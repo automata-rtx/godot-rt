@@ -99,7 +99,7 @@ void main() {
 	vec4 world = params.inv_view_projection * ndc;
 	vec3 world_position = world.xyz / world.w;
 
-	// Reconstruct a geometric normal from neighbouring depth taps. Derivatives
+	// Reconstruct a geometric normal from neighboring depth taps. Derivatives
 	// are not available in a compute shader, and this avoids a dependency on the
 	// normal/roughness buffer, which Forward+ does not produce unless some other
 	// effect asks for it.

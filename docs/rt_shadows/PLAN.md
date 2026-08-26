@@ -18,7 +18,7 @@ That is actually the good news. It means:
 
 * We are not fighting an existing half-finished shadow-raytracing design.
 * Every hard, fiddly, driver-level piece (extension loading, feature detection,
-  memory, scratch buffers, synchronisation) is already done and already debugged.
+  memory, scratch buffers, synchronization) is already done and already debugged.
 * The work in front of us is *renderer* work, in C++ and GLSL, at a layer that is
   well-understood and well-isolated.
 
@@ -157,7 +157,7 @@ _register_requested_device_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
 _register_requested_device_extension(VK_KHR_RAY_QUERY_EXTENSION_NAME, false);
 ```
 
-Optional means a GPU without raytracing still initialises normally — there is no
+Optional means a GPU without raytracing still initializes normally — there is no
 hardware regression risk from this feature merely existing. Support surfaces upward as
 two separate capabilities (`rendering_device_commons.h:1036-1037`):
 
@@ -176,7 +176,7 @@ There are no `TODO`/`FIXME`/stub markers anywhere in the raytracing code paths.
 
 ### 1.3 Shader compilation — inline ray tracing is available now
 
-This was the make-or-break question, and the answer is favourable on all four counts:
+This was the make-or-break question, and the answer is favorable on all four counts:
 
 | Requirement | Status | Evidence |
 |---|---|---|
@@ -212,7 +212,7 @@ additional reason for decision D2.
 
 Local-light shadowing lives in
 `servers/rendering/renderer_rd/shaders/scene_forward_lights_inc.glsl`. Inside
-`light_process_omni_light()` the shadow term is initialised at line 499:
+`light_process_omni_light()` the shadow term is initialized at line 499:
 
 ```glsl
 half shadow = half(1.0);
@@ -270,7 +270,7 @@ waste a week if taken on trust:
   Under MSAA it is only *resolved* if the pass adds itself to the `finish_depth`
   disjunction at `:2152`. Neither happens automatically. Reading an unwritten depth buffer
   is the silent failure mode.
-* **Normal-roughness is not produced by default.** `depth_pass_mode` initialises to
+* **Normal-roughness is not produced by default.** `depth_pass_mode` initializes to
   `PASS_MODE_DEPTH` (`:1844`) and is only upgraded to `PASS_MODE_DEPTH_NORMAL_ROUGHNESS`
   by the SSR/SDFGI/SSAO/SSIL/compositor chain at `:1938-1952`. RT shadows must add their
   own term to that chain, which costs an extra `R8G8B8A8_UNORM` attachment in the prepass
@@ -391,7 +391,7 @@ query is driven by each light's influence volume rather than by a camera radius.
 
 Also relevant: `light_get_shadow_caster_mask()` is already respected during shadow
 caster gathering (`renderer_scene_cull.cpp:2430`), alongside `layer_mask` and the
-geometry's `can_cast_shadows` flag. The RT path must honour the same three, which maps
+geometry's `can_cast_shadows` flag. The RT path must honor the same three, which maps
 naturally onto the 8-bit TLAS instance `mask`.
 
 ### 1.10 Debug draw modes and editor plumbing
@@ -506,7 +506,7 @@ denoiser history buffers.
 
 **Why.** §1.5: zero new variants, works in ubershader mode, no compile-time or stutter
 regression. When the bit is clear, the compiler removes the RT branch entirely and the
-shader is byte-for-byte the behaviour you have today.
+shader is byte-for-byte the behavior you have today.
 
 ### D5 — TLAS instances come from the scenario geometry index, not the render list
 
@@ -529,7 +529,7 @@ inventing a parallel one.
 
 Two API notes: do **not** use the public `RenderingServer::instances_cull_aabb` — it returns
 `ObjectID`s rather than instances, silently skips instances with a null object id, and is
-marshalled through the RS command queue. Use the internal `DynamicBVH::aabb_query` with a
+marshaled through the RS command queue. Use the internal `DynamicBVH::aabb_query` with a
 collecting functor, copying the `instance_shadow_cull_result` pattern at `cpp:2406-2419`.
 And note BVH AABBs are motion-quantised and expanded for moving objects (`cpp:1746-1757`),
 so a region query returns a conservative superset — fine for a TLAS, but do not assume tight
@@ -574,7 +574,7 @@ integration layer assumes a native resource-binding model. Godot has no
 precompiled-SPIR-V ingestion path, so adopting NRD means either porting its shaders or
 building that path — a substantial project in its own right, and one that would block
 shipping *any* working shadows. A shadow-only denoiser is a well-understood problem
-(shadow visibility is a scalar in [0,1] with known temporal behaviour) and Godot's
+(shadow visibility is a scalar in [0,1] with known temporal behavior) and Godot's
 compute infrastructure is entirely adequate for it. Shipping our own first means
 Phase 3 is usable; NRD then becomes a quality upgrade rather than a prerequisite.
 
@@ -596,7 +596,7 @@ shadow-casting mode on `Light3D`, superseding the `shadow_enabled` bool:
 `RT_ONLY` is self-describing, and that is the point: it encodes your requirement that the
 setting must not carry over when RT shadows are switched off. A project with RT disabled
 shows lights with no shadows, which is loud and obvious, rather than silently reverting to
-shadow-map behaviour you did not ask for.
+shadow-map behavior you did not ask for.
 
 **Newly created non-directional lights get `RT_ONLY` in the constructor** when the project
 setting is on — so a light dragged into the scene, instanced from a `PackedScene`, or created
@@ -629,20 +629,20 @@ an inherited default and survives any future change to what `AUTO` means.
 
 **Consequence, stated plainly.** With the project setting on, every light in your existing
 scenes that already cast shadows switches to RT. Lights you left dark stay dark. That is the
-auto-upgrade behaviour you asked for, and it *is* a visible change to existing scenes — which
+auto-upgrade behavior you asked for, and it *is* a visible change to existing scenes — which
 is correct here, because it is the entire point of the feature.
 
 **Rejected.** Flipping the default of `shadow_enabled` — it would make the meaning of every
 `.tscn` depend on a project setting, so scene files would stop being portable between
 projects. A separate parallel `rt_shadow_mode` property (the first draft's answer) — two
-properties governing one behaviour is worse UX than one property with four values, and it
+properties governing one behavior is worse UX than one property with four values, and it
 made "RT off means no shadows" awkward to express.
 
 ### D8b — Raise the default `light_size`; keep 0 meaning "point light"
 
 **Decision.** Change the constructor default `set_param(PARAM_SIZE, ...)` from `0` to
 **`0.05`** (5 cm) for `OmniLight3D` and `SpotLight3D`. `AreaLight3D` keeps its existing
-`0.5`. `light_size` remains a pure physical quantity — the emitter radius in metres — and
+`0.5`. `light_size` remains a pure physical quantity — the emitter radius in meters — and
 `0` continues to mean an ideal point light, and therefore hard shadows.
 
 There is **no** `rt_hard_shadows` property. Hard shadows are expressed the way they always
@@ -665,7 +665,7 @@ Raising the default achieves the same goal — realistic softness with no config
 keeping one property with one meaning, visible and tunable in the inspector.
 
 **What this changes in existing scenes.** `0` was the old default, so no existing `.tscn`
-serialises `light_size`; every existing light therefore picks up the new default. Two visible
+serializes `light_size`; every existing light therefore picks up the new default. Two visible
 effects, both intended under the revised philosophy:
 
 * Shadows soften. Under RT this is the point. Under the raster path it also softens PCSS.
@@ -680,7 +680,7 @@ effects, both intended under the revised philosophy:
 sample in §5.1 spreads over a solid angle proportional to `light_size / distance`, so a larger
 radius means higher variance at one sample per pixel and more work for the denoiser. A radius
 of `0` is free — a single deterministic ray with zero variance. 5 cm gives shadows that are
-sharp within 10–20 cm of contact and visibly soften over a couple of metres, which reads as
+sharp within 10–20 cm of contact and visibly soften over a couple of meters, which reads as
 realistic without being expensive or mushy. Treat it as a tuning value, not a constant of
 nature.
 
@@ -690,7 +690,7 @@ uses hit distance to filter at the matching width. This is the single most visib
 difference over shadow maps, which is why it is on by default rather than being a knob.
 
 **Upstream note.** A changed constructor default is a divergence from upstream Godot and will
-show up as a behavioural difference if this fork ever merges or is compared against it. It is
+show up as a behavioral difference if this fork ever merges or is compared against it. It is
 one line, and it is deliberate.
 
 ### D9 — RT is required; there is no shadow-map fallback for local lights
@@ -891,7 +891,7 @@ The one genuine blocker from §1.7. A compute shader
 is bit-comparable to what you see on screen).
 
 * Runs **once per surface**, not per frame, not per instance.
-* Amortised across all instances of the mesh.
+* Amortized across all instances of the mesh.
 * Cost: 12 bytes per vertex. A 50,000-vertex mesh costs 600 KB.
 * Dispatched in batches during the RT update, budgeted (§4.5) so a level load does not
   produce a single enormous stall.
@@ -1113,7 +1113,7 @@ based on "mesh was cleared" never fire, because nothing is cleared. Key churn de
 instance per second.
 
 **LOD.** BLASes are built at LOD 0 and never re-selected, because camera-dependent LOD would
-make residency flicker. The consequence: a distant object rasterised at LOD 3 casts a LOD 0
+make residency flicker. The consequence: a distant object rasterized at LOD 3 casts a LOD 0
 shadow, so its shadow silhouette will not match its outline. If that proves objectionable, the
 mitigation is a *camera-independent* LOD chosen once at build time against the owning light's
 radius and cached — never re-evaluated per frame.
@@ -1237,7 +1237,7 @@ Three delivery details, all verified:
 
 **The shadow atlas keeps running, and the per-light toggle must never be implemented by
 clearing `light->shadow`.** Three consumers read the atlas independently of the fragment
-shader: volumetric fog reimplements the atlas UV maths with its own exponential fade
+shader: volumetric fog reimplements the atlas UV math with its own exponential fade
 (`volumetric_fog_process.glsl:499-523`), SDFGI/VoxelGI check `light_has_shadow()` and
 raymarch, and the atlas is the fallback image any RT-to-raster cross-fade blends toward.
 Clearing `light->shadow` would silently kill GI shadowing — a bug that would take months to
@@ -1256,7 +1256,7 @@ resisted: correctness first, then the saving.
 
 ### 5.4 Preserving the shadow contract
 
-The atlas path does more than return a visibility term, and every one of those behaviours
+The atlas path does more than return a visibility term, and every one of those behaviors
 is a thing an existing project may already depend on. Enumerating them *before* writing the
 shader removes an entire class of "why does this look wrong" bugs.
 
@@ -1275,7 +1275,7 @@ exclusion must be visible in the debug view, because a room lit by one omni and 
 light showing two different shadow techniques on the same wall is worse than a room showing
 one technique consistently.
 
-**Soft shadows are a behaviour to preserve, not a feature to add.** Today,
+**Soft shadows are a behavior to preserve, not a feature to add.** Today,
 `sc_use_light_soft_shadows() && soft_shadow_size > 0.0` gives PCSS penumbras (`:520`,
 `:822`, `:1027`). Replacing that with a 1-sample-per-pixel hard shadow makes carefully tuned
 lights visibly **worse**. Combined with the area-light default above — and with D8b raising the
@@ -1432,7 +1432,7 @@ that were dark stay dark.
 
 The `RT_ONLY` + project-setting-off row is the important one. It is deliberately *not* a
 fallback: switching RT off leaves those lights unshadowed, loudly, rather than quietly
-reverting to shadow-map behaviour you did not author. `SHADOW_MAP` remains available per light
+reverting to shadow-map behavior you did not author. `SHADOW_MAP` remains available per light
 as a deliberate escape hatch for the rare case where RT is genuinely wrong for one light.
 
 ### 7.3 What the user never has to do
@@ -1485,7 +1485,7 @@ editor.
 New viewport debug mode: **"RT Acceleration Structure"**, added via the 8-file checklist
 in §1.10.
 
-An important honesty point first: **the hardware BVH itself cannot be visualised.**
+An important honesty point first: **the hardware BVH itself cannot be visualized.**
 Once `vkCmdBuildAccelerationStructuresKHR` runs, the internal node layout is opaque,
 vendor-specific, driver-private data. There is no API in Vulkan — or in Godot — to read
 it back. Anything claiming to show "the RT BVH" is showing a proxy.
@@ -1523,7 +1523,7 @@ my caution, so it needs a decision rather than a reassurance.
 `volumetric_fog_process.glsl` binds the shadow atlas directly
 (`:27 layout(set = 0, binding = 1) uniform texture2D shadow_atlas`) and samples it per froxel
 for **omni** (`:504-521`), **spot** (`:579-586`) and **area** (`:674`) lights, reimplementing
-the atlas UV maths with its own exponential fade. It runs over a 3D froxel grid, not over
+the atlas UV math with its own exponential fade. It runs over a 3D froxel grid, not over
 screen pixels, so **it cannot read our screen-space mask** — the mask has no value for a
 froxel behind a wall or outside the depth buffer.
 
@@ -1545,7 +1545,7 @@ shadow map, purely for fog. Four ways out:
 opt-in, so option A confines shadow maps to a case you may never enable — and if you never
 turn fog on, you already have zero shadow maps for local lights. Option D is the principled
 end state and is a natural Phase 5 companion to RTAO, since both are "trace a sparse volume
-and denoise it". Option B is the same work as D without the optimisation and is worth
+and denoise it". Option B is the same work as D without the optimization and is worth
 measuring before committing.
 
 If you intend to use volumetric fog heavily, tell me and I will move D forward — it changes
@@ -1779,7 +1779,7 @@ and a GridMap level engages rather than demoting.
 
 **Exit:** production-quality shadows. **The project setting becomes user-facing here.**
 
-### Phase 4 — Integration and optimisation
+### Phase 4 — Integration and optimization
 * **Delete the local-light shadow-map pass entirely**, except where volumetric fog requires
   it (§7.7). This is the performance win and the point of the whole exercise.
 * **Screen-space contact shadows** (§D9) to fill in grass and foliage that alpha-tested
@@ -1861,7 +1861,7 @@ and a GridMap level engages rather than demoting.
 | `blas_build` arity change breaks GDExtension API compat | Add `blas_build_update()` as a new method rather than changing the signature |
 
 ### 10.3 Things I am not certain about
-Stated plainly, since you are relying on my judgement:
+Stated plainly, since you are relying on my judgment:
 
 * **The 4-lights-per-pixel budget (D3)** is an educated guess. It may want to be 2 (cheaper)
   or 8 (two textures). It is isolated behind one function so revising it is cheap, but
@@ -1905,7 +1905,7 @@ Stated plainly, since you are relying on my judgement:
   specialization-constant bit is clear, the RT branch compiles out, no acceleration
   structures are created, no memory is allocated.
 * Shadow maps are never removed. RT shadows are an override layered on top, which is why
-  every fallback path degrades to *today's behaviour* rather than to something broken.
+  every fallback path degrades to *today's behavior* rather than to something broken.
 * No import settings change; no mesh re-import is needed; `.tscn` semantics are unchanged
   (D8).
 * **One unavoidable exception:** adding a binding to `scene_forward_clustered_inc.glsl`
@@ -1913,8 +1913,8 @@ Stated plainly, since you are relying on my judgement:
   (`shader_rd.cpp:167-180`). Every user upgrading gets a full scene-shader recompile of every
   material on first run — even with RT shadows off. A one-time cost, but it must be budgeted
   and communicated rather than discovered.
-* The one intentional behaviour change is D8's: with the setting **on**, a light that had
-  `shadow = false` will start casting an RT shadow. That is the requested behaviour, it is
+* The one intentional behavior change is D8's: with the setting **on**, a light that had
+  `shadow = false` will start casting an RT shadow. That is the requested behavior, it is
   opt-in at project level, and `rt_shadow_mode = DISABLED` restores the old look per light.
 
 ---
