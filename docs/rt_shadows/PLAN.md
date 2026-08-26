@@ -159,9 +159,28 @@ This was the make-or-break question, and the answer is favourable on all four co
 | Vulkan ≥ 1.1 client | Yes — 1.1 | `rendering_shader_container_vulkan.cpp:99-101` |
 | AS bindable as uniform | Yes | `UNIFORM_TYPE_ACCELERATION_STRUCTURE` |
 
-`GL_EXT_ray_query` requires SPIR-V 1.4 and Vulkan 1.1. Godot targets exactly that.
-**We can write `rayQueryEXT` in a normal `.glsl` compute shader with no changes to the
-shader build system.**
+`GL_EXT_ray_query` requires SPIR-V 1.4 and Vulkan 1.1. Godot targets exactly that — but
+there is a fifth requirement that is easy to miss and that Godot does **not** currently
+meet:
+
+> **glslang gates the `rayQueryEXT` keyword (`Scan.cpp:1110`) and every `rayQuery*EXT`
+> builtin prototype (`Initialize.cpp:5327`) on GLSL `#version >= 460`. All 82 shader files
+> in `renderer_rd/shaders/` are `#version 450`. None is 460.**
+
+So our RT shaders must be the first `#version 460` files in the tree. This is not a build
+system change — `ShaderRD::_build_variant_code` injects defines at the `#VERSION_DEFINES`
+chunk, i.e. *after* the `#version` line (`shader_rd.cpp:280-300`), so a 460 header plus the
+`#extension` directive at the top of the file just works.
+
+There is a nasty asymmetry worth knowing in advance: `accelerationStructureEXT` has **no**
+version gate (`Scan.cpp:1091-1097`), so the TLAS uniform declaration compiles fine at 450
+and the failure only surfaces later at the first `rayQueryEXT`. Expect to lose an afternoon
+to this if it is not written down.
+
+It also means ray query **cannot** be made conditional inside an existing `#version 450`
+shader behind an `#ifdef` or specialization constant — the keyword is rejected at scan
+time regardless of preprocessor branches. Ray query lives in its own 460 file. This is an
+additional reason for decision D2.
 
 ### 1.4 Where shadows are computed today
 
@@ -216,14 +235,42 @@ Process Pre Opaque Compositor Effects    (:2185 def)
 Render Opaque Pass                       (:2201)
 ```
 
-`_pre_opaque_render()` is where SSAO and SSIL run, which means **depth and
-`normal_roughness` are already resolved and available there** — the exact inputs a
-screen-space raytraced shadow pass needs. Our pass slots in alongside SSAO with no
-reordering of anything that exists.
+`_pre_opaque_render()` is where SSAO and SSIL run, and it is the right slot for an RT
+shadow pass. But its inputs are **not** free, and this is the correction most likely to
+waste a week if taken on trust:
 
-`RB_TEX_NORMAL_ROUGHNESS` is allocated on demand via `ensure_normal_roughness_texture()`
-(`render_forward_clustered.cpp:63-68`); we simply add RT shadows to the list of features
-that request it.
+* **Depth** is available at internal resolution only if `depth_pre_pass` is true
+  (`render_forward_clustered.cpp:2126`) — and that is a user-disableable project setting.
+  Under MSAA it is only *resolved* if the pass adds itself to the `finish_depth`
+  disjunction at `:2152`. Neither happens automatically. Reading an unwritten depth buffer
+  is the silent failure mode.
+* **Normal-roughness is not produced by default.** `depth_pass_mode` initialises to
+  `PASS_MODE_DEPTH` (`:1844`) and is only upgraded to `PASS_MODE_DEPTH_NORMAL_ROUGHNESS`
+  by the SSR/SDFGI/SSAO/SSIL/compositor chain at `:1938-1952`. RT shadows must add their
+  own term to that chain, which costs an extra `R8G8B8A8_UNORM` attachment in the prepass
+  and, under MSAA, the heavier `resolve_gi` path.
+* Do **not** gate on `rb_data->has_normal_roughness()`. It is backed by
+  `global_surface_data.normal_texture_used`, a sticky global that is set once
+  (`render_forward_clustered.h:682`, `:4190`) and never reset — so the texture can exist
+  with nothing ever rendered into it.
+* The contents are view-space, best-fit-24 encoded into 8 bits, with a dynamic/static flag
+  folded around 0.5 in the roughness channel
+  (`scene_forward_clustered.glsl:3090-3097`). It must be decoded, not read raw.
+* **Reflection probe renders take the `is_reflection_probe` branch with no `rb_data`** —
+  the RT pass must skip them entirely.
+
+So the concrete work is: add `using_rt_shadows` to the `depth_pass_mode` upgrade chain and
+to `finish_depth`; either force `depth_pre_pass` on when RT shadows are enabled (mirroring
+`force_depth_pre_pass = scene_state.used_opaque_stencil` at `:2125`) or disable RT shadows
+when the prepass is off (mirroring `using_ssao = depth_pre_pass && ...` at `:2131`).
+
+Given the encoding loss, reconstructing a geometric normal from depth derivatives inside
+the RT shader is a legitimate alternative to depending on `normal_roughness` at all — and
+it is the cheaper starting point for Phase 1.
+
+Dispatch position within `_pre_opaque_render` matters too: after `update_light_buffers`
+(`:1680`), because earlier the light indices do not exist, and before `:2213`, because
+later the render-pass uniform set is already built.
 
 ### 1.7 Mesh geometry — the one real blocker
 
@@ -432,9 +479,29 @@ requirement that walls behind the player still cast shadows. The geometry indexe
 not frustum-culled, is maintained every frame anyway, and supports exactly the spatial
 query we want. This is reuse, not new infrastructure.
 
+**Where the code lives matters.** `Scenario`, `Instance` and `DynamicBVH` are **not
+reachable from `forward_clustered`** — the renderer only sees `RenderGeometryInstance*`.
+The TLAS instance list must therefore be built in `RendererSceneCull` and passed down
+through a new `render_scene` parameter, mirroring how `RenderShadowData::instances` already
+works. Reuse the existing per-instance shadow-caster filter verbatim
+(`renderer_scene_cull.cpp:2584`: visible, geometry mask, `can_cast_shadows`,
+`layer_mask & light_get_shadow_caster_mask`, inactive-particle rejection) rather than
+inventing a parallel one.
+
+Two API notes: do **not** use the public `RenderingServer::instances_cull_aabb` — it returns
+`ObjectID`s rather than instances, silently skips instances with a null object id, and is
+marshalled through the RS command queue. Use the internal `DynamicBVH::aabb_query` with a
+collecting functor, copying the `instance_shadow_cull_result` pattern at `cpp:2406-2419`.
+And note BVH AABBs are motion-quantised and expanded for moving objects (`cpp:1746-1757`),
+so a region query returns a conservative superset — fine for a TLAS, but do not assume tight
+bounds.
+
 **Rejected.** A second parallel scene structure maintained by the RT system — duplicated
 state, duplicated bugs, and a new class of "why is this object's shadow wrong"
-failure that would be invisible to the user.
+failure that would be invisible to the user. Also rejected: sourcing from the forward render
+list, which loses not only off-screen casters but occlusion-culled casters,
+visibility-range-faded casters, and **all `SHADOWS_ONLY` geometry even when fully on
+screen** (`cpp:2990`).
 
 ### D6 — A dedicated RT position buffer, built lazily, shared across instances
 
@@ -731,6 +798,26 @@ our 65,536 default that is ~4 MB per entry, a few times over. And calling `tlas_
 more than once per frame allocates an additional full-size entry, so **the TLAS must be
 built exactly once per frame**.
 
+`max_instance_count` is also **frozen at `tlas_create()`** (`rendering_device.cpp:436`) and
+exceeding it is a hard failure (`:475`). Growth therefore means destroying and recreating
+the TLAS, which invalidates any uniform set holding it. The policy: size generously at
+creation, and on overflow drop the lowest-priority instances for that frame while
+scheduling a TLAS recreate for the next — never fail the build.
+
+**One quirk to plan for.** `tlas_build()` rejects any instance whose `hit_sbt_range` is
+zero (`rendering_device.cpp:543`), even though a ray-query-only path has no shader binding
+table at all. The range is encoded as `(count << 32) | offset`, so passing a synthetic
+`(offset = 0, count = 1)` — the literal `0x1_0000_0000` — satisfies the check and writes
+`instanceShaderBindingTableRecordOffset = 0`, which ray query never reads. No raytracing
+pipeline, no SBT, and no engine patch required. Without this the design would need a dummy
+ray pipeline purely to pass validation.
+
+**Scratch memory is not pooled.** `_acceleration_structure_scratch_buffer_create()`
+(`rendering_device.cpp:252-275`) allocates a scratch buffer *per acceleration structure*
+and keeps it alive. N BLASes therefore means N permanent scratch allocations on top of the
+BLASes themselves. Static builds must release scratch immediately after building; only
+deformed entries, which rebuild every frame, should retain it.
+
 Per-instance fields are filled as:
 
 | Field | Source |
@@ -741,14 +828,44 @@ Per-instance fields are filled as:
 | `flags` | `TRIANGLE_FACING_CULL_DISABLE` for double-sided; `TRIANGLE_FLIP_FACING` for negative-determinant transforms |
 | `blas` | from the BLAS cache |
 
-**Negative scale matters.** A mesh with a negatively-scaled transform has inverted
-winding. The raster path handles this in its culling state; the RT path must set
-`TRIANGLE_FLIP_FACING_BIT` or such objects will self-shadow incorrectly. This is a
-classic RT porting bug and is called out here so it is not rediscovered later.
+**Facing: disable triangle culling on every instance, unconditionally.**
+Vulkan flips triangle facing for TLAS instances with a negative-determinant transform, and
+a mirrored prop (`scale.x = -1`) is extremely common. The raster shadow pass compensates
+through `flip_cull`, driven both by the dual-paraboloid flip *and* by
+`light_get_reverse_cull_face_mode` (`render_forward_clustered.cpp:2866-2877`).
+
+That per-light compensation is **structurally impossible** to reproduce in RT:
+`shadow_reverse_cull_face` is a per-light property, but the TLAS is per-scenario and shared
+by every light. There is no per-light BLAS.
+
+The only answer that survives negative scale, per-light reverse-cull and a shared TLAS
+simultaneously is to set `ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT`
+on **every** instance. Shadow rays do not need facing — an occluder occludes from either
+side. Consequences to write down: the `DOUBLE_SIDED → CULL_DISABLE` mapping becomes a
+no-op and should not be implemented, and `shadow_reverse_cull_face` becomes a documented
+no-op for RT-shadowed lights.
 
 **`SHADOWS_ONLY` and `SHADOWS_OFF`** map naturally: `SHADOWS_OFF` geometry is excluded
 from the TLAS; `SHADOWS_ONLY` geometry is included in the TLAS but excluded from the
-render list, exactly as it is today.
+render list, exactly as it is today. Note that `SHADOWS_ONLY` geometry is *absent* from the
+forward render list by construction (`renderer_scene_cull.cpp:2990`) — one more reason the
+TLAS cannot be sourced from it.
+
+**Ray flags and geometry opacity.** Set `ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT` on
+every geometry and trace with
+`gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT`.
+If geometry is not marked opaque, `rayQueryEXT` yields *candidate* intersections that the
+shader must confirm in a proceed loop; the naive single-`Proceed`-then-check-committed
+pattern then returns **no hit at all**, i.e. no shadows anywhere. That failure reads
+exactly like "residency is broken" and will cost days to diagnose.
+
+**Instance mask is 8 bits; Godot's layer masks are 32.** `VkAccelerationStructureInstanceKHR::mask`
+is 8-bit, so the 32-bit `layer_mask & shadow_caster_mask` test cannot be represented
+exactly. Fold groups of four layers into each mask bit with an OR — conservative in the
+safe direction (an extra caster, never a missing one). A project using layers 9-32 for
+shadow-caster filtering will see RT and raster disagree about which objects cast. There is
+no fix short of extending the mask semantics, which Vulkan does not permit. Document it on
+the property and surface it in the debug view.
 
 ### 4.4 Residency, streaming and the deforming-mesh hazard
 
@@ -798,8 +915,95 @@ the TLAS, and that light falls back to its shadow map for those frames — so a 
 scene degrades to *today's behaviour* briefly rather than to a missing shadow. This is
 the property that makes level loading and fast teleporting safe.
 
-If the VRAM budget cannot be met even after eviction, the system logs once and reduces
+Budget by **triangles** (default 500,000/frame), not by BLAS count — 8 hero meshes and 8
+rocks are wildly different costs. Add a separate cap on graph commands (default 64), since
+each `add_blas_build` records its own command with its own barrier group and the graph's
+sort and adjacency pass is real CPU cost. Multiply the budget 8× for 30 frames after a
+scenario's instance count jumps by >20%: frame pacing during a level load does not matter,
+but a four-second BVH warm-up does.
+
+**One item always builds per frame, regardless of size.** A 2M-triangle terrain or merged
+level mesh cannot be split across frames; under a strict cap it would never be scheduled,
+its light would never engage, and the failure would be silent and permanent. Accept the
+one-frame hitch and surface "oversized BLAS: N triangles" in the debug view.
+
+**Over-budget demotes a light, never drops geometry.** Dropping geometry produces a missing
+shadow — the exact failure this design exists to prevent. Demoting the lowest-priority
+light removes its influence volume from the residency set, frees its exclusive casters, and
+converges. If the VRAM budget cannot be met even after eviction, log once and reduce
 `rt_shadow_distance` adaptively rather than failing.
+
+**Build failure is not an error to retry.** There is no acceleration-structure size query at
+any level, and AS backing buffers bypass RD's `buffer_memory` accounting, so
+`get_memory_usage()` systematically under-reports and our bytes-per-triangle figure is an
+estimate, not a measurement. A failed `blas_create` must be treated as "not built" — the
+entry returns to the queue at lowest priority and its light stays unengaged. After N
+consecutive failures, RT disables itself for the session with one log line. Without this, a
+memory-pressured machine gets an error-spam death spiral.
+
+### 4.6 The purity gate — the mechanism that keeps existing scenes correct
+
+This is the most important safety mechanism in the design, and it exists because of a
+failure mode that is easy to miss.
+
+The forward shader *replaces* the atlas term with the RT mask. So a caster that is absent
+from the TLAS does not get a slightly-wrong shadow — it loses its shadow **entirely**. An
+alpha-scissor fence becomes a hole in the shadow. A `GPUParticles3D` smoke column stops
+occluding. That is a visible regression on existing content, and it directly violates the
+"nothing may break" requirement that the rest of this document is built around.
+
+The fix is to gate at the level of the *light*, not the geometry:
+
+> A light is granted RT shadows only if every **significant** ineligible caster in its
+> influence volume is absent. Otherwise it keeps its shadow map, at exactly today's quality.
+
+"Significant" means `aabb.get_longest_axis_size() > 0.02 * light_range` — so one dust mote
+does not demote a whole room, but a missing wall always does.
+
+Implementation: add `material_casts_opaque_shadows()` as a sibling virtual to the existing
+`material_casts_shadows()` (`servers/rendering/storage/material_storage.h:92`), returning
+false for shaders using `alpha_clip`, `alpha_antialiasing`, `depth_prepass_alpha` or
+`shadow_to_opacity`; compute a `casts_opaque_shadows` flag alongside the existing
+`can_cast_shadows` recomputation in `_update_dirty_instance`
+(`renderer_scene_cull.cpp:4313-4333`).
+
+The gate is strictly safe: the worst case is that a light looks exactly like it does today.
+
+**The planned second step — the degraded tier.** For a light with ineligible casters,
+render its shadow map with the caster list filtered to *ineligible geometry only*, and
+composite `shadow = min(atlas_shadow, rt_shadow)`. The fence keeps its blobby PCF shadow;
+everything else gets crisp RT. This is the correct end state and is genuinely cheap.
+
+**The risk the gate creates.** A gate that fires everywhere is a feature that does nothing.
+And several scope decisions cause it to fire:
+
+| Content | Why it demotes |
+|---|---|
+| GridMap levels | GridMap is 100% MultiMesh (`grid_map.cpp:769-812`) |
+| Foliage / scatter | MultiMesh |
+| Any `GPUParticles3D` in range | Never RT-eligible |
+| CSG whiteboxing | New mesh RID every rebuild (below) |
+
+This is why **MultiMesh belongs in Phase 2, not later**. Its transform data is already
+CPU-side for `data_cache`-backed multimeshes and the layout is byte-identical to
+`VkTransformMatrixKHR` (`mesh_storage.cpp:1928-1940`) — it is a memcpy plus one TLAS
+instance per visible element, capped. Deferring it means the feature is silently off in a
+large fraction of real projects.
+
+**CSG churn.** `modules/csg/csg_shape.cpp:606-638` calls `root_mesh.instantiate()` on every
+`_update_shape`, so dragging a CSG node in the editor produces a **new mesh RID every
+frame**. A BLAS cache keyed on mesh RID therefore sees an unbounded stream of new keys, and
+churn heuristics based on "mesh was cleared" never fire, because nothing is cleared — the
+old mesh is freed and a different one appears. Key churn detection on `instance_set_base`
+frequency per `Instance` instead, with a hard cap on new BLAS keys accepted from one
+instance per second.
+
+**LOD.** BLASes are built at LOD 0 and never re-selected, because a camera-dependent LOD
+would make BLAS residency flicker. The consequence must be stated rather than discovered: a
+distant object rasterised at LOD 3 casts a LOD 0 shadow, so its shadow silhouette will not
+match its outline, and self-shadowing can seam where the two disagree. If that proves
+objectionable, the mitigation is a *camera-independent* LOD chosen once at build time
+against the owning light's radius and cached — never re-evaluated per frame.
 
 ---
 
@@ -810,6 +1014,7 @@ If the VRAM budget cannot be met even after eviction, the system logs once and r
 `rt_shadows.glsl`, dispatched at internal resolution, one thread per pixel.
 
 ```glsl
+#version 460                       // REQUIRED — rayQueryEXT is gated on >= 460
 #extension GL_EXT_ray_query : enable
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
@@ -841,7 +1046,8 @@ void main() {
 
         rayQueryEXT rq;
         rayQueryInitializeEXT(rq, tlas,
-            gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+            gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT
+              | gl_RayFlagsSkipClosestHitShaderEXT,
             L.cull_mask, origin, 0.001, dir, dist - 0.001);
         rayQueryProceedEXT(rq);
 
@@ -902,11 +1108,97 @@ if (sc_use_rt_shadows() && omni_lights.data[idx].rt_channel < 4u) {
 layout does not change. When `sc_use_rt_shadows()` is false the specialization constant
 folds the branch away and the generated code is identical to today's.
 
-Volumetric fog and SDFGI also consume shadows, and they run from their own shaders
-against the shadow atlas. **They keep using the shadow atlas.** RT-shadowed lights
-therefore still allocate a shadow map for fog/GI purposes in Phase 1-3; the saving in
-shadow-map rendering comes later, in Phase 4, once fog and GI have their own RT paths.
-This is a deliberate ordering choice: it means fog and GI cannot visually regress.
+Three delivery details, all verified:
+
+* **`scene_forward_lights_inc.glsl` is `#include`d by `forward_mobile` as well as
+  `forward_clustered`.** Every RT read must sit inside `#ifndef USING_MOBILE_RENDERER` or
+  the mobile renderer breaks. This is the concrete reason "Mobile is untouched" holds.
+* The mask binds as one new texture at `set = 1, binding = 37` — the first free binding in
+  the render-pass uniform set — declared in both the `USE_MULTIVIEW` (`texture2DArray`) and
+  mono (`texture2D`) branches. Model the C++ block byte-for-byte on the SSAO `ao_buffer`
+  block at `render_forward_clustered.cpp:3647-3654`, defaulting to
+  `DEFAULT_RD_TEXTURE_WHITE` (white = unshadowed) so the six `p_render_data == nullptr`
+  call sites stay valid. No uniform-set restructuring is needed.
+* `LightData` has exactly 8 free bytes and this design consumes all of them. Any future
+  per-light RT field grows the struct from 224 to 240 bytes, which must be mirrored by hand
+  across `light_storage.h` and `light_data_inc.glsl` — there is no `static_assert` tying
+  them together today. **Add one as part of this work.**
+
+**The shadow atlas keeps running, and the per-light toggle must never be implemented by
+clearing `light->shadow`.** Three consumers read the atlas independently of the fragment
+shader: volumetric fog reimplements the atlas UV maths with its own exponential fade
+(`volumetric_fog_process.glsl:499-523`), SDFGI/VoxelGI check `light_has_shadow()` and
+raymarch, and the atlas is the fallback image any RT-to-raster cross-fade blends toward.
+Clearing `light->shadow` would silently kill GI shadowing — a bug that would take months to
+attribute to this feature.
+
+So the honest framing of the first shipping milestone is **better quality at higher cost**:
+we pay for both shadow maps and rays for the same lights. Cost recovery is a later phase and
+is conditional — suppress atlas rendering only for a light that has been fully RT-engaged
+for 30 consecutive frames with no pending BLAS builds, *and* only when volumetric fog is
+disabled on that viewport, *and* only when no transmittance/SSS material is affected by it
+(§5.4). Retain the atlas slot and its last-rendered contents even then, so a withdrawal
+cross-fades into a stale-but-plausible image rather than popping.
+
+There will be pressure to skip hardening and jump straight to cost recovery. It should be
+resisted: correctness first, then the saving.
+
+### 5.4 Preserving the shadow contract
+
+The atlas path does more than return a visibility term, and every one of those behaviours
+is a thing an existing project may already depend on. Enumerating them *before* writing the
+shader removes an entire class of "why does this look wrong" bugs.
+
+**Area lights are a first-class light type in this fork, and the plan must not ignore
+them.** `RSE::LIGHT_AREA` has its own SSBO (`set = 0, binding = 5`), its own cluster element
+type, its own shadow block (`scene_forward_lights_inc.glsl:1006-1126`), and its own atlas
+allocation path. Critically, `AreaLight3D::AreaLight3D()` sets `PARAM_SIZE = 0.5`
+(`scene/3d/light_3d.cpp:747`) — **every area light in every project has soft shadows on by
+default.** Its composite site is also structurally different from omni/spot: the shadow term
+multiplies into *two* variables, `light_attenuation_ltc` and `light_attenuation`
+(`:1125-1126`).
+
+Decision: **area lights are excluded from RT slot candidacy until Phase 3.** They neither
+burn budget nor engage. The reason is 5.4's next point, not squeamishness — and the
+exclusion must be visible in the debug view, because a room lit by one omni and one area
+light showing two different shadow techniques on the same wall is worse than a room showing
+one technique consistently.
+
+**Soft shadows are a behaviour to preserve, not a feature to add.** Today,
+`sc_use_light_soft_shadows() && soft_shadow_size > 0.0` gives PCSS penumbras (`:520`,
+`:822`, `:1027`). Replacing that with a 1-sample-per-pixel hard shadow makes carefully tuned
+lights visibly **worse**. Combined with the area-light default above, a naive Phase 2 would
+regress *every* area light and every omni/spot with `light_size > 0`.
+
+Decision: **Phase 2 ships the cone-sampled soft path from §5.1 from the start**, reusing the
+existing Vogel `penumbra_shadow_kernel` and the existing
+`quick_hash(gl_FragCoord.xy + taa_frame_count * 5.588238)` rotation, at 4-8 taps. Noise is
+acceptable until the Phase 3 denoiser; a silent downgrade to hard shadows is not. The
+alternative — restricting Phase 2 to lights with `soft_shadow_size == 0.0` — is honest but
+shrinks the audience to almost nothing.
+
+**`shadow_opacity` must survive.** Every atlas site ends with
+`mix(half(1.0), shadow, half(...shadow_opacity))` (`:606`, `:626`, `:871`, `:880`, `:1105`,
+`:1121`). It is a user-facing `Light3D` property that artists routinely dial down. If the
+RT path returns raw visibility without it, **any light with `shadow_opacity < 1` goes fully
+black the moment RT engages.** The composite in §5.3 keeps it; it must not be dropped when
+a cross-fade blend factor is added alongside it.
+
+**Transmittance re-reads the atlas and RT cannot replace it.** Under
+`LIGHT_TRANSMITTANCE_USED` the shader independently re-samples the atlas at three sites
+(`:637-665`, `:891-905`, `:1227-1247`) to compute `transmittance_z` — a blocker *distance*
+difference, not a visibility term. The mask cannot supply it. Harmless while the atlas is
+retained (§7.6), but it means any future atlas suppression must also exclude lights
+affecting transmittance/SSS materials.
+
+There is an opportunity here worth recording rather than rediscovering:
+`rayQueryGetIntersectionTEXT` gives blocker distance for free. A second R16 channel in the
+mask would supply `transmittance_z` **better** than the atlas does — no quantisation, no
+paraboloid seam.
+
+**`blur_shadow()` is a dead stub.** `scene_forward_lights_inc.glsl:1435-1451` is `#if 0`
+with a "will investigate later" comment. There is no working shadow post-filter hook, so it
+cannot be used as a cheap smoothing fallback for hard-shadow aliasing.
 
 ---
 
@@ -1030,6 +1322,30 @@ demote it. It is an escape hatch, not something a novice ever needs.
 * Change how they import models.
 * Do anything different for animated characters than for static walls.
 
+### 7.3b The expectation gap you need to know about
+
+This is the most important honesty point in the document, and it is a scoping consequence
+rather than a technical one.
+
+**Every default Godot 3D scene contains exactly one light: a `DirectionalLight3D`.** This
+plan defers directional RT shadows to Phase 5. So a user who creates a new project, ticks
+the box, and looks at their scene will see **nothing change — ever.**
+
+"Just works" cannot ship against content where it demonstrably does nothing. Three things
+follow, and none is optional:
+
+1. The project setting's own description text must say that RT shadows apply to
+   OmniLight3D and SpotLight3D (and, from Phase 3, AreaLight3D) — not to directional lights.
+2. The debug view must state it directly when it is true: *"0 RT-capable lights in this
+   scene — RT shadows apply to Omni/Spot lights only."*
+3. Phase 2's success criterion must be framed honestly: it is shippable for scenes with
+   shadow-casting local lights, which is a minority of projects and a smaller minority of
+   beginner projects — precisely the audience this feature is for.
+
+If that trade is unacceptable, the alternative is to pull directional RT shadows forward.
+That is a real option and a defensible one; it is simply a different plan, with cascaded
+shadow-map parity as its hard part rather than acceleration-structure management.
+
 ### 7.4 Editor integration
 
 RT shadows appear in the editor 3D viewport the moment the setting is ticked, through
@@ -1081,6 +1397,12 @@ scripting-facing API and never driven hard by an engine subsystem. Four things n
 adding or fixing before Phase 2, and one is a latent bug worth fixing regardless.
 
 **(a) BLAS refit — required, Phase 2.**
+Note on API compatibility: `misc/extension_api_validation/` is a real gate, and changing
+`blas_build(RID)` to `blas_build(RID, bool)` alters a bound method's arity — **not
+additive**, even with a default argument. Add `blas_build_update()` as a separate method
+instead. The same check applies to any new `tlas_create` flag bit and to a new
+`light_set_shadow_raytraced` virtual.
+
 `build_info.mode` is hard-coded to `VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR`
 (`rendering_device_driver_vulkan.cpp:6380`, `:6428`) and `srcAccelerationStructure` is
 never set. `ALLOW_UPDATE` is forwarded correctly to Vulkan (the flag bits are
@@ -1126,7 +1448,14 @@ For D9's silent fallback to actually be silent, capability detection must not tr
 two-triangle BLAS, and enable the feature only if that succeeds. Wrapping the two
 `has_feature` cases in the macro is a one-line upstream fix worth making too.
 
-**(e) Not needed now, but worth knowing.** There is no acceleration-structure compaction
+**(e) Two `get_driver_resource` cases are outright broken.**
+`DRIVER_RESOURCE_BUFFER` returns a pointer to Godot's internal `BufferInfo` struct rather
+than the `VkBuffer` handle, and `DRIVER_RESOURCE_UNIFORM_SET` likewise returns a
+`UniformSetInfo *` rather than a `VkDescriptorSet`. Passing either to a Vulkan or NGX call
+is using a host pointer as a handle. Both are one-line fixes worth upstreaming, and they
+matter the moment any external SDK enters the picture (§8.3).
+
+**(f) Not needed now, but worth knowing.** There is no acceleration-structure compaction
 (`ALLOW_COMPACTION` is forwarded but no compaction query pool or copy exists), no host or
 deferred builds (`VK_KHR_deferred_host_operations` is enabled but never used), no indirect
 tracing, no AABB/procedural geometry, and no per-geometry transform. Compaction's absence
@@ -1218,13 +1547,27 @@ project setting stays default-off through Phase 3.
 ### Phase 0 — Foundations
 *Prove the plumbing works before building on it.*
 
+* **Shader compile smoke test**: push a minimal `#version 460` + `GL_EXT_ray_query` source
+  through `RD::shader_compile_spirv_from_source` and assert success. Closes the
+  `#version 460` unknown (§1.3) before any real shader is written.
 * Startup capability probe (§8.1d): build a two-triangle BLAS and TLAS, trace one ray
   from a compute shader, verify the result. This single test de-risks the entire project.
 * `RD::has_feature(SUPPORTS_RAY_QUERY)` wrapped in `VULKAN_RAYTRACING_ENABLED`.
+* **A CI job running the gate scene under `--gpu-validation`, with any validation error
+  treated as blocking.** No engine code has ever built an acceleration structure in this
+  tree — our first run is the first run these paths have had. `blas_create` does no usage
+  validation, AS barriers are hand-rolled buffer barriers with a stage-mask workaround, and
+  there is a known same-frame instance-buffer aliasing bug. This is not hygiene; it is the
+  only thing between us and shipping driver-dependent corruption.
+* **Write the full shader contract (§5.4) before writing the shader.** Enumerate every read
+  of `shadow` in `scene_forward_lights_inc.glsl` and state per site what RT does with it.
+  One afternoon; removes an entire class of wrong-image bugs.
 * Project settings registered and documented; nothing reads them yet.
-* Debug overlay skeleton.
+* Debug overlay skeleton — shipped **before** any shadow code, so purity-gate engagement
+  (§4.6) can be measured on real projects while it is still cheap to rescope.
 
-**Exit:** a `--rt-selftest` flag prints pass/fail on your GPU.
+**Exit:** a `--rt-selftest` flag prints pass/fail on your GPU, and the debug view reports
+how often the purity gate would fire on representative content.
 
 ### Phase 1 — Static geometry, one light
 *The smallest thing that produces a real raytraced shadow.*
@@ -1243,23 +1586,37 @@ the editor viewport, and toggling the setting off restores today's rendering exa
 * Dynamic BLASes for skinned/morphed `MeshInstance`s.
 * **`mesh_instance_check_for_update()` on off-screen RT casters (§4.4 step 3)** — without
   this, off-screen characters cast frozen shadows.
-* Up to 4 lights per pixel, channel packing, spot lights, soft shadows from `light_size`.
+* Up to 4 lights per pixel, channel packing, spot lights.
+* **Cone-sampled soft shadows from the start** (§5.4) — not deferred. Shipping hard shadows
+  would regress every light with `light_size > 0`.
+* **MultiMesh support** (§4.6) — moved forward from a later phase. Without it, GridMap
+  levels and any scatter/foliage scene are demoted by the purity gate and the feature is
+  silently off in a large fraction of real projects.
+* The purity gate itself, plus `material_casts_opaque_shadows()`.
 
-**Exit:** an animated character casts a correct shadow while off-screen behind the camera.
+**Exit:** an animated character casts a correct shadow while off-screen behind the camera,
+and a GridMap level engages rather than demoting.
 
 ### Phase 3 — Denoising and quality
 * Temporal + spatial shadow denoiser (§6.1); hit-distance-guided penumbra filtering.
 * Blue-noise sampling, TAA/FSR2 interaction handling.
 * Quality presets wired to the `quality` setting.
-* Full debug view: state colour-coding, residency boundary, ray-cost heatmap, stats.
+* **Area light support** (§5.4) — three composite sites, and the LTC path needs checking.
+* Full debug view: state colour-coding, residency boundary, ray-cost heatmap, stats,
+  purity-gate demotion reasons, and the "0 RT-capable lights" notice (§7.3b).
 
 **Exit:** production-quality shadows. **The project setting becomes user-facing here.**
 
 ### Phase 4 — Integration and optimisation
-* Skip shadow-map rendering for fully-RT-shadowed lights — the actual performance win.
+* Conditional atlas suppression per §7.6 — the actual performance win, with all three
+  guards (fully engaged, fog disabled, no transmittance materials).
 * RT shadows for volumetric fog and SDFGI so nothing regresses when atlases go away.
-* Multi-view/XR support or an explicit gate.
-* Async BLAS builds, LOD proxy selection, eviction tuning.
+* The **degraded tier** (§4.6): ineligible-only shadow maps min-combined with RT, so an
+  alpha-scissor fence keeps its shadow instead of demoting its whole light.
+* Multi-view/XR support or an explicit gate. Note the existing FSR2 integration in this fork
+  shares one temporal context across both eyes — a latent defect the denoiser must not
+  inherit.
+* Async BLAS builds, eviction tuning.
 
 **Exit:** RT shadows are net-faster than shadow maps in light-heavy scenes.
 
@@ -1288,7 +1645,19 @@ the editor viewport, and toggling the setting off restores today's rendering exa
   quads. This is the single most likely thing to look wrong in a real project, and it is a
   deliberate scope exclusion you named. It needs any-hit shaders and material binding to
   fix properly.
-* **Non-triangle primitives** (points, lines, strips) never participate.
+* **Non-triangle primitives** (points, lines, strips) never participate. 2D-vertex surfaces
+  (`ARRAY_FLAG_USE_2D_VERTICES`) and surfaces with `ARRAY_FLAG_USES_EMPTY_VERTEX_ARRAY` must
+  be excluded explicitly — the 2D format is legal-but-degenerate as AS input and would
+  silently produce a flat BLAS.
+* **Directional lights (sun/moon) are not covered until Phase 5** — see §7.3b. In a default
+  Godot scene, which contains only a `DirectionalLight3D`, this feature does nothing at all.
+* **`shadow_reverse_cull_face` becomes a no-op** for RT-shadowed lights (§4.3). It is
+  per-light; the TLAS is per-scenario.
+* **Shadow-caster layer masks above layer 8 lose precision** (§4.3). The 8-bit TLAS instance
+  mask is an OR-fold of Godot's 32-bit masks — conservative, but RT and raster can disagree
+  about which objects cast.
+* **Shadow LOD is always LOD 0** (§4.6), so distant shadow silhouettes will not match
+  LOD-reduced geometry outlines.
 
 ### 10.2 Things that will need care
 | Risk | Mitigation |
@@ -1302,6 +1671,12 @@ the editor viewport, and toggling the setting off restores today's rendering exa
 | Denoiser × TAA/FSR2 double-accumulation | Aggressive history rejection; denoise before opaque |
 | Negative-scale winding (§4.3) | `TRIANGLE_FLIP_FACING_BIT` on negative-determinant transforms |
 | Shadow-map path bit-rot as RT becomes default | CI scenes rendered both ways every build |
+| Purity gate fires everywhere, feature does nothing | Ship the debug view in Phase 0 and measure on real content before committing scope |
+| Ray query silently rejected at `#version 450` | Phase 0 compile smoke test |
+| First-ever use of these AS code paths | `--gpu-validation` CI job, errors blocking |
+| CSG mesh-RID churn exhausting the BLAS cache | Key churn detection on `instance_set_base`, cap new keys per instance per second |
+| Oversized single mesh never scheduled | Always build at least one item per frame |
+| `blas_build` arity change breaks GDExtension API compat | Add `blas_build_update()` as a new method rather than changing the signature |
 
 ### 10.3 Things I am not certain about
 Stated plainly, since you are relying on my judgement:
@@ -1318,6 +1693,30 @@ Stated plainly, since you are relying on my judgement:
   rebuild-every-60-frames heuristic is a starting point, not a tuned value.
 * **NRD's actual quality delta** over a competent hand-rolled shadow denoiser is something
   I would want measured before committing to the integration (§6.2).
+* **Purity-gate engagement rate is completely unmeasured, and it is the single biggest
+  threat to the design.** If typical projects have an alpha-scissor fence, a grass patch or
+  a particle system inside most light volumes, RT is permanently demoted everywhere and the
+  feature does nothing. This is why the debug view ships in Phase 0. If demotion exceeds
+  roughly 30% of lights on representative content, the degraded tier must move from Phase 4
+  into Phase 2 — a rescope, not a tweak. There is no way to know this in advance.
+* **Whether the first shipping milestone is a net win at all.** Between Phase 2 and Phase 4
+  we pay for both shadow maps and rays for the same lights, so the honest framing is better
+  quality at higher cost. Whether full-resolution RT shadows visibly beat a well-configured
+  512px atlas slot — enough to justify that cost to a user who did not ask for it — has not
+  been established on real content and cannot be settled by argument.
+* **Ray bias constants are unvalidated.** Shadow acne and peter-panning are the two failure
+  modes a novice notices instantly, and the exact things RT is meant to fix. Compressed
+  vertices add roughly `aabb_size / 65535` of positional error on top of depth
+  reconstruction error, so the bias floor cannot be zero. These want empirical tuning
+  against a stress scene, not derivation.
+* **BLAS memory accounting has no ground truth.** There is no AS size query at any level and
+  AS backing buffers bypass RD's `buffer_memory`, so `get_memory_usage()` under-reports. Our
+  bytes-per-triangle figure is an estimate; if the constant is wrong the budget protects
+  nobody. Calibrating it per vendor at startup is a plan, not a solution.
+* **The refit drift period** (rebuilding every 60 frames) is a guess. Refitting for hundreds
+  of consecutive frames develops progressively worse node overlap: trace cost climbs with no
+  visible artifact and no error. The debug view's ray-cost counter drifting upward over a
+  minute of playback is the signal to watch.
 
 ### 10.4 What will not change for existing projects
 * With the setting off (the default), the engine is byte-for-byte what it is today. The
@@ -1327,6 +1726,11 @@ Stated plainly, since you are relying on my judgement:
   every fallback path degrades to *today's behaviour* rather than to something broken.
 * No import settings change; no mesh re-import is needed; `.tscn` semantics are unchanged
   (D8).
+* **One unavoidable exception:** adding a binding to `scene_forward_clustered_inc.glsl`
+  changes that file's hash, which invalidates **every** shader group's cache
+  (`shader_rd.cpp:167-180`). Every user upgrading gets a full scene-shader recompile of every
+  material on first run — even with RT shadows off. A one-time cost, but it must be budgeted
+  and communicated rather than discovered.
 * The one intentional behaviour change is D8's: with the setting **on**, a light that had
   `shadow = false` will start casting an RT shadow. That is the requested behaviour, it is
   opt-in at project level, and `rt_shadow_mode = DISABLED` restores the old look per light.
@@ -1336,22 +1740,36 @@ Stated plainly, since you are relying on my judgement:
 ## 11. Summary
 
 **Viability: high.** The RenderingDevice raytracing layer is real and usable; inline ray
-query from compute works today with no shader-build changes; the "hard" case of animated
-characters is already solved by Godot's existing skinning pipeline; and the non-frustum-culled
-caster enumeration you require already exists as `Scenario::indexers[INDEXER_GEOMETRY]`.
+query from compute works today (in a `#version 460` shader — the one thing Godot does not
+already have); the "hard" case of animated characters is largely solved by Godot's existing
+skinning pipeline; and the non-frustum-culled caster enumeration you require already exists
+as `Scenario::indexers[INDEXER_GEOMETRY]`.
 
-**The one genuine blocker** is that Godot's default compressed vertex format is illegal as
-raytracing input. It is solved by a one-time-per-surface dequantise pass, and it should be
-prototyped first (Phase 1) because it is the largest remaining unknown.
+**The one genuine technical blocker** is that Godot's default compressed vertex format is
+illegal as raytracing input. It is solved by a one-time-per-surface dequantise pass, and it
+should be prototyped first (Phase 1) because it is the largest remaining unknown.
 
-**Four small additions to the RT layer** are prerequisites: BLAS refit, dirty-tracking that
-does not trust the `invalidated` flag, render-thread discipline for AS creation, and a
-startup capability probe that does not trust `has_feature()`.
+**The one genuine design risk is the purity gate (§4.6)** — the mechanism that keeps
+existing scenes from losing shadows. It is required for correctness, but if it fires on most
+lights in most projects, the feature is safe and does nothing. That is why the debug view
+ships in Phase 0: it is measurable early, and cheap to rescope around while it still is.
 
-**Ease of use is achievable as specified.** One project setting; every light defaults to
-casting; a one-click per-light opt-out; automatic acceleration-structure management with
-streaming and eviction; works identically in the editor viewport and in exported games;
-silent fallback to today's shadow maps on unsupported hardware.
+**Five additions to the RT layer** are prerequisites: BLAS refit (as a new method, not a
+signature change), dirty-tracking that does not trust the `invalidated` flag, render-thread
+discipline for AS creation, a startup capability probe that does not trust `has_feature()`,
+and a `#version 460` compile smoke test.
+
+**Ease of use is achievable as specified — with one honest caveat.** One project setting;
+every light defaults to casting; a one-click per-light opt-out; automatic
+acceleration-structure management with streaming and eviction; works identically in the
+editor viewport and in exported games; silent fallback to today's shadow maps on
+unsupported hardware.
+
+The caveat is §7.3b: until Phase 5 this covers Omni, Spot and (from Phase 3) Area lights —
+**not directional**. A default Godot scene contains only a `DirectionalLight3D`, so a user
+ticking the box on a fresh project sees nothing change. Either pull directional forward or
+say so plainly in the setting's description and the debug view. Do not ship "just works"
+against content where it demonstrably does not.
 
 **Of the long-term goals:** RTAO is cheap and should be next. NRD is worthwhile but is a
 quality upgrade, not a prerequisite. DLSS SR and RR are both gated behind one missing piece
