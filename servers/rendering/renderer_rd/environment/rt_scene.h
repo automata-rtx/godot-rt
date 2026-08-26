@@ -113,7 +113,6 @@ private:
 	RID dequantize_pipeline;
 
 	bool supported = false;
-	bool warned_about_support = false;
 	uint32_t skipped_surface_count = 0;
 	bool warned_about_skipped = false;
 
