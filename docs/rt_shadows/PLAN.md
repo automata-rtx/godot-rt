@@ -638,25 +638,60 @@ projects. A separate parallel `rt_shadow_mode` property (the first draft's answe
 properties governing one behaviour is worse UX than one property with four values, and it
 made "RT off means no shadows" awkward to express.
 
-### D8b — Soft shadows with contact hardening are the default
+### D8b — Raise the default `light_size`; keep 0 meaning "point light"
 
-**Decision.** For a light in `RT_ONLY` mode, `light_size == 0` means **automatic softness**,
-derived as a small fraction of the light's range, not a hard shadow. Truly hard shadows
-require explicitly ticking a new `rt_hard_shadows` box.
+**Decision.** Change the constructor default `set_param(PARAM_SIZE, ...)` from `0` to
+**`0.05`** (5 cm) for `OmniLight3D` and `SpotLight3D`. `AreaLight3D` keeps its existing
+`0.5`. `light_size` remains a pure physical quantity — the emitter radius in metres — and
+`0` continues to mean an ideal point light, and therefore hard shadows.
 
-**Why this needs saying.** `Light3D` sets `PARAM_SIZE = 0` in its constructor
-(`scene/3d/light_3d.cpp:494`) for every light type. So "use the authored `light_size`" would
-give hard shadows on every existing light and every new one — precisely the outcome you ruled
-out. Reinterpreting `0` as "auto" fixes existing scenes and new lights in one move, without
-changing a serialized default.
+There is **no** `rt_hard_shadows` property. Hard shadows are expressed the way they always
+were: set the radius to zero.
 
-Area lights are the exception that proves it: `AreaLight3D` sets `PARAM_SIZE = 0.5`
-(`light_3d.cpp:747`), so they already have soft shadows and already look right.
+**Why not "0 means automatic softness".** An earlier draft reinterpreted `light_size == 0` as
+"derive a sensible softness from the light's range". That was wrong on four counts, and it is
+recorded here because it is a tempting mistake:
 
-Contact hardening comes free with the cone-sampling approach in §5.1 — the penumbra widens
-with distance from the blocker because the ray cone does — and the denoiser uses hit distance
-to filter at the matching width. This is the single most visible quality difference over
-shadow maps, and it is why it is on by default rather than being a tuning knob.
+* `0` is not a missing value — it is a meaningful one. Overloading it as a sentinel destroys
+  the ability to express a true point light.
+* Recovering that meaning then required a *second* property (`rt_hard_shadows`). Two
+  properties to express one concept is a design smell.
+* It made RT and raster disagree about the same value: `light_size = 0` would give hard
+  shadows with RT off and soft shadows with RT on.
+* Range is physically unrelated to emitter size. A 5 cm bulb in a warehouse has a tiny radius
+  and a huge range, so deriving softness from range is a guess, not physics.
+
+Raising the default achieves the same goal — realistic softness with no configuration — while
+keeping one property with one meaning, visible and tunable in the inspector.
+
+**What this changes in existing scenes.** `0` was the old default, so no existing `.tscn`
+serialises `light_size`; every existing light therefore picks up the new default. Two visible
+effects, both intended under the revised philosophy:
+
+* Shadows soften. Under RT this is the point. Under the raster path it also softens PCSS.
+* **Specular highlights widen.** `light_size` is passed as the area term `A` into
+  `light_compute()` (`scene_forward_lights_inc.glsl:732`, `:934`), where it drives the
+  spherical-area-light approximation. This is a *lighting* change, not only a shadow change.
+  It is arguably a correctness fix — a light with a real emitter radius should have a broader
+  highlight — and it is gated behind the same `sc_use_light_soft_shadows()` constant that
+  gates soft shadows, so it does not apply at the lowest quality setting.
+
+**Why 0.05 and not larger.** Emitter radius is directly a **noise budget** for RT. The cone
+sample in §5.1 spreads over a solid angle proportional to `light_size / distance`, so a larger
+radius means higher variance at one sample per pixel and more work for the denoiser. A radius
+of `0` is free — a single deterministic ray with zero variance. 5 cm gives shadows that are
+sharp within 10–20 cm of contact and visibly soften over a couple of metres, which reads as
+realistic without being expensive or mushy. Treat it as a tuning value, not a constant of
+nature.
+
+**Contact hardening is not a separate feature.** It falls out of the cone sampling: the
+penumbra widens with distance from the blocker because the ray cone does, and the denoiser
+uses hit distance to filter at the matching width. This is the single most visible quality
+difference over shadow maps, which is why it is on by default rather than being a knob.
+
+**Upstream note.** A changed constructor default is a divergence from upstream Godot and will
+show up as a behavioural difference if this fork ever merges or is compared against it. It is
+one line, and it is deliberate.
 
 ### D9 — RT is required; there is no shadow-map fallback for local lights
 
@@ -1243,8 +1278,10 @@ one technique consistently.
 **Soft shadows are a behaviour to preserve, not a feature to add.** Today,
 `sc_use_light_soft_shadows() && soft_shadow_size > 0.0` gives PCSS penumbras (`:520`,
 `:822`, `:1027`). Replacing that with a 1-sample-per-pixel hard shadow makes carefully tuned
-lights visibly **worse**. Combined with the area-light default above, a naive Phase 2 would
-regress *every* area light and every omni/spot with `light_size > 0`.
+lights visibly **worse**. Combined with the area-light default above — and with D8b raising the
+Omni/Spot default to 0.05 m — a naive Phase 2 would make *every* light in *every* scene look
+wrong, not merely the tuned ones. There is no "hard shadows first, soft later" milestone
+available to us.
 
 Decision: **Phase 2 ships the cone-sampled soft path from §5.1 from the start**, reusing the
 existing Vogel `penumbra_shadow_kernel` and the existing
@@ -1372,8 +1409,8 @@ Light3D
     ├── Mode                 OFF | SHADOW_MAP | RT_ONLY   ** NEW **
     │                        (new non-directional lights: RT_ONLY)
     │                        (new directional lights:     SHADOW_MAP)
-    ├── Hard Shadows         bool, default false          ** NEW **
-    ├── Light Size           0 = automatic softness (§D8b)
+    ├── Light Size           default 0.05 m  ** CHANGED, was 0 **
+    │                        physical emitter radius; 0 = point light = hard
     └── ... existing shadow properties ...
 ```
 
@@ -1715,8 +1752,9 @@ the editor viewport, and toggling the setting off restores today's rendering exa
   this, off-screen characters cast frozen shadows.
 * Eight denoised slots (two RGBA8), slot packing, spot lights.
 * `Light3D.shadow_mode` with `AUTO` resolution and the auto-upgrade path (D8).
-* **Cone-sampled soft shadows from the start** (§5.4) — not deferred. Shipping hard shadows
-  would regress every light with `light_size > 0`.
+* **Cone-sampled soft shadows from the start** (§5.4) — not deferred. With the raised
+  `light_size` default (D8b) every light is soft, so a hard-shadow first pass would look
+  wrong everywhere rather than only on tuned lights.
 * **MultiMesh support** (§4.6) — moved forward from a later phase. GridMap is 100% MultiMesh
   and scatter/foliage systems are too, so without it every GridMap level and every scattered
   scene would silently cast no shadows.
