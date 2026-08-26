@@ -3182,6 +3182,16 @@
 		<member name="rendering/lights_and_shadows/positional_shadow/atlas_quadrant_3_subdiv" type="int" setter="" getter="" default="4">
 			The subdivision amount of the fourth quadrant on the shadow atlas. See the [url=$DOCS_URL/tutorials/3d/lights_and_shadows.html#shadow-atlas]documentation[/url] for more information.
 		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/enabled" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], [OmniLight3D] and [SpotLight3D] nodes cast hardware-raytraced shadows instead of using the shadow atlas. Requires the Forward+ renderer, the Vulkan rendering driver, and a GPU that supports hardware ray queries; the setting has no effect otherwise.
+			[b]Note:[/b] This is an experimental feature. [DirectionalLight3D] and [AreaLight3D] nodes continue to use shadow maps, and geometry that cannot be raytraced (alpha-scissor materials, particles and non-triangle meshes) does not cast raytraced shadows.
+		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/max_ray_distance" type="float" setter="" getter="" default="0.0">
+			Maximum length of a raytraced shadow ray, in meters. Rays are never traced further than the distance to the light, so this only clamps very large lights. [code]0.0[/code] means no additional limit.
+		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/samples_per_light" type="int" setter="" getter="" default="4">
+			Number of shadow rays traced per pixel per raytraced light. Higher values reduce the noise produced by soft shadows at the cost of performance. Lights with a [member Light3D.light_size] of [code]0.0[/code] cast hard shadows and ignore this setting.
+		</member>
 		<member name="rendering/lights_and_shadows/positional_shadow/atlas_size" type="int" setter="" getter="" default="4096">
 			The size of the shadow atlas used for [OmniLight3D] and [SpotLight3D] nodes. See the [url=$DOCS_URL/tutorials/3d/lights_and_shadows.html#shadow-atlas]documentation[/url] for more information.
 		</member>

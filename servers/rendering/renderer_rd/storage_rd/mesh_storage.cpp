@@ -30,6 +30,7 @@
 
 #include "mesh_storage.h"
 
+#include "servers/rendering/renderer_rd/environment/rt_scene.h"
 #include "servers/rendering/renderer_viewport.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_types.h"
@@ -376,8 +377,19 @@ void MeshStorage::mesh_add_surface(RID p_mesh, const RenderingServerTypes::Surfa
 
 	const bool use_as_storage = (new_surface.skin_data.size() || mesh->blend_shape_count > 0);
 	const bool requested_storage_buffer = (new_surface.format & RSE::ARRAY_FLAG_USE_STORAGE_BUFFER);
-	const BitField<RD::BufferCreationBits> as_storage_flag = (use_as_storage || requested_storage_buffer) ? RD::BUFFER_CREATION_AS_STORAGE_BIT : 0;
-	const BitField<RD::BufferCreationBits> requested_storage_flag = requested_storage_buffer ? RD::BUFFER_CREATION_AS_STORAGE_BIT : 0;
+
+	// When raytraced shadows are enabled, mesh buffers may be used as acceleration
+	// structure build input. Both the device address and the AS input bits are
+	// required, and neither is validated at build time, so they must be set here.
+	// The compressed-position path also reads the vertex buffer as a storage
+	// buffer in order to expand it, so storage access is requested as well.
+	BitField<RD::BufferCreationBits> raytracing_flags = 0;
+	if (RendererRD::RaytracingScene::is_enabled() && RD::get_singleton()->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS)) {
+		raytracing_flags = RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT | RD::BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT | RD::BUFFER_CREATION_AS_STORAGE_BIT;
+	}
+
+	const BitField<RD::BufferCreationBits> as_storage_flag = ((use_as_storage || requested_storage_buffer) ? RD::BUFFER_CREATION_AS_STORAGE_BIT : 0) | raytracing_flags;
+	const BitField<RD::BufferCreationBits> requested_storage_flag = (requested_storage_buffer ? RD::BUFFER_CREATION_AS_STORAGE_BIT : 0) | raytracing_flags;
 
 	if (new_surface.vertex_data.size()) {
 		// If we have an uncompressed surface that contains normals, but not tangents, we need to differentiate the array

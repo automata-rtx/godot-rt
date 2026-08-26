@@ -477,6 +477,27 @@ public:
 		return s->format;
 	}
 
+	// Raw surface buffers, used to build raytracing acceleration structures.
+	_FORCE_INLINE_ uint32_t mesh_surface_get_index_count(void *p_surface) const {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		return s->index_count;
+	}
+
+	_FORCE_INLINE_ RID mesh_surface_get_vertex_buffer(void *p_surface) const {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		return s->vertex_buffer;
+	}
+
+	_FORCE_INLINE_ RID mesh_surface_get_index_buffer(void *p_surface) const {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		return s->index_buffer;
+	}
+
+	_FORCE_INLINE_ uint32_t mesh_surface_get_vertex_buffer_size(void *p_surface) const {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		return s->vertex_buffer_size;
+	}
+
 	_FORCE_INLINE_ Vector4 mesh_surface_get_uv_scale(void *p_surface) {
 		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
 		return s->uv_scale;

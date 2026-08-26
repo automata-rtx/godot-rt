@@ -498,8 +498,21 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 
 	half shadow = half(1.0);
 #ifndef SHADOWS_DISABLED
+	bool rt_shadowed = false;
+#ifndef USING_MOBILE_RENDERER
+	// Raytraced shadows replace the shadow map for lights that were granted a
+	// slot in the screen-space mask. Lights without a slot fall through to the
+	// regular shadow atlas path below.
+	if (omni_lights.data[idx].rt_slot < RT_SLOT_NONE) {
+		rt_shadowed = true;
+		if (omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_opacity > 0.001) {
+			shadow = half(rt_shadow_lookup(omni_lights.data[idx].rt_slot));
+			shadow = mix(half(1.0), shadow, half(omni_lights.data[idx].shadow_opacity));
+		}
+	}
+#endif
 	// Omni light shadow.
-	if (omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_opacity > 0.001) {
+	if (!rt_shadowed && omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_opacity > 0.001) {
 		// there is a shadowmap
 		vec2 texel_size = scene_data_block.data.shadow_atlas_pixel_size;
 		vec4 base_uv_rect = omni_lights.data[idx].atlas_rect;
@@ -808,8 +821,19 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 
 	half shadow = half(1.0);
 #ifndef SHADOWS_DISABLED
+	bool rt_shadowed = false;
+#ifndef USING_MOBILE_RENDERER
+	// See the omni light path above.
+	if (spot_lights.data[idx].rt_slot < RT_SLOT_NONE) {
+		rt_shadowed = true;
+		if (spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_opacity > 0.001) {
+			shadow = half(rt_shadow_lookup(spot_lights.data[idx].rt_slot));
+			shadow = mix(half(1.0), shadow, half(spot_lights.data[idx].shadow_opacity));
+		}
+	}
+#endif
 	// Spot light shadow.
-	if (spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_opacity > 0.001) {
+	if (!rt_shadowed && spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_opacity > 0.001) {
 		vec3 normal_bias = vec3(normal) * light_length * spot_lights.data[idx].shadow_normal_bias * (1.0 - abs(dot(normal, light_rel_vec_norm)));
 
 		//there is a shadowmap

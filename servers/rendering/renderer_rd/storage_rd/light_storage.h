@@ -33,6 +33,7 @@
 #include "core/templates/paged_array.h"
 #include "core/templates/rid_owner.h"
 #include "servers/rendering/renderer_rd/cluster_builder_rd.h"
+#include "servers/rendering/renderer_rd/effects/rt_shadows.h"
 #include "servers/rendering/renderer_rd/environment/sky.h"
 #include "servers/rendering/renderer_rd/storage_rd/forward_id_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
@@ -136,6 +137,10 @@ private:
 
 	/* OMNI/SPOT LIGHT DATA */
 
+	// Sentinel stored in LightData::rt_slot for lights that are not raytraced.
+	// Must match RT_SLOT_NONE in light_data_inc.glsl.
+	static constexpr float RT_SLOT_NONE = 255.0f;
+
 	struct LightData {
 		float position[3];
 		float inv_radius;
@@ -154,7 +159,8 @@ private:
 		float specular_amount;
 		float shadow_opacity;
 
-		float pad[2];
+		float rt_slot; // Raytraced shadow mask channel, or RT_SLOT_NONE.
+		float pad;
 		float atlas_rect[4]; // in omni, used for atlas uv, in spot, used for projector uv
 		float shadow_matrix[16];
 		float shadow_bias;
@@ -167,6 +173,10 @@ private:
 		uint32_t bake_mode;
 		float projector_rect[4];
 	};
+
+	// Lights that were granted a channel in the raytraced shadow mask this frame,
+	// in mask-channel order. Filled by update_light_buffers().
+	LocalVector<RTShadows::LightParams> rt_lights;
 
 	struct LightInstanceDepthSort {
 		float depth;
@@ -467,6 +477,10 @@ private:
 	bool shadow_dual_paraboloid_used = false;
 
 public:
+	// Lights granted a channel in the raytraced shadow mask this frame, in
+	// mask-channel order. Filled by update_light_buffers().
+	const LocalVector<RTShadows::LightParams> &get_rt_lights() const { return rt_lights; }
+
 	static LightStorage *get_singleton();
 
 	LightStorage();

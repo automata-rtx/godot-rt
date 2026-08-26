@@ -3709,6 +3709,40 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		prev_camera_data = RSG::viewport->viewport_get_prev_camera_data(p_viewport);
 	}
 
+	/* RAYTRACED SHADOWS: BUILD ACCELERATION STRUCTURES */
+
+	// The acceleration structure is deliberately NOT built from the culled render
+	// list: geometry behind the camera still has to cast shadows. Instead every
+	// mesh registered in the scenario is considered.
+	if (scene_render->is_raytracing_scene_available() && !p_reflection_probe.is_valid()) {
+		RENDER_TIMESTAMP("Update RT Acceleration Structures");
+
+		rt_instance_scratch.clear();
+
+		const uint32_t instance_data_count = scenario->instance_data.size();
+		for (uint32_t i = 0; i < instance_data_count; i++) {
+			const InstanceData &idata = scenario->instance_data[i];
+
+			if ((idata.flags & InstanceData::FLAG_BASE_TYPE_MASK) != RSE::INSTANCE_MESH) {
+				continue;
+			}
+			if (!(idata.flags & InstanceData::FLAG_CAST_SHADOWS)) {
+				continue;
+			}
+			if (idata.base_rid.is_null() || idata.instance == nullptr || !idata.instance->visible) {
+				continue;
+			}
+
+			RendererSceneRender::RaytracingInstance rt_instance;
+			rt_instance.mesh = idata.base_rid;
+			rt_instance.transform = idata.instance->transform;
+			rt_instance.layer_mask = idata.layer_mask;
+			rt_instance_scratch.push_back(rt_instance);
+		}
+
+		scene_render->update_raytracing_scene(rt_instance_scratch);
+	}
+
 	RENDER_TIMESTAMP("Render 3D Scene");
 	scene_render->render_scene(p_render_buffers, p_camera_data, prev_camera_data, scene_cull_result.geometry_instances, scene_cull_result.light_instances, scene_cull_result.reflections, scene_cull_result.voxel_gi_instances, scene_cull_result.decals, scene_cull_result.lightmaps, scene_cull_result.fog_volumes, p_environment, camera_attributes, p_compositor, p_shadow_atlas, occluders_tex, p_reflection_probe.is_valid() ? RID() : scenario->reflection_atlas, p_reflection_probe, p_reflection_probe_pass, p_screen_mesh_lod_threshold, render_shadow_data, max_shadows_used, render_sdfgi_data, cull.sdfgi.region_count, p_window_output_max_value, &sdfgi_update_data, r_render_info);
 

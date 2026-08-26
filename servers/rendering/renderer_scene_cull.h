@@ -1002,6 +1002,10 @@ public:
 	InstanceCullResult scene_cull_result;
 	LocalVector<InstanceCullResult> scene_cull_result_threads;
 
+	// Non-frustum-culled mesh list handed to the raytracing acceleration structure
+	// builder. Kept as a member so it is not reallocated every frame.
+	LocalVector<RendererSceneRender::RaytracingInstance> rt_instance_scratch;
+
 	RendererSceneRender::RenderShadowData render_shadow_data[MAX_UPDATE_SHADOWS];
 	uint32_t max_shadows_used = 0;
 

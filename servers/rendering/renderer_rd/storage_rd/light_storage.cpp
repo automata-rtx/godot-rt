@@ -33,6 +33,7 @@
 #include "core/config/project_settings.h"
 #include "core/math/geometry_3d.h"
 #include "core/os/os.h"
+#include "servers/rendering/renderer_rd/environment/rt_scene.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/rendering_server_globals.h"
@@ -722,6 +723,9 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 
 	omni_light_count = 0;
 	spot_light_count = 0;
+
+	rt_lights.clear();
+	const bool rt_shadows_available = RaytracingScene::get_singleton() && RaytracingScene::get_singleton()->is_available();
 	area_light_count = 0;
 
 	r_directional_light_soft_shadows = false;
@@ -1074,6 +1078,43 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 		float size = light->param[RSE::LIGHT_PARAM_SIZE];
 
 		light_data.size = size;
+
+		// Raytraced shadows: grant this light a channel in the screen-space mask.
+		// Only omni and spot lights participate in this first draft; area and
+		// directional lights keep their shadow maps.
+		light_data.rt_slot = RT_SLOT_NONE;
+		if (rt_shadows_available && p_using_shadows && light->shadow &&
+				(type == RSE::LIGHT_OMNI || type == RSE::LIGHT_SPOT) &&
+				rt_lights.size() < RTShadows::MAX_RT_LIGHTS) {
+			RTShadows::LightParams rt_light = {};
+
+			// The acceleration structure is in world space, so the ray tracing pass
+			// needs the untransformed light position rather than the view-space one
+			// stored in LightData.
+			const Vector3 world_position = light_transform.origin;
+			rt_light.position[0] = world_position.x;
+			rt_light.position[1] = world_position.y;
+			rt_light.position[2] = world_position.z;
+			rt_light.radius = radius;
+
+			const Vector3 world_direction = light_transform.basis.xform(Vector3(0, 0, -1)).normalized();
+			rt_light.direction[0] = world_direction.x;
+			rt_light.direction[1] = world_direction.y;
+			rt_light.direction[2] = world_direction.z;
+			rt_light.cos_spot_angle = light_data.cos_spot_angle;
+
+			rt_light.size = size;
+			rt_light.is_spot = (type == RSE::LIGHT_SPOT) ? 1u : 0u;
+
+			// Fold Godot's 32-bit cull mask into the 8-bit acceleration structure
+			// instance mask. Conservative: an extra caster, never a missing one.
+			const uint32_t cull_mask = light->cull_mask;
+			uint32_t folded = (cull_mask & 0xFF) | ((cull_mask >> 8) & 0xFF) | ((cull_mask >> 16) & 0xFF) | ((cull_mask >> 24) & 0xFF);
+			rt_light.mask = folded == 0 ? 0xFF : folded;
+
+			light_data.rt_slot = float(rt_lights.size());
+			rt_lights.push_back(rt_light);
+		}
 
 		light_data.inv_spot_attenuation = 1.0f / light->param[RSE::LIGHT_PARAM_SPOT_ATTENUATION];
 		float spot_angle = light->param[RSE::LIGHT_PARAM_SPOT_ANGLE];

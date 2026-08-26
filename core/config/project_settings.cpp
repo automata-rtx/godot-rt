@@ -1835,6 +1835,12 @@ ProjectSettings::ProjectSettings() {
 
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/rendering_device/vsync/frame_queue_size", PROPERTY_HINT_RANGE, "2,3,1"), 2);
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/rendering_device/vsync/swapchain_image_count", PROPERTY_HINT_RANGE, "2,4,1"), 3);
+	// Raytraced shadows. Registered here so that the setting is available before
+	// the rendering device is created and before any Light3D is constructed.
+	GLOBAL_DEF_RST_BASIC("rendering/lights_and_shadows/raytraced_shadows/enabled", false);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/samples_per_light", PROPERTY_HINT_RANGE, "1,16,1"), 4);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/max_ray_distance", PROPERTY_HINT_RANGE, "0,4096,0.1,or_greater"), 0.0);
+
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/block_size_kb", PROPERTY_HINT_RANGE, "4,2048,1,or_greater"), 256);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/max_size_mb", PROPERTY_HINT_RANGE, "1,1024,1,or_greater"), 128);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/texture_upload_region_size_px", PROPERTY_HINT_RANGE, "1,256,1,or_greater"), 64);

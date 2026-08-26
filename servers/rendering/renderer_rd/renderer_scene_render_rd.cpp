@@ -1789,6 +1789,17 @@ RendererSceneRenderRD::RendererSceneRenderRD() {
 	singleton = this;
 }
 
+bool RendererSceneRenderRD::is_raytracing_scene_available() const {
+	return raytracing_scene != nullptr && raytracing_scene->is_available() && rt_shadows != nullptr && rt_shadows->is_valid();
+}
+
+void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances) {
+	if (raytracing_scene == nullptr) {
+		return;
+	}
+	raytracing_scene->update(p_instances);
+}
+
 void RendererSceneRenderRD::init() {
 	max_cluster_elements = get_max_elements();
 	RendererRD::LightStorage::get_singleton()->set_max_cluster_elements(max_cluster_elements);
@@ -1874,6 +1885,13 @@ void RendererSceneRenderRD::init() {
 	bokeh_dof = memnew(RendererRD::BokehDOF(!can_use_storage));
 	copy_effects = memnew(RendererRD::CopyEffects(raster_effects));
 	debug_effects = memnew(RendererRD::DebugEffects);
+
+	// Raytraced shadows. Both objects are cheap to construct when the feature is
+	// off or unsupported; they simply stay inert.
+	raytracing_scene = memnew(RendererRD::RaytracingScene);
+	if (raytracing_scene->is_available()) {
+		rt_shadows = memnew(RendererRD::RTShadows);
+	}
 	luminance = memnew(RendererRD::Luminance(!can_use_storage));
 	smaa = memnew(RendererRD::SMAA);
 	tone_mapper = memnew(RendererRD::ToneMapper(!can_use_storage));
@@ -1895,6 +1913,12 @@ RendererSceneRenderRD::~RendererSceneRenderRD() {
 	memdelete(bokeh_dof);
 	memdelete(copy_effects);
 	memdelete(debug_effects);
+	if (rt_shadows) {
+		memdelete(rt_shadows);
+	}
+	if (raytracing_scene) {
+		memdelete(raytracing_scene);
+	}
 	memdelete(luminance);
 	memdelete(smaa);
 	memdelete(tone_mapper);
