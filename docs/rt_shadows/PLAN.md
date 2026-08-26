@@ -63,6 +63,32 @@ silently uses the shadow maps it uses today.
 
 ---
 
+## 0.5 Design philosophy (revised — this supersedes earlier caution)
+
+The first draft of this document treated shadow maps as the substrate and RT as a cautious
+override. **That is inverted.** The project targets RT-capable hardware exclusively, and the
+governing rule is now:
+
+> **Raytraced shadows are the shadow system for every non-directional light. A local light
+> falling back to a shadow map is a defect, not a degradation.**
+
+Everything below follows from that. Concretely, it deletes more of the design than it adds:
+
+| First draft | Revised | Why |
+|---|---|---|
+| Silent fallback to shadow maps on unsupported GPUs | **Deleted.** RT-capable hardware is a requirement | No fallback to maintain, no dual-path testing, no "why does it look different on my friend's PC" |
+| Purity gate demoting whole lights to shadow maps | **Deleted.** Ineligible geometry simply casts no RT shadow | The gate was the single biggest risk in the plan and it existed only to protect a fallback we no longer want |
+| 64 m residency radius around the camera | **Deleted.** Residency follows light influence volumes | A light inside the world should shadow correctly regardless of camera distance |
+| Budgets that cap work and demote lights | **Diagnostic only.** Never silently reduce quality | Cost should be visible and fixed in content, not hidden by the renderer |
+| 4 RT-shadowed lights per pixel, rest on shadow maps | **8 denoised slots + inline ray-traced overflow** | No pixel ever falls back to a shadow map |
+| Soft shadows as a feature to add | **Soft with contact hardening is the default.** Hard shadows are opt-in | This is the actual reason to use RT over shadow maps |
+
+The one thing this philosophy cannot delete is **volumetric fog** (§7.7), which samples the
+shadow atlas directly in its own shader and cannot read the screen-space mask. That is a
+genuine structural dependency, not caution, and it is called out separately.
+
+---
+
 ## 1. What actually exists today (verified)
 
 Everything in this section was confirmed by reading the source in this fork. File and
@@ -360,7 +386,8 @@ in the scenario**, independent of the camera frustum.
 
 This is exactly the enumeration source we need, and it is existing, well-tested code
 used by the culling system every frame. Querying it with a box around the camera gives
-us "everything within RT shadow distance, on-screen or not".
+us every caster a light can reach, on-screen or not. Under the revised design (§4.4) the
+query is driven by each light's influence volume rather than by a camera radius.
 
 Also relevant: `light_get_shadow_caster_mask()` is already respected during shadow
 caster gathering (`renderer_scene_cull.cpp:2430`), alongside `layer_mask` and the
@@ -442,24 +469,36 @@ tracing forecloses NRD entirely.
 **Rejected.** Inline `rayQueryEXT` in `scene_forward_lights_inc.glsl`. Simpler to
 prototype, but incompatible with denoising, which is a stated goal.
 
-### D3 — Mask format: 4 lights per pixel, R8G8B8A8, with an index remap
+### D3 — 8 denoised slots, plus inline ray tracing for overflow
 
-**Decision.** A single `R8G8B8A8_UNORM` texture at internal resolution. Each channel is
-the visibility term for one light. A small per-pixel index table maps channel → light.
+**Decision.** Two `R8G8B8A8_UNORM` textures at internal resolution — **8 denoised
+visibility slots per pixel** — with a per-pixel index table mapping slot to light. Any light
+beyond the 8th affecting a pixel is traced **inline, in the forward shader**, with a
+`rayQueryEXT` call in a `SHADER_GROUP_RAYTRACING` variant. **No pixel ever falls back to a
+shadow map.**
 
-**Why.** Real scenes have many lights but few *shadow-casting* lights affecting any
-given pixel. Godot's clustered light culling already gives us the per-cluster light
-list. Budgeting four RT-shadowed lights per pixel covers the overwhelming majority of
-cases at 4 bytes/pixel. Lights beyond the budget fall back to their existing shadow map
-— which is safe, correct-looking, and invisible in practice.
+**Why.** The budget is about per-pixel *overlap*, not total light count: a scene with 300
+lights is fine as long as no pixel is reached by more than 8 shadow-casters. Eight covers
+essentially all real content; the inline path exists so the ninth is still correct rather
+than being a policy exception. The overflow rays are unfiltered and therefore noisier than
+the denoised slots — but noisy RT is closer to correct than a shadow map, and it degrades in
+the direction of the design's own goal.
 
-**Rejected.** One full-resolution texture per light (unbounded VRAM); a packed 1-bit
-bitmask (cannot be denoised — denoising needs continuous values); a texture array sized
-to the light count (allocation churn as lights come and go).
+**How the inline path compiles.** `ShaderRD` already supports conditional shader **groups**
+with per-group SHA and per-group cache files (`shader_rd.h:64-66`, `:146`), used today for
+`SHADER_GROUP_MULTIVIEW` and `SHADER_GROUP_ADVANCED`. Add `SHADER_GROUP_RAYTRACING`, enabled
+via `shader.enable_group()` only when the project setting is on. `scene_forward_clustered.glsl`
+bumps to `#version 460` — harmless for existing variants, since 460 is a superset of
+everything Godot uses — and the ray-query code sits behind an `#ifdef` so
+`OpCapability RayQueryKHR` is emitted **only** in the RT group's variants. Projects with RT
+off never compile a ray-query shader.
 
-**Note.** This is the decision I am least certain about, and it is the one most likely
-to be revised after profiling. It is deliberately isolated behind a single function in
-the shader so revising it is cheap. See §10.
+**Rejected.** Four slots (too tight once every local light casts); one texture per light
+(unbounded VRAM); a 1-bit mask (undenoisable); a variable per-tile list (scales better in
+theory, but is materially harder to denoise, and 8-plus-inline already removes the hard cap).
+
+**Cost.** 8 bytes/pixel of mask. At 1440p internal that is ~29 MB, plus hit-distance and
+denoiser history buffers.
 
 ### D4 — Specialization constant, not a shader variant
 
@@ -472,7 +511,7 @@ shader is byte-for-byte the behaviour you have today.
 ### D5 — TLAS instances come from the scenario geometry index, not the render list
 
 **Decision.** Source casters from `Scenario::indexers[INDEXER_GEOMETRY].aabb_query()`
-with a box centred on the camera, sized by the RT shadow distance.
+with the influence bounds of each RT-shadowing light (§4.4) — not a camera-centred radius.
 
 **Why.** The render list is frustum-culled; using it would break your explicit
 requirement that walls behind the player still cast shadows. The geometry indexer is
@@ -542,46 +581,115 @@ Phase 3 is usable; NRD then becomes a quality upgrade rather than a prerequisite
 **Rejected.** NRD as a hard dependency of the first working version — it would put a
 large, uncertain porting task on the critical path of a feature that can work without it.
 
-### D8 — `Light3D.rt_shadow_mode` tri-state, not a flipped `shadow` default
+### D8 — `Light3D.shadow_mode`: AUTO / OFF / SHADOW_MAP / RT_ONLY
 
-**Decision.** Add `Light3D.rt_shadow_mode` with values `AUTO` (default), `ALWAYS`,
-`DISABLED`. Leave `Light3D.shadow`'s default at `false`, untouched.
+**Decision.** Replace the first draft's separate `rt_shadow_mode` property with a single
+shadow-casting mode on `Light3D`, superseding the `shadow_enabled` bool:
 
-**Why.** This one is subtle and worth understanding, because the obvious approach has a
-nasty side effect. Godot's scene serializer only writes properties that differ from
-their C++ default. If we changed `shadow`'s default to `true` when the project setting
-is on, then the *meaning of every existing `.tscn` file* would change depending on a
-project setting — lights that were deliberately left non-shadowing would start casting,
-and scene files would no longer be portable between projects. That is a genuine
-correctness problem, not just a cosmetic one.
+| Value | Meaning |
+|---|---|
+| `AUTO` | Serialization default. Resolves from the legacy `shadow_enabled` bool (below) |
+| `OFF` | No shadows, ever |
+| `SHADOW_MAP` | Classic shadow map. The only mode directional lights use today |
+| `RT_ONLY` | **Raytraced shadows only.** If RT is unavailable or disabled, this light casts *no* shadow — it never falls back to a shadow map |
 
-A separate `AUTO`-defaulted property gives you exactly what you asked for — every light,
-however it is created, casts RT shadows once the project setting is on — while keeping
-`.tscn` semantics stable and per-light opt-out a single click.
+`RT_ONLY` is self-describing, and that is the point: it encodes your requirement that the
+setting must not carry over when RT shadows are switched off. A project with RT disabled
+shows lights with no shadows, which is loud and obvious, rather than silently reverting to
+shadow-map behaviour you did not ask for.
 
-**Consequence you should know about:** with the project setting on, a light that
-currently has `shadow = false` *will* start casting an RT shadow. That is the intended
-behaviour and it is what you asked for, but it is a visible change to an existing scene,
-and it is the one place where "nothing changes" is not literally true. It is gated
-behind a setting that is off by default, so no existing project is affected until its
-author opts in. `DISABLED` restores the old look per light.
+**Newly created non-directional lights get `RT_ONLY` in the constructor** when the project
+setting is on — so a light dragged into the scene, instanced from a `PackedScene`, or created
+with `OmniLight3D.new()` all cast RT shadows with no further action. Directional lights get
+`SHADOW_MAP`.
 
-### D9 — Fallback is silent and automatic, at three levels
+**Why `AUTO` exists, and why it is not redundant.** This is the subtle part, and getting it
+wrong silently changes how existing scenes render.
 
-**Decision.**
+Godot's scene serializer only writes properties that differ from their C++ default.
+`Light3D::shadow` defaults to `false` (`scene/3d/light_3d.h:73`), so an existing `.tscn`
+contains `shadow = true` for shadow-casting lights and **nothing at all** for the rest. There
+is no stored value distinguishing "deliberately off" from "never touched".
 
-1. **No hardware RT** (`SUPPORTS_RAY_QUERY == false`) → the feature disables itself
-   entirely; shadow maps run exactly as today. A one-line note in the log, nothing in
-   the UI, no error.
-2. **Per-light budget exceeded** (more than 4 RT-shadowed lights on a pixel) → the
-   overflow lights use their shadow map.
-3. **Per-instance ineligible** (non-triangle primitive, unsupported geometry) → that
-   instance is absent from the TLAS but still renders into shadow maps normally.
+So a new `shadow_mode` property whose default is `RT_ONLY` would turn on shadows for every
+light in every existing scene — including ones deliberately left dark. And a default of `OFF`
+would mean newly created lights need their mode set by some other mechanism, which
+deserialization would then overwrite.
 
-**Why.** Every one of these must be invisible to a novice. The critical property is that
-the shadow-map path is never removed or disabled — it remains the substrate, and RT
-shadows are an override on top of it. That is what makes "it just works" achievable, and
-it is why nothing existing can break.
+`AUTO` resolves both. It is the serialization default, so old scenes carry it implicitly, and
+it resolves at load from the legacy bool:
+
+```
+AUTO + shadow_enabled == true   ->  RT_ONLY      (auto-upgrade, your choice)
+AUTO + shadow_enabled == false  ->  OFF          (stays dark, as authored)
+```
+
+New lights write `shadow_mode = RT_ONLY` explicitly, so it is a real stored value rather than
+an inherited default and survives any future change to what `AUTO` means.
+
+**Consequence, stated plainly.** With the project setting on, every light in your existing
+scenes that already cast shadows switches to RT. Lights you left dark stay dark. That is the
+auto-upgrade behaviour you asked for, and it *is* a visible change to existing scenes — which
+is correct here, because it is the entire point of the feature.
+
+**Rejected.** Flipping the default of `shadow_enabled` — it would make the meaning of every
+`.tscn` depend on a project setting, so scene files would stop being portable between
+projects. A separate parallel `rt_shadow_mode` property (the first draft's answer) — two
+properties governing one behaviour is worse UX than one property with four values, and it
+made "RT off means no shadows" awkward to express.
+
+### D8b — Soft shadows with contact hardening are the default
+
+**Decision.** For a light in `RT_ONLY` mode, `light_size == 0` means **automatic softness**,
+derived as a small fraction of the light's range, not a hard shadow. Truly hard shadows
+require explicitly ticking a new `rt_hard_shadows` box.
+
+**Why this needs saying.** `Light3D` sets `PARAM_SIZE = 0` in its constructor
+(`scene/3d/light_3d.cpp:494`) for every light type. So "use the authored `light_size`" would
+give hard shadows on every existing light and every new one — precisely the outcome you ruled
+out. Reinterpreting `0` as "auto" fixes existing scenes and new lights in one move, without
+changing a serialized default.
+
+Area lights are the exception that proves it: `AreaLight3D` sets `PARAM_SIZE = 0.5`
+(`light_3d.cpp:747`), so they already have soft shadows and already look right.
+
+Contact hardening comes free with the cone-sampling approach in §5.1 — the penumbra widens
+with distance from the blocker because the ray cone does — and the denoiser uses hit distance
+to filter at the matching width. This is the single most visible quality difference over
+shadow maps, and it is why it is on by default rather than being a tuning knob.
+
+### D9 — RT is required; there is no shadow-map fallback for local lights
+
+**Decision.** Replaces the three-level fallback of the first draft.
+
+1. **No hardware RT** → the project setting cannot be enabled. The startup probe (§8.1d)
+   reports a clear, actionable message rather than silently downgrading. This is a hardware
+   requirement of the game, like any other.
+2. **More than 8 shadow-casting lights on a pixel** → overflow lights are traced inline
+   (D3). Never a shadow map.
+3. **Ineligible geometry** (non-triangle, alpha-tested, particles, `ImmediateMesh`) → that
+   geometry casts **no shadow**, is listed in the debug view, does not demote its light, and
+   does not resurrect a shadow map.
+
+**Why.** Each of these was previously justified by protecting a fallback path. With the
+fallback gone they collapse into one rule — RT or nothing — which is simpler to implement,
+simpler to reason about, and removes the dual-path testing burden that would otherwise have
+doubled the QA surface for the life of the feature.
+
+**The cost of item 3, stated plainly.** Alpha-tested foliage and particles cast no shadow at
+all. In an outdoor scene with grass or foliage cards this is visible. Three paths out, in
+increasing order of effort, none of which reintroduces a shadow map:
+
+* **Screen-space contact shadows** — a short screen-space ray-march (the technique Bend
+  Studios used in *Days Gone*) covering exactly the small, near-field detail alpha geometry
+  provides. Composes cleanly: RT handles inter-object shadowing, the march fills in grass and
+  foliage contact. Cheapest fill-in; planned as a Phase 4 item.
+* **Geometry-based foliage** — sidesteps the problem entirely by making foliage real
+  triangles, which are BVH-eligible. A content decision rather than an engine one.
+* **Any-hit alpha testing** — the proper fix. Requires either a raytracing pipeline with hit
+  groups or ray-query candidate handling, plus material and texture binding inside the ray
+  path. This is the one item that would pull the material system into the RT design, which is
+  why it is sequenced last rather than first.
 
 ### D10 — DLSS Super Resolution is Phase 6, and needs engine plumbing first
 
@@ -867,145 +975,113 @@ shadow-caster filtering will see RT and raster disagree about which objects cast
 no fix short of extending the mask semantics, which Vulkan does not permit. Document it on
 the property and surface it in the debug view.
 
-### 4.4 Residency, streaming and the deforming-mesh hazard
+### 4.4 Residency — driven by light volumes, not camera distance
 
-Residency is driven by a single user-facing number, **RT shadow distance** (default
-`64 m`), and one internal VRAM budget.
+The first draft kept a 64 m radius around the camera. That is deleted. **Residency follows
+the lights.**
+
+> A caster is resident if its bounds intersect the influence volume of any RT-shadowing
+> light. A light keeps its casters resident for as long as the light exists in the scenario.
+
+There is no `rt_shadow_distance` setting. A light 300 m away lighting a room you can see
+across a valley shadows that room correctly, because its own range — not the camera — decides
+what it needs. Casters leave the acceleration structure when the last light that reaches them
+is removed from the scene, and at no other time.
 
 Each frame:
 
-1. Query `Scenario::indexers[INDEXER_GEOMETRY].aabb_query()` with a box of
-   `rt_shadow_distance` around the camera. **No frustum culling** — this is what makes
-   walls behind the player cast shadows.
-2. For each hit instance: mark its surfaces' BLAS entries used this frame; queue
-   `UNBUILT` ones.
-3. **If the instance is skinned or morphed, call
-   `mesh_instance_check_for_update()` on it.** This is the fix for the §1.8 hazard —
-   without it, off-screen characters cast frozen shadows. It is one line, and it is the
-   single most important correctness detail in this section.
-4. Refit dynamic BLASes whose `last_change` advanced.
-5. Evict: BLAS entries unused for N frames (default 120) are freed, oldest-first, until
-   the VRAM budget is met.
+1. For every light in the scenario with `shadow_mode == RT_ONLY`, query
+   `Scenario::indexers[INDEXER_GEOMETRY].aabb_query()` with the light's influence bounds.
+   **No frustum culling** — this is what makes walls behind the player cast shadows.
+2. Mark hit surfaces' BLAS entries used this frame; queue unbuilt ones.
+3. **If the instance is skinned or morphed, call `mesh_instance_check_for_update()`.**
+   Without this, off-screen characters cast frozen shadows. One line, and the single most
+   important correctness detail in this section.
+4. Refit dynamic BLASes whose pose advanced.
+5. Evict entries no light has referenced for 120 frames.
 
-Eviction hysteresis (unused for *120 frames*, not 1) prevents thrashing when the player
-turns around or paces back and forth across a boundary.
+**The one bounded relaxation, and it needs your sign-off.** Taken literally, "as long as the
+light exists" means a light 10 km away in a streamed open world keeps its casters resident
+forever, and a large level ends up fully resident. The obvious bound is to skip lights whose
+influence volume lies entirely outside the camera's far distance — such a light contributes
+nothing to any pixel, so its shadows cannot be observed.
 
-**Deforming meshes.** Skinned and morphed surfaces are marked `is_dynamic`. Their BLAS
-is built once with `ALLOW_UPDATE | PREFER_FAST_BUILD` and thereafter **refitted**, not
-rebuilt, via the new `blas_update()`. Refit is roughly an order of magnitude cheaper
-than a rebuild. Refit quality degrades if the pose drifts far from the one the BLAS was
-built in, so a full rebuild is forced every N frames (default 60) or when a heuristic on
-AABB growth trips. Unlike static meshes, a dynamic BLAS is per *MeshInstance*, not per
-surface — each animated character has its own pose and therefore its own BLAS.
+That is a real bound and I recommend it, but it is a bound, and you asked not to lose shadows
+to distance. It differs from the deleted 64 m radius in the way that matters: the test is
+*"can this light affect anything on screen at all"*, not *"is this light near the camera"*.
+A light at the far plane still shadows fully. If you would rather have no bound whatsoever,
+say so — it costs only memory, and per §4.5 memory is now a diagnostic rather than a limit.
 
-### 4.5 Budgets — never stall the frame
+**Deforming meshes.** Skinned and morphed surfaces are marked `is_dynamic`. Their BLAS is
+built once with `ALLOW_UPDATE | PREFER_FAST_BUILD` and thereafter **refitted** via the new
+`blas_update()` — roughly an order of magnitude cheaper than a rebuild. Refit quality degrades
+as the pose drifts from the build pose, so force a full rebuild every 60 frames or on an
+AABB-growth heuristic. Unlike static meshes, a dynamic BLAS is per `MeshInstance`, not per
+surface: each animated character has its own pose and therefore its own BLAS.
 
-Every expensive operation is budgeted per frame, with a configurable ceiling:
+### 4.5 Budgets are diagnostics, not limits
 
-| Operation | Default budget |
+The first draft capped work per frame and demoted lights when over budget. Demotion meant
+shadow maps, which is now a defect, so **the caps are gone.**
+
+Build everything the lights touch. Report cost prominently rather than hiding it:
+
+| Reported in the debug view | Why it matters |
 |---|---|
-| New BLAS builds | 8 per frame |
-| Dequantise dispatches | 4 per frame |
-| BLAS VRAM | 256 MB |
-| TLAS instances | 65,536 |
+| BLAS count, triangles, estimated VRAM | The number you fix in content when it gets large |
+| Builds and refits this frame | Spot a mesh churning every frame |
+| Ray cost heatmap | Find the one over-tessellated mesh eating the frame |
+| Oversized BLAS warnings | A 2 M-triangle merged level mesh is worth knowing about |
+| Ineligible casters in range, by reason | The list of things silently not casting (§D9) |
 
-Exceeding a budget defers work to the next frame; it never drops geometry silently in a
-visible way. During the frames before a BLAS is ready the instance is simply absent from
-the TLAS, and that light falls back to its shadow map for those frames — so a streaming
-scene degrades to *today's behaviour* briefly rather than to a missing shadow. This is
-the property that makes level loading and fast teleporting safe.
+Two mechanical safeguards remain, because they are about *smoothness*, not quality:
+spread new builds across frames so a level load does not stall on one enormous batch, and
+always build at least one item per frame regardless of size, so a single oversized mesh is
+never starved.
 
-Budget by **triangles** (default 500,000/frame), not by BLAS count — 8 hero meshes and 8
-rocks are wildly different costs. Add a separate cap on graph commands (default 64), since
-each `add_blas_build` records its own command with its own barrier group and the graph's
-sort and adjacency pass is real CPU cost. Multiply the budget 8× for 30 frames after a
-scenario's instance count jumps by >20%: frame pacing during a level load does not matter,
-but a four-second BVH warm-up does.
+**Build failure is still not an error to retry.** There is no acceleration-structure size
+query at any level, and AS backing buffers bypass RD's `buffer_memory` accounting, so
+`get_memory_usage()` under-reports and our bytes-per-triangle figure is an estimate. A failed
+`blas_create` returns its entry to the queue at lowest priority and logs once. After N
+consecutive failures, log a clear out-of-memory diagnostic — do not silently retry every
+frame, and do not silently drop the geometry.
 
-**One item always builds per frame, regardless of size.** A 2M-triangle terrain or merged
-level mesh cannot be split across frames; under a strict cap it would never be scheduled,
-its light would never engage, and the failure would be silent and permanent. Accept the
-one-frame hitch and surface "oversized BLAS: N triangles" in the debug view.
+### 4.6 Ineligible geometry (the purity gate, deleted)
 
-**Over-budget demotes a light, never drops geometry.** Dropping geometry produces a missing
-shadow — the exact failure this design exists to prevent. Demoting the lowest-priority
-light removes its influence volume from the residency set, frees its exclusive casters, and
-converges. If the VRAM budget cannot be met even after eviction, log once and reduce
-`rt_shadow_distance` adaptively rather than failing.
+The first draft proposed a *purity gate*: a light with any ineligible caster in range would be
+demoted to a shadow map, so nothing lost its shadow. That mechanism is **deleted**. It existed
+solely to protect a shadow-map fallback, it was the single largest risk in the plan — it would
+have fired on every GridMap and every scatter scene — and under the revised philosophy its own
+remedy is the defect it was avoiding.
 
-**Build failure is not an error to retry.** There is no acceleration-structure size query at
-any level, and AS backing buffers bypass RD's `buffer_memory` accounting, so
-`get_memory_usage()` systematically under-reports and our bytes-per-triangle figure is an
-estimate, not a measurement. A failed `blas_create` must be treated as "not built" — the
-entry returns to the queue at lowest priority and its light stays unengaged. After N
-consecutive failures, RT disables itself for the session with one log line. Without this, a
-memory-pressured machine gets an error-spam death spiral.
+The replacement rule is blunt and predictable:
 
-### 4.6 The purity gate — the mechanism that keeps existing scenes correct
+> Ineligible geometry casts no shadow. Its light is unaffected. Everything else in that
+> light's volume gets a correct RT shadow.
 
-This is the most important safety mechanism in the design, and it exists because of a
-failure mode that is easy to miss.
+Ineligible means: non-triangle primitives; `ARRAY_FLAG_USE_2D_VERTICES` and
+`ARRAY_FLAG_USES_EMPTY_VERTEX_ARRAY` surfaces; alpha-tested and alpha-antialiased materials;
+`GPUParticles3D`; `ImmediateMesh`. Every instance in this category is listed in the debug
+view with its reason, so "why is that not casting" is one glance rather than an investigation.
 
-The forward shader *replaces* the atlas term with the RT mask. So a caster that is absent
-from the TLAS does not get a slightly-wrong shadow — it loses its shadow **entirely**. An
-alpha-scissor fence becomes a hole in the shadow. A `GPUParticles3D` smoke column stops
-occluding. That is a visible regression on existing content, and it directly violates the
-"nothing may break" requirement that the rest of this document is built around.
-
-The fix is to gate at the level of the *light*, not the geometry:
-
-> A light is granted RT shadows only if every **significant** ineligible caster in its
-> influence volume is absent. Otherwise it keeps its shadow map, at exactly today's quality.
-
-"Significant" means `aabb.get_longest_axis_size() > 0.02 * light_range` — so one dust mote
-does not demote a whole room, but a missing wall always does.
-
-Implementation: add `material_casts_opaque_shadows()` as a sibling virtual to the existing
-`material_casts_shadows()` (`servers/rendering/storage/material_storage.h:92`), returning
-false for shaders using `alpha_clip`, `alpha_antialiasing`, `depth_prepass_alpha` or
-`shadow_to_opacity`; compute a `casts_opaque_shadows` flag alongside the existing
-`can_cast_shadows` recomputation in `_update_dirty_instance`
-(`renderer_scene_cull.cpp:4313-4333`).
-
-The gate is strictly safe: the worst case is that a light looks exactly like it does today.
-
-**The planned second step — the degraded tier.** For a light with ineligible casters,
-render its shadow map with the caster list filtered to *ineligible geometry only*, and
-composite `shadow = min(atlas_shadow, rt_shadow)`. The fence keeps its blobby PCF shadow;
-everything else gets crisp RT. This is the correct end state and is genuinely cheap.
-
-**The risk the gate creates.** A gate that fires everywhere is a feature that does nothing.
-And several scope decisions cause it to fire:
-
-| Content | Why it demotes |
-|---|---|
-| GridMap levels | GridMap is 100% MultiMesh (`grid_map.cpp:769-812`) |
-| Foliage / scatter | MultiMesh |
-| Any `GPUParticles3D` in range | Never RT-eligible |
-| CSG whiteboxing | New mesh RID every rebuild (below) |
-
-This is why **MultiMesh belongs in Phase 2, not later**. Its transform data is already
-CPU-side for `data_cache`-backed multimeshes and the layout is byte-identical to
-`VkTransformMatrixKHR` (`mesh_storage.cpp:1928-1940`) — it is a memcpy plus one TLAS
-instance per visible element, capped. Deferring it means the feature is silently off in a
-large fraction of real projects.
+**MultiMesh is emphatically not in that list.** GridMap is 100% MultiMesh
+(`grid_map.cpp:769-812`) and scatter/foliage systems are too, so MultiMesh support is a
+**Phase 2** requirement rather than a later nicety. Its transform data is already CPU-side for
+`data_cache`-backed multimeshes and the layout is byte-identical to `VkTransformMatrixKHR`
+(`mesh_storage.cpp:1928-1940`) — a memcpy plus one TLAS instance per element.
 
 **CSG churn.** `modules/csg/csg_shape.cpp:606-638` calls `root_mesh.instantiate()` on every
-`_update_shape`, so dragging a CSG node in the editor produces a **new mesh RID every
-frame**. A BLAS cache keyed on mesh RID therefore sees an unbounded stream of new keys, and
-churn heuristics based on "mesh was cleared" never fire, because nothing is cleared — the
-old mesh is freed and a different one appears. Key churn detection on `instance_set_base`
-frequency per `Instance` instead, with a hard cap on new BLAS keys accepted from one
+`_update_shape`, so dragging a CSG node in the editor produces a **new mesh RID every frame**.
+A BLAS cache keyed on mesh RID sees an unbounded stream of new keys, and churn heuristics
+based on "mesh was cleared" never fire, because nothing is cleared. Key churn detection on
+`instance_set_base` frequency per `Instance`, with a cap on new BLAS keys accepted from one
 instance per second.
 
-**LOD.** BLASes are built at LOD 0 and never re-selected, because a camera-dependent LOD
-would make BLAS residency flicker. The consequence must be stated rather than discovered: a
-distant object rasterised at LOD 3 casts a LOD 0 shadow, so its shadow silhouette will not
-match its outline, and self-shadowing can seam where the two disagree. If that proves
-objectionable, the mitigation is a *camera-independent* LOD chosen once at build time
-against the owning light's radius and cached — never re-evaluated per frame.
-
----
+**LOD.** BLASes are built at LOD 0 and never re-selected, because camera-dependent LOD would
+make residency flicker. The consequence: a distant object rasterised at LOD 3 casts a LOD 0
+shadow, so its shadow silhouette will not match its outline. If that proves objectionable, the
+mitigation is a *camera-independent* LOD chosen once at build time against the owning light's
+radius and cached — never re-evaluated per frame.
 
 ## 5. Tracing and shading
 
@@ -1188,7 +1264,7 @@ a cross-fade blend factor is added alongside it.
 `LIGHT_TRANSMITTANCE_USED` the shader independently re-samples the atlas at three sites
 (`:637-665`, `:891-905`, `:1227-1247`) to compute `transmittance_z` — a blocker *distance*
 difference, not a visibility term. The mask cannot supply it. Harmless while the atlas is
-retained (§7.6), but it means any future atlas suppression must also exclude lights
+retained (§5.3), but it means any future atlas suppression must also exclude lights
 affecting transmittance/SSS materials.
 
 There is an opportunity here worth recording rather than rediscovering:
@@ -1262,13 +1338,17 @@ any of it.
 ### 7.1 Project settings
 
 ```
-rendering/lights_and_shadows/raytraced_shadows/enabled            bool   false
-rendering/lights_and_shadows/raytraced_shadows/quality            enum   Medium
-rendering/lights_and_shadows/raytraced_shadows/distance           float  64.0
-rendering/lights_and_shadows/raytraced_shadows/max_lights_per_pixel int  4
-rendering/lights_and_shadows/raytraced_shadows/denoising          bool   true
-rendering/lights_and_shadows/raytraced_shadows/vram_budget_mb     int    256
+rendering/lights_and_shadows/raytraced_shadows/enabled              bool  false
+rendering/lights_and_shadows/raytraced_shadows/quality              enum  High
+rendering/lights_and_shadows/raytraced_shadows/denoising            bool  true
+rendering/lights_and_shadows/raytraced_shadows/denoised_light_slots enum  8     (4 or 8)
+rendering/lights_and_shadows/raytraced_shadows/inline_overflow      bool  true
 ```
+
+`distance` and `vram_budget_mb` are **gone**: residency follows light volumes (§4.4) and
+memory is a diagnostic (§4.5). `max_lights_per_pixel` became `denoised_light_slots`, which is
+a quality/memory trade rather than a cap — lights past it are still raytraced, just inline
+and unfiltered.
 
 Only the first is `Basic`; the rest are `Advanced`. The intended interaction is: tick
 `enabled`, done. `quality` maps to ray count, denoiser strength and internal resolution
@@ -1289,28 +1369,34 @@ converges over a few frames. No restart, in the editor or at runtime.
 ```
 Light3D
 └── Shadow
-    ├── Enabled              (existing, unchanged)
-    ├── RT Shadow Mode       AUTO | ALWAYS | DISABLED     ** NEW **, default AUTO
+    ├── Mode                 OFF | SHADOW_MAP | RT_ONLY   ** NEW **
+    │                        (new non-directional lights: RT_ONLY)
+    │                        (new directional lights:     SHADOW_MAP)
+    ├── Hard Shadows         bool, default false          ** NEW **
+    ├── Light Size           0 = automatic softness (§D8b)
     └── ... existing shadow properties ...
 ```
 
 Resolution table:
 
-| Project setting | `rt_shadow_mode` | Result |
+| Project setting | `shadow_mode` | Result |
 |---|---|---|
-| off | any | Shadow maps, exactly as today |
-| on | `AUTO` (default) | **RT shadows** |
-| on | `ALWAYS` | RT shadows |
-| on | `DISABLED` | Shadow maps (per-light opt-out) |
-| on, no RT hardware | any | Shadow maps, silently |
+| on | `RT_ONLY` (new-light default) | **Raytraced shadows** |
+| on | `SHADOW_MAP` | Classic shadow map — the escape hatch |
+| on | `OFF` | No shadows |
+| **off** | `RT_ONLY` | **No shadows** — the setting does not carry over |
+| off | `SHADOW_MAP` | Shadow map, exactly as today |
+| no RT hardware | any | Project setting cannot be enabled (§D9) |
 
-Because the default is `AUTO`, a light created any way at all — dragged into the scene,
-instanced from a `PackedScene`, or `OmniLight3D.new()` in a script — casts RT shadows
-with no further action. That is your "must default to casting" requirement, satisfied
-without touching serialization semantics (D8).
+A light created any way at all — dragged into the scene, instanced from a `PackedScene`, or
+`OmniLight3D.new()` in a script — gets `RT_ONLY` and casts RT shadows with no further action.
+Existing scenes auto-upgrade per D8: lights that already cast shadows become `RT_ONLY`, lights
+that were dark stay dark.
 
-`ALWAYS` exists for a light you want RT-shadowed even if a future heuristic would
-demote it. It is an escape hatch, not something a novice ever needs.
+The `RT_ONLY` + project-setting-off row is the important one. It is deliberately *not* a
+fallback: switching RT off leaves those lights unshadowed, loudly, rather than quietly
+reverting to shadow-map behaviour you did not author. `SHADOW_MAP` remains available per light
+as a deliberate escape hatch for the rare case where RT is genuinely wrong for one light.
 
 ### 7.3 What the user never has to do
 
@@ -1372,8 +1458,12 @@ What we *can* show is genuinely useful, and arguably more useful than raw BVH no
 * **Wireframe bounds of every TLAS instance**, colour-coded by state:
   green = resident and built · yellow = queued/building · blue = dynamic (refit each
   frame) · red = ineligible (non-triangle geometry, etc.).
-* **The residency boundary** — a wireframe box showing the RT shadow distance, so it is
-  immediately obvious why a distant object stopped casting.
+* **Light influence volumes** — wireframe spheres and cones for every RT-shadowing light,
+  which together *are* the residency region (§4.4). If something is not casting, it is either
+  outside every volume or on the ineligible list.
+* **The ineligible-caster list** — every instance in range that cannot be raytraced, with its
+  reason (alpha-tested material, particles, non-triangle, 2D vertices). This replaces the
+  deleted purity gate as your diagnostic surface.
 * **An overlay readout**: instance count, BLAS count, VRAM used vs budget, builds this
   frame, refits this frame.
 * **A ray-cost heatmap** toggle: per-pixel traversal cost, which is how you find the one
@@ -1387,6 +1477,42 @@ answers why in one glance: the object is red (ineligible), or outside the bounda
 still yellow (streaming).
 
 ---
+
+### 7.7 Volumetric fog — the one structural shadow-map dependency
+
+This is the only place your "no shadow maps" goal collides with the engine rather than with
+my caution, so it needs a decision rather than a reassurance.
+
+`volumetric_fog_process.glsl` binds the shadow atlas directly
+(`:27 layout(set = 0, binding = 1) uniform texture2D shadow_atlas`) and samples it per froxel
+for **omni** (`:504-521`), **spot** (`:579-586`) and **area** (`:674`) lights, reimplementing
+the atlas UV maths with its own exponential fade. It runs over a 3D froxel grid, not over
+screen pixels, so **it cannot read our screen-space mask** — the mask has no value for a
+froxel behind a wall or outside the depth buffer.
+
+SDFGI and VoxelGI are *not* a problem, despite also calling `light_has_shadow()`: they
+raymarch their own SDF and occlusion volumes rather than sampling the atlas
+(`sdfgi_direct_light.glsl:402-421`). Only fog reads it.
+
+So: with volumetric fog enabled on a viewport, an RT-shadowed local light must still render a
+shadow map, purely for fog. Four ways out:
+
+| Option | What it costs | Result |
+|---|---|---|
+| **A. Fog keeps its shadow map** (per-light, only when fog is on) | A shadow-map pass per fog-affected light | Fog looks exactly as today; shadow maps survive in one narrow case |
+| **B. Ray-trace fog shadows** — one ray per froxel per light | Real GPU cost; a 160×90×64 grid is ~920 k froxels | Fog shadows become *better* than today: no atlas resolution limit, no paraboloid seam |
+| **C. Fog ignores local-light shadows** | Nothing | Light shafts pass through walls. Very visible; not recommended |
+| **D. Sparse/temporal RT fog shadows** — trace a subset of froxels per frame, reproject | Moderate; needs its own temporal filter | B's quality at a fraction of the cost, with some latency in moving light shafts |
+
+**My recommendation: A now, D later.** Fog is off by default in Godot and is a per-viewport
+opt-in, so option A confines shadow maps to a case you may never enable — and if you never
+turn fog on, you already have zero shadow maps for local lights. Option D is the principled
+end state and is a natural Phase 5 companion to RTAO, since both are "trace a sparse volume
+and denoise it". Option B is the same work as D without the optimisation and is worth
+measuring before committing.
+
+If you intend to use volumetric fog heavily, tell me and I will move D forward — it changes
+the phase ordering but not the architecture.
 
 ## 8. Prerequisites, and the long-term goals
 
@@ -1567,14 +1693,15 @@ project setting stays default-off through Phase 3.
   (§4.6) can be measured on real projects while it is still cheap to rescope.
 
 **Exit:** a `--rt-selftest` flag prints pass/fail on your GPU, and the debug view reports
-how often the purity gate would fire on representative content.
+how much geometry in a representative scene is RT-ineligible, and where.
 
 ### Phase 1 — Static geometry, one light
 *The smallest thing that produces a real raytraced shadow.*
 
 * `RaytracingSceneRD`: BLAS cache, TLAS build, residency (§4).
 * Dequantise pass for compressed meshes (§4.2) — the main unknown in this phase.
-* `rt_shadows.glsl` for a single OmniLight3D. No denoiser; expect visible noise.
+* `rt_shadows.glsl` for a single OmniLight3D, soft-sampled from the start. No denoiser yet;
+  expect visible noise.
 * Debug view showing TLAS instance bounds.
 
 **Exit:** a static scene with one omni light shows a correct, noisy raytraced shadow in
@@ -1586,13 +1713,15 @@ the editor viewport, and toggling the setting off restores today's rendering exa
 * Dynamic BLASes for skinned/morphed `MeshInstance`s.
 * **`mesh_instance_check_for_update()` on off-screen RT casters (§4.4 step 3)** — without
   this, off-screen characters cast frozen shadows.
-* Up to 4 lights per pixel, channel packing, spot lights.
+* Eight denoised slots (two RGBA8), slot packing, spot lights.
+* `Light3D.shadow_mode` with `AUTO` resolution and the auto-upgrade path (D8).
 * **Cone-sampled soft shadows from the start** (§5.4) — not deferred. Shipping hard shadows
   would regress every light with `light_size > 0`.
-* **MultiMesh support** (§4.6) — moved forward from a later phase. Without it, GridMap
-  levels and any scatter/foliage scene are demoted by the purity gate and the feature is
-  silently off in a large fraction of real projects.
-* The purity gate itself, plus `material_casts_opaque_shadows()`.
+* **MultiMesh support** (§4.6) — moved forward from a later phase. GridMap is 100% MultiMesh
+  and scatter/foliage systems are too, so without it every GridMap level and every scattered
+  scene would silently cast no shadows.
+* Ineligible-geometry classification and its debug listing (§4.6) — no purity gate,
+  no demotion.
 
 **Exit:** an animated character casts a correct shadow while off-screen behind the camera,
 and a GridMap level engages rather than demoting.
@@ -1602,17 +1731,25 @@ and a GridMap level engages rather than demoting.
 * Blue-noise sampling, TAA/FSR2 interaction handling.
 * Quality presets wired to the `quality` setting.
 * **Area light support** (§5.4) — three composite sites, and the LTC path needs checking.
-* Full debug view: state colour-coding, residency boundary, ray-cost heatmap, stats,
-  purity-gate demotion reasons, and the "0 RT-capable lights" notice (§7.3b).
+  Area lights already default to `light_size = 0.5`, so they are the best early proof that
+  contact hardening looks right.
+* **Inline overflow path**: `SHADER_GROUP_RAYTRACING`, `scene_forward_clustered.glsl` to
+  `#version 460`, ray query for the 9th+ light on a pixel (D3).
+* Full debug view: state colour-coding, light influence volumes, ray-cost heatmap, memory
+  and build stats, the ineligible-caster list with reasons, and the "0 RT-capable lights"
+  notice (§7.3b).
 
 **Exit:** production-quality shadows. **The project setting becomes user-facing here.**
 
 ### Phase 4 — Integration and optimisation
-* Conditional atlas suppression per §7.6 — the actual performance win, with all three
-  guards (fully engaged, fog disabled, no transmittance materials).
-* RT shadows for volumetric fog and SDFGI so nothing regresses when atlases go away.
-* The **degraded tier** (§4.6): ineligible-only shadow maps min-combined with RT, so an
-  alpha-scissor fence keeps its shadow instead of demoting its whole light.
+* **Delete the local-light shadow-map pass entirely**, except where volumetric fog requires
+  it (§7.7). This is the performance win and the point of the whole exercise.
+* **Screen-space contact shadows** (§D9) to fill in grass and foliage that alpha-tested
+  geometry can no longer cast — the *Days Gone* approach, composing with RT rather than
+  replacing it.
+* Transmittance/SSS: either keep a shadow map for affected lights or move
+  `transmittance_z` onto a second mask channel from `rayQueryGetIntersectionTEXT` (§5.4),
+  which is strictly better than the atlas.
 * Multi-view/XR support or an explicit gate. Note the existing FSR2 integration in this fork
   shares one temporal context across both eyes — a latent defect the denoiser must not
   inherit.
@@ -1622,8 +1759,13 @@ and a GridMap level engages rather than demoting.
 
 ### Phase 5 — Extensions
 * **RTAO** (§8.2) — highest value per unit effort of anything remaining.
+* **Volumetric fog RT shadows**, sparse + temporally reprojected (§7.7 option D). Shares its
+  machinery with RTAO: both trace a sparse volume and denoise it.
+* Directional-light (sun/moon) RT shadows — after which shadow maps are gone from the
+  renderer entirely.
 * NRD SIGMA evaluation (§6.2).
-* Directional-light (sun/moon) RT shadows.
+* **Any-hit alpha testing**, if screen-space contact shadows prove insufficient and foliage
+  has not moved to real geometry.
 
 ### Phase 6 — Native interop
 * `RenderingDevice` external-pass mechanism and command-buffer access (§8.3).
@@ -1639,12 +1781,14 @@ and a GridMap level engages rather than demoting.
   `metal:2363-2417`) and report no RT support. macOS/iOS are excluded by
   `VULKAN_RAYTRACING_ENABLED = 0`.
 * **Forward+ only.** Mobile and Compatibility renderers are untouched.
-* **RT-capable GPU required** — RTX 20-series and newer, RDNA2 and newer, Arc. Everything
-  else silently uses shadow maps.
-* **Opaque triangle geometry only.** Alpha-tested foliage casts a solid shadow of its
-  quads. This is the single most likely thing to look wrong in a real project, and it is a
-  deliberate scope exclusion you named. It needs any-hit shaders and material binding to
-  fix properly.
+* **RT-capable GPU required** — RTX 20-series and newer, RDNA2 and newer, Arc. This is now a
+  hard requirement of the game, not a quality tier: without it the project setting cannot be
+  enabled and local lights have no shadows.
+* **Opaque triangle geometry only.** Alpha-tested foliage, particles and `ImmediateMesh`
+  cast **no shadow at all** (§D9) — not a wrong shadow, no shadow. This is the most visible
+  consequence of the revised philosophy and the thing most likely to need attention in an
+  outdoor scene. Three exits, none reintroducing a shadow map: screen-space contact shadows
+  (Phase 4), geometry-based foliage (content), or any-hit alpha testing (Phase 5).
 * **Non-triangle primitives** (points, lines, strips) never participate. 2D-vertex surfaces
   (`ARRAY_FLAG_USE_2D_VERTICES`) and surfaces with `ARRAY_FLAG_USES_EMPTY_VERTEX_ARRAY` must
   be excluded explicitly — the 2D format is legal-but-degenerate as AS input and would
@@ -1693,17 +1837,17 @@ Stated plainly, since you are relying on my judgement:
   rebuild-every-60-frames heuristic is a starting point, not a tuned value.
 * **NRD's actual quality delta** over a competent hand-rolled shadow denoiser is something
   I would want measured before committing to the integration (§6.2).
-* **Purity-gate engagement rate is completely unmeasured, and it is the single biggest
-  threat to the design.** If typical projects have an alpha-scissor fence, a grass patch or
-  a particle system inside most light volumes, RT is permanently demoted everywhere and the
-  feature does nothing. This is why the debug view ships in Phase 0. If demotion exceeds
-  roughly 30% of lights on representative content, the degraded tier must move from Phase 4
-  into Phase 2 — a rescope, not a tweak. There is no way to know this in advance.
-* **Whether the first shipping milestone is a net win at all.** Between Phase 2 and Phase 4
-  we pay for both shadow maps and rays for the same lights, so the honest framing is better
-  quality at higher cost. Whether full-resolution RT shadows visibly beat a well-configured
-  512px atlas slot — enough to justify that cost to a user who did not ask for it — has not
-  been established on real content and cannot be settled by argument.
+* **How visible the missing alpha-geometry shadows will be.** This replaces the purity gate
+  as the design's main open risk, and it is a much better risk to have: it is a *visual*
+  question answerable by looking at your own content, not a systemic one that could silently
+  switch the feature off. Build a representative outdoor scene early and judge it.
+* **Whether 8 denoised slots is the right number.** It is an educated guess at per-pixel
+  overlap. The inline overflow path means being wrong costs quality, not correctness, so this
+  is safe to tune late — but expect to tune it.
+* **The cost of unbounded residency.** With no distance cap, a large level with many lights
+  can hold a great deal of geometry resident. Whether that is tens or hundreds of megabytes
+  depends entirely on your content, and per §4.5 the renderer will tell you rather than
+  silently trimming.
 * **Ray bias constants are unvalidated.** Shadow acne and peter-panning are the two failure
   modes a novice notices instantly, and the exact things RT is meant to fix. Compressed
   vertices add roughly `aabb_size / 65535` of positional error on top of depth
@@ -1749,27 +1893,36 @@ as `Scenario::indexers[INDEXER_GEOMETRY]`.
 illegal as raytracing input. It is solved by a one-time-per-surface dequantise pass, and it
 should be prototyped first (Phase 1) because it is the largest remaining unknown.
 
-**The one genuine design risk is the purity gate (§4.6)** — the mechanism that keeps
-existing scenes from losing shadows. It is required for correctness, but if it fires on most
-lights in most projects, the feature is safe and does nothing. That is why the debug view
-ships in Phase 0: it is measurable early, and cheap to rescope around while it still is.
+**The one genuine design risk is now visual rather than systemic.** Alpha-tested geometry,
+particles and `ImmediateMesh` cast no shadow at all (§D9). How much that matters depends
+entirely on your content, and it is answerable by building a representative outdoor scene and
+looking at it — not by argument. Three exits exist, none of which reintroduces a shadow map:
+screen-space contact shadows, geometry-based foliage, or any-hit alpha testing.
+
+This replaced a much worse risk. The first draft's *purity gate* would have demoted whole
+lights to shadow maps whenever any ineligible caster was in range — which, given GridMap and
+scatter systems are MultiMesh-based, would have fired almost everywhere. Deleting the
+shadow-map fallback deleted the gate along with it.
 
 **Five additions to the RT layer** are prerequisites: BLAS refit (as a new method, not a
 signature change), dirty-tracking that does not trust the `invalidated` flag, render-thread
 discipline for AS creation, a startup capability probe that does not trust `has_feature()`,
 and a `#version 460` compile smoke test.
 
-**Ease of use is achievable as specified — with one honest caveat.** One project setting;
-every light defaults to casting; a one-click per-light opt-out; automatic
-acceleration-structure management with streaming and eviction; works identically in the
-editor viewport and in exported games; silent fallback to today's shadow maps on
-unsupported hardware.
+**Ease of use is achievable as specified.** One project setting; every new non-directional
+light casts RT shadows by default; existing shadow-casting lights auto-upgrade; a per-light
+escape hatch; soft contact-hardened shadows without configuration; automatic
+acceleration-structure management driven by light volumes; identical in the editor viewport
+and in exported games.
 
-The caveat is §7.3b: until Phase 5 this covers Omni, Spot and (from Phase 3) Area lights —
-**not directional**. A default Godot scene contains only a `DirectionalLight3D`, so a user
-ticking the box on a fresh project sees nothing change. Either pull directional forward or
-say so plainly in the setting's description and the debug view. Do not ship "just works"
-against content where it demonstrably does not.
+**Two caveats worth restating.** Until Phase 5 this covers Omni, Spot and (from Phase 3) Area
+lights, not directional — and a default Godot scene contains only a `DirectionalLight3D`, so
+the setting's description and the debug view must say so plainly. And alpha-tested geometry
+casts nothing until screen-space contact shadows land in Phase 4.
+
+**Shadow maps end up confined to exactly two places:** directional lights, and volumetric fog
+where it is enabled. Phase 5 removes the first; §7.7 option D removes the second. After that
+the renderer has no shadow-map path for local lights at all — which is the goal.
 
 **Of the long-term goals:** RTAO is cheap and should be next. NRD is worthwhile but is a
 quality upgrade, not a prerequisite. DLSS SR and RR are both gated behind one missing piece
