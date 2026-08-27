@@ -15,6 +15,9 @@
 // it carries the same lights in the same channels. Channel assignments are
 // sorted by light index, which makes that a single equality test.
 
+// Channel carrying no light. Matches SLOT_NONE in rt_shadow_trace.glsl.
+#define SLOT_NONE 255u
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D source_visibility;
@@ -67,8 +70,12 @@ void main() {
 	float center_depth = texelFetch(source_depth, pos, 0).r;
 	uvec4 center_index = texelFetch(source_index, pos, 0);
 
-	if (center_depth <= 0.0) {
-		// Sky: nothing to filter, and the surrounding geometry must not bleed in.
+	// Sky has nothing to filter and must not draw the surrounding geometry in.
+	// A pixel no raytraced light reaches is fully lit in every channel, which no
+	// amount of filtering changes; in an outdoor scene that is most of the
+	// screen, and skipping it here is what keeps the denoiser's cost
+	// proportional to how much of the frame the raytraced lights actually touch.
+	if (center_depth <= 0.0 || center_index == uvec4(SLOT_NONE)) {
 		imageStore(dest_visibility, pos, center);
 		if (params.write_history != 0u) {
 			imageStore(dest_history_visibility, pos, center);

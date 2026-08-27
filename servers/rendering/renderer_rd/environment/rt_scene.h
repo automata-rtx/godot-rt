@@ -141,6 +141,19 @@ private:
 	// Per-frame scratch, kept as members to avoid reallocating every frame.
 	LocalVector<RD::AccelerationStructureInstance> instance_scratch;
 
+	// Building an acceleration structure allocates GPU memory and scratch space
+	// and then does real work on the device. A level streaming in, or a camera
+	// cut into a lit interior, can bring hundreds of new surfaces into range in
+	// one frame; without a ceiling that is a visible stall. Surfaces past the
+	// budget do not cast this frame and are picked up by the next, which shows
+	// as a shadow arriving a frame or two late instead.
+	static constexpr uint32_t MAX_BLAS_BUILDS_PER_FRAME = 64;
+	static constexpr uint32_t MAX_BLAS_BUILD_TRIANGLES_PER_FRAME = 1 << 20;
+
+	uint32_t blas_builds_remaining = 0;
+	uint32_t blas_build_triangles_remaining = 0;
+	uint32_t deferred_surface_count = 0;
+
 	BlasEntry *_get_or_create_blas(RID p_mesh, RID p_mesh_instance, uint32_t p_surface);
 	bool _build_blas_geometry(RID p_mesh, RID p_mesh_instance, uint32_t p_surface, BlasEntry &r_entry);
 	// What a surface would build from right now, so that a cached entry can tell

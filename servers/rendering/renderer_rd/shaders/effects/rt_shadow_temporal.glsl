@@ -11,6 +11,9 @@
 // downstream would average the shadow signal over time, so the accumulation
 // has to converge on its own.
 
+// Channel carrying no light. Matches SLOT_NONE in rt_shadow_trace.glsl.
+#define SLOT_NONE 255u
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D source_visibility;
@@ -54,15 +57,16 @@ void main() {
 	vec4 current = texelFetch(source_visibility, pos, 0);
 	float depth = texelFetch(source_depth, pos, 0).r;
 
-	if (depth <= 0.0) {
-		// Sky. Nothing to accumulate, and leaving a history here would bleed into
-		// geometry that later moves in front of it.
+	uvec4 current_index = texelFetch(source_index, pos, 0);
+
+	// Sky, or a pixel no raytraced light reaches. Neither has anything to
+	// accumulate, and leaving a history behind would bleed into whatever moves
+	// in front of it later.
+	if (depth <= 0.0 || current_index == uvec4(SLOT_NONE)) {
 		imageStore(dest_visibility, pos, current);
 		imageStore(dest_history_length, pos, vec4(0.0));
 		return;
 	}
-
-	uvec4 current_index = texelFetch(source_index, pos, 0);
 
 	vec2 uv = (vec2(pos) + 0.5) / vec2(params.screen_size);
 	vec4 previous_clip = params.reprojection * vec4(uv * 2.0 - 1.0, depth, 1.0);

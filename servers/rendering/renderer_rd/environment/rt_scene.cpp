@@ -387,12 +387,22 @@ RaytracingScene::BlasEntry *RaytracingScene::_get_or_create_blas(RID p_mesh, RID
 		}
 	}
 
+	// Nothing is cached for this surface, so it has to be built. Everything up
+	// to here was free; past here it costs allocations and device work.
+	if (blas_builds_remaining == 0 || blas_build_triangles_remaining == 0) {
+		deferred_surface_count++;
+		return nullptr;
+	}
+	blas_builds_remaining--;
+
 	BlasEntry entry;
 	entry.last_used_frame = frame;
 
 	if (_build_blas_geometry(p_mesh, p_mesh_instance, p_surface, entry)) {
 		entry.state = BLAS_READY;
 		built_surface_count++;
+		const uint32_t triangles = (entry.index_count >= 3 ? entry.index_count : entry.vertex_count) / 3;
+		blas_build_triangles_remaining = triangles >= blas_build_triangles_remaining ? 0 : blas_build_triangles_remaining - triangles;
 		if (entry.skinned) {
 			entry.skin_version = mesh_storage->mesh_instance_get_last_change(p_mesh_instance, p_surface);
 		}
@@ -497,6 +507,10 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 
 	instance_scratch.clear();
 
+	blas_builds_remaining = MAX_BLAS_BUILDS_PER_FRAME;
+	blas_build_triangles_remaining = MAX_BLAS_BUILD_TRIANGLES_PER_FRAME;
+	deferred_surface_count = 0;
+
 	for (const InstanceData &instance : p_instances) {
 		if (instance.mesh.is_null()) {
 			continue;
@@ -555,8 +569,9 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 
 	if (rtdbg) {
 		static String last;
-		String cur = vformat("RT_DEBUG update: in_instances=%d tlas_instances=%d blas_cache=%d skipped_surfaces=%d",
-				(int)p_instances.size(), (int)instance_scratch.size(), (int)blas_cache.size(), (int)skipped_surface_count);
+		String cur = vformat("RT_DEBUG update: in_instances=%d tlas_instances=%d blas_cache=%d skipped_surfaces=%d deferred_surfaces=%d",
+				(int)p_instances.size(), (int)instance_scratch.size(), (int)blas_cache.size(), (int)skipped_surface_count,
+				(int)deferred_surface_count);
 		if (cur != last) {
 			last = cur;
 			print_line(cur);
