@@ -122,7 +122,7 @@ void main() {
 			// Per-light reach: a light whose filter_scale is small takes less of
 			// this tap the further away it is.
 			float distance_ratio = length(vec2(x, y)) / 2.0;
-			vec4 reach = clamp((filter_scale - vec4(distance_ratio - 1.0)) , vec4(0.0), vec4(1.0));
+			vec4 reach = clamp((filter_scale - vec4(distance_ratio - 1.0)), vec4(0.0), vec4(1.0));
 			vec4 weight = vec4(geometric) * reach;
 
 			sum += tap_visibility * weight;
