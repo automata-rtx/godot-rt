@@ -1101,7 +1101,9 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 			rt_light.direction[0] = world_direction.x;
 			rt_light.direction[1] = world_direction.y;
 			rt_light.direction[2] = world_direction.z;
-			rt_light.cos_spot_angle = light_data.cos_spot_angle;
+			// Computed here rather than read from light_data, whose cos_spot_angle is
+			// not assigned until further below.
+			rt_light.cos_spot_angle = Math::cos(Math::deg_to_rad(light->param[RSE::LIGHT_PARAM_SPOT_ANGLE]));
 
 			rt_light.size = size;
 			rt_light.is_spot = (type == RSE::LIGHT_SPOT) ? 1u : 0u;

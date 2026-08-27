@@ -5152,6 +5152,12 @@ bool RenderingDevice::compute_pipeline_is_valid(RID p_pipeline) {
 	return compute_pipeline_owner.owns(p_pipeline);
 }
 
+bool RenderingDevice::acceleration_structure_is_valid(RID p_acceleration_structure) {
+	_THREAD_SAFE_METHOD_
+
+	return acceleration_structure_owner.owns(p_acceleration_structure);
+}
+
 Error RenderingDevice::_raytracing_pipeline_create_sbt_buffer(RDD::RaytracingPipelineID p_raytracing_pipeline, uint32_t p_raygen_shader_count, uint32_t p_miss_shader_count, Buffer &r_sbt_buffer) {
 	// Ray generation and miss shader group handles are placed next to each other in the same buffer.
 

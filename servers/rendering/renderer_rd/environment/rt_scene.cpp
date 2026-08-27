@@ -110,7 +110,10 @@ RaytracingScene::~RaytracingScene() {
 
 void RaytracingScene::free_all() {
 	for (KeyValue<SurfaceKey, BlasEntry> &E : blas_cache) {
-		if (E.value.blas.is_valid()) {
+		// The BLAS may already be gone: RenderingDevice frees an acceleration
+		// structure along with the vertex buffer it was built from, and the mesh
+		// that owns that buffer can be destroyed before this cache is torn down.
+		if (E.value.blas.is_valid() && RD::get_singleton()->acceleration_structure_is_valid(E.value.blas)) {
 			RD::get_singleton()->free_rid(E.value.blas);
 		}
 		if (E.value.position_buffer.is_valid()) {

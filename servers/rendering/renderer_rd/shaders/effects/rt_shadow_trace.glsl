@@ -127,6 +127,16 @@ void main() {
 		normal /= normal_length;
 	}
 
+	// The winding of the cross product above depends on the handedness of the
+	// projection: with Vulkan's downward clip-space Y the two screen-space taps
+	// produce cross(+X_view, -Y_view), which points away from the camera. Rather
+	// than bake in a sign, force the normal to face the viewer, which is true of
+	// every visible surface. Getting this backwards fails the N.L test and pushes
+	// the ray origin below the surface, so every pixel comes back occluded.
+	if (dot(normal, params.camera_position - world_position) < 0.0) {
+		normal = -normal;
+	}
+
 	uint light_count = min(params.light_count, uint(MAX_RT_LIGHTS));
 
 	for (uint i = 0u; i < light_count; i++) {

@@ -15,6 +15,29 @@
 #define SPEC_CONSTANT_LOOP_ANNOTATION
 #endif
 
+#ifndef USING_MOBILE_RENDERER
+// Raytraced shadow visibility for one light, read from the screen-space mask
+// written before the opaque pass. Returns 1.0 (fully lit) when the light was
+// not granted a slot in the mask.
+//
+// This lives here rather than next to the rt_shadow_mask declaration because it
+// reads gl_FragCoord: scene_forward_clustered_inc.glsl is included by the
+// vertex stage too, where that builtin does not exist, and defining it there
+// fails to compile every Forward+ vertex variant.
+float rt_shadow_lookup(float p_slot) {
+	if (p_slot >= RT_SLOT_NONE) {
+		return 1.0;
+	}
+#ifdef USE_MULTIVIEW
+	vec4 mask = texelFetch(sampler2DArray(rt_shadow_mask, SAMPLER_NEAREST_CLAMP), ivec3(ivec2(gl_FragCoord.xy), ViewIndex), 0);
+#else
+	vec4 mask = texelFetch(sampler2D(rt_shadow_mask, SAMPLER_NEAREST_CLAMP), ivec2(gl_FragCoord.xy), 0);
+#endif
+	int slot = int(p_slot);
+	return slot == 0 ? mask.r : (slot == 1 ? mask.g : (slot == 2 ? mask.b : mask.a));
+}
+#endif // !USING_MOBILE_RENDERER
+
 half D_GGX(half NoH, half roughness, hvec3 n, hvec3 h) {
 	half a = NoH * roughness;
 #ifdef EXPLICIT_FP16

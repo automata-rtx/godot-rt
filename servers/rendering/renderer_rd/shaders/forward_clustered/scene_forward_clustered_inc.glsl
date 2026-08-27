@@ -486,20 +486,9 @@ layout(set = 1, binding = 36) uniform texture2D ssr_mip_level_buffer;
 layout(set = 1, binding = 37) uniform texture2D rt_shadow_mask;
 #endif // USE_MULTIVIEW
 
-// Raytraced shadow visibility for one light, from the screen-space mask written
-// before the opaque pass. Returns 1.0 (fully lit) when this light has no slot.
-float rt_shadow_lookup(float p_slot) {
-	if (p_slot >= RT_SLOT_NONE) {
-		return 1.0;
-	}
-#ifdef USE_MULTIVIEW
-	vec4 mask = texelFetch(rt_shadow_mask, ivec3(ivec2(gl_FragCoord.xy), ViewIndex), 0);
-#else
-	vec4 mask = texelFetch(rt_shadow_mask, ivec2(gl_FragCoord.xy), 0);
-#endif
-	int slot = int(p_slot);
-	return slot == 0 ? mask.r : (slot == 1 ? mask.g : (slot == 2 ? mask.b : mask.a));
-}
+// rt_shadow_lookup(), which samples the mask above, lives in
+// scene_forward_lights_inc.glsl because it reads gl_FragCoord. This file is
+// included by the vertex stage as well, where that builtin does not exist.
 
 #endif
 

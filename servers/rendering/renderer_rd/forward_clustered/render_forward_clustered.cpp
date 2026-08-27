@@ -1536,7 +1536,7 @@ RID RenderForwardClustered::_ensure_rt_shadow_mask(Ref<RenderSceneBuffersRD> p_r
 		// buffers when the internal size changes.
 		p_render_buffers->create_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_RT_SHADOW_MASK,
 				RD::DATA_FORMAT_R8G8B8A8_UNORM,
-				RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT,
+				RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT,
 				RD::TEXTURE_SAMPLES_1, p_size);
 	}
 
@@ -1720,7 +1720,7 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			if (mask.is_valid()) {
 				if (tlas.is_valid()) {
 					rt_shadows->render(tlas, rb->get_depth_texture(), mask, internal_size,
-							p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform,
+							p_render_data->scene_data->get_cam_projection(), p_render_data->scene_data->get_cam_transform(),
 							rt_lights, RendererRD::RaytracingScene::get_sample_count(),
 							RendererRD::RaytracingScene::get_max_distance());
 				} else {
