@@ -63,22 +63,37 @@ layout(set = 0, binding = 5, std430) restrict readonly buffer RTLights {
 }
 rt_lights;
 
+// View space surface normals from the depth pre-pass, which raytraced shadows
+// force on. Reconstructing a normal from neighbouring depth taps instead would
+// span the discontinuity at every silhouette and offset those rays into the
+// surface, fringing the outline of every object.
+layout(set = 0, binding = 6) uniform sampler2D source_normal_roughness;
+
 layout(push_constant, std430) uniform Params {
 	mat4 inv_view_projection;
 
-	ivec2 screen_size;
-	uint light_count;
-	uint sample_count;
+	// Rotates a view space normal into the world space the acceleration
+	// structure lives in. A quaternion rather than the camera's basis because a
+	// mat3 would not fit beside the inverse view projection in 128 bytes.
+	vec4 camera_rotation;
 
 	vec3 camera_position;
 	float max_ray_distance;
 
+	ivec2 screen_size;
+	uint light_count;
+	// Sample count in the low eight bits, frame index above them. Packed for the
+	// same reason the rotation is a quaternion.
+	uint samples_and_frame;
+
 	float bias;
 	float normal_bias;
-	uint frame_index;
-	float pad;
 }
 params;
+
+vec3 rotate_by_quaternion(vec4 q, vec3 v) {
+	return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
 
 // Coarse bounds of the geometry in this tile, so the light cull below runs once
 // per tile instead of once per pixel.
@@ -135,11 +150,15 @@ vec3 reconstruct_world_position(ivec2 pos, float depth) {
 // Rough estimate of how much this light contributes here, used to keep the
 // strongest few when more lights reach a pixel than the mask has channels.
 // Dropping the weakest is what makes the per pixel limit hard to notice.
-float light_importance(RTLight light, vec3 world_position, float distance_to_light) {
+float light_importance(RTLight light, vec3 to_light_normalized, vec3 normal, float distance_to_light) {
 	float falloff = max(1.0 - distance_to_light / max(light.radius, 0.0001), 0.0);
+	// A light below the horizon of the surface is already fully shadowed by the
+	// surface itself, so it must not take a channel from one that is not: with
+	// lamps on every side of a room, that is most of them.
+	float facing = max(dot(normal, to_light_normalized), 0.0);
 	// Floored so that a light left at zero energy still ranks above an empty
 	// channel rather than silently losing its shadow.
-	return max(light.energy, 0.0001) * falloff * falloff;
+	return max(light.energy, 0.0001) * falloff * falloff * facing;
 }
 
 void main() {
@@ -229,28 +248,14 @@ void main() {
 	vec3 normal = vec3(0.0, 1.0, 0.0);
 
 	if (has_surface) {
-		// Geometric normal from neighboring depth taps. The normal buffer holds
-		// view space normals and converting them here would need the camera basis,
-		// which does not fit in the 128 byte push constant alongside the inverse
-		// view projection. The denoiser reads that buffer directly instead, where
-		// view space comparisons between neighbors need no conversion at all.
-		ivec2 max_pos = params.screen_size - ivec2(1);
-		ivec2 pos_x = min(pos + ivec2(1, 0), max_pos);
-		ivec2 pos_y = min(pos + ivec2(0, 1), max_pos);
-		vec3 position_x = reconstruct_world_position(pos_x, texelFetch(source_depth, pos_x, 0).r);
-		vec3 position_y = reconstruct_world_position(pos_y, texelFetch(source_depth, pos_y, 0).r);
-
-		normal = cross(position_x - world_position, position_y - world_position);
-		float normal_length = length(normal);
-		if (normal_length < 1e-12) {
+		vec3 view_normal = texelFetch(source_normal_roughness, pos, 0).xyz * 2.0 - 1.0;
+		float normal_length = length(view_normal);
+		if (normal_length < 1e-6) {
+			// Nothing wrote this pixel's normal. Facing the viewer is the only
+			// assumption that cannot push a ray origin inside the surface.
 			normal = normalize(params.camera_position - world_position);
 		} else {
-			normal /= normal_length;
-		}
-		// The winding depends on the handedness of the projection; force the normal
-		// to face the viewer, which holds for every visible surface.
-		if (dot(normal, params.camera_position - world_position) < 0.0) {
-			normal = -normal;
+			normal = rotate_by_quaternion(params.camera_rotation, view_normal / normal_length);
 		}
 
 		// Keep the strongest few lights that actually reach this pixel.
@@ -264,8 +269,9 @@ void main() {
 				continue;
 			}
 
+			vec3 light_dir = to_light / distance_to_light;
+
 			if (light.is_spot != 0u) {
-				vec3 light_dir = to_light / distance_to_light;
 				// Outside the cone the light contributes nothing, so leave it lit
 				// and let the regular attenuation take care of it.
 				if (dot(-light_dir, light.direction) < light.cos_spot_angle) {
@@ -273,7 +279,12 @@ void main() {
 				}
 			}
 
-			float candidate_score = light_importance(light, world_position, distance_to_light);
+			float candidate_score = light_importance(light, light_dir, normal, distance_to_light);
+			if (candidate_score <= 0.0) {
+				// Behind the surface. Nothing to trace, and the channel is worth
+				// more to a light that does reach here.
+				continue;
+			}
 			uint candidate_index = index;
 			for (int k = 0; k < LIGHTS_PER_PIXEL; k++) {
 				if (candidate_score > score[k]) {
@@ -305,7 +316,9 @@ void main() {
 	// One rotation per pixel, advanced every frame. The temporal filter then
 	// integrates a different set of emitter samples each frame rather than
 	// re-averaging the same ones.
-	float phi = interleaved_gradient_noise(vec2(pos), params.frame_index) * 6.2831853;
+	uint frame_index = params.samples_and_frame >> 8u;
+	uint requested_samples = params.samples_and_frame & 0xffu;
+	float phi = interleaved_gradient_noise(vec2(pos), frame_index) * 6.2831853;
 
 	vec4 visibility = vec4(1.0);
 	vec4 hit_distance = vec4(0.0);
@@ -346,7 +359,7 @@ void main() {
 		vec3 bitangent;
 		build_basis(light_dir, tangent, bitangent);
 
-		uint sample_count = light.size > 0.0 ? max(params.sample_count, 1u) : 1u;
+		uint sample_count = light.size > 0.0 ? max(requested_samples, 1u) : 1u;
 		float occluded = 0.0;
 		float blocker_distance_sum = 0.0;
 

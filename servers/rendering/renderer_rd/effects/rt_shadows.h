@@ -108,17 +108,22 @@ private:
 	struct TracePushConstant {
 		float inv_view_projection[16];
 
-		int32_t screen_size[2];
-		uint32_t light_count;
-		uint32_t sample_count;
+		// Rotates a view space normal into world space. A quaternion because the
+		// camera's basis would not fit here alongside the inverse view
+		// projection, and the push constant is limited to 128 bytes.
+		float camera_rotation[4];
 
 		float camera_position[3];
 		float max_ray_distance;
 
+		int32_t screen_size[2];
+		uint32_t light_count;
+		// Sample count in the low eight bits, frame index above them. Packed for
+		// the same reason the rotation is a quaternion.
+		uint32_t samples_and_frame;
+
 		float bias;
 		float normal_bias;
-		uint32_t frame_index;
-		float pad;
 	};
 
 	struct TemporalPushConstant {
@@ -161,7 +166,7 @@ private:
 	uint32_t frame_index = 0;
 
 	void _ensure_light_buffer(uint32_t p_light_count);
-	void _trace(RID p_tlas, RID p_depth_texture, const Buffers &p_buffers,
+	void _trace(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, const Buffers &p_buffers,
 			const Size2i &p_size, const Projection &p_inv_view_projection,
 			const Transform3D &p_camera_transform, uint32_t p_light_count,
 			const Settings &p_settings);

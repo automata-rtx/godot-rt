@@ -139,12 +139,14 @@ RTShadows::~RTShadows() {
 	}
 }
 
-void RTShadows::_trace(RID p_tlas, RID p_depth_texture, const Buffers &p_buffers,
+void RTShadows::_trace(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, const Buffers &p_buffers,
 		const Size2i &p_size, const Projection &p_inv_view_projection,
 		const Transform3D &p_camera_transform, uint32_t p_light_count,
 		const Settings &p_settings) {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
+	TextureStorage *texture_storage = TextureStorage::get_singleton();
 	RID sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
+	RID normal_texture = p_normal_roughness.is_valid() ? p_normal_roughness : texture_storage->texture_rd_get_default(TextureStorage::DEFAULT_RD_TEXTURE_NORMAL);
 
 	LocalVector<RD::Uniform> uniforms;
 	{
@@ -190,23 +192,36 @@ void RTShadows::_trace(RID p_tlas, RID p_depth_texture, const Buffers &p_buffers
 		u.append_id(light_buffer);
 		uniforms.push_back(u);
 	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+		u.binding = 6;
+		u.append_id(sampler);
+		u.append_id(normal_texture);
+		uniforms.push_back(u);
+	}
 
 	RID compiled = trace_shader.version_get_shader(trace_shader_version, 0);
 	RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(compiled, 0, uniforms);
 
 	TracePushConstant push_constant = {};
 	store_projection(p_inv_view_projection, push_constant.inv_view_projection);
+	const Quaternion camera_rotation = p_camera_transform.basis.get_rotation_quaternion();
+	push_constant.camera_rotation[0] = camera_rotation.x;
+	push_constant.camera_rotation[1] = camera_rotation.y;
+	push_constant.camera_rotation[2] = camera_rotation.z;
+	push_constant.camera_rotation[3] = camera_rotation.w;
 	push_constant.screen_size[0] = p_size.x;
 	push_constant.screen_size[1] = p_size.y;
 	push_constant.light_count = p_light_count;
-	push_constant.sample_count = MAX(1u, p_settings.sample_count);
+	const uint32_t sample_count = CLAMP(p_settings.sample_count, 1u, 255u);
+	push_constant.samples_and_frame = sample_count | ((frame_index & 0xffffffu) << 8);
 	store_vector3(p_camera_transform.origin, push_constant.camera_position);
 	push_constant.max_ray_distance = p_settings.max_ray_distance;
 	// Rays start slightly off the surface to avoid self-intersection. These are
 	// first-draft constants and want tuning against a stress scene.
 	push_constant.bias = 0.005f;
 	push_constant.normal_bias = 0.02f;
-	push_constant.frame_index = frame_index;
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, trace_pipeline);
@@ -364,7 +379,7 @@ void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 	const Projection view_projection = p_camera_projection * Projection(p_camera_transform.affine_inverse());
 	const Projection inv_view_projection = view_projection.inverse();
 
-	_trace(p_tlas, p_depth_texture, p_buffers, p_screen_size, inv_view_projection,
+	_trace(p_tlas, p_depth_texture, p_normal_roughness, p_buffers, p_screen_size, inv_view_projection,
 			p_camera_transform, light_count, p_settings);
 
 	const bool denoise = p_settings.denoise &&
