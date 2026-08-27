@@ -334,6 +334,9 @@ public:
 		RID mesh_instance;
 		Transform3D transform;
 		uint32_t layer_mask = 0xFFFFFFFF;
+		// One bit per surface of the mesh, clear where the surface's material
+		// cannot write a shadow. Surfaces past the thirty-second always cast.
+		uint32_t surface_mask = 0xFFFFFFFF;
 	};
 
 	// True when the project setting is on and the device supports ray queries.

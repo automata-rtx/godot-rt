@@ -504,6 +504,12 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 
 		const int surface_count = mesh_storage->mesh_get_surface_count(instance.mesh);
 		for (int surface = 0; surface < surface_count; surface++) {
+			// A surface whose material cannot write a shadow map must not write a
+			// traced one either, or every pane of glass in the scene would start
+			// casting a solid shadow the moment its light became raytraced.
+			if (surface < 32 && (instance.surface_mask & (uint32_t(1) << surface)) == 0) {
+				continue;
+			}
 			BlasEntry *entry = _get_or_create_blas(instance.mesh, instance.mesh_instance, surface);
 			if (entry && entry->state == BLAS_READY && !RD::get_singleton()->acceleration_structure_is_valid(entry->blas)) {
 				// Defense in depth for anything that frees a structure behind our

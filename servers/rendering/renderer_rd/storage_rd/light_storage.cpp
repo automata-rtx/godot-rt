@@ -587,6 +587,8 @@ void LightStorage::light_instance_free(RID p_light) {
 		shadow_atlas->shadow_owners.erase(p_light);
 	}
 
+	_rt_slot_release(light_instance);
+
 	if (light_instance->light_type != RSE::LIGHT_DIRECTIONAL) {
 		ForwardIDType forward_id_type = _light_type_to_forward_id_type(light_instance->light_type);
 		ForwardIDStorage::get_singleton()->free_forward_id(forward_id_type, light_instance->forward_id);
@@ -737,6 +739,86 @@ bool LightStorage::_light_uses_raytraced_shadows(const Light *p_light) const {
 	return rt_scene != nullptr && rt_scene->has_traceable_scene();
 }
 
+uint32_t LightStorage::_rt_slot_acquire(LightInstance *p_light_instance, uint64_t p_frame) {
+	if (p_light_instance->rt_slot != RT_SLOT_UNASSIGNED) {
+		p_light_instance->rt_slot_frame = p_frame;
+		return p_light_instance->rt_slot;
+	}
+
+	uint32_t slot;
+	if (!rt_free_slots.is_empty()) {
+		slot = rt_free_slots[rt_free_slots.size() - 1];
+		rt_free_slots.resize(rt_free_slots.size() - 1);
+	} else if (rt_slot_owner.size() < RTShadows::MAX_RT_LIGHTS) {
+		slot = rt_slot_owner.size();
+		rt_slot_owner.push_back(nullptr);
+	} else {
+		// Every slot is spoken for, which past the grace period above means more
+		// lights want one than the buffer holds. Take the one whose light has
+		// gone unseen longest: the culler caps a pass at the buffer's size, so a
+		// light in this pass can always be given a slot, and the one it costs
+		// belongs to a light that is not in this pass.
+		uint32_t oldest = RT_SLOT_UNASSIGNED;
+		uint64_t oldest_frame = p_frame;
+		for (uint32_t i = 0; i < rt_slot_owner.size(); i++) {
+			LightInstance *owner = rt_slot_owner[i];
+			if (owner != nullptr && owner->rt_slot_frame < oldest_frame) {
+				oldest_frame = owner->rt_slot_frame;
+				oldest = i;
+			}
+		}
+		if (oldest == RT_SLOT_UNASSIGNED) {
+			return RT_SLOT_UNASSIGNED;
+		}
+		rt_slot_owner[oldest]->rt_slot = RT_SLOT_UNASSIGNED;
+		rt_slot_owner[oldest] = nullptr;
+		slot = oldest;
+	}
+
+	rt_slot_owner[slot] = p_light_instance;
+	p_light_instance->rt_slot = slot;
+	p_light_instance->rt_slot_frame = p_frame;
+	rt_slots_assigned_this_frame++;
+	return slot;
+}
+
+void LightStorage::_rt_slot_release(LightInstance *p_light_instance) {
+	const uint32_t slot = p_light_instance->rt_slot;
+	if (slot == RT_SLOT_UNASSIGNED) {
+		return;
+	}
+
+	p_light_instance->rt_slot = RT_SLOT_UNASSIGNED;
+	if (slot < rt_slot_owner.size() && rt_slot_owner[slot] == p_light_instance) {
+		rt_slot_owner[slot] = nullptr;
+		rt_free_slots.push_back(slot);
+	}
+}
+
+void LightStorage::_rt_slot_sweep(uint64_t p_frame) {
+	if (rt_slot_sweep_frame == p_frame) {
+		return;
+	}
+	rt_slot_sweep_frame = p_frame;
+
+	for (uint32_t i = 0; i < rt_slot_owner.size(); i++) {
+		LightInstance *owner = rt_slot_owner[i];
+		if (owner == nullptr) {
+			continue;
+		}
+		if (p_frame - owner->rt_slot_frame > RT_SLOT_GRACE_FRAMES) {
+			_rt_slot_release(owner);
+		}
+	}
+
+	// Nothing holds a slot any more, so the buffer can start over from zero
+	// rather than staying as long as the high water mark left it.
+	if (rt_free_slots.size() == rt_slot_owner.size()) {
+		rt_slot_owner.clear();
+		rt_free_slots.clear();
+	}
+}
+
 bool LightStorage::light_instance_is_raytraced_shadow_candidate(RID p_light_instance) const {
 	const LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
 	if (light_instance == nullptr) {
@@ -783,6 +865,11 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 	// A reflection probe render, for instance, has no mask, so its lights keep
 	// reading the shadow atlas.
 	const bool rt_shadows_available = p_use_raytraced_shadows && p_using_shadows;
+	const uint64_t rt_frame = RSG::rasterizer->get_frame_number();
+	if (rt_shadows_available) {
+		_rt_slot_sweep(rt_frame);
+	}
+	rt_slots_assigned_this_frame = 0;
 	area_light_count = 0;
 
 	r_directional_light_soft_shadows = false;
@@ -1169,14 +1256,33 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 			// shadow would be least visible.
 			rt_light.energy = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_ENERGY]);
 
-			// Fold Godot's 32-bit cull mask into the 8-bit acceleration structure
-			// instance mask. Conservative: an extra caster, never a missing one.
-			const uint32_t cull_mask = light->cull_mask;
-			uint32_t folded = (cull_mask & 0xFF) | ((cull_mask >> 8) & 0xFF) | ((cull_mask >> 16) & 0xFF) | ((cull_mask >> 24) & 0xFF);
+			// Which layers this light takes shadow casters from, which is a
+			// separate mask from the one deciding what it lights.
+			//
+			// The acceleration structure's instance mask is eight bits against
+			// Godot's thirty-two, so both sides are folded down by OR. That is
+			// exact for the first eight render layers and conservative beyond
+			// them: a caster on layer 9 also answers a light that only asked for
+			// layer 1. Being wrong that way costs an extra ray test rather than a
+			// missing shadow.
+			const uint32_t caster_mask = light->shadow_caster_mask;
+			uint32_t folded = (caster_mask & 0xFF) | ((caster_mask >> 8) & 0xFF) | ((caster_mask >> 16) & 0xFF) | ((caster_mask >> 24) & 0xFF);
 			rt_light.mask = folded == 0 ? 0xFF : folded;
 
-			light_data.rt_slot = float(rt_lights.size());
-			rt_lights.push_back(rt_light);
+			const uint32_t slot = _rt_slot_acquire(light_instance, rt_frame);
+			if (slot != RT_SLOT_UNASSIGNED) {
+				// Slots are held across frames, so this pass's buffer can be sparse:
+				// the gaps are zeroed, and the trace skips a light of zero radius.
+				if (slot >= rt_lights.size()) {
+					const uint32_t first_gap = rt_lights.size();
+					rt_lights.resize(slot + 1);
+					for (uint32_t gap = first_gap; gap <= slot; gap++) {
+						rt_lights[gap] = RTShadows::LightParams();
+					}
+				}
+				rt_lights[slot] = rt_light;
+				light_data.rt_slot = float(slot);
+			}
 		}
 
 		light_data.inv_spot_attenuation = 1.0f / light->param[RSE::LIGHT_PARAM_SPOT_ATTENUATION];

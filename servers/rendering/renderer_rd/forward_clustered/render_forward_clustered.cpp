@@ -1757,9 +1757,10 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 	// assignments) have just been filled.
 	if (RendererRD::RaytracingScene::debug_enabled()) {
 		static String last;
-		String cur = vformat("RT_DEBUG pre_opaque: rb=%d available=%d rt_lights=%d tlas=%d",
+		String cur = vformat("RT_DEBUG pre_opaque: rb=%d available=%d rt_lights=%d new_slots=%d tlas=%d",
 				int(rb_data.is_valid()), int(is_raytracing_scene_available()),
 				(int)light_storage->get_rt_lights().size(),
+				(int)light_storage->get_rt_slots_assigned(),
 				int(raytracing_scene != nullptr && raytracing_scene->get_tlas().is_valid()));
 		if (cur != last) {
 			last = cur;

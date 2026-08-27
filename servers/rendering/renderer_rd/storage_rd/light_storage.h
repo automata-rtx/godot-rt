@@ -121,6 +121,13 @@ private:
 		// from the raytraced mask, in which case no shadow map is rendered for it.
 		bool raytraced_shadow = false;
 
+		// Index into the raytraced shadow mask's light buffer, held for as long
+		// as the light keeps casting a raytraced shadow. The denoiser's history
+		// records which light each channel of the mask carried, so a light that
+		// changed index between frames would throw that history away.
+		uint32_t rt_slot = RT_SLOT_UNASSIGNED;
+		uint64_t rt_slot_frame = 0;
+
 		uint64_t shadow_pass = 0;
 		uint64_t last_scene_pass = 0;
 		uint64_t last_scene_shadow_pass = 0;
@@ -144,6 +151,8 @@ private:
 	// Sentinel stored in LightData::rt_slot for lights that are not raytraced.
 	// Must match RT_SLOT_NONE in light_data_inc.glsl.
 	static constexpr float RT_SLOT_NONE = 255.0f;
+	// A light instance that holds no slot in the raytraced light buffer.
+	static constexpr uint32_t RT_SLOT_UNASSIGNED = 0xffffffffu;
 
 	struct LightData {
 		float position[3];
@@ -178,9 +187,28 @@ private:
 		float projector_rect[4];
 	};
 
-	// Lights that were granted a channel in the raytraced shadow mask this frame,
-	// in mask-channel order. Filled by update_light_buffers().
+	// The raytraced light buffer for the pass being set up. Indexed by the
+	// light's slot, so it can hold gaps where a slot belongs to a light that is
+	// not in this pass; the trace skips a gap by its zero radius.
 	LocalVector<RTShadows::LightParams> rt_lights;
+
+	// Slot ownership. A slot is held by one light instance until that light
+	// stops taking a raytraced shadow, at which point the sweep below returns it
+	// to the free list for another light to take.
+	LocalVector<LightInstance *> rt_slot_owner;
+	LocalVector<uint32_t> rt_free_slots;
+	uint64_t rt_slot_sweep_frame = 0;
+	// Frames a slot is held after its light was last seen, so that a light that
+	// leaves the view for a moment comes back to the same channel.
+	static constexpr uint64_t RT_SLOT_GRACE_FRAMES = 4;
+
+	// Slots handed out during the pass being set up. Steady state is zero: a
+	// light that keeps its slot keeps the denoiser history that goes with it.
+	uint32_t rt_slots_assigned_this_frame = 0;
+
+	uint32_t _rt_slot_acquire(LightInstance *p_light_instance, uint64_t p_frame);
+	void _rt_slot_release(LightInstance *p_light_instance);
+	void _rt_slot_sweep(uint64_t p_frame);
 
 	struct LightInstanceDepthSort {
 		float depth;
@@ -488,9 +516,10 @@ private:
 	bool _light_uses_raytraced_shadows(const Light *p_light) const;
 
 public:
-	// Lights granted a channel in the raytraced shadow mask this frame, in
-	// mask-channel order. Filled by update_light_buffers().
+	// The raytraced light buffer for the pass that was last set up, indexed by
+	// light slot. Filled by update_light_buffers().
 	const LocalVector<RTShadows::LightParams> &get_rt_lights() const { return rt_lights; }
+	uint32_t get_rt_slots_assigned() const { return rt_slots_assigned_this_frame; }
 
 	static LightStorage *get_singleton();
 

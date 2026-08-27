@@ -193,6 +193,13 @@ void main() {
 		// distance test, a missing one costs a shadow.
 		for (uint i = thread; i < params.light_count; i += uint(TILE_THREADS)) {
 			RTLight light = rt_lights.data[i];
+			// A light keeps its index in this buffer for as long as it casts a
+			// raytraced shadow, so the buffer can hold gaps where an index belongs
+			// to a light that is not in this pass. A gap is zeroed, and a light of
+			// no radius lights nothing.
+			if (light.radius <= 0.0) {
+				continue;
+			}
 			vec3 closest = clamp(light.position, bounds_min, bounds_max);
 			vec3 offset = closest - light.position;
 			if (dot(offset, offset) <= light.radius * light.radius) {

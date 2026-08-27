@@ -3500,7 +3500,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		rt_light_bounds_scratch.clear();
 		rt_caster_pass_counter++;
 
-		uint32_t dbg_visited = 0, dbg_skinned = 0, dbg_multimesh = 0;
+		uint32_t dbg_visited = 0, dbg_skinned = 0, dbg_multimesh = 0, dbg_noncaster = 0;
 
 		for (uint32_t i = 0; i < (uint32_t)scene_cull_result.lights.size(); i++) {
 			Instance *light_instance = scene_cull_result.lights[i];
@@ -3514,6 +3514,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			LocalVector<Instance *> *result;
 			uint64_t pass;
 			uint32_t *visited;
+			uint32_t *rejected;
 
 			_FORCE_INLINE_ bool operator()(void *p_data) {
 				Instance *instance = (Instance *)p_data;
@@ -3532,6 +3533,15 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				if (instance->base_type != RSE::INSTANCE_MESH && instance->base_type != RSE::INSTANCE_MULTIMESH) {
 					return false;
 				}
+				// The same test the shadow map path makes, so that glass, a material
+				// whose shader discards its depth, and anything else Godot already
+				// considers a non caster does not start casting a solid shadow just
+				// because the light became raytraced.
+				const InstanceGeometryData *geom = static_cast<const InstanceGeometryData *>(instance->base_data);
+				if (geom == nullptr || !geom->can_cast_shadows) {
+					(*rejected)++;
+					return false;
+				}
 
 				result->push_back(instance);
 				return false;
@@ -3542,6 +3552,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		cull_casters.result = &rt_caster_scratch;
 		cull_casters.pass = rt_caster_pass_counter;
 		cull_casters.visited = &dbg_visited;
+		cull_casters.rejected = &dbg_noncaster;
 
 		for (const AABB &light_bounds : rt_light_bounds_scratch) {
 			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(light_bounds, cull_casters);
@@ -3553,12 +3564,15 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				break;
 			}
 
+			const InstanceGeometryData *caster_geom = static_cast<const InstanceGeometryData *>(instance->base_data);
+
 			if (instance->base_type == RSE::INSTANCE_MESH) {
 				RendererSceneRender::RaytracingInstance rt_instance;
 				rt_instance.mesh = instance->base;
 				rt_instance.mesh_instance = instance->mesh_instance;
 				rt_instance.transform = instance->transform;
 				rt_instance.layer_mask = instance->layer_mask;
+				rt_instance.surface_mask = caster_geom->shadow_caster_surface_mask;
 				rt_instance_scratch.push_back(rt_instance);
 
 				if (rt_instance.mesh_instance.is_valid()) {
@@ -3620,6 +3634,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				rt_instance.mesh = mesh;
 				rt_instance.transform = element_transform;
 				rt_instance.layer_mask = instance->layer_mask;
+				rt_instance.surface_mask = caster_geom->shadow_caster_surface_mask;
 				rt_instance_scratch.push_back(rt_instance);
 			}
 		}
@@ -3632,9 +3647,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 		if (scene_render->is_raytracing_debug_enabled()) {
 			static String last;
-			String cur = vformat("RT_DEBUG cull: scenario_instances=%d rt_lights=%d visited=%d casters=%d multimesh=%d -> tlas_entries=%d (skinned=%d)",
+			String cur = vformat("RT_DEBUG cull: scenario_instances=%d rt_lights=%d visited=%d non_casters=%d casters=%d multimesh=%d -> tlas_entries=%d (skinned=%d)",
 					(int)scenario->instance_data.size(), (int)rt_light_bounds_scratch.size(), (int)dbg_visited,
-					(int)rt_caster_scratch.size(), (int)dbg_multimesh,
+					(int)dbg_noncaster, (int)rt_caster_scratch.size(), (int)dbg_multimesh,
 					(int)rt_instance_scratch.size(), (int)dbg_skinned);
 			if (cur != last) {
 				last = cur;
@@ -4413,6 +4428,10 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 
 			bool can_cast_shadows = true;
 			bool is_animated = false;
+			// Surfaces that can write a shadow. Read only by the raytraced path,
+			// which decides once per surface as it builds the structure rather
+			// than per draw.
+			uint32_t caster_surface_mask = 0xFFFFFFFF;
 
 			p_instance->instance_uniforms.materials_start();
 
@@ -4423,6 +4442,10 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 			if (p_instance->material_override.is_valid()) {
 				if (!RSG::material_storage->material_casts_shadows(p_instance->material_override)) {
 					can_cast_shadows = false;
+				}
+				if (RSG::material_storage->material_shadow_casting_disabled(p_instance->material_override)) {
+					// An override replaces every surface, so it decides for all of them.
+					caster_surface_mask = 0;
 				}
 				is_animated = RSG::material_storage->material_is_animated(p_instance->material_override);
 				p_instance->instance_uniforms.materials_append(p_instance->material_override);
@@ -4441,6 +4464,10 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 							} else {
 								if (RSG::material_storage->material_casts_shadows(mat)) {
 									cast_shadows = true;
+								}
+
+								if (i < 32 && RSG::material_storage->material_shadow_casting_disabled(mat)) {
+									caster_surface_mask &= ~(uint32_t(1) << i);
 								}
 
 								if (RSG::material_storage->material_is_animated(mat)) {
@@ -4473,6 +4500,9 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 							} else {
 								if (RSG::material_storage->material_casts_shadows(mat)) {
 									cast_shadows = true;
+								}
+								if (i < 32 && RSG::material_storage->material_shadow_casting_disabled(mat)) {
+									caster_surface_mask &= ~(uint32_t(1) << i);
 								}
 								if (RSG::material_storage->material_is_animated(mat)) {
 									is_animated = true;
@@ -4545,6 +4575,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 				geom->can_cast_shadows = can_cast_shadows;
 			}
 
+			geom->shadow_caster_surface_mask = caster_surface_mask;
 			geom->material_is_animated = is_animated;
 
 			if (p_instance->instance_uniforms.materials_finish(p_instance->self)) {

@@ -624,6 +624,11 @@ public:
 		HashSet<Instance *> lights;
 		bool can_cast_shadows;
 		bool material_is_animated;
+		// One bit per mesh surface, set when that surface can write a shadow.
+		// Surfaces past the thirty-second are assumed to cast. Only the raytraced
+		// path reads this: the shadow map path makes the same decision per draw,
+		// where it has the material in hand anyway.
+		uint32_t shadow_caster_surface_mask = 0xFFFFFFFF;
 		uint32_t projector_count = 0;
 		uint32_t softshadow_count = 0;
 
