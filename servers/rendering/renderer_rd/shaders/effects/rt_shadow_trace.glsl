@@ -17,7 +17,14 @@ layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
 layout(set = 0, binding = 1) uniform sampler2D source_depth;
 
-layout(rgba8, set = 0, binding = 2) uniform restrict writeonly image2D dest_shadow_mask;
+// Per-light visibility in [0, 1], one channel per light.
+layout(rgba8, set = 0, binding = 2) uniform restrict writeonly image2D dest_visibility;
+
+// Mean distance to the occluders that were hit, normalized by the light's
+// range. The denoiser needs this to size its filter: penumbra width grows with
+// the distance between receiver and blocker, which is what makes a raytraced
+// shadow harden at contact.
+layout(rgba8, set = 0, binding = 3) uniform restrict writeonly image2D dest_hit_distance;
 
 struct RTLight {
 	vec3 position;
@@ -32,7 +39,7 @@ struct RTLight {
 	float pad;
 };
 
-layout(set = 0, binding = 3, std140) uniform RTLights {
+layout(set = 0, binding = 4, std140) uniform RTLights {
 	RTLight data[MAX_RT_LIGHTS];
 }
 rt_lights;
@@ -54,16 +61,21 @@ layout(push_constant, std430) uniform Params {
 }
 params;
 
-// Cheap hash used to decorrelate the sampling pattern per pixel and per frame.
-float quick_hash(vec2 pos, float seed) {
-	const vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
-	return fract(magic.z * fract(dot(vec3(pos, seed), magic)));
+// Interleaved gradient noise. Cheap, and its spatial distribution is far better
+// behaved than a plain hash, which matters because the spatial filter runs over
+// whatever pattern this leaves behind.
+float interleaved_gradient_noise(vec2 pos, uint frame) {
+	pos += float(frame) * 5.588238;
+	return fract(52.9829189 * fract(dot(pos, vec2(0.06711056, 0.00583715))));
 }
 
-// Uniformly distributed point on a disk, used to sample the light's area.
-vec2 sample_disk(float u1, float u2) {
-	float r = sqrt(u1);
-	float theta = u2 * 6.2831853;
+// Vogel disk. For a handful of samples this covers the emitter far more evenly
+// than independent random points, so the raw signal starts with much less
+// variance for the denoiser to remove.
+vec2 vogel_disk_sample(uint index, uint count, float phi) {
+	const float golden_angle = 2.39996323;
+	float r = sqrt((float(index) + 0.5) / float(count));
+	float theta = float(index) * golden_angle + phi;
 	return vec2(r * cos(theta), r * sin(theta));
 }
 
@@ -76,6 +88,13 @@ void build_basis(vec3 n, out vec3 t, out vec3 b) {
 	b = vec3(d, sign_n + n.y * n.y * a, -n.y);
 }
 
+vec3 reconstruct_world_position(ivec2 pos, float depth) {
+	vec2 uv = (vec2(pos) + 0.5) / vec2(params.screen_size);
+	vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
+	vec4 world = params.inv_view_projection * ndc;
+	return world.xyz / world.w;
+}
+
 void main() {
 	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
 	if (any(greaterThanEqual(pos, params.screen_size))) {
@@ -85,57 +104,45 @@ void main() {
 	// Fully lit by default, so any early out leaves the pixel unshadowed rather
 	// than black.
 	vec4 visibility = vec4(1.0);
+	vec4 hit_distance = vec4(0.0);
 
 	float depth = texelFetch(source_depth, pos, 0).r;
 
 	// Godot uses reverse-Z, so 0 is the far plane. Skip the sky entirely.
 	if (depth <= 0.0) {
-		imageStore(dest_shadow_mask, pos, visibility);
+		imageStore(dest_visibility, pos, visibility);
+		imageStore(dest_hit_distance, pos, hit_distance);
 		return;
 	}
 
-	vec2 uv = (vec2(pos) + 0.5) / vec2(params.screen_size);
-	vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
-	vec4 world = params.inv_view_projection * ndc;
-	vec3 world_position = world.xyz / world.w;
+	vec3 world_position = reconstruct_world_position(pos, depth);
 
-	// Reconstruct a geometric normal from neighboring depth taps. Derivatives
-	// are not available in a compute shader, and this avoids a dependency on the
-	// normal/roughness buffer, which Forward+ does not produce unless some other
-	// effect asks for it.
-	vec2 texel = 1.0 / vec2(params.screen_size);
+	// Geometric normal from neighboring depth taps. The normal buffer holds
+	// view space normals and converting them here would need the camera basis,
+	// which does not fit in the 128 byte push constant alongside the inverse
+	// view projection. The denoiser reads that buffer directly instead, where
+	// view space comparisons between neighbors need no conversion at all.
 	ivec2 max_pos = params.screen_size - ivec2(1);
-
-	float depth_x = texelFetch(source_depth, min(pos + ivec2(1, 0), max_pos), 0).r;
-	float depth_y = texelFetch(source_depth, min(pos + ivec2(0, 1), max_pos), 0).r;
-
-	vec4 ndc_x = vec4((uv + vec2(texel.x, 0.0)) * 2.0 - 1.0, depth_x, 1.0);
-	vec4 ndc_y = vec4((uv + vec2(0.0, texel.y)) * 2.0 - 1.0, depth_y, 1.0);
-	vec4 world_x = params.inv_view_projection * ndc_x;
-	vec4 world_y = params.inv_view_projection * ndc_y;
-
-	vec3 position_x = world_x.xyz / world_x.w;
-	vec3 position_y = world_y.xyz / world_y.w;
+	vec3 position_x = reconstruct_world_position(min(pos + ivec2(1, 0), max_pos), texelFetch(source_depth, min(pos + ivec2(1, 0), max_pos), 0).r);
+	vec3 position_y = reconstruct_world_position(min(pos + ivec2(0, 1), max_pos), texelFetch(source_depth, min(pos + ivec2(0, 1), max_pos), 0).r);
 
 	vec3 normal = cross(position_x - world_position, position_y - world_position);
 	float normal_length = length(normal);
 	if (normal_length < 1e-12) {
-		// Degenerate neighbourhood (a depth discontinuity); fall back to facing
-		// the camera so the pixel stays lit rather than producing garbage rays.
 		normal = normalize(params.camera_position - world_position);
 	} else {
 		normal /= normal_length;
 	}
-
-	// The winding of the cross product above depends on the handedness of the
-	// projection: with Vulkan's downward clip-space Y the two screen-space taps
-	// produce cross(+X_view, -Y_view), which points away from the camera. Rather
-	// than bake in a sign, force the normal to face the viewer, which is true of
-	// every visible surface. Getting this backwards fails the N.L test and pushes
-	// the ray origin below the surface, so every pixel comes back occluded.
+	// The winding depends on the handedness of the projection; force the normal
+	// to face the viewer, which holds for every visible surface.
 	if (dot(normal, params.camera_position - world_position) < 0.0) {
 		normal = -normal;
 	}
+
+	// One rotation per pixel, advanced every frame. The temporal filter then
+	// integrates a different set of emitter samples each frame rather than
+	// re-averaging the same ones.
+	float phi = interleaved_gradient_noise(vec2(pos), params.frame_index) * 6.2831853;
 
 	uint light_count = min(params.light_count, uint(MAX_RT_LIGHTS));
 
@@ -171,9 +178,8 @@ void main() {
 			ray_length = min(ray_length, params.max_ray_distance);
 		}
 
-		// Offset along the geometric normal to avoid self-intersection. Scaled by
-		// distance so that faraway surfaces, where the reconstructed position is
-		// least precise, get a proportionally larger offset.
+		// Offset along the normal to avoid self-intersection, scaled by distance
+		// because the reconstructed position is least precise far away.
 		float offset_scale = params.normal_bias * (1.0 + distance_to_light * 0.01);
 		vec3 origin = world_position + normal * offset_scale;
 
@@ -181,21 +187,15 @@ void main() {
 		vec3 bitangent;
 		build_basis(light_dir, tangent, bitangent);
 
-		uint sample_count = max(params.sample_count, 1u);
+		uint sample_count = light.size > 0.0 ? max(params.sample_count, 1u) : 1u;
 		float occluded = 0.0;
+		float blocker_distance_sum = 0.0;
 
 		for (uint s = 0u; s < sample_count; s++) {
 			vec3 direction = light_dir;
 
 			if (light.size > 0.0) {
-				// Cone sample across the light's emitter disk. The penumbra widens
-				// with distance from the blocker because the cone does, which is
-				// what produces contact hardening.
-				float seed = float(params.frame_index * sample_count + s);
-				float u1 = quick_hash(vec2(pos), seed);
-				float u2 = quick_hash(vec2(pos) + vec2(17.0, 31.0), seed);
-
-				vec2 disk = sample_disk(u1, u2) * light.size;
+				vec2 disk = vogel_disk_sample(s, sample_count, phi) * light.size;
 				vec3 target = light.position + tangent * disk.x + bitangent * disk.y;
 				direction = normalize(target - origin);
 			}
@@ -209,11 +209,19 @@ void main() {
 
 			if (rayQueryGetIntersectionTypeEXT(ray_query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
 				occluded += 1.0;
+				blocker_distance_sum += rayQueryGetIntersectionTEXT(ray_query, true);
 			}
 		}
 
 		visibility[i] = 1.0 - (occluded / float(sample_count));
+
+		if (occluded > 0.0) {
+			// Mean blocker distance, normalized so it survives an 8 bit channel.
+			float mean_blocker = blocker_distance_sum / occluded;
+			hit_distance[i] = clamp(mean_blocker / max(light.radius, 0.0001), 0.0, 1.0);
+		}
 	}
 
-	imageStore(dest_shadow_mask, pos, visibility);
+	imageStore(dest_visibility, pos, visibility);
+	imageStore(dest_hit_distance, pos, hit_distance);
 }

@@ -1526,21 +1526,42 @@ void RenderForwardClustered::_copy_framebuffer_to_ss_effects(Ref<RenderSceneBuff
 	ss_effects->copy_internal_texture_to_last_frame(p_render_buffers, *copy_effects);
 }
 
-RID RenderForwardClustered::_ensure_rt_shadow_mask(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size) {
+bool RenderForwardClustered::_ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_denoise, RendererRD::RTShadows::Buffers &r_buffers) {
 	if (p_render_buffers.is_null()) {
-		return RID();
+		return false;
 	}
 
-	if (!p_render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_RT_SHADOW_MASK)) {
-		// One channel per raytraced light. Recreated automatically by the render
-		// buffers when the internal size changes.
-		p_render_buffers->create_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_RT_SHADOW_MASK,
-				RD::DATA_FORMAT_R8G8B8A8_UNORM,
-				RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT,
-				RD::TEXTURE_SAMPLES_1, p_size);
+	const uint32_t sampled_storage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT |
+			RD::TEXTURE_USAGE_CAN_COPY_TO_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+
+	auto ensure = [&](const StringName &p_name, RD::DataFormat p_format) -> RID {
+		if (!p_render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, p_name)) {
+			// Recreated automatically by the render buffers when the size changes.
+			p_render_buffers->create_texture(RB_SCOPE_FORWARD_CLUSTERED, p_name, p_format,
+					sampled_storage, RD::TEXTURE_SAMPLES_1, p_size);
+		}
+		return p_render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, p_name);
+	};
+
+	// One channel per raytraced light.
+	r_buffers.output_mask = ensure(RB_TEX_RT_SHADOW_MASK, RD::DATA_FORMAT_R8G8B8A8_UNORM);
+	// Always its own target: the trace writes visibility and hit distance in the
+	// same dispatch, so aliasing them onto one texture makes the second write
+	// clobber the first.
+	r_buffers.raw_hit_distance = ensure(RB_TEX_RT_RAW_HIT_DISTANCE, RD::DATA_FORMAT_R8G8B8A8_UNORM);
+
+	if (p_denoise) {
+		r_buffers.raw_visibility = ensure(RB_TEX_RT_RAW_VISIBILITY, RD::DATA_FORMAT_R8G8B8A8_UNORM);
+		r_buffers.denoise_a = ensure(RB_TEX_RT_DENOISE_A, RD::DATA_FORMAT_R8G8B8A8_UNORM);
+		r_buffers.denoise_b = ensure(RB_TEX_RT_DENOISE_B, RD::DATA_FORMAT_R8G8B8A8_UNORM);
+		r_buffers.history_visibility = ensure(RB_TEX_RT_HISTORY_VISIBILITY, RD::DATA_FORMAT_R8G8B8A8_UNORM);
+		// Normalized view distance and history length. Half float is enough for a
+		// relative surface comparison and halves the cost of a full float target.
+		r_buffers.history_meta = ensure(RB_TEX_RT_HISTORY_META, RD::DATA_FORMAT_R16G16_SFLOAT);
+		r_buffers.history_length = ensure(RB_TEX_RT_HISTORY_LENGTH, RD::DATA_FORMAT_R8_UNORM);
 	}
 
-	return p_render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_RT_SHADOW_MASK);
+	return r_buffers.output_mask.is_valid();
 }
 
 void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
@@ -1725,19 +1746,39 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			RD::get_singleton()->draw_command_begin_label("Raytraced Shadows");
 
 			Size2i internal_size = rb->get_internal_size();
-			RID mask = _ensure_rt_shadow_mask(rb, internal_size);
 			RID tlas = raytracing_scene->get_tlas();
 
-			if (mask.is_valid()) {
+			RendererRD::RTShadows::Settings settings;
+			settings.sample_count = RendererRD::RaytracingScene::get_sample_count();
+			settings.max_ray_distance = RendererRD::RaytracingScene::get_max_distance();
+			settings.denoise = RendererRD::RaytracingScene::is_denoiser_enabled();
+			settings.atrous_iterations = RendererRD::RaytracingScene::get_denoiser_iterations();
+			settings.max_history = RendererRD::RaytracingScene::get_denoiser_max_history();
+
+			// The denoiser writes and samples plain 2D images, so a stereo pair
+			// would need a per-view trace. Fall back to the raw signal there
+			// rather than filtering one eye with the other's history.
+			if (rb->get_view_count() > 1) {
+				WARN_PRINT_ONCE("Raytraced shadow denoising is not supported for multiview rendering yet; shadows will be noisy.");
+				settings.denoise = false;
+			}
+
+			RendererRD::RTShadows::Buffers rt_buffers;
+			bool have_buffers = _ensure_rt_shadow_buffers(rb, internal_size, settings.denoise, rt_buffers);
+
+			if (have_buffers) {
 				if (tlas.is_valid()) {
-					rt_shadows->render(tlas, rb->get_depth_texture(), mask, internal_size,
+					RID normal_roughness = rb_data->has_normal_roughness() ? rb_data->get_normal_roughness() : RID();
+					RID velocity = rb->has_velocity_buffer(false) ? rb->get_velocity_buffer(false) : RID();
+
+					rt_shadows->render(tlas, rb->get_depth_texture(), normal_roughness, velocity,
+							rt_buffers, internal_size,
 							p_render_data->scene_data->get_cam_projection(), p_render_data->scene_data->get_cam_transform(),
-							rt_lights, RendererRD::RaytracingScene::get_sample_count(),
-							RendererRD::RaytracingScene::get_max_distance());
+							p_render_data->scene_data->z_far, rt_lights, settings);
 				} else {
 					// Nothing to trace against (an empty scene, or every mesh was
 					// ineligible). Fully lit is the correct answer.
-					RD::get_singleton()->texture_clear(mask, Color(1, 1, 1, 1), 0, 1, 0, 1);
+					RD::get_singleton()->texture_clear(rt_buffers.output_mask, Color(1, 1, 1, 1), 0, 1, 0, 1);
 				}
 			}
 
@@ -1889,6 +1930,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		motion_vectors_required = true;
 	} else if (!is_reflection_probe && using_upscaling) {
 		motion_vectors_required = true;
+	} else if (!is_reflection_probe && is_raytracing_scene_available()) {
+		// The shadow denoiser reprojects its own history and cannot rely on
+		// temporal antialiasing being on to have produced motion vectors.
+		motion_vectors_required = true;
 	} else {
 		motion_vectors_required = false;
 	}
@@ -2001,6 +2046,12 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	if (!is_reflection_probe) {
 		if (using_voxelgi) {
 			depth_pass_mode = PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI;
+		} else if (is_raytracing_scene_available()) {
+			// Raytraced shadows want real normals rather than ones reconstructed
+			// from depth, both to offset ray origins and to stop the denoiser's
+			// filter at geometric edges. Checked before the environment branch
+			// because a scene without an environment still needs them.
+			depth_pass_mode = PASS_MODE_DEPTH_NORMAL_ROUGHNESS;
 		} else if (p_render_data->environment.is_valid()) {
 			if (using_ssr ||
 					using_sdfgi ||

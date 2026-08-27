@@ -3196,6 +3196,16 @@
 		<member name="rendering/lights_and_shadows/positional_shadow/soft_shadow_filter_quality.mobile" type="int" setter="" getter="" default="0">
 			Lower-end override for [member rendering/lights_and_shadows/positional_shadow/soft_shadow_filter_quality] on mobile devices, due to performance concerns or driver support.
 		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], raytraced shadows are denoised before being applied. The denoiser keeps its own temporal history and does not depend on temporal antialiasing, so the result is usable with SMAA, FXAA or no antialiasing at all.
+			Disabling this shows the raw traced result, which is only usable at a high [member rendering/lights_and_shadows/raytraced_shadows/samples_per_light].
+		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes" type="int" setter="" getter="" default="3">
+			Number of edge-stopping wavelet passes run over the shadow mask. Each pass doubles its reach, so every additional pass widens the filter considerably at a roughly constant cost. Higher values suppress more noise but can soften wide penumbrae.
+		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames" type="int" setter="" getter="" default="32">
+			Number of frames the denoiser blends shadows over. Higher values are smoother and more stable but take longer to react when a light or the camera moves; the history is discarded outright when a surface is disoccluded, so this does not cause shadows to trail behind geometry.
+		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/enabled" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], [OmniLight3D] and [SpotLight3D] nodes cast hardware-raytraced shadows instead of using the shadow atlas. Requires the Forward+ renderer, the Vulkan rendering driver, and a GPU that supports hardware ray queries; the setting has no effect otherwise.
 			[b]Note:[/b] This is an experimental feature. [DirectionalLight3D] and [AreaLight3D] nodes continue to use shadow maps, and geometry that cannot be raytraced (alpha-scissor materials, particles and non-triangle meshes) does not cast raytraced shadows.

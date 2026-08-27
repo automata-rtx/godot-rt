@@ -52,6 +52,9 @@ bool RaytracingScene::settings_registered = false;
 bool RaytracingScene::setting_enabled = false;
 int RaytracingScene::setting_samples = 4;
 float RaytracingScene::setting_max_distance = 0.0f;
+bool RaytracingScene::setting_denoise = true;
+int RaytracingScene::setting_denoise_passes = 3;
+int RaytracingScene::setting_denoise_frames = 32;
 
 void RaytracingScene::register_settings() {
 	if (settings_registered) {
@@ -64,6 +67,9 @@ void RaytracingScene::register_settings() {
 	setting_enabled = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/enabled");
 	setting_samples = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/samples_per_light");
 	setting_max_distance = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/max_ray_distance");
+	setting_denoise = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled");
+	setting_denoise_passes = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes");
+	setting_denoise_frames = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames");
 }
 
 bool RaytracingScene::is_enabled() {
@@ -79,6 +85,21 @@ int RaytracingScene::get_sample_count() {
 float RaytracingScene::get_max_distance() {
 	register_settings();
 	return setting_max_distance;
+}
+
+bool RaytracingScene::is_denoiser_enabled() {
+	register_settings();
+	return setting_denoise;
+}
+
+int RaytracingScene::get_denoiser_iterations() {
+	register_settings();
+	return CLAMP(setting_denoise_passes, 1, 5);
+}
+
+float RaytracingScene::get_denoiser_max_history() {
+	register_settings();
+	return float(CLAMP(setting_denoise_frames, 1, 64));
 }
 
 RaytracingScene::RaytracingScene() {

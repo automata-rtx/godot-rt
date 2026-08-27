@@ -59,6 +59,9 @@ private:
 	static bool setting_enabled;
 	static int setting_samples;
 	static float setting_max_distance;
+	static bool setting_denoise;
+	static int setting_denoise_passes;
+	static int setting_denoise_frames;
 
 	enum BlasState {
 		BLAS_UNBUILT,
@@ -138,6 +141,9 @@ public:
 	static bool is_enabled();
 	static int get_sample_count();
 	static float get_max_distance();
+	static bool is_denoiser_enabled();
+	static int get_denoiser_iterations();
+	static float get_denoiser_max_history();
 
 	// True when the setting is on AND the device can actually trace rays.
 	bool is_available() const { return supported && is_enabled(); }

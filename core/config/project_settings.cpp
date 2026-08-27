@@ -1840,6 +1840,9 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF_RST_BASIC("rendering/lights_and_shadows/raytraced_shadows/enabled", false);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/samples_per_light", PROPERTY_HINT_RANGE, "1,16,1"), 4);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/max_ray_distance", PROPERTY_HINT_RANGE, "0,4096,0.1,or_greater"), 0.0);
+	GLOBAL_DEF("rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes", PROPERTY_HINT_RANGE, "1,5,1"), 3);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames", PROPERTY_HINT_RANGE, "1,64,1"), 32);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/block_size_kb", PROPERTY_HINT_RANGE, "4,2048,1,or_greater"), 256);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/max_size_mb", PROPERTY_HINT_RANGE, "1,1024,1,or_greater"), 128);
