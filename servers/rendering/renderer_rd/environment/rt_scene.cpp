@@ -31,6 +31,8 @@
 #include "rt_scene.h"
 
 #include "core/config/project_settings.h"
+#include "core/os/os.h"
+#include "core/string/print_string.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/rendering_server_globals.h"
@@ -38,6 +40,13 @@
 using namespace RendererRD;
 
 RaytracingScene *RaytracingScene::singleton = nullptr;
+
+// Opt-in tracing for diagnosing why raytraced shadows are not appearing.
+// Cached so the hot path does not query the environment every frame.
+bool RaytracingScene::debug_enabled() {
+	static const bool enabled = !OS::get_singleton()->get_environment("GODOT_RT_DEBUG").is_empty();
+	return enabled;
+}
 
 bool RaytracingScene::settings_registered = false;
 bool RaytracingScene::setting_enabled = false;
@@ -78,6 +87,14 @@ RaytracingScene::RaytracingScene() {
 	register_settings();
 
 	supported = RD::get_singleton()->has_feature(RD::SUPPORTS_RAY_QUERY);
+
+	if (setting_enabled) {
+		if (supported) {
+			print_line("Raytraced shadows: enabled (device supports ray queries).");
+		} else {
+			WARN_PRINT("Raytraced shadows are enabled in the project settings, but this rendering device does not support ray queries. Local lights will fall back to shadow maps.");
+		}
+	}
 
 	if (!setting_enabled) {
 		// Nothing else is needed; the feature is off for this project.
@@ -197,6 +214,7 @@ bool RaytracingScene::_build_blas_geometry(RID p_mesh, uint32_t p_surface, BlasE
 
 	RID vertex_buffer = mesh_storage->mesh_surface_get_vertex_buffer(surface);
 	if (vertex_buffer.is_null()) {
+		ERR_PRINT_ONCE("Raytraced shadows: mesh surface has no vertex buffer; it cannot cast shadows.");
 		return false;
 	}
 
@@ -245,10 +263,15 @@ bool RaytracingScene::_build_blas_geometry(RID p_mesh, uint32_t p_surface, BlasE
 	RD::AccelerationStructureGeometry geometries[1] = { geometry };
 	r_entry.blas = RD::get_singleton()->blas_create(geometries, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
 	if (r_entry.blas.is_null()) {
+		// Most often this means the source buffers were created without the
+		// acceleration structure usage bits, which are only applied when the
+		// project setting is already on at the time the mesh is uploaded.
+		ERR_PRINT_ONCE("Raytraced shadows: blas_create() failed. The mesh buffers were probably created without the acceleration structure usage flags; the setting is restart-required for this reason.");
 		return false;
 	}
 
 	if (RD::get_singleton()->blas_build(r_entry.blas) != OK) {
+		ERR_PRINT_ONCE("Raytraced shadows: blas_build() failed; this geometry will not cast shadows.");
 		RD::get_singleton()->free_rid(r_entry.blas);
 		r_entry.blas = RID();
 		return false;
@@ -275,6 +298,7 @@ RaytracingScene::BlasEntry *RaytracingScene::_get_or_create_blas(RID p_mesh, uin
 
 	if (_build_blas_geometry(p_mesh, p_surface, entry)) {
 		entry.state = BLAS_READY;
+		built_surface_count++;
 	} else {
 		entry.state = BLAS_INELIGIBLE;
 		skipped_surface_count++;
@@ -304,14 +328,21 @@ void RaytracingScene::_ensure_tlas(uint32_t p_instance_count) {
 	}
 
 	tlas = RD::get_singleton()->tlas_create(new_capacity, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
+	if (tlas.is_null()) {
+		ERR_PRINT_ONCE(vformat("Raytraced shadows: tlas_create() failed for %d instances; no raytraced shadows will be cast.", new_capacity));
+	}
 	tlas_capacity = tlas.is_valid() ? new_capacity : 0;
 }
 
 void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
+	const bool rtdbg = debug_enabled();
 	frame++;
 	tlas_valid = false;
 
 	if (!is_available()) {
+		if (rtdbg) {
+			print_line(vformat("RT_DEBUG update: NOT AVAILABLE (supported=%d enabled=%d)", int(supported), int(is_enabled())));
+		}
 		return;
 	}
 
@@ -361,7 +392,17 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 
 	if (skipped_surface_count > 0 && !warned_about_skipped) {
 		warned_about_skipped = true;
-		WARN_PRINT(vformat("Raytraced shadows: %d mesh surface(s) cannot be raytraced and will not cast shadows (non-triangle geometry, 2D vertices, or empty vertex arrays).", skipped_surface_count));
+		WARN_PRINT(vformat("Raytraced shadows: %d mesh surface(s) cannot be raytraced and will not cast shadows (non-triangle geometry, 2D vertices, or empty vertex arrays). %d surface(s) built successfully.", skipped_surface_count, built_surface_count));
+	}
+
+	if (rtdbg) {
+		static String last;
+		String cur = vformat("RT_DEBUG update: in_instances=%d tlas_instances=%d blas_cache=%d skipped_surfaces=%d",
+				(int)p_instances.size(), (int)instance_scratch.size(), (int)blas_cache.size(), (int)skipped_surface_count);
+		if (cur != last) {
+			last = cur;
+			print_line(cur);
+		}
 	}
 
 	if (instance_scratch.is_empty()) {
@@ -374,5 +415,8 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 	}
 
 	Error err = RD::get_singleton()->tlas_build(tlas, instance_scratch);
+	if (err != OK) {
+		ERR_PRINT_ONCE(vformat("Raytraced shadows: tlas_build() failed with error %d; no raytraced shadows will be cast.", (int)err));
+	}
 	tlas_valid = (err == OK);
 }

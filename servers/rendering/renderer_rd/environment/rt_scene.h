@@ -114,6 +114,7 @@ private:
 
 	bool supported = false;
 	uint32_t skipped_surface_count = 0;
+	uint32_t built_surface_count = 0;
 	bool warned_about_skipped = false;
 
 	uint64_t frame = 0;
@@ -131,6 +132,8 @@ public:
 
 	// Registers the project settings. Safe to call more than once.
 	static void register_settings();
+	// True when GODOT_RT_DEBUG is set in the environment. Cached on first use.
+	static bool debug_enabled();
 	// True when the project setting is on. Does not imply hardware support.
 	static bool is_enabled();
 	static int get_sample_count();
@@ -144,6 +147,12 @@ public:
 	void update(const LocalVector<InstanceData> &p_instances);
 
 	RID get_tlas() const { return tlas_valid ? tlas : RID(); }
+
+	// True only when there is a built acceleration structure to trace against
+	// this frame. Lights must not claim a mask slot otherwise: the forward
+	// shader skips the shadow atlas for any light that holds one, so a slot
+	// without a structure behind it means the light casts no shadow at all.
+	bool has_traceable_scene() const { return supported && tlas_valid; }
 
 	uint32_t get_blas_count() const { return blas_cache.size(); }
 

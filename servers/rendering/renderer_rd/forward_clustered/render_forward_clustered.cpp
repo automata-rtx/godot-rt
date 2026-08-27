@@ -1702,6 +1702,17 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 	// Raytraced shadows. Runs here because the depth pre-pass has completed and
 	// been resolved, and because the light buffers (and therefore the mask slot
 	// assignments) have just been filled.
+	if (RendererRD::RaytracingScene::debug_enabled()) {
+		static String last;
+		String cur = vformat("RT_DEBUG pre_opaque: rb=%d available=%d rt_lights=%d tlas=%d",
+				int(rb_data.is_valid()), int(is_raytracing_scene_available()),
+				(int)light_storage->get_rt_lights().size(),
+				int(raytracing_scene != nullptr && raytracing_scene->get_tlas().is_valid()));
+		if (cur != last) {
+			last = cur;
+			print_line(cur);
+		}
+	}
 	if (rb_data.is_valid() && is_raytracing_scene_available()) {
 		const LocalVector<RendererRD::RTShadows::LightParams> &rt_lights = light_storage->get_rt_lights();
 

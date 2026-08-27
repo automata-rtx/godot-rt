@@ -1789,6 +1789,10 @@ RendererSceneRenderRD::RendererSceneRenderRD() {
 	singleton = this;
 }
 
+bool RendererSceneRenderRD::is_raytracing_debug_enabled() const {
+	return RendererRD::RaytracingScene::debug_enabled();
+}
+
 bool RendererSceneRenderRD::is_raytracing_scene_available() const {
 	return raytracing_scene != nullptr && raytracing_scene->is_available() && rt_shadows != nullptr && rt_shadows->is_valid();
 }

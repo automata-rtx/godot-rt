@@ -3719,17 +3719,23 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 		rt_instance_scratch.clear();
 
+		uint32_t dbg_total = 0, dbg_not_mesh = 0, dbg_no_shadow = 0, dbg_bad = 0;
+
 		const uint32_t instance_data_count = scenario->instance_data.size();
 		for (uint32_t i = 0; i < instance_data_count; i++) {
 			const InstanceData &idata = scenario->instance_data[i];
+			dbg_total++;
 
 			if ((idata.flags & InstanceData::FLAG_BASE_TYPE_MASK) != RSE::INSTANCE_MESH) {
+				dbg_not_mesh++;
 				continue;
 			}
 			if (!(idata.flags & InstanceData::FLAG_CAST_SHADOWS)) {
+				dbg_no_shadow++;
 				continue;
 			}
 			if (idata.base_rid.is_null() || idata.instance == nullptr || !idata.instance->visible) {
+				dbg_bad++;
 				continue;
 			}
 
@@ -3740,6 +3746,15 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			rt_instance_scratch.push_back(rt_instance);
 		}
 
+		if (scene_render->is_raytracing_debug_enabled()) {
+			static String last;
+			String cur = vformat("RT_DEBUG cull: scenario_instances=%d not_mesh=%d no_shadow_flag=%d bad=%d -> kept=%d",
+					(int)dbg_total, (int)dbg_not_mesh, (int)dbg_no_shadow, (int)dbg_bad, (int)rt_instance_scratch.size());
+			if (cur != last) {
+				last = cur;
+				print_line(cur);
+			}
+		}
 		scene_render->update_raytracing_scene(rt_instance_scratch);
 	}
 

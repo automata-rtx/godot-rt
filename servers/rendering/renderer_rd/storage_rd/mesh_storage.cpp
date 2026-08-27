@@ -384,7 +384,12 @@ void MeshStorage::mesh_add_surface(RID p_mesh, const RenderingServerTypes::Surfa
 	// The compressed-position path also reads the vertex buffer as a storage
 	// buffer in order to expand it, so storage access is requested as well.
 	BitField<RD::BufferCreationBits> raytracing_flags = 0;
-	if (RendererRD::RaytracingScene::is_enabled() && RD::get_singleton()->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS)) {
+	// Ray query support is required as well as the setting: only the Vulkan
+	// driver reports SUPPORTS_RAY_QUERY, and there is no reason to give every
+	// mesh buffer acceleration structure usage on a device that cannot trace.
+	if (RendererRD::RaytracingScene::is_enabled() &&
+			RD::get_singleton()->has_feature(RD::SUPPORTS_RAY_QUERY) &&
+			RD::get_singleton()->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS)) {
 		raytracing_flags = RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT | RD::BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT | RD::BUFFER_CREATION_AS_STORAGE_BIT;
 	}
 

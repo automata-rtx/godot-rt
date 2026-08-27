@@ -725,7 +725,13 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 	spot_light_count = 0;
 
 	rt_lights.clear();
-	const bool rt_shadows_available = RaytracingScene::get_singleton() && RaytracingScene::get_singleton()->is_available();
+	// Requires a built acceleration structure, not just an enabled setting: a
+	// light holding a mask slot skips the shadow atlas entirely, so granting
+	// one when there is nothing to trace against would leave it unshadowed
+	// rather than falling back to a shadow map.
+	const bool rt_shadows_available = RaytracingScene::get_singleton() &&
+			RaytracingScene::get_singleton()->is_available() &&
+			RaytracingScene::get_singleton()->has_traceable_scene();
 	area_light_count = 0;
 
 	r_directional_light_soft_shadows = false;
