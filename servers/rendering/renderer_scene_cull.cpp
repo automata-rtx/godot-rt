@@ -3479,49 +3479,78 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	/* RAYTRACED SHADOWS: BUILD ACCELERATION STRUCTURES */
 
 	// The acceleration structure is deliberately NOT built from the culled render
-	// list: geometry behind the camera still has to cast shadows. Instead every
-	// mesh registered in the scenario is considered.
+	// list: geometry behind the camera still has to cast shadows.
+	//
+	// It does not need the whole scenario either. A shadow ray runs from a lit
+	// surface to a light, and both ends of it are inside that light's range, so
+	// anything the ray can hit is inside that range too. Gathering by querying
+	// the geometry index with each candidate light's bounds is therefore exact,
+	// not an approximation, and it is what keeps a large level's cost tied to
+	// what its lights actually reach rather than to how big the level is.
 	if (scene_render->is_raytracing_scene_available() && !p_reflection_probe.is_valid()) {
 		RENDER_TIMESTAMP("Update RT Acceleration Structures");
 
 		rt_instance_scratch.clear();
+		rt_caster_pass_counter++;
 
-		uint32_t dbg_total = 0, dbg_not_mesh = 0, dbg_no_shadow = 0, dbg_bad = 0, dbg_skinned = 0;
+		uint32_t dbg_lights = 0, dbg_visited = 0, dbg_skinned = 0;
 
-		const uint32_t instance_data_count = scenario->instance_data.size();
-		for (uint32_t i = 0; i < instance_data_count; i++) {
-			const InstanceData &idata = scenario->instance_data[i];
-			dbg_total++;
+		struct CullRTCasters {
+			LocalVector<RendererSceneRender::RaytracingInstance> *result;
+			uint64_t pass;
+			uint32_t *visited;
+			uint32_t *skinned;
 
-			if ((idata.flags & InstanceData::FLAG_BASE_TYPE_MASK) != RSE::INSTANCE_MESH) {
-				dbg_not_mesh++;
+			_FORCE_INLINE_ bool operator()(void *p_data) {
+				Instance *instance = (Instance *)p_data;
+				(*visited)++;
+
+				// Queried once per light, and lights overlap.
+				if (instance->rt_caster_pass == pass) {
+					return false;
+				}
+				instance->rt_caster_pass = pass;
+
+				if (instance->base_type != RSE::INSTANCE_MESH || !instance->visible ||
+						instance->base.is_null() ||
+						instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_OFF) {
+					return false;
+				}
+
+				RendererSceneRender::RaytracingInstance rt_instance;
+				rt_instance.mesh = instance->base;
+				rt_instance.mesh_instance = instance->mesh_instance;
+				rt_instance.transform = instance->transform;
+				rt_instance.layer_mask = instance->layer_mask;
+				result->push_back(rt_instance);
+
+				if (rt_instance.mesh_instance.is_valid()) {
+					// The skeleton pass only runs for instances that survived frustum
+					// culling, so a character behind the camera would otherwise be
+					// frozen at whatever pose it held when it was last on screen, and
+					// cast that stale shadow. Casters are deliberately not frustum
+					// culled here, so each one is marked for skinning explicitly.
+					RSG::mesh_storage->mesh_instance_check_for_update(rt_instance.mesh_instance);
+					(*skinned)++;
+				}
+				return false;
+			}
+		};
+
+		CullRTCasters cull_casters;
+		cull_casters.result = &rt_instance_scratch;
+		cull_casters.pass = rt_caster_pass_counter;
+		cull_casters.visited = &dbg_visited;
+		cull_casters.skinned = &dbg_skinned;
+
+		for (uint32_t i = 0; i < (uint32_t)scene_cull_result.lights.size(); i++) {
+			Instance *light_instance = scene_cull_result.lights[i];
+			InstanceLightData *light = static_cast<InstanceLightData *>(light_instance->base_data);
+			if (!RSG::light_storage->light_instance_is_raytraced_shadow_candidate(light->instance)) {
 				continue;
 			}
-			if (!(idata.flags & InstanceData::FLAG_CAST_SHADOWS)) {
-				dbg_no_shadow++;
-				continue;
-			}
-			if (idata.base_rid.is_null() || idata.instance == nullptr || !idata.instance->visible) {
-				dbg_bad++;
-				continue;
-			}
-
-			RendererSceneRender::RaytracingInstance rt_instance;
-			rt_instance.mesh = idata.base_rid;
-			rt_instance.mesh_instance = idata.instance->mesh_instance;
-			rt_instance.transform = idata.instance->transform;
-			rt_instance.layer_mask = idata.layer_mask;
-			rt_instance_scratch.push_back(rt_instance);
-
-			if (rt_instance.mesh_instance.is_valid()) {
-				// The skeleton pass only runs for instances that survived frustum
-				// culling, so a character behind the camera would otherwise be
-				// frozen at whatever pose it held when it was last on screen, and
-				// cast that stale shadow. Casters are deliberately not frustum
-				// culled here, so each one is marked for skinning explicitly.
-				RSG::mesh_storage->mesh_instance_check_for_update(rt_instance.mesh_instance);
-				dbg_skinned++;
-			}
+			dbg_lights++;
+			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(light_instance->transformed_aabb, cull_casters);
 		}
 
 		if (dbg_skinned > 0) {
@@ -3532,8 +3561,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 		if (scene_render->is_raytracing_debug_enabled()) {
 			static String last;
-			String cur = vformat("RT_DEBUG cull: scenario_instances=%d not_mesh=%d no_shadow_flag=%d bad=%d -> kept=%d (skinned=%d)",
-					(int)dbg_total, (int)dbg_not_mesh, (int)dbg_no_shadow, (int)dbg_bad, (int)rt_instance_scratch.size(), (int)dbg_skinned);
+			String cur = vformat("RT_DEBUG cull: scenario_instances=%d rt_lights=%d visited=%d -> kept=%d (skinned=%d)",
+					(int)scenario->instance_data.size(), (int)dbg_lights, (int)dbg_visited,
+					(int)rt_instance_scratch.size(), (int)dbg_skinned);
 			if (cur != last) {
 				last = cur;
 				print_line(cur);

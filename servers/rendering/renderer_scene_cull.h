@@ -479,6 +479,10 @@ public:
 
 		uint64_t last_frame_pass;
 
+		// Marks that this instance was already gathered as a raytraced shadow
+		// caster this frame; the gather queries once per light and lights overlap.
+		uint64_t rt_caster_pass = 0;
+
 		uint64_t version; // changes to this, and changes to base increase version
 
 		InstanceBaseData *base_data = nullptr;
@@ -1005,6 +1009,7 @@ public:
 	// Non-frustum-culled mesh list handed to the raytracing acceleration structure
 	// builder. Kept as a member so it is not reallocated every frame.
 	LocalVector<RendererSceneRender::RaytracingInstance> rt_instance_scratch;
+	uint64_t rt_caster_pass_counter = 0;
 
 	RendererSceneRender::RenderShadowData render_shadow_data[MAX_UPDATE_SHADOWS];
 	uint32_t max_shadows_used = 0;

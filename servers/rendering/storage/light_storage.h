@@ -111,6 +111,14 @@ public:
 	}
 	virtual bool light_instance_is_shadow_visible_at_position(RID p_light, const Vector3 &p_position) const = 0;
 
+	// Whether this light is the kind that takes a raytraced shadow at all, judged
+	// from the light alone. Deliberately says nothing about whether there is
+	// anything to trace against, because the geometry to trace against is chosen
+	// from these lights' ranges before any of it has been built.
+	virtual bool light_instance_is_raytraced_shadow_candidate(RID p_light_instance) const {
+		return false;
+	}
+
 	// Whether this light could take its shadow from the raytraced mask instead of
 	// from the shadow atlas. Renderers without raytraced shadows never say yes.
 	virtual bool light_instance_can_use_raytraced_shadows(RID p_light_instance) const {

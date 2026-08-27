@@ -712,12 +712,16 @@ void LightStorage::set_max_lights(const uint32_t p_max_lights) {
 	directional_light_buffer = RD::get_singleton()->uniform_buffer_create(directional_light_buffer_size);
 }
 
-bool LightStorage::_light_uses_raytraced_shadows(const Light *p_light) const {
+bool LightStorage::_light_is_raytraced_shadow_candidate(const Light *p_light) const {
 	if (p_light == nullptr || !p_light->shadow) {
 		return false;
 	}
 	// Area and directional lights keep their shadow maps for now.
-	if (p_light->type != RSE::LIGHT_OMNI && p_light->type != RSE::LIGHT_SPOT) {
+	return p_light->type == RSE::LIGHT_OMNI || p_light->type == RSE::LIGHT_SPOT;
+}
+
+bool LightStorage::_light_uses_raytraced_shadows(const Light *p_light) const {
+	if (!_light_is_raytraced_shadow_candidate(p_light)) {
 		return false;
 	}
 	// Requires a renderer that samples the mask AND a built acceleration
@@ -731,6 +735,14 @@ bool LightStorage::_light_uses_raytraced_shadows(const Light *p_light) const {
 	}
 	const RaytracingScene *rt_scene = RaytracingScene::get_singleton();
 	return rt_scene != nullptr && rt_scene->has_traceable_scene();
+}
+
+bool LightStorage::light_instance_is_raytraced_shadow_candidate(RID p_light_instance) const {
+	const LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
+	if (light_instance == nullptr) {
+		return false;
+	}
+	return _light_is_raytraced_shadow_candidate(light_owner.get_or_null(light_instance->light));
 }
 
 bool LightStorage::light_instance_can_use_raytraced_shadows(RID p_light_instance) const {

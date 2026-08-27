@@ -484,6 +484,7 @@ private:
 	// pure function of the light and of whether there is anything to trace
 	// against, so that the culler and the light buffer agree without having to
 	// visit lights in the same order.
+	bool _light_is_raytraced_shadow_candidate(const Light *p_light) const;
 	bool _light_uses_raytraced_shadows(const Light *p_light) const;
 
 public:
@@ -658,6 +659,7 @@ public:
 	virtual void light_instance_set_shadow_transform(RID p_light_instance, const Projection &p_projection, const Transform3D &p_transform, float p_far, float p_split, int p_pass, float p_shadow_texel_size, float p_bias_scale = 1.0, float p_range_begin = 0, const Vector2 &p_uv_scale = Vector2()) override;
 	virtual void light_instance_mark_visible(RID p_light_instance) override;
 
+	virtual bool light_instance_is_raytraced_shadow_candidate(RID p_light_instance) const override;
 	virtual bool light_instance_can_use_raytraced_shadows(RID p_light_instance) const override;
 	virtual void light_instance_set_raytraced_shadow(RID p_light_instance, bool p_enabled) override;
 	virtual bool light_instance_has_raytraced_shadow(RID p_light_instance) const override;
