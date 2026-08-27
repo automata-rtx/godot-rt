@@ -143,6 +143,10 @@ private:
 
 	BlasEntry *_get_or_create_blas(RID p_mesh, RID p_mesh_instance, uint32_t p_surface);
 	bool _build_blas_geometry(RID p_mesh, RID p_mesh_instance, uint32_t p_surface, BlasEntry &r_entry);
+	// What a surface would build from right now, so that a cached entry can tell
+	// whether the buffers under it have been replaced.
+	RID _get_surface_source_buffer(RID p_mesh, RID p_mesh_instance, uint32_t p_surface) const;
+	void _release_blas(BlasEntry &r_entry);
 	void _refresh_skinned_blas(BlasEntry &r_entry);
 	void _evict_stale_blas();
 	void _dequantize_positions(RID p_source_buffer, RID p_dest_buffer, uint32_t p_vertex_count, uint32_t p_source_stride, const AABB &p_aabb);

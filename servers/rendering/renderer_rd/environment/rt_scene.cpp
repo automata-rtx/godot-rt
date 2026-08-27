@@ -323,6 +323,22 @@ bool RaytracingScene::_build_blas_geometry(RID p_mesh, RID p_mesh_instance, uint
 	return true;
 }
 
+RID RaytracingScene::_get_surface_source_buffer(RID p_mesh, RID p_mesh_instance, uint32_t p_surface) const {
+	MeshStorage *mesh_storage = MeshStorage::get_singleton();
+
+	RID vertex_buffer;
+	if (p_mesh_instance.is_valid()) {
+		vertex_buffer = mesh_storage->mesh_instance_get_vertex_buffer(p_mesh_instance, p_surface);
+	}
+	if (vertex_buffer.is_null()) {
+		void *surface = mesh_storage->mesh_get_surface(p_mesh, p_surface);
+		if (surface != nullptr) {
+			vertex_buffer = mesh_storage->mesh_surface_get_vertex_buffer(surface);
+		}
+	}
+	return vertex_buffer;
+}
+
 RaytracingScene::BlasEntry *RaytracingScene::_get_or_create_blas(RID p_mesh, RID p_mesh_instance, uint32_t p_surface) {
 	MeshStorage *mesh_storage = MeshStorage::get_singleton();
 
@@ -342,14 +358,33 @@ RaytracingScene::BlasEntry *RaytracingScene::_get_or_create_blas(RID p_mesh, RID
 	BlasEntry *existing = blas_cache.getptr(key);
 	if (existing) {
 		existing->last_used_frame = frame;
-		if (existing->state == BLAS_READY && existing->skinned) {
-			const uint64_t version = mesh_storage->mesh_instance_get_last_change(p_mesh_instance, p_surface);
-			if (version != existing->skin_version) {
-				existing->skin_version = version;
-				_refresh_skinned_blas(*existing);
+		if (existing->state == BLAS_READY) {
+			// A mesh can have its surfaces cleared and re-added on the same RID:
+			// every PrimitiveMesh does exactly that when one of its properties
+			// changes, and so does ArrayMesh.clear_surfaces(). That frees the
+			// vertex buffer, and the structure built from it goes with it. Left
+			// alone, the dead structure would be handed to every later TLAS build
+			// and take the whole build down with it, so the entry is dropped and
+			// rebuilt from whatever the surface holds now.
+			const RID current_source = _get_surface_source_buffer(p_mesh, p_mesh_instance, p_surface);
+			const bool source_changed = current_source.is_valid() && current_source != existing->source_buffer;
+			if (source_changed || !RD::get_singleton()->acceleration_structure_is_valid(existing->blas)) {
+				_release_blas(*existing);
+				blas_cache.erase(key);
+				existing = nullptr;
 			}
 		}
-		return existing;
+
+		if (existing) {
+			if (existing->state == BLAS_READY && existing->skinned) {
+				const uint64_t version = mesh_storage->mesh_instance_get_last_change(p_mesh_instance, p_surface);
+				if (version != existing->skin_version) {
+					existing->skin_version = version;
+					_refresh_skinned_blas(*existing);
+				}
+			}
+			return existing;
+		}
 	}
 
 	BlasEntry entry;
@@ -390,6 +425,17 @@ void RaytracingScene::_refresh_skinned_blas(BlasEntry &r_entry) {
 	}
 }
 
+void RaytracingScene::_release_blas(BlasEntry &r_entry) {
+	if (r_entry.blas.is_valid() && RD::get_singleton()->acceleration_structure_is_valid(r_entry.blas)) {
+		RD::get_singleton()->free_rid(r_entry.blas);
+	}
+	r_entry.blas = RID();
+	if (r_entry.position_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(r_entry.position_buffer);
+		r_entry.position_buffer = RID();
+	}
+}
+
 void RaytracingScene::_evict_stale_blas() {
 	// Skinned structures are per instance, so without eviction every character
 	// that ever existed would keep one alive. Static entries are cheap to keep
@@ -404,13 +450,7 @@ void RaytracingScene::_evict_stale_blas() {
 	}
 
 	for (const SurfaceKey &key : to_remove) {
-		BlasEntry *entry = blas_cache.getptr(key);
-		if (entry->blas.is_valid() && RD::get_singleton()->acceleration_structure_is_valid(entry->blas)) {
-			RD::get_singleton()->free_rid(entry->blas);
-		}
-		if (entry->position_buffer.is_valid()) {
-			RD::get_singleton()->free_rid(entry->position_buffer);
-		}
+		_release_blas(*blas_cache.getptr(key));
 		blas_cache.erase(key);
 	}
 }
@@ -465,6 +505,11 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 		const int surface_count = mesh_storage->mesh_get_surface_count(instance.mesh);
 		for (int surface = 0; surface < surface_count; surface++) {
 			BlasEntry *entry = _get_or_create_blas(instance.mesh, instance.mesh_instance, surface);
+			if (entry && entry->state == BLAS_READY && !RD::get_singleton()->acceleration_structure_is_valid(entry->blas)) {
+				// Defense in depth for anything that frees a structure behind our
+				// back: skip this caster rather than aborting the whole build.
+				continue;
+			}
 			if (!entry || entry->state != BLAS_READY) {
 				continue;
 			}
