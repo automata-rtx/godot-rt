@@ -117,6 +117,10 @@ private:
 		Vector3 spot_vector;
 		float linear_att = 0.0;
 
+		// Set once per frame by the culler: true when this light takes its shadow
+		// from the raytraced mask, in which case no shadow map is rendered for it.
+		bool raytraced_shadow = false;
+
 		uint64_t shadow_pass = 0;
 		uint64_t last_scene_pass = 0;
 		uint64_t last_scene_shadow_pass = 0;
@@ -654,7 +658,10 @@ public:
 	virtual void light_instance_set_shadow_transform(RID p_light_instance, const Projection &p_projection, const Transform3D &p_transform, float p_far, float p_split, int p_pass, float p_shadow_texel_size, float p_bias_scale = 1.0, float p_range_begin = 0, const Vector2 &p_uv_scale = Vector2()) override;
 	virtual void light_instance_mark_visible(RID p_light_instance) override;
 
-	virtual bool light_instance_uses_raytraced_shadows(RID p_light_instance) const override;
+	virtual bool light_instance_can_use_raytraced_shadows(RID p_light_instance) const override;
+	virtual void light_instance_set_raytraced_shadow(RID p_light_instance, bool p_enabled) override;
+	virtual bool light_instance_has_raytraced_shadow(RID p_light_instance) const override;
+	virtual uint32_t light_get_max_raytraced_shadows() const override { return RTShadows::MAX_RT_LIGHTS; }
 
 	virtual bool light_instance_is_shadow_visible_at_position(RID p_light_instance, const Vector3 &p_position) const override {
 		const LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);

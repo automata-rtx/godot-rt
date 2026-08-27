@@ -338,6 +338,9 @@ public:
 
 	// True when the project setting is on and the device supports ray queries.
 	virtual bool is_raytracing_scene_available() const { return false; }
+	// True when this render will actually produce a raytraced shadow mask that
+	// the forward pass samples. Only then may a light give up its shadow map.
+	virtual bool is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const { return false; }
 	// Whether raytraced shadow tracing should log what it is doing. Lives here
 	// so the renderer-agnostic cull layer can log without reaching into RD.
 	virtual bool is_raytracing_debug_enabled() const { return false; }

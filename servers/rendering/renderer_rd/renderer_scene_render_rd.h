@@ -260,6 +260,7 @@ public:
 	virtual bool _uses_raytraced_shadows() const { return false; }
 
 	virtual bool is_raytracing_scene_available() const override;
+	virtual bool is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const override;
 	virtual bool is_raytracing_debug_enabled() const override;
 	virtual void update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances) override;
 

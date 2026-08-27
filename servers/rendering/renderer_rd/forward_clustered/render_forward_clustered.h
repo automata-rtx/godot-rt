@@ -622,6 +622,7 @@ private:
 
 	// These are not used in the Forward+ path, it has different light clustering tech.
 	virtual bool _uses_raytraced_shadows() const override { return true; }
+	virtual bool is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const override;
 
 	virtual uint32_t get_max_lights_total() override { return 0; }
 	virtual uint32_t get_max_lights_per_mesh() override { return 0; }

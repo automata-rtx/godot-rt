@@ -733,12 +733,25 @@ bool LightStorage::_light_uses_raytraced_shadows(const Light *p_light) const {
 	return rt_scene != nullptr && rt_scene->has_traceable_scene();
 }
 
-bool LightStorage::light_instance_uses_raytraced_shadows(RID p_light_instance) const {
+bool LightStorage::light_instance_can_use_raytraced_shadows(RID p_light_instance) const {
 	const LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
 	if (light_instance == nullptr) {
 		return false;
 	}
 	return _light_uses_raytraced_shadows(light_owner.get_or_null(light_instance->light));
+}
+
+void LightStorage::light_instance_set_raytraced_shadow(RID p_light_instance, bool p_enabled) {
+	LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
+	if (light_instance == nullptr) {
+		return;
+	}
+	light_instance->raytraced_shadow = p_enabled;
+}
+
+bool LightStorage::light_instance_has_raytraced_shadow(RID p_light_instance) const {
+	const LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
+	return light_instance != nullptr && light_instance->raytraced_shadow;
 }
 
 void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, bool p_use_raytraced_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows) {
@@ -1117,8 +1130,7 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 		// is bounded by what fits in the index rather than by the mask's four
 		// channels.
 		light_data.rt_slot = RT_SLOT_NONE;
-		if (rt_shadows_available && _light_uses_raytraced_shadows(light) &&
-				rt_lights.size() < RTShadows::MAX_RT_LIGHTS) {
+		if (rt_shadows_available && light_instance->raytraced_shadow) {
 			RTShadows::LightParams rt_light = {};
 
 			// The acceleration structure is in world space, so the ray tracing pass
@@ -1244,6 +1256,29 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 			light_data.shadow_opacity = in_shadow_range
 					? light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY] * shadow_opacity_fade
 					: 0.0;
+
+			// The light projector transforms the vertex into light space with this
+			// matrix, and it is not part of the shadow map: a raytraced light owns
+			// no atlas quadrant but still has to project its cookie correctly. The
+			// matrices below match the shadow map path exactly, computed directly
+			// rather than read back from a shadow transform this light never got.
+			if (type == RSE::LIGHT_OMNI) {
+				Transform3D proj = (inverse_transform * light_transform).inverse();
+				RendererRD::MaterialStorage::store_transform(proj, light_data.shadow_matrix);
+			} else if (type == RSE::LIGHT_SPOT) {
+				Transform3D modelview = (inverse_transform * light_transform).inverse();
+				Projection bias;
+				bias.set_light_bias();
+
+				Projection cm;
+				cm.set_perspective(spot_angle * 2.0, 1.0, MIN(0.025, radius), radius);
+
+				Projection correction;
+				correction.set_depth_correction(false, true, false);
+
+				Projection shadow_mtx = bias * (correction * cm) * modelview;
+				RendererRD::MaterialStorage::store_camera(shadow_mtx, light_data.shadow_matrix);
+			}
 		} else if (needs_shadow && in_shadow_range) {
 			// fill in the shadow information
 

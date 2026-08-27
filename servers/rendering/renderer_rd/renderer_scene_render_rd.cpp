@@ -1797,6 +1797,16 @@ bool RendererSceneRenderRD::is_raytracing_scene_available() const {
 	return _uses_raytraced_shadows() && raytracing_scene != nullptr && raytracing_scene->is_available() && rt_shadows != nullptr && rt_shadows->is_valid();
 }
 
+bool RendererSceneRenderRD::is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const {
+	if (!is_raytracing_scene_available()) {
+		return false;
+	}
+	Ref<RenderSceneBuffersRD> rb = p_render_buffers;
+	// A stereo pair would need a trace and a full set of denoiser history per
+	// eye, so multiview keeps its shadow maps.
+	return rb.is_valid() && rb->get_view_count() == 1;
+}
+
 void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances) {
 	if (raytracing_scene == nullptr) {
 		return;

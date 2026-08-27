@@ -496,7 +496,11 @@ void main() {
 
 						vec3 light = omni_lights.data[light_index].color;
 
-						if (omni_lights.data[light_index].shadow_opacity > 0.001) {
+						// A raytraced light has no shadow map, and the screen-space mask
+						// cannot answer for a froxel that is not a visible surface, so
+						// such a light lights the fog unshadowed rather than sampling an
+						// atlas quadrant it never owned.
+						if (omni_lights.data[light_index].rt_slot >= RT_SLOT_NONE && omni_lights.data[light_index].shadow_opacity > 0.001) {
 							//has shadow
 							vec4 uv_rect = omni_lights.data[light_index].atlas_rect;
 							vec2 flip_offset = omni_lights.data[light_index].direction.xy;
@@ -570,7 +574,9 @@ void main() {
 
 						vec3 light = spot_lights.data[light_index].color;
 
-						if (spot_lights.data[light_index].shadow_opacity > 0.001) {
+						// See the omni light above: a raytraced light lights the fog
+						// unshadowed rather than sampling a shadow map it does not have.
+						if (spot_lights.data[light_index].rt_slot >= RT_SLOT_NONE && spot_lights.data[light_index].shadow_opacity > 0.001) {
 							//has shadow
 							vec4 uv_rect = spot_lights.data[light_index].atlas_rect;
 

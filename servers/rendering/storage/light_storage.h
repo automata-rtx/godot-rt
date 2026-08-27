@@ -111,11 +111,24 @@ public:
 	}
 	virtual bool light_instance_is_shadow_visible_at_position(RID p_light, const Vector3 &p_position) const = 0;
 
-	// True when this light takes its shadow from the raytraced mask rather than
-	// from the shadow atlas, in which case rendering a shadow map for it is
-	// wasted work. Renderers without raytraced shadows never say yes.
-	virtual bool light_instance_uses_raytraced_shadows(RID p_light_instance) const {
+	// Whether this light could take its shadow from the raytraced mask instead of
+	// from the shadow atlas. Renderers without raytraced shadows never say yes.
+	virtual bool light_instance_can_use_raytraced_shadows(RID p_light_instance) const {
 		return false;
+	}
+
+	// The culler records its decision for the frame here, and the light buffer
+	// obeys it. Deciding in one place is what keeps a light from being skipped by
+	// the shadow atlas and then denied a mask channel, which would leave it with
+	// no shadow at all.
+	virtual void light_instance_set_raytraced_shadow(RID p_light_instance, bool p_enabled) {}
+	virtual bool light_instance_has_raytraced_shadow(RID p_light_instance) const {
+		return false;
+	}
+
+	// How many lights may take their shadow from the mask in a single frame.
+	virtual uint32_t light_get_max_raytraced_shadows() const {
+		return 0;
 	}
 
 	/* PROBE API */

@@ -3542,6 +3542,30 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		scene_render->update_raytracing_scene(rt_instance_scratch);
 	}
 
+	/* RAYTRACED SHADOWS: DECIDE WHICH LIGHTS GIVE UP THEIR SHADOW MAP */
+
+	// Decided here, once, rather than re-derived by the shadow atlas and the
+	// light buffer independently: those two visit lights in different orders and
+	// answer to different conditions, and a light that one of them thinks is
+	// raytraced while the other does not would end up with no shadow at all.
+	{
+		const bool mask_available = !p_reflection_probe.is_valid() &&
+				scene_render->is_raytraced_shadow_mask_available(p_render_buffers);
+		const uint32_t max_raytraced = RSG::light_storage->light_get_max_raytraced_shadows();
+		uint32_t raytraced_used = 0;
+
+		for (uint32_t i = 0; i < (uint32_t)scene_cull_result.lights.size(); i++) {
+			InstanceLightData *light = static_cast<InstanceLightData *>(scene_cull_result.lights[i]->base_data);
+
+			bool raytraced = mask_available && p_using_shadows && raytraced_used < max_raytraced &&
+					RSG::light_storage->light_instance_can_use_raytraced_shadows(light->instance);
+			if (raytraced) {
+				raytraced_used++;
+			}
+			RSG::light_storage->light_instance_set_raytraced_shadow(light->instance, raytraced);
+		}
+	}
+
 	//render shadows
 
 	max_shadows_used = 0;
@@ -3580,8 +3604,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 			// A raytraced light reads its shadow from the screen-space mask, so
 			// neither an atlas quadrant nor a shadow map render is any use to it.
-			// Reflection probes have no mask, so they keep their shadow maps.
-			if (!p_reflection_probe.is_valid() && RSG::light_storage->light_instance_uses_raytraced_shadows(light->instance)) {
+			if (RSG::light_storage->light_instance_has_raytraced_shadow(light->instance)) {
 				dbg_raytraced_lights++;
 				continue;
 			}

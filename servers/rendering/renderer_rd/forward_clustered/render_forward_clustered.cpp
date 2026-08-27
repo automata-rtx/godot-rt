@@ -1526,6 +1526,17 @@ void RenderForwardClustered::_copy_framebuffer_to_ss_effects(Ref<RenderSceneBuff
 	ss_effects->copy_internal_texture_to_last_frame(p_render_buffers, *copy_effects);
 }
 
+bool RenderForwardClustered::is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const {
+	if (!RendererSceneRenderRD::is_raytraced_shadow_mask_available(p_render_buffers)) {
+		return false;
+	}
+	// The mask is written from the depth and normal buffers this renderer keeps
+	// in its own render buffer data, which a reflection probe render does not
+	// have.
+	Ref<RenderSceneBuffersRD> rb = p_render_buffers;
+	return rb.is_valid() && rb->has_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
+}
+
 bool RenderForwardClustered::_ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_denoise, RendererRD::RTShadows::Buffers &r_buffers) {
 	if (p_render_buffers.is_null()) {
 		return false;
@@ -1728,11 +1739,11 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 
 	uint32_t directional_light_count = 0;
 	uint32_t positional_light_count = 0;
-	// Only the main scene pass traces and samples the raytraced shadow mask, so
-	// only it may hand out raytraced light indices. A stereo pair would need a
-	// trace and a full set of denoiser history per eye, so it keeps shadow maps.
-	bool using_raytraced_shadows = p_render_data->reflection_probe.is_null() && rb_data.is_valid() &&
-			is_raytracing_scene_available() && rb.is_valid() && rb->get_view_count() == 1;
+	// Exactly the question the culler asked before it decided which lights could
+	// give up their shadow maps. Asking it the same way here is what keeps the
+	// two from disagreeing.
+	bool using_raytraced_shadows = p_render_data->reflection_probe.is_null() &&
+			is_raytraced_shadow_mask_available(p_render_data->render_buffers);
 	if (p_render_data->reflection_probe.is_null() && rb.is_valid() && rb->get_view_count() > 1 && is_raytracing_scene_available()) {
 		WARN_PRINT_ONCE("Raytraced shadows are not supported for multiview rendering yet; shadow maps are used instead.");
 	}
