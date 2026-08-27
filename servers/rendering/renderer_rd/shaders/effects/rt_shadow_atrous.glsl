@@ -34,14 +34,14 @@ layout(set = 0, binding = 8) uniform usampler2D source_index;
 layout(rgba8ui, set = 0, binding = 9) uniform restrict writeonly uimage2D dest_history_index;
 
 layout(push_constant, std430) uniform Params {
-	mat4 inv_view_projection;
+	// The four terms of the inverse projection that survive for a centered
+	// perspective matrix, enough to turn a depth buffer value into a distance
+	// along the camera's forward axis without reconstructing a world position.
+	vec4 depth_unproject;
 
 	ivec2 screen_size;
 	int step_size;
 	uint write_history;
-
-	vec3 camera_position;
-	float far_plane;
 
 	float depth_sigma;
 	float normal_sigma;
@@ -52,11 +52,9 @@ params;
 
 const float KERNEL[3] = float[](0.375, 0.25, 0.0625);
 
-vec3 reconstruct_world_position(ivec2 pos, float depth) {
-	vec2 uv = (vec2(pos) + 0.5) / vec2(params.screen_size);
-	vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
-	vec4 world = params.inv_view_projection * ndc;
-	return world.xyz / world.w;
+float linear_view_depth(float depth) {
+	return -(params.depth_unproject.x * depth + params.depth_unproject.y) /
+			(params.depth_unproject.z * depth + params.depth_unproject.w);
 }
 
 void main() {
@@ -155,9 +153,10 @@ void main() {
 		imageStore(dest_history_visibility, pos, result);
 		imageStore(dest_history_index, pos, center_index);
 
-		vec3 world_position = reconstruct_world_position(pos, center_depth);
-		float view_distance = length(world_position - params.camera_position);
+		// Stored raw rather than normalized: the temporal pass compares it against
+		// the w of a reprojected clip position, which is the same quantity in the
+		// same units.
 		imageStore(dest_history_meta, pos,
-				vec4(view_distance / max(params.far_plane, 1.0), history_length, 0.0, 0.0));
+				vec4(linear_view_depth(center_depth), history_length, 0.0, 0.0));
 	}
 }

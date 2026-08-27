@@ -216,9 +216,8 @@ void RTShadows::_trace(RID p_tlas, RID p_depth_texture, const Buffers &p_buffers
 	RD::get_singleton()->compute_list_end();
 }
 
-void RTShadows::_temporal(RID p_depth_texture, RID p_velocity, const Buffers &p_buffers, const Size2i &p_size,
-		const Projection &p_inv_view_projection, const Transform3D &p_camera_transform,
-		float p_far_plane, const Settings &p_settings) {
+void RTShadows::_temporal(RID p_depth_texture, const Buffers &p_buffers, const Size2i &p_size,
+		const Projection &p_reprojection, const Settings &p_settings) {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 	RID sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 
@@ -241,7 +240,6 @@ void RTShadows::_temporal(RID p_depth_texture, RID p_velocity, const Buffers &p_
 
 	add_texture(0, sampler, p_buffers.output_mask);
 	add_texture(1, sampler, p_depth_texture);
-	add_texture(2, sampler, p_velocity);
 	// The reprojected history is filtered in the shader rather than by the
 	// sampler, because the channel assignment cannot be interpolated.
 	add_texture(3, sampler, p_buffers.history_visibility);
@@ -255,15 +253,13 @@ void RTShadows::_temporal(RID p_depth_texture, RID p_velocity, const Buffers &p_
 	RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(compiled, 0, uniforms);
 
 	TemporalPushConstant push_constant = {};
-	store_projection(p_inv_view_projection, push_constant.inv_view_projection);
+	store_projection(p_reprojection, push_constant.reprojection);
 	push_constant.screen_size[0] = p_size.x;
 	push_constant.screen_size[1] = p_size.y;
 	// Relative tolerance on view distance when deciding whether the reprojected
 	// sample is the same surface.
 	push_constant.depth_tolerance = 0.02f;
 	push_constant.max_history = MAX(1.0f, p_settings.max_history);
-	store_vector3(p_camera_transform.origin, push_constant.camera_position);
-	push_constant.far_plane = p_far_plane;
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, temporal_pipeline);
@@ -274,8 +270,8 @@ void RTShadows::_temporal(RID p_depth_texture, RID p_velocity, const Buffers &p_
 }
 
 void RTShadows::_atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_normal_roughness,
-		const Buffers &p_buffers, const Size2i &p_size, const Projection &p_inv_view_projection,
-		const Transform3D &p_camera_transform, float p_far_plane, int p_step_size, bool p_write_history) {
+		const Buffers &p_buffers, const Size2i &p_size, const Projection &p_inv_projection,
+		int p_step_size, bool p_write_history) {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 	TextureStorage *texture_storage = TextureStorage::get_singleton();
 	RID sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
@@ -316,13 +312,18 @@ void RTShadows::_atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_nor
 	RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(compiled, 0, uniforms);
 
 	AtrousPushConstant push_constant = {};
-	store_projection(p_inv_view_projection, push_constant.inv_view_projection);
+	// Turns a depth buffer value into a distance along the camera's forward axis.
+	// Only these four terms of the inverse projection matter: for a perspective
+	// matrix its bottom two rows have no x or y dependency, which stays true
+	// under both the depth correction and the temporal antialiasing jitter.
+	push_constant.depth_unproject[0] = p_inv_projection.columns[2][2];
+	push_constant.depth_unproject[1] = p_inv_projection.columns[3][2];
+	push_constant.depth_unproject[2] = p_inv_projection.columns[2][3];
+	push_constant.depth_unproject[3] = p_inv_projection.columns[3][3];
 	push_constant.screen_size[0] = p_size.x;
 	push_constant.screen_size[1] = p_size.y;
 	push_constant.step_size = p_step_size;
 	push_constant.write_history = p_write_history ? 1u : 0u;
-	store_vector3(p_camera_transform.origin, push_constant.camera_position);
-	push_constant.far_plane = p_far_plane;
 	push_constant.depth_sigma = 0.02f;
 	push_constant.normal_sigma = 64.0f;
 	// Never collapse the kernel completely: even a contact shadow benefits from
@@ -337,9 +338,10 @@ void RTShadows::_atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_nor
 	RD::get_singleton()->compute_list_end();
 }
 
-void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, RID p_velocity,
-		const Buffers &p_buffers, const Size2i &p_screen_size, const Projection &p_camera_projection,
-		const Transform3D &p_camera_transform, float p_far_plane,
+void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
+		const Buffers &p_buffers, const Size2i &p_screen_size,
+		const Projection &p_camera_projection, const Transform3D &p_camera_transform,
+		const Projection &p_prev_camera_projection, const Transform3D &p_prev_camera_transform,
 		const LocalVector<LightParams> &p_lights, const Settings &p_settings) {
 	if (!valid || p_tlas.is_null() || p_lights.is_empty() ||
 			p_buffers.output_mask.is_null() || p_buffers.output_index.is_null()) {
@@ -367,7 +369,6 @@ void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, 
 
 	const bool denoise = p_settings.denoise &&
 			temporal_pipeline.is_valid() && atrous_pipeline.is_valid() &&
-			p_velocity.is_valid() &&
 			p_buffers.denoise_a.is_valid() && p_buffers.denoise_b.is_valid() &&
 			p_buffers.history_visibility.is_valid() && p_buffers.history_index.is_valid() &&
 			p_buffers.history_meta.is_valid() && p_buffers.history_length.is_valid();
@@ -376,15 +377,22 @@ void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, 
 		return;
 	}
 
+	// Straight from this frame's clip space to the previous frame's, which is
+	// exact for static geometry under any camera movement. On the first frame of
+	// a viewport the previous camera is still the identity; the resulting history
+	// lookups fail the surface test rather than producing a smear.
+	const Projection prev_view_projection = p_prev_camera_projection * Projection(p_prev_camera_transform.affine_inverse());
+	const Projection reprojection = prev_view_projection * inv_view_projection;
+
 	// The denoiser works on the mask in place: the temporal pass reads it and the
 	// last a-trous pass writes it back.
-	_temporal(p_depth_texture, p_velocity, p_buffers, p_screen_size, inv_view_projection,
-			p_camera_transform, p_far_plane, p_settings);
+	_temporal(p_depth_texture, p_buffers, p_screen_size, reprojection, p_settings);
 
 	// A-trous iterations with a doubling step. The first iteration's output is
 	// what next frame reprojects: feeding back the once-filtered signal rather
 	// than the raw accumulation is what keeps the history from locking in noise.
 	const uint32_t iterations = CLAMP(p_settings.atrous_iterations, 1u, 5u);
+	const Projection inv_projection = p_camera_projection.inverse();
 	RID source = p_buffers.denoise_a;
 
 	for (uint32_t i = 0; i < iterations; i++) {
@@ -392,7 +400,7 @@ void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, 
 		RID dest = last ? p_buffers.output_mask : ((source == p_buffers.denoise_a) ? p_buffers.denoise_b : p_buffers.denoise_a);
 
 		_atrous(source, dest, p_depth_texture, p_normal_roughness, p_buffers, p_screen_size,
-				inv_view_projection, p_camera_transform, p_far_plane, 1 << i, i == 0);
+				inv_projection, 1 << i, i == 0);
 
 		source = dest;
 	}

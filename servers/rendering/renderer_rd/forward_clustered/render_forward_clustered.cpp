@@ -1793,12 +1793,19 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			if (have_buffers) {
 				if (tlas.is_valid()) {
 					RID normal_roughness = rb_data->has_normal_roughness() ? rb_data->get_normal_roughness() : RID();
-					RID velocity = rb->has_velocity_buffer(false) ? rb->get_velocity_buffer(false) : RID();
 
-					rt_shadows->render(tlas, rb->get_depth_texture(), normal_roughness, velocity,
+					// The same correction the current projection gets, so the two
+					// clip spaces the denoiser maps between are built the same way.
+					Projection prev_correction;
+					prev_correction.set_depth_correction(true);
+					prev_correction.add_jitter_offset(p_render_data->scene_data->prev_taa_jitter);
+					const Projection prev_projection = prev_correction * p_render_data->scene_data->prev_cam_projection;
+
+					rt_shadows->render(tlas, rb->get_depth_texture(), normal_roughness,
 							rt_buffers, internal_size,
 							p_render_data->scene_data->get_cam_projection(), p_render_data->scene_data->get_cam_transform(),
-							p_render_data->scene_data->z_far, rt_lights, settings);
+							prev_projection, p_render_data->scene_data->prev_cam_transform,
+							rt_lights, settings);
 				} else {
 					// Nothing to trace against (an empty scene, or every mesh was
 					// ineligible). A fully lit mask is the correct answer, and it makes
@@ -1955,10 +1962,6 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	} else if (!is_reflection_probe && using_taa) {
 		motion_vectors_required = true;
 	} else if (!is_reflection_probe && using_upscaling) {
-		motion_vectors_required = true;
-	} else if (!is_reflection_probe && is_raytracing_scene_available()) {
-		// The shadow denoiser reprojects its own history and cannot rely on
-		// temporal antialiasing being on to have produced motion vectors.
 		motion_vectors_required = true;
 	} else {
 		motion_vectors_required = false;

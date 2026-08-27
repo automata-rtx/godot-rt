@@ -122,25 +122,19 @@ private:
 	};
 
 	struct TemporalPushConstant {
-		float inv_view_projection[16];
+		float reprojection[16];
 
 		int32_t screen_size[2];
 		float depth_tolerance;
 		float max_history;
-
-		float camera_position[3];
-		float far_plane;
 	};
 
 	struct AtrousPushConstant {
-		float inv_view_projection[16];
+		float depth_unproject[4];
 
 		int32_t screen_size[2];
 		int32_t step_size;
 		uint32_t write_history;
-
-		float camera_position[3];
-		float far_plane;
 
 		float depth_sigma;
 		float normal_sigma;
@@ -171,19 +165,22 @@ private:
 			const Size2i &p_size, const Projection &p_inv_view_projection,
 			const Transform3D &p_camera_transform, uint32_t p_light_count,
 			const Settings &p_settings);
-	void _temporal(RID p_depth_texture, RID p_velocity, const Buffers &p_buffers, const Size2i &p_size,
-			const Projection &p_inv_view_projection, const Transform3D &p_camera_transform,
-			float p_far_plane, const Settings &p_settings);
+	void _temporal(RID p_depth_texture, const Buffers &p_buffers, const Size2i &p_size,
+			const Projection &p_reprojection, const Settings &p_settings);
 	void _atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_normal_roughness,
-			const Buffers &p_buffers, const Size2i &p_size, const Projection &p_inv_view_projection,
-			const Transform3D &p_camera_transform, float p_far_plane, int p_step_size, bool p_write_history);
+			const Buffers &p_buffers, const Size2i &p_size, const Projection &p_inv_projection,
+			int p_step_size, bool p_write_history);
 
 public:
 	bool is_valid() const { return valid; }
 
-	void render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, RID p_velocity,
-			const Buffers &p_buffers, const Size2i &p_screen_size, const Projection &p_camera_projection,
-			const Transform3D &p_camera_transform, float p_far_plane,
+	// The previous camera is what the denoiser reprojects its history with. Motion
+	// vectors would be the obvious source, but they are written by the opaque
+	// pass, which runs after the mask is needed.
+	void render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
+			const Buffers &p_buffers, const Size2i &p_screen_size,
+			const Projection &p_camera_projection, const Transform3D &p_camera_transform,
+			const Projection &p_prev_camera_projection, const Transform3D &p_prev_camera_transform,
 			const LocalVector<LightParams> &p_lights, const Settings &p_settings);
 
 	RTShadows();
