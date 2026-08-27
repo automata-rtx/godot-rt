@@ -5,6 +5,14 @@ concurrency:
   group: ${{ github.workflow }}|${{ github.ref_name }}
   cancel-in-progress: true
 
+# Fork-local change: this fork targets Windows only, so the Android, iOS, Linux,
+# macOS and Web build workflows are not invoked. Their workflow files are left
+# untouched, so restoring a platform is a matter of adding its job back here.
+#
+# Note that dropping the Linux jobs also drops the checks that only ran there:
+# the --doctool class reference check, the GDExtension API compatibility check,
+# the unit tests, and the project export/converter tests.
+
 jobs:
   # First stage: Only static checks, fast and prevent expensive builds from running.
 
@@ -13,44 +21,10 @@ jobs:
     name: 📊 Static checks
     uses: ./.github/workflows/static_checks.yml
 
-  # Second stage: Run all the builds and some of the tests.
-
-  android-build:
-    name: 🤖 Android
-    needs: static-checks
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
-    uses: ./.github/workflows/android_builds.yml
-    secrets:
-      SERVICE_ACCOUNT_KEY: ${{ secrets.SERVICE_ACCOUNT_KEY }}
-
-  ios-build:
-    name: 🍏 iOS
-    needs: static-checks
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
-    uses: ./.github/workflows/ios_builds.yml
-
-  linux-build:
-    name: 🐧 Linux
-    needs: static-checks
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
-    uses: ./.github/workflows/linux_builds.yml
-    with:
-      changed-files: ${{ needs.static-checks.outputs.changed-files }}
-
-  macos-build:
-    name: 🍎 macOS
-    needs: static-checks
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
-    uses: ./.github/workflows/macos_builds.yml
+  # Second stage: Run the Windows builds.
 
   windows-build:
     name: 🏁 Windows
     needs: static-checks
     if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/windows_builds.yml
-
-  web-build:
-    name: 🌐 Web
-    needs: static-checks
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
-    uses: ./.github/workflows/web_builds.yml
