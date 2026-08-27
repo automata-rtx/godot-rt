@@ -122,6 +122,11 @@
 		<member name="shadow_enabled" type="bool" setter="set_shadow" getter="has_shadow" default="false">
 			If [code]true[/code], the light will cast real-time shadows. This has a significant performance cost. Only enable shadow rendering when it makes a noticeable difference in the scene's appearance, and consider using [member distance_fade_enabled] to hide the light when far away from the [Camera3D].
 		</member>
+		<member name="shadow_map_enabled" type="bool" setter="set_shadow_map_enabled" getter="is_shadow_map_enabled" default="false">
+			If [code]true[/code], a shadow map is rendered for this light even when it takes its own shadow from the raytraced shadow mask (see [member ProjectSettings.rendering/lights_and_shadows/raytraced_shadows/enabled]).
+			Volumetric fog and subsurface transmittance read a shadow map by construction: the mask only carries visibility at visible surfaces, which cannot answer for a point inside the fog or under a surface. A raytraced light therefore lights the fog without casting light shafts through it, and falls back to the material's own transmittance depth, unless this is enabled.
+			This costs a shadow atlas quadrant and a shadow map render, which is what raytraced shadows exist to avoid, so enable it only on the lights that need it. It has no effect on a light that already uses a shadow map.
+		</member>
 		<member name="shadow_normal_bias" type="float" setter="set_param" getter="get_param" default="2.0">
 			Offsets the lookup into the shadow map by the object's normal. This can be used to reduce self-shadowing artifacts without using [member shadow_bias]. In practice, this value should be tweaked along with [member shadow_bias] to reduce artifacts as much as possible.
 		</member>

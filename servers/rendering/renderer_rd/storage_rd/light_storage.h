@@ -65,6 +65,11 @@ private:
 		Color color = Color(1, 1, 1, 1);
 		RID projector;
 		bool shadow = false;
+		// Render a shadow map for this light even when it takes its own shadow
+		// from the raytraced mask. Volumetric fog and subsurface transmittance
+		// sample a shadow map by construction and cannot read a screen space
+		// mask, so a light that has to occlude either of them needs both.
+		bool shadow_map = false;
 		bool negative = false;
 		bool reverse_cull = false;
 		RSE::LightBakeMode bake_mode = RSE::LIGHT_BAKE_DYNAMIC;
@@ -173,7 +178,9 @@ private:
 		float shadow_opacity;
 
 		float rt_slot; // Raytraced shadow mask channel, or RT_SLOT_NONE.
-		float pad;
+		// Shadow strength for the effects that sample the shadow map instead of
+		// the mask, and zero when this light owns no shadow map.
+		float shadow_map_opacity;
 		float atlas_rect[4]; // in omni, used for atlas uv, in spot, used for projector uv
 		float shadow_matrix[16];
 		float shadow_bias;
@@ -564,6 +571,7 @@ public:
 	virtual void light_set_cull_mask(RID p_light, uint32_t p_mask) override;
 	virtual void light_set_distance_fade(RID p_light, bool p_enabled, float p_begin, float p_shadow, float p_length) override;
 	virtual void light_set_reverse_cull_face_mode(RID p_light, bool p_enabled) override;
+	virtual void light_set_shadow_map_enabled(RID p_light, bool p_enabled) override;
 	virtual void light_set_shadow_caster_mask(RID p_light, uint32_t p_caster_mask) override;
 	virtual uint32_t light_get_shadow_caster_mask(RID p_light) const override;
 	virtual void light_set_bake_mode(RID p_light, RSE::LightBakeMode p_bake_mode) override;
@@ -668,6 +676,28 @@ public:
 		ERR_FAIL_NULL_V(light, false);
 
 		return light->reverse_cull;
+	}
+
+	virtual bool light_get_shadow_map_enabled(RID p_light) const override {
+		const Light *light = light_owner.get_or_null(p_light);
+		ERR_FAIL_NULL_V(light, false);
+
+		return light->shadow_map;
+	}
+
+	// True when this light needs a shadow map rendered: either it is not
+	// raytraced, or it is and something that cannot read the mask still has to
+	// be occluded by it.
+	virtual bool light_instance_needs_shadow_map(RID p_light_instance) const override {
+		const LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
+		if (light_instance == nullptr) {
+			return false;
+		}
+		if (!light_instance->raytraced_shadow) {
+			return true;
+		}
+		const Light *light = light_owner.get_or_null(light_instance->light);
+		return light != nullptr && light->shadow_map;
 	}
 
 	virtual RSE::LightBakeMode light_get_bake_mode(RID p_light) override;

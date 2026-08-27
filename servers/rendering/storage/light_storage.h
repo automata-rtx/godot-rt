@@ -61,6 +61,9 @@ public:
 	virtual void light_set_cull_mask(RID p_light, uint32_t p_mask) = 0;
 	virtual void light_set_distance_fade(RID p_light, bool p_enabled, float p_begin, float p_shadow, float p_length) = 0;
 	virtual void light_set_reverse_cull_face_mode(RID p_light, bool p_enabled) = 0;
+	// Renders a shadow map for this light even when it takes its own shadow from
+	// the raytraced mask, for the effects that cannot read that mask.
+	virtual void light_set_shadow_map_enabled(RID p_light, bool p_enabled) = 0;
 	virtual void light_set_shadow_caster_mask(RID p_light, uint32_t p_caster_mask) = 0;
 	virtual uint32_t light_get_shadow_caster_mask(RID p_light) const = 0;
 	virtual void light_set_bake_mode(RID p_light, RSE::LightBakeMode p_bake_mode) = 0;
@@ -93,6 +96,7 @@ public:
 	virtual float light_get_param(RID p_light, RSE::LightParam p_param) = 0;
 	virtual Color light_get_color(RID p_light) = 0;
 	virtual bool light_get_reverse_cull_face_mode(RID p_light) const = 0;
+	virtual bool light_get_shadow_map_enabled(RID p_light) const = 0;
 	virtual RSE::LightBakeMode light_get_bake_mode(RID p_light) = 0;
 	virtual uint32_t light_get_max_sdfgi_cascade(RID p_light) = 0;
 	virtual uint64_t light_get_version(RID p_light) const = 0;
@@ -132,6 +136,12 @@ public:
 	virtual void light_instance_set_raytraced_shadow(RID p_light_instance, bool p_enabled) {}
 	virtual bool light_instance_has_raytraced_shadow(RID p_light_instance) const {
 		return false;
+	}
+	// True when a shadow map still has to be rendered for this light: it is not
+	// raytraced, or it is and something that cannot read the mask - volumetric
+	// fog, subsurface transmittance - has to be occluded by it too.
+	virtual bool light_instance_needs_shadow_map(RID p_light_instance) const {
+		return true;
 	}
 
 	// How many lights may take their shadow from the mask in a single frame.

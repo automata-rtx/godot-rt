@@ -496,11 +496,11 @@ void main() {
 
 						vec3 light = omni_lights.data[light_index].color;
 
-						// A raytraced light has no shadow map, and the screen-space mask
-						// cannot answer for a froxel that is not a visible surface, so
-						// such a light lights the fog unshadowed rather than sampling an
-						// atlas quadrant it never owned.
-						if (omni_lights.data[light_index].rt_slot >= RT_SLOT_NONE && omni_lights.data[light_index].shadow_opacity > 0.001) {
+						// Fog is shadowed by a shadow map: the screen space mask carries
+						// visibility at visible surfaces, and a froxel is not one. A
+						// raytraced light owns a shadow map only if it was asked for
+						// one, and without it lights the fog unshadowed.
+						if (omni_lights.data[light_index].shadow_map_opacity > 0.001) {
 							//has shadow
 							vec4 uv_rect = omni_lights.data[light_index].atlas_rect;
 							vec2 flip_offset = omni_lights.data[light_index].direction.xy;
@@ -524,7 +524,7 @@ void main() {
 
 							float depth = texture(sampler2D(shadow_atlas, linear_sampler), pos.xy).r;
 
-							shadow_attenuation = mix(1.0 - omni_lights.data[light_index].shadow_opacity, 1.0, exp(min(0.0, (pos.z - depth)) / omni_lights.data[light_index].inv_radius * INV_FOG_FADE));
+							shadow_attenuation = mix(1.0 - omni_lights.data[light_index].shadow_map_opacity, 1.0, exp(min(0.0, (pos.z - depth)) / omni_lights.data[light_index].inv_radius * INV_FOG_FADE));
 						}
 						total_light += light * attenuation * shadow_attenuation * henyey_greenstein(dot(safe_normalize(light_pos - view_pos), safe_normalize(view_pos)), params.phase_g) * omni_lights.data[light_index].volumetric_fog_energy;
 					}
@@ -574,9 +574,9 @@ void main() {
 
 						vec3 light = spot_lights.data[light_index].color;
 
-						// See the omni light above: a raytraced light lights the fog
-						// unshadowed rather than sampling a shadow map it does not have.
-						if (spot_lights.data[light_index].rt_slot >= RT_SLOT_NONE && spot_lights.data[light_index].shadow_opacity > 0.001) {
+						// See the omni light above: a raytraced light without a shadow
+						// map lights the fog unshadowed.
+						if (spot_lights.data[light_index].shadow_map_opacity > 0.001) {
 							//has shadow
 							vec4 uv_rect = spot_lights.data[light_index].atlas_rect;
 
@@ -591,7 +591,7 @@ void main() {
 
 							float depth = texture(sampler2D(shadow_atlas, linear_sampler), pos.xy).r;
 
-							shadow_attenuation = mix(1.0 - spot_lights.data[light_index].shadow_opacity, 1.0, exp(min(0.0, (pos.z - depth)) / spot_lights.data[light_index].inv_radius * INV_FOG_FADE));
+							shadow_attenuation = mix(1.0 - spot_lights.data[light_index].shadow_map_opacity, 1.0, exp(min(0.0, (pos.z - depth)) / spot_lights.data[light_index].inv_radius * INV_FOG_FADE));
 						}
 						total_light += light * attenuation * shadow_attenuation * henyey_greenstein(dot(safe_normalize(light_rel_vec), safe_normalize(view_pos)), params.phase_g) * spot_lights.data[light_index].volumetric_fog_energy;
 					}

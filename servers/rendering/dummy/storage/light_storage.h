@@ -80,6 +80,7 @@ public:
 	virtual void light_set_cull_mask(RID p_light, uint32_t p_mask) override {}
 	virtual void light_set_distance_fade(RID p_light, bool p_enabled, float p_begin, float p_shadow, float p_length) override {}
 	virtual void light_set_reverse_cull_face_mode(RID p_light, bool p_enabled) override {}
+	virtual void light_set_shadow_map_enabled(RID p_light, bool p_enabled) override {}
 	virtual void light_set_shadow_caster_mask(RID p_light, uint32_t p_caster_mask) override {}
 	virtual uint32_t light_get_shadow_caster_mask(RID p_light) const override { return 0xFFFFFFFF; }
 	virtual void light_set_bake_mode(RID p_light, RSE::LightBakeMode p_bake_mode) override {}
@@ -111,6 +112,7 @@ public:
 	virtual float light_get_param(RID p_light, RSE::LightParam p_param) override { return 0.0; }
 	virtual Color light_get_color(RID p_light) override { return Color(); }
 	virtual bool light_get_reverse_cull_face_mode(RID p_light) const override { return false; }
+	virtual bool light_get_shadow_map_enabled(RID p_light) const override { return false; }
 	virtual RSE::LightBakeMode light_get_bake_mode(RID p_light) override { return RSE::LIGHT_BAKE_DISABLED; }
 	virtual uint32_t light_get_max_sdfgi_cascade(RID p_light) override { return 0; }
 	virtual uint64_t light_get_version(RID p_light) const override { return 0; }

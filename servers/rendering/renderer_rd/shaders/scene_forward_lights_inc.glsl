@@ -687,11 +687,11 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	half transmittance_z = transmittance_depth; //no transmittance by default
 	transmittance_color.a *= omni_attenuation;
 #ifndef SHADOWS_DISABLED
-	// Transmittance depth comes from the shadow map, and a raytraced light has
-	// none: the mask only carries visibility at the receiving pixel, not the
-	// depth of the surface the light last hit. Fall back to the material's own
-	// transmittance depth rather than sampling a quadrant this light never owned.
-	if (!rt_shadowed && omni_lights.data[idx].shadow_opacity > 0.001) {
+	// Transmittance depth comes from the shadow map: the mask only carries
+	// visibility at the receiving pixel, not the depth of the surface the light
+	// last hit. A raytraced light has one only if it was asked for one, and
+	// without it the material's own transmittance depth stands.
+	if (omni_lights.data[idx].shadow_map_opacity > 0.001) {
 		// Redo shadowmapping, but shrink the model a bit to avoid artifacts.
 		vec2 texel_size = scene_data_block.data.shadow_atlas_pixel_size;
 		vec4 uv_rect = omni_lights.data[idx].atlas_rect;
@@ -957,7 +957,7 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	transmittance_color.a *= spot_attenuation;
 #ifndef SHADOWS_DISABLED
 	// See the omni light above: no shadow map means no transmittance depth.
-	if (!rt_shadowed && spot_lights.data[idx].shadow_opacity > 0.001) {
+	if (spot_lights.data[idx].shadow_map_opacity > 0.001) {
 		vec4 splane = (spot_lights.data[idx].shadow_matrix * vec4(vertex - vec3(normal) * spot_lights.data[idx].transmittance_bias, 1.0));
 		splane /= splane.w;
 

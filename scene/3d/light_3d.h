@@ -73,6 +73,7 @@ private:
 	bool shadow = false;
 	bool negative = false;
 	bool reverse_cull = false;
+	bool shadow_map = false;
 	uint32_t cull_mask = 0;
 	uint32_t shadow_caster_mask = 0xFFFFFFFF;
 	bool distance_fade_enabled = false;
@@ -136,6 +137,9 @@ public:
 
 	void set_shadow_reverse_cull_face(bool p_enable);
 	bool get_shadow_reverse_cull_face() const;
+
+	void set_shadow_map_enabled(bool p_enable);
+	bool is_shadow_map_enabled() const;
 
 	void set_shadow_caster_mask(uint32_t p_caster_mask);
 	uint32_t get_shadow_caster_mask() const;

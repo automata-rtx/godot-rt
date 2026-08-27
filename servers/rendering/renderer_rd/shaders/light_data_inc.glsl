@@ -24,7 +24,10 @@ struct LightData { //this structure needs to be as packed as possible
 	float specular_amount;
 	float shadow_opacity;
 	float rt_slot; // raytraced shadow mask channel, or RT_SLOT_NONE
-	float pad;
+	// Shadow strength for the effects that sample the shadow map rather than the
+	// mask - volumetric fog, subsurface transmittance - and zero when this light
+	// owns no shadow map. A raytraced light owns one only when asked to.
+	float shadow_map_opacity;
 
 	vec4 atlas_rect; // rect in the shadow atlas
 	mat4 shadow_matrix;

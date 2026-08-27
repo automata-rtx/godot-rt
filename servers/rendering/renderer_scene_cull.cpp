@@ -3720,10 +3720,15 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			InstanceLightData *light = static_cast<InstanceLightData *>(ins->base_data);
 
 			// A raytraced light reads its shadow from the screen-space mask, so
-			// neither an atlas quadrant nor a shadow map render is any use to it.
+			// neither an atlas quadrant nor a shadow map render is any use to it,
+			// unless it was asked for one anyway: volumetric fog and subsurface
+			// transmittance sample a shadow map by construction, and a screen
+			// space mask cannot answer for a froxel or a point under a surface.
 			if (RSG::light_storage->light_instance_has_raytraced_shadow(light->instance)) {
 				dbg_raytraced_lights++;
-				continue;
+				if (!RSG::light_storage->light_instance_needs_shadow_map(light->instance)) {
+					continue;
+				}
 			}
 
 			if (!RSG::light_storage->light_instance_is_shadow_visible_at_position(light->instance, camera_position)) {

@@ -323,6 +323,16 @@ void LightStorage::light_set_reverse_cull_face_mode(RID p_light, bool p_enabled)
 	light->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_LIGHT);
 }
 
+void LightStorage::light_set_shadow_map_enabled(RID p_light, bool p_enabled) {
+	Light *light = light_owner.get_or_null(p_light);
+	ERR_FAIL_NULL(light);
+
+	light->shadow_map = p_enabled;
+
+	light->version++;
+	light->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_LIGHT);
+}
+
 void LightStorage::light_set_shadow_caster_mask(RID p_light, uint32_t p_caster_mask) {
 	Light *light = light_owner.get_or_null(p_light);
 	ERR_FAIL_NULL(light);
@@ -1350,13 +1360,12 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 			light_data.cos_spot_angle = MIN(Math::floor(Math::log2(MAX(MIN(texture_size.x, texture_size.y), 1.0f))), texture_storage->area_light_atlas_get_mipmaps()) - 1.0f; // max mipmaps
 		}
 
-		// A raytraced light owns no atlas quadrant, so none of the shadow map
-		// setup below applies to it. Its shadow strength and distance fade still
-		// do: the shader multiplies the traced visibility by shadow_opacity.
+		// A raytraced light takes its own shadow from the mask. It owns an atlas
+		// quadrant only when it was asked for a shadow map as well, which is what
+		// makes the ownership test below right for both kinds of light.
 		const bool is_raytraced = light_data.rt_slot < RT_SLOT_NONE;
 
 		const bool needs_shadow =
-				!is_raytraced &&
 				p_using_shadows &&
 				owns_shadow_atlas(p_shadow_atlas) &&
 				shadow_atlas_owns_light_instance(p_shadow_atlas, light_instance->self) &&
@@ -1370,34 +1379,9 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 			}
 		}
 
-		if (is_raytraced) {
-			light_data.shadow_opacity = in_shadow_range
-					? light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY] * shadow_opacity_fade
-					: 0.0;
+		const bool has_shadow_map = needs_shadow && in_shadow_range;
 
-			// The light projector transforms the vertex into light space with this
-			// matrix, and it is not part of the shadow map: a raytraced light owns
-			// no atlas quadrant but still has to project its cookie correctly. The
-			// matrices below match the shadow map path exactly, computed directly
-			// rather than read back from a shadow transform this light never got.
-			if (type == RSE::LIGHT_OMNI) {
-				Transform3D proj = (inverse_transform * light_transform).inverse();
-				RendererRD::MaterialStorage::store_transform(proj, light_data.shadow_matrix);
-			} else if (type == RSE::LIGHT_SPOT) {
-				Transform3D modelview = (inverse_transform * light_transform).inverse();
-				Projection bias;
-				bias.set_light_bias();
-
-				Projection cm;
-				cm.set_perspective(spot_angle * 2.0, 1.0, MIN(0.025, radius), radius);
-
-				Projection correction;
-				correction.set_depth_correction(false, true, false);
-
-				Projection shadow_mtx = bias * (correction * cm) * modelview;
-				RendererRD::MaterialStorage::store_camera(shadow_mtx, light_data.shadow_matrix);
-			}
-		} else if (needs_shadow && in_shadow_range) {
+		if (has_shadow_map) {
 			// fill in the shadow information
 
 			light_data.shadow_opacity = light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY] * shadow_opacity_fade;
@@ -1474,8 +1458,47 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 				}
 				light_data.shadow_bias *= light_data.soft_shadow_scale;
 			}
+
+			// What the effects that sample the shadow map rather than the mask -
+			// volumetric fog, subsurface transmittance - should multiply by.
+			light_data.shadow_map_opacity = light_data.shadow_opacity;
 		} else {
 			light_data.shadow_opacity = 0.0;
+			light_data.shadow_map_opacity = 0.0;
+		}
+
+		if (is_raytraced) {
+			// The mask is there whether or not a shadow map is, and the shader
+			// multiplies the traced visibility by this.
+			light_data.shadow_opacity = in_shadow_range
+					? light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY] * shadow_opacity_fade
+					: 0.0;
+
+			if (!has_shadow_map) {
+				// The light projector transforms the vertex into light space with
+				// this matrix, and it is not part of the shadow map: a raytraced
+				// light with no atlas quadrant still has to project its cookie
+				// correctly. The matrices below match the shadow map path exactly,
+				// computed directly rather than read back from a shadow transform
+				// this light never got.
+				if (type == RSE::LIGHT_OMNI) {
+					Transform3D proj = (inverse_transform * light_transform).inverse();
+					RendererRD::MaterialStorage::store_transform(proj, light_data.shadow_matrix);
+				} else if (type == RSE::LIGHT_SPOT) {
+					Transform3D modelview = (inverse_transform * light_transform).inverse();
+					Projection bias;
+					bias.set_light_bias();
+
+					Projection cm;
+					cm.set_perspective(spot_angle * 2.0, 1.0, MIN(0.025, radius), radius);
+
+					Projection correction;
+					correction.set_depth_correction(false, true, false);
+
+					Projection shadow_mtx = bias * (correction * cm) * modelview;
+					RendererRD::MaterialStorage::store_camera(shadow_mtx, light_data.shadow_matrix);
+				}
+			}
 		}
 
 		light_instance->cull_mask = light->cull_mask;
