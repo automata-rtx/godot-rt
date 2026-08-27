@@ -1009,6 +1009,8 @@ public:
 	// Non-frustum-culled mesh list handed to the raytracing acceleration structure
 	// builder. Kept as a member so it is not reallocated every frame.
 	LocalVector<RendererSceneRender::RaytracingInstance> rt_instance_scratch;
+	LocalVector<Instance *> rt_caster_scratch;
+	LocalVector<AABB> rt_light_bounds_scratch;
 	uint64_t rt_caster_pass_counter = 0;
 
 	RendererSceneRender::RenderShadowData render_shadow_data[MAX_UPDATE_SHADOWS];

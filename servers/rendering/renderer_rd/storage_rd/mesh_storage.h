@@ -702,6 +702,7 @@ public:
 	virtual void _multimesh_instance_set_custom_data(RID p_multimesh, int p_index, const Color &p_color) override;
 
 	virtual RID _multimesh_get_mesh(RID p_multimesh) const override;
+	virtual bool multimesh_uses_3d_transforms(RID p_multimesh) const override;
 
 	virtual Transform3D _multimesh_instance_get_transform(RID p_multimesh, int p_index) const override;
 	virtual Transform2D _multimesh_instance_get_transform_2d(RID p_multimesh, int p_index) const override;

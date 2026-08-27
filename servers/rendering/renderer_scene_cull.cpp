@@ -3490,16 +3490,30 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	if (scene_render->is_raytracing_scene_available() && !p_reflection_probe.is_valid()) {
 		RENDER_TIMESTAMP("Update RT Acceleration Structures");
 
+		// A multimesh contributes one entry per element, so a single GridMap
+		// octant can be worth hundreds. Bounded so that a pathological scene
+		// degrades instead of stalling.
+		constexpr uint32_t MAX_RT_CASTERS = 65536;
+
 		rt_instance_scratch.clear();
+		rt_caster_scratch.clear();
+		rt_light_bounds_scratch.clear();
 		rt_caster_pass_counter++;
 
-		uint32_t dbg_lights = 0, dbg_visited = 0, dbg_skinned = 0;
+		uint32_t dbg_visited = 0, dbg_skinned = 0, dbg_multimesh = 0;
+
+		for (uint32_t i = 0; i < (uint32_t)scene_cull_result.lights.size(); i++) {
+			Instance *light_instance = scene_cull_result.lights[i];
+			InstanceLightData *light = static_cast<InstanceLightData *>(light_instance->base_data);
+			if (RSG::light_storage->light_instance_is_raytraced_shadow_candidate(light->instance)) {
+				rt_light_bounds_scratch.push_back(light_instance->transformed_aabb);
+			}
+		}
 
 		struct CullRTCasters {
-			LocalVector<RendererSceneRender::RaytracingInstance> *result;
+			LocalVector<Instance *> *result;
 			uint64_t pass;
 			uint32_t *visited;
-			uint32_t *skinned;
 
 			_FORCE_INLINE_ bool operator()(void *p_data) {
 				Instance *instance = (Instance *)p_data;
@@ -3511,18 +3525,41 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				}
 				instance->rt_caster_pass = pass;
 
-				if (instance->base_type != RSE::INSTANCE_MESH || !instance->visible ||
-						instance->base.is_null() ||
+				if (!instance->visible || instance->base.is_null() ||
 						instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_OFF) {
 					return false;
 				}
+				if (instance->base_type != RSE::INSTANCE_MESH && instance->base_type != RSE::INSTANCE_MULTIMESH) {
+					return false;
+				}
 
+				result->push_back(instance);
+				return false;
+			}
+		};
+
+		CullRTCasters cull_casters;
+		cull_casters.result = &rt_caster_scratch;
+		cull_casters.pass = rt_caster_pass_counter;
+		cull_casters.visited = &dbg_visited;
+
+		for (const AABB &light_bounds : rt_light_bounds_scratch) {
+			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(light_bounds, cull_casters);
+		}
+
+		for (Instance *instance : rt_caster_scratch) {
+			if (rt_instance_scratch.size() >= MAX_RT_CASTERS) {
+				WARN_PRINT_ONCE(vformat("Raytraced shadows: more than %d shadow casters are within range of a light; the rest will not cast.", MAX_RT_CASTERS));
+				break;
+			}
+
+			if (instance->base_type == RSE::INSTANCE_MESH) {
 				RendererSceneRender::RaytracingInstance rt_instance;
 				rt_instance.mesh = instance->base;
 				rt_instance.mesh_instance = instance->mesh_instance;
 				rt_instance.transform = instance->transform;
 				rt_instance.layer_mask = instance->layer_mask;
-				result->push_back(rt_instance);
+				rt_instance_scratch.push_back(rt_instance);
 
 				if (rt_instance.mesh_instance.is_valid()) {
 					// The skeleton pass only runs for instances that survived frustum
@@ -3531,26 +3568,60 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 					// cast that stale shadow. Casters are deliberately not frustum
 					// culled here, so each one is marked for skinning explicitly.
 					RSG::mesh_storage->mesh_instance_check_for_update(rt_instance.mesh_instance);
-					(*skinned)++;
+					dbg_skinned++;
 				}
-				return false;
-			}
-		};
-
-		CullRTCasters cull_casters;
-		cull_casters.result = &rt_instance_scratch;
-		cull_casters.pass = rt_caster_pass_counter;
-		cull_casters.visited = &dbg_visited;
-		cull_casters.skinned = &dbg_skinned;
-
-		for (uint32_t i = 0; i < (uint32_t)scene_cull_result.lights.size(); i++) {
-			Instance *light_instance = scene_cull_result.lights[i];
-			InstanceLightData *light = static_cast<InstanceLightData *>(light_instance->base_data);
-			if (!RSG::light_storage->light_instance_is_raytraced_shadow_candidate(light->instance)) {
 				continue;
 			}
-			dbg_lights++;
-			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(light_instance->transformed_aabb, cull_casters);
+
+			// A multimesh is one instance in the scene but many in the structure.
+			// Every element shares the mesh, so they also share its acceleration
+			// structure and only differ by transform; that is exactly what the top
+			// level structure is for, and it is how a GridMap or a field of
+			// scattered props casts shadows at all.
+			const RID multimesh = instance->base;
+			const RID mesh = RSG::mesh_storage->multimesh_get_mesh(multimesh);
+			if (mesh.is_null() || !RSG::mesh_storage->multimesh_uses_3d_transforms(multimesh)) {
+				continue;
+			}
+
+			const int total = RSG::mesh_storage->multimesh_get_instance_count(multimesh);
+			const int visible = RSG::mesh_storage->multimesh_get_visible_instances(multimesh);
+			const int count = visible >= 0 ? MIN(visible, total) : total;
+			if (count <= 0) {
+				continue;
+			}
+
+			const AABB mesh_aabb = RSG::mesh_storage->mesh_get_aabb(mesh, RID());
+			dbg_multimesh++;
+
+			for (int element = 0; element < count; element++) {
+				if (rt_instance_scratch.size() >= MAX_RT_CASTERS) {
+					break;
+				}
+
+				const Transform3D element_transform = instance->transform * RSG::mesh_storage->multimesh_instance_get_transform(multimesh, element);
+
+				// The instance's own bounds cover the whole multimesh, so an element
+				// of it can still be far outside every light. Culling per element
+				// keeps a large GridMap octant from filling the structure.
+				bool reached = false;
+				const AABB element_bounds = element_transform.xform(mesh_aabb);
+				for (const AABB &light_bounds : rt_light_bounds_scratch) {
+					if (light_bounds.intersects(element_bounds)) {
+						reached = true;
+						break;
+					}
+				}
+				if (!reached) {
+					continue;
+				}
+
+				RendererSceneRender::RaytracingInstance rt_instance;
+				rt_instance.mesh = mesh;
+				rt_instance.transform = element_transform;
+				rt_instance.layer_mask = instance->layer_mask;
+				rt_instance_scratch.push_back(rt_instance);
+			}
 		}
 
 		if (dbg_skinned > 0) {
@@ -3561,8 +3632,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 		if (scene_render->is_raytracing_debug_enabled()) {
 			static String last;
-			String cur = vformat("RT_DEBUG cull: scenario_instances=%d rt_lights=%d visited=%d -> kept=%d (skinned=%d)",
-					(int)scenario->instance_data.size(), (int)dbg_lights, (int)dbg_visited,
+			String cur = vformat("RT_DEBUG cull: scenario_instances=%d rt_lights=%d visited=%d casters=%d multimesh=%d -> tlas_entries=%d (skinned=%d)",
+					(int)scenario->instance_data.size(), (int)rt_light_bounds_scratch.size(), (int)dbg_visited,
+					(int)rt_caster_scratch.size(), (int)dbg_multimesh,
 					(int)rt_instance_scratch.size(), (int)dbg_skinned);
 			if (cur != last) {
 				last = cur;

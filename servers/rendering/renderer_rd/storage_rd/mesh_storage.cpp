@@ -2068,6 +2068,11 @@ RID MeshStorage::_multimesh_get_mesh(RID p_multimesh) const {
 	return multimesh->mesh;
 }
 
+bool MeshStorage::multimesh_uses_3d_transforms(RID p_multimesh) const {
+	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	return multimesh != nullptr && multimesh->xform_format == RSE::MULTIMESH_TRANSFORM_3D;
+}
+
 Dependency *MeshStorage::multimesh_get_dependency(RID p_multimesh) const {
 	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
 	ERR_FAIL_NULL_V(multimesh, nullptr);
