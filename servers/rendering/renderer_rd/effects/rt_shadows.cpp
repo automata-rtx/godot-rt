@@ -101,9 +101,27 @@ RTShadows::RTShadows() {
 		ERR_PRINT_ONCE("Raytraced shadows: denoiser shaders failed to compile; shadows will be noisy.");
 	}
 
-	light_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(LightParams) * MAX_RT_LIGHTS);
+	valid = true;
+}
 
-	valid = light_buffer.is_valid();
+void RTShadows::_ensure_light_buffer(uint32_t p_light_count) {
+	// Grown in powers of two so a scene whose light count wobbles does not
+	// reallocate every frame.
+	uint32_t required = MAX(16u, p_light_count);
+	if (light_buffer.is_valid() && light_buffer_capacity >= required) {
+		return;
+	}
+
+	uint32_t capacity = 16;
+	while (capacity < required) {
+		capacity *= 2;
+	}
+
+	if (light_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(light_buffer);
+	}
+	light_buffer = RD::get_singleton()->storage_buffer_create(sizeof(LightParams) * capacity);
+	light_buffer_capacity = light_buffer.is_valid() ? capacity : 0;
 }
 
 RTShadows::~RTShadows() {
@@ -121,9 +139,10 @@ RTShadows::~RTShadows() {
 	}
 }
 
-void RTShadows::_trace(RID p_tlas, RID p_depth_texture, RID p_dest_visibility, RID p_dest_hit_distance,
+void RTShadows::_trace(RID p_tlas, RID p_depth_texture, const Buffers &p_buffers,
 		const Size2i &p_size, const Projection &p_inv_view_projection,
-		const Transform3D &p_camera_transform, uint32_t p_light_count, const Settings &p_settings) {
+		const Transform3D &p_camera_transform, uint32_t p_light_count,
+		const Settings &p_settings) {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 	RID sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 
@@ -147,20 +166,27 @@ void RTShadows::_trace(RID p_tlas, RID p_depth_texture, RID p_dest_visibility, R
 		RD::Uniform u;
 		u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
 		u.binding = 2;
-		u.append_id(p_dest_visibility);
+		u.append_id(p_buffers.output_mask);
 		uniforms.push_back(u);
 	}
 	{
 		RD::Uniform u;
 		u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
 		u.binding = 3;
-		u.append_id(p_dest_hit_distance);
+		u.append_id(p_buffers.output_index);
 		uniforms.push_back(u);
 	}
 	{
 		RD::Uniform u;
-		u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+		u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
 		u.binding = 4;
+		u.append_id(p_buffers.raw_hit_distance);
+		uniforms.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = 5;
 		u.append_id(light_buffer);
 		uniforms.push_back(u);
 	}
@@ -195,7 +221,6 @@ void RTShadows::_temporal(RID p_depth_texture, RID p_velocity, const Buffers &p_
 		float p_far_plane, const Settings &p_settings) {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 	RID sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
-	RID linear_sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 
 	LocalVector<RD::Uniform> uniforms;
 	auto add_texture = [&](uint32_t p_binding, RID p_sampler, RID p_texture) {
@@ -214,14 +239,17 @@ void RTShadows::_temporal(RID p_depth_texture, RID p_velocity, const Buffers &p_
 		uniforms.push_back(u);
 	};
 
-	add_texture(0, sampler, p_buffers.raw_visibility);
+	add_texture(0, sampler, p_buffers.output_mask);
 	add_texture(1, sampler, p_depth_texture);
 	add_texture(2, sampler, p_velocity);
-	// The history is sampled at a reprojected, non-integer position.
-	add_texture(3, linear_sampler, p_buffers.history_visibility);
-	add_texture(4, linear_sampler, p_buffers.history_meta);
+	// The reprojected history is filtered in the shader rather than by the
+	// sampler, because the channel assignment cannot be interpolated.
+	add_texture(3, sampler, p_buffers.history_visibility);
+	add_texture(4, sampler, p_buffers.history_meta);
 	add_image(5, p_buffers.denoise_a);
 	add_image(6, p_buffers.history_length);
+	add_texture(7, sampler, p_buffers.output_index);
+	add_texture(8, sampler, p_buffers.history_index);
 
 	RID compiled = temporal_shader.version_get_shader(temporal_shader_version, 0);
 	RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(compiled, 0, uniforms);
@@ -281,6 +309,8 @@ void RTShadows::_atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_nor
 	// iterations; only the first iteration actually writes them.
 	add_image(6, p_buffers.history_visibility);
 	add_image(7, p_buffers.history_meta);
+	add_texture(8, p_buffers.output_index);
+	add_image(9, p_buffers.history_index);
 
 	RID compiled = atrous_shader.version_get_shader(atrous_shader_version, 0);
 	RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(compiled, 0, uniforms);
@@ -311,43 +341,43 @@ void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, 
 		const Buffers &p_buffers, const Size2i &p_screen_size, const Projection &p_camera_projection,
 		const Transform3D &p_camera_transform, float p_far_plane,
 		const LocalVector<LightParams> &p_lights, const Settings &p_settings) {
-	if (!valid || p_tlas.is_null() || p_lights.is_empty() || p_buffers.output_mask.is_null()) {
+	if (!valid || p_tlas.is_null() || p_lights.is_empty() ||
+			p_buffers.output_mask.is_null() || p_buffers.output_index.is_null()) {
 		return;
 	}
 
 	frame_index++;
 
-	// Upload the light list. Unused slots are zeroed so a stale light cannot
-	// leak into a channel that is no longer in use.
-	LightParams packed[MAX_RT_LIGHTS] = {};
 	const uint32_t light_count = MIN((uint32_t)p_lights.size(), MAX_RT_LIGHTS);
-	for (uint32_t i = 0; i < light_count; i++) {
-		packed[i] = p_lights[i];
+
+	_ensure_light_buffer(light_count);
+	if (light_buffer.is_null()) {
+		return;
 	}
-	RD::get_singleton()->buffer_update(light_buffer, 0, sizeof(LightParams) * MAX_RT_LIGHTS, packed);
+	RD::get_singleton()->buffer_update(light_buffer, 0, sizeof(LightParams) * light_count, p_lights.ptr());
+
+	ERR_FAIL_COND(p_buffers.raw_hit_distance.is_null());
 
 	// The acceleration structure lives in world space, so rays are traced there.
-	Projection view_projection = p_camera_projection * Projection(p_camera_transform.affine_inverse());
-	Projection inv_view_projection = view_projection.inverse();
+	const Projection view_projection = p_camera_projection * Projection(p_camera_transform.affine_inverse());
+	const Projection inv_view_projection = view_projection.inverse();
 
-	const bool denoise = p_settings.denoise && temporal_pipeline.is_valid() && atrous_pipeline.is_valid() &&
-			p_velocity.is_valid() && p_buffers.raw_visibility.is_valid() &&
+	_trace(p_tlas, p_depth_texture, p_buffers, p_screen_size, inv_view_projection,
+			p_camera_transform, light_count, p_settings);
+
+	const bool denoise = p_settings.denoise &&
+			temporal_pipeline.is_valid() && atrous_pipeline.is_valid() &&
+			p_velocity.is_valid() &&
 			p_buffers.denoise_a.is_valid() && p_buffers.denoise_b.is_valid() &&
-			p_buffers.history_visibility.is_valid() && p_buffers.history_meta.is_valid() &&
-			p_buffers.history_length.is_valid();
+			p_buffers.history_visibility.is_valid() && p_buffers.history_index.is_valid() &&
+			p_buffers.history_meta.is_valid() && p_buffers.history_length.is_valid();
 
 	if (!denoise) {
-		// Trace straight into the mask the forward pass reads. Noisy, but the
-		// shadows are correct.
-		ERR_FAIL_COND(p_buffers.raw_hit_distance.is_null());
-		_trace(p_tlas, p_depth_texture, p_buffers.output_mask, p_buffers.raw_hit_distance,
-				p_screen_size, inv_view_projection, p_camera_transform, light_count, p_settings);
 		return;
 	}
 
-	_trace(p_tlas, p_depth_texture, p_buffers.raw_visibility, p_buffers.raw_hit_distance,
-			p_screen_size, inv_view_projection, p_camera_transform, light_count, p_settings);
-
+	// The denoiser works on the mask in place: the temporal pass reads it and the
+	// last a-trous pass writes it back.
 	_temporal(p_depth_texture, p_velocity, p_buffers, p_screen_size, inv_view_projection,
 			p_camera_transform, p_far_plane, p_settings);
 
@@ -359,7 +389,6 @@ void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, 
 
 	for (uint32_t i = 0; i < iterations; i++) {
 		const bool last = (i == iterations - 1);
-		// The final iteration writes the mask the forward shader samples.
 		RID dest = last ? p_buffers.output_mask : ((source == p_buffers.denoise_a) ? p_buffers.denoise_b : p_buffers.denoise_a);
 
 		_atrous(source, dest, p_depth_texture, p_normal_roughness, p_buffers, p_screen_size,

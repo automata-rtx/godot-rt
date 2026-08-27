@@ -111,6 +111,13 @@ public:
 	}
 	virtual bool light_instance_is_shadow_visible_at_position(RID p_light, const Vector3 &p_position) const = 0;
 
+	// True when this light takes its shadow from the raytraced mask rather than
+	// from the shadow atlas, in which case rendering a shadow map for it is
+	// wasted work. Renderers without raytraced shadows never say yes.
+	virtual bool light_instance_uses_raytraced_shadows(RID p_light_instance) const {
+		return false;
+	}
+
 	/* PROBE API */
 
 	virtual RID reflection_probe_allocate() = 0;

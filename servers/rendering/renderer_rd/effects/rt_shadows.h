@@ -40,19 +40,33 @@
 
 namespace RendererRD {
 
-// Traces one shadow ray set per pixel per raytraced light and denoises the
-// result into an RGBA8 screen-space mask, one channel per light. The forward
-// shader samples that mask instead of the shadow atlas.
+// Traces shadow rays for the raytraced lights that reach each pixel and
+// denoises the result into a screen-space mask. The forward shader samples that
+// mask instead of the shadow atlas.
+//
+// The mask is not a channel per light in the scene. Each pixel keeps the few
+// raytraced lights that actually reach it, tile-culled and ranked by
+// contribution inside the trace shader, and a companion index texture records
+// which lights those are. Cost therefore scales with how many raytraced lights
+// overlap a pixel rather than with how many the scene contains.
+//
+// Everything here is single view: a stereo pair would need a trace and a full
+// set of denoiser history per eye, so multiview keeps its shadow maps instead.
 //
 // The denoiser keeps its own temporal history rather than relying on the
 // image's temporal antialiasing, so the result is usable with SMAA or with no
 // antialiasing at all.
 class RTShadows {
 public:
-	// Maximum number of lights that can be packed into the mask.
-	static constexpr uint32_t MAX_RT_LIGHTS = 4;
+	// Absolute ceiling on raytraced lights in a frame. LightData carries the
+	// light's index as a float with 255 reserved to mean "not raytraced", so the
+	// indices have to stay below that.
+	static constexpr uint32_t MAX_RT_LIGHTS = 255;
+	// Raytraced lights kept per pixel, one per channel of the mask. Must match
+	// LIGHTS_PER_PIXEL in rt_shadow_trace.glsl.
+	static constexpr uint32_t LIGHTS_PER_PIXEL = 4;
 
-	// CPU-side mirror of the shader's RTLight struct. std140 layout.
+	// CPU-side mirror of the shader's RTLight struct. std430 layout.
 	struct LightParams {
 		float position[3];
 		float radius;
@@ -63,20 +77,23 @@ public:
 		float size;
 		uint32_t is_spot;
 		uint32_t mask;
-		float pad;
+		float energy;
 	};
 
 	// The textures the trace and the denoiser work through. Owned by the render
 	// buffers so they follow the viewport's size and lifetime.
 	struct Buffers {
-		RID raw_visibility;
+		// The mask the forward pass samples, and the light index each of its
+		// channels carries.
+		RID output_mask;
+		RID output_index;
 		RID raw_hit_distance;
 		RID denoise_a;
 		RID denoise_b;
 		RID history_visibility;
+		RID history_index;
 		RID history_meta;
 		RID history_length;
-		RID output_mask;
 	};
 
 	struct Settings {
@@ -144,13 +161,16 @@ private:
 	RID atrous_pipeline;
 
 	RID light_buffer;
+	uint32_t light_buffer_capacity = 0;
 
 	bool valid = false;
 	uint32_t frame_index = 0;
 
-	void _trace(RID p_tlas, RID p_depth_texture, RID p_dest_visibility, RID p_dest_hit_distance,
+	void _ensure_light_buffer(uint32_t p_light_count);
+	void _trace(RID p_tlas, RID p_depth_texture, const Buffers &p_buffers,
 			const Size2i &p_size, const Projection &p_inv_view_projection,
-			const Transform3D &p_camera_transform, uint32_t p_light_count, const Settings &p_settings);
+			const Transform3D &p_camera_transform, uint32_t p_light_count,
+			const Settings &p_settings);
 	void _temporal(RID p_depth_texture, RID p_velocity, const Buffers &p_buffers, const Size2i &p_size,
 			const Projection &p_inv_view_projection, const Transform3D &p_camera_transform,
 			float p_far_plane, const Settings &p_settings);

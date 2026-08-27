@@ -712,7 +712,36 @@ void LightStorage::set_max_lights(const uint32_t p_max_lights) {
 	directional_light_buffer = RD::get_singleton()->uniform_buffer_create(directional_light_buffer_size);
 }
 
-void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows) {
+bool LightStorage::_light_uses_raytraced_shadows(const Light *p_light) const {
+	if (p_light == nullptr || !p_light->shadow) {
+		return false;
+	}
+	// Area and directional lights keep their shadow maps for now.
+	if (p_light->type != RSE::LIGHT_OMNI && p_light->type != RSE::LIGHT_SPOT) {
+		return false;
+	}
+	// Requires a renderer that samples the mask AND a built acceleration
+	// structure, not just an enabled setting: a raytraced light skips the shadow
+	// atlas entirely, so saying yes when there is nothing to trace against, or
+	// when nothing will sample the mask, would leave it unshadowed rather than
+	// falling back to a shadow map.
+	const RendererSceneRenderRD *scene_render = RendererSceneRenderRD::get_singleton();
+	if (scene_render == nullptr || !scene_render->is_raytracing_scene_available()) {
+		return false;
+	}
+	const RaytracingScene *rt_scene = RaytracingScene::get_singleton();
+	return rt_scene != nullptr && rt_scene->has_traceable_scene();
+}
+
+bool LightStorage::light_instance_uses_raytraced_shadows(RID p_light_instance) const {
+	const LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
+	if (light_instance == nullptr) {
+		return false;
+	}
+	return _light_uses_raytraced_shadows(light_owner.get_or_null(light_instance->light));
+}
+
+void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, bool p_use_raytraced_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows) {
 	ForwardIDStorage *forward_id_storage = ForwardIDStorage::get_singleton();
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
 
@@ -725,13 +754,10 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 	spot_light_count = 0;
 
 	rt_lights.clear();
-	// Requires a built acceleration structure, not just an enabled setting: a
-	// light holding a mask slot skips the shadow atlas entirely, so granting
-	// one when there is nothing to trace against would leave it unshadowed
-	// rather than falling back to a shadow map.
-	const bool rt_shadows_available = RaytracingScene::get_singleton() &&
-			RaytracingScene::get_singleton()->is_available() &&
-			RaytracingScene::get_singleton()->has_traceable_scene();
+	// Only the pass that actually traces and samples the mask hands out slots.
+	// A reflection probe render, for instance, has no mask, so its lights keep
+	// reading the shadow atlas.
+	const bool rt_shadows_available = p_use_raytraced_shadows && p_using_shadows;
 	area_light_count = 0;
 
 	r_directional_light_soft_shadows = false;
@@ -1085,12 +1111,13 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 
 		light_data.size = size;
 
-		// Raytraced shadows: grant this light a channel in the screen-space mask.
-		// Only omni and spot lights participate in this first draft; area and
-		// directional lights keep their shadow maps.
+		// Raytraced shadows: register this light with the trace. The index it
+		// gets is not a fixed channel of the mask; each pixel keeps whichever
+		// raytraced lights actually reach it and records their indices, so this
+		// is bounded by what fits in the index rather than by the mask's four
+		// channels.
 		light_data.rt_slot = RT_SLOT_NONE;
-		if (rt_shadows_available && p_using_shadows && light->shadow &&
-				(type == RSE::LIGHT_OMNI || type == RSE::LIGHT_SPOT) &&
+		if (rt_shadows_available && _light_uses_raytraced_shadows(light) &&
 				rt_lights.size() < RTShadows::MAX_RT_LIGHTS) {
 			RTShadows::LightParams rt_light = {};
 
@@ -1113,6 +1140,10 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 
 			rt_light.size = size;
 			rt_light.is_spot = (type == RSE::LIGHT_SPOT) ? 1u : 0u;
+			// Used to rank lights where more of them reach a pixel than the mask
+			// has channels, so that the ones that are dropped are the ones whose
+			// shadow would be least visible.
+			rt_light.energy = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_ENERGY]);
 
 			// Fold Godot's 32-bit cull mask into the 8-bit acceleration structure
 			// instance mask. Conservative: an extra caster, never a missing one.
@@ -1189,21 +1220,31 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 			light_data.cos_spot_angle = MIN(Math::floor(Math::log2(MAX(MIN(texture_size.x, texture_size.y), 1.0f))), texture_storage->area_light_atlas_get_mipmaps()) - 1.0f; // max mipmaps
 		}
 
+		// A raytraced light owns no atlas quadrant, so none of the shadow map
+		// setup below applies to it. Its shadow strength and distance fade still
+		// do: the shader multiplies the traced visibility by shadow_opacity.
+		const bool is_raytraced = light_data.rt_slot < RT_SLOT_NONE;
+
 		const bool needs_shadow =
+				!is_raytraced &&
 				p_using_shadows &&
 				owns_shadow_atlas(p_shadow_atlas) &&
 				shadow_atlas_owns_light_instance(p_shadow_atlas, light_instance->self) &&
 				light->shadow;
 
 		bool in_shadow_range = true;
-		if (needs_shadow && light->distance_fade) {
+		if ((needs_shadow || is_raytraced) && light->distance_fade) {
 			if (distance > light->distance_fade_shadow + light->distance_fade_length) {
 				// Out of range, don't draw shadows to improve performance.
 				in_shadow_range = false;
 			}
 		}
 
-		if (needs_shadow && in_shadow_range) {
+		if (is_raytraced) {
+			light_data.shadow_opacity = in_shadow_range
+					? light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY] * shadow_opacity_fade
+					: 0.0;
+		} else if (needs_shadow && in_shadow_range) {
 			// fill in the shadow information
 
 			light_data.shadow_opacity = light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY] * shadow_opacity_fade;

@@ -1794,7 +1794,7 @@ bool RendererSceneRenderRD::is_raytracing_debug_enabled() const {
 }
 
 bool RendererSceneRenderRD::is_raytracing_scene_available() const {
-	return raytracing_scene != nullptr && raytracing_scene->is_available() && rt_shadows != nullptr && rt_shadows->is_valid();
+	return _uses_raytraced_shadows() && raytracing_scene != nullptr && raytracing_scene->is_available() && rt_shadows != nullptr && rt_shadows->is_valid();
 }
 
 void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances) {

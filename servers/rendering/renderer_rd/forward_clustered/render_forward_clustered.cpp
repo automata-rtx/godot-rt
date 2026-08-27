@@ -1531,37 +1531,50 @@ bool RenderForwardClustered::_ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD>
 		return false;
 	}
 
-	const uint32_t sampled_storage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT |
+	const uint32_t usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT |
 			RD::TEXTURE_USAGE_CAN_COPY_TO_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 
+	// All single layer: raytraced shadows are not used under multiview, so
+	// nothing here is ever per-view. These live in their own scope so a resize
+	// can tear them down without disturbing anything else the renderer keeps on
+	// the render buffers.
 	auto ensure = [&](const StringName &p_name, RD::DataFormat p_format) -> RID {
-		if (!p_render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, p_name)) {
-			// Recreated automatically by the render buffers when the size changes.
-			p_render_buffers->create_texture(RB_SCOPE_FORWARD_CLUSTERED, p_name, p_format,
-					sampled_storage, RD::TEXTURE_SAMPLES_1, p_size);
+		if (!p_render_buffers->has_texture(RB_SCOPE_RT_SHADOWS, p_name)) {
+			p_render_buffers->create_texture(RB_SCOPE_RT_SHADOWS, p_name, p_format, usage,
+					RD::TEXTURE_SAMPLES_1, p_size, 1);
+			// A fresh image has undefined contents, and the denoiser reads its own
+			// buffers back before it has ever written them. Zeroed history reads as
+			// "no usable history": the reprojection test compares against a stored
+			// view distance of zero and rejects it.
+			RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_RT_SHADOWS, p_name), Color(0, 0, 0, 0), 0, 1, 0, 1);
 		}
-		return p_render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, p_name);
+		return p_render_buffers->get_texture(RB_SCOPE_RT_SHADOWS, p_name);
 	};
 
-	// One channel per raytraced light.
+	// The mask the forward pass samples, and which raytraced light each of its
+	// four channels carries at that pixel.
 	r_buffers.output_mask = ensure(RB_TEX_RT_SHADOW_MASK, RD::DATA_FORMAT_R8G8B8A8_UNORM);
+	r_buffers.output_index = ensure(RB_TEX_RT_SHADOW_INDEX, RD::DATA_FORMAT_R8G8B8A8_UINT);
+
 	// Always its own target: the trace writes visibility and hit distance in the
 	// same dispatch, so aliasing them onto one texture makes the second write
 	// clobber the first.
 	r_buffers.raw_hit_distance = ensure(RB_TEX_RT_RAW_HIT_DISTANCE, RD::DATA_FORMAT_R8G8B8A8_UNORM);
 
 	if (p_denoise) {
-		r_buffers.raw_visibility = ensure(RB_TEX_RT_RAW_VISIBILITY, RD::DATA_FORMAT_R8G8B8A8_UNORM);
 		r_buffers.denoise_a = ensure(RB_TEX_RT_DENOISE_A, RD::DATA_FORMAT_R8G8B8A8_UNORM);
 		r_buffers.denoise_b = ensure(RB_TEX_RT_DENOISE_B, RD::DATA_FORMAT_R8G8B8A8_UNORM);
 		r_buffers.history_visibility = ensure(RB_TEX_RT_HISTORY_VISIBILITY, RD::DATA_FORMAT_R8G8B8A8_UNORM);
+		// Which light each history channel belongs to. A history sample is only
+		// usable where this still matches, so it has to be kept alongside.
+		r_buffers.history_index = ensure(RB_TEX_RT_HISTORY_INDEX, RD::DATA_FORMAT_R8G8B8A8_UINT);
 		// Normalized view distance and history length. Half float is enough for a
 		// relative surface comparison and halves the cost of a full float target.
 		r_buffers.history_meta = ensure(RB_TEX_RT_HISTORY_META, RD::DATA_FORMAT_R16G16_SFLOAT);
 		r_buffers.history_length = ensure(RB_TEX_RT_HISTORY_LENGTH, RD::DATA_FORMAT_R8_UNORM);
 	}
 
-	return r_buffers.output_mask.is_valid();
+	return r_buffers.output_mask.is_valid() && r_buffers.output_index.is_valid();
 }
 
 void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
@@ -1715,7 +1728,15 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 
 	uint32_t directional_light_count = 0;
 	uint32_t positional_light_count = 0;
-	light_storage->update_light_buffers(p_render_data, *p_render_data->lights, p_render_data->scene_data->cam_transform, p_render_data->shadow_atlas, using_shadows, directional_light_count, positional_light_count, p_render_data->directional_light_soft_shadows);
+	// Only the main scene pass traces and samples the raytraced shadow mask, so
+	// only it may hand out raytraced light indices. A stereo pair would need a
+	// trace and a full set of denoiser history per eye, so it keeps shadow maps.
+	bool using_raytraced_shadows = p_render_data->reflection_probe.is_null() && rb_data.is_valid() &&
+			is_raytracing_scene_available() && rb.is_valid() && rb->get_view_count() == 1;
+	if (p_render_data->reflection_probe.is_null() && rb.is_valid() && rb->get_view_count() > 1 && is_raytracing_scene_available()) {
+		WARN_PRINT_ONCE("Raytraced shadows are not supported for multiview rendering yet; shadow maps are used instead.");
+	}
+	light_storage->update_light_buffers(p_render_data, *p_render_data->lights, p_render_data->scene_data->cam_transform, p_render_data->shadow_atlas, using_shadows, using_raytraced_shadows, directional_light_count, positional_light_count, p_render_data->directional_light_soft_shadows);
 	texture_storage->update_decal_buffer(*p_render_data->decals, p_render_data->scene_data->cam_transform);
 
 	p_render_data->directional_light_count = directional_light_count;
@@ -1755,14 +1776,6 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			settings.atrous_iterations = RendererRD::RaytracingScene::get_denoiser_iterations();
 			settings.max_history = RendererRD::RaytracingScene::get_denoiser_max_history();
 
-			// The denoiser writes and samples plain 2D images, so a stereo pair
-			// would need a per-view trace. Fall back to the raw signal there
-			// rather than filtering one eye with the other's history.
-			if (rb->get_view_count() > 1) {
-				WARN_PRINT_ONCE("Raytraced shadow denoising is not supported for multiview rendering yet; shadows will be noisy.");
-				settings.denoise = false;
-			}
-
 			RendererRD::RTShadows::Buffers rt_buffers;
 			bool have_buffers = _ensure_rt_shadow_buffers(rb, internal_size, settings.denoise, rt_buffers);
 
@@ -1777,7 +1790,9 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 							p_render_data->scene_data->z_far, rt_lights, settings);
 				} else {
 					// Nothing to trace against (an empty scene, or every mesh was
-					// ineligible). Fully lit is the correct answer.
+					// ineligible). A fully lit mask is the correct answer, and it makes
+					// the companion index irrelevant: whichever channel a light matches,
+					// it reads back as unshadowed.
 					RD::get_singleton()->texture_clear(rt_buffers.output_mask, Color(1, 1, 1, 1), 0, 1, 0, 1);
 				}
 			}
@@ -3899,10 +3914,27 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 
 		RID mask;
-		if (rb.is_valid() && rb->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_RT_SHADOW_MASK)) {
-			mask = rb->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_RT_SHADOW_MASK);
+		if (rb.is_valid() && rb->has_texture(RB_SCOPE_RT_SHADOWS, RB_TEX_RT_SHADOW_MASK)) {
+			mask = rb->get_texture(RB_SCOPE_RT_SHADOWS, RB_TEX_RT_SHADOW_MASK);
 		}
-		RID texture = mask.is_valid() ? mask : texture_storage->texture_rd_get_default(is_multiview ? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_WHITE : RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_WHITE);
+		RID texture = mask.is_valid() ? mask : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_WHITE);
+		u.append_id(texture);
+		uniforms.push_back(u);
+	}
+
+	{
+		// Which raytraced light each channel of the mask carries. The default is
+		// an all-ones texture, which reads as "no light claims this channel" and
+		// leaves every light unshadowed.
+		RD::Uniform u;
+		u.binding = 38;
+		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+
+		RID index;
+		if (rb.is_valid() && rb->has_texture(RB_SCOPE_RT_SHADOWS, RB_TEX_RT_SHADOW_INDEX)) {
+			index = rb->get_texture(RB_SCOPE_RT_SHADOWS, RB_TEX_RT_SHADOW_INDEX);
+		}
+		RID texture = index.is_valid() ? index : rt_shadow_index_fallback;
 		u.append_id(texture);
 		uniforms.push_back(u);
 	}
@@ -5383,6 +5415,30 @@ RenderForwardClustered::RenderForwardClustered() {
 		RD::get_singleton()->compute_list_end();
 	}
 
+	{
+		// Stand-in for the raytraced shadow index texture. The forward shader
+		// declares it whether or not raytracing is in use, and its format is
+		// integer, so none of the shared default textures fit.
+		RD::TextureFormat tf;
+		tf.format = RD::DATA_FORMAT_R8G8B8A8_UINT;
+		tf.width = 1;
+		tf.height = 1;
+		tf.array_layers = 1;
+		tf.usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_UPDATE_BIT;
+
+		Vector<uint8_t> texel;
+		texel.resize_initialized(4);
+		uint8_t *texel_ptr = texel.ptrw();
+		// 255 is the "no light in this channel" marker, so nothing matches.
+		for (int i = 0; i < 4; i++) {
+			texel_ptr[i] = 255;
+		}
+
+		Vector<Vector<uint8_t>> data;
+		data.push_back(texel);
+		rt_shadow_index_fallback = RD::get_singleton()->texture_create(tf, RD::TextureView(), data);
+	}
+
 	_update_shader_quality_settings();
 	_update_global_pipeline_data_requirements_from_project();
 
@@ -5424,6 +5480,9 @@ RenderForwardClustered::~RenderForwardClustered() {
 #endif
 
 	RD::get_singleton()->free_rid(shadow_sampler);
+	if (rt_shadow_index_fallback.is_valid()) {
+		RD::get_singleton()->free_rid(rt_shadow_index_fallback);
+	}
 	RSG::light_storage->directional_shadow_atlas_set_size(0);
 
 	RD::get_singleton()->free_rid(best_fit_normal.pipeline);

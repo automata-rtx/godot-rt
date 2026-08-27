@@ -28,13 +28,30 @@ float rt_shadow_lookup(float p_slot) {
 	if (p_slot >= RT_SLOT_NONE) {
 		return 1.0;
 	}
-#ifdef USE_MULTIVIEW
-	vec4 mask = texelFetch(sampler2DArray(rt_shadow_mask, SAMPLER_NEAREST_CLAMP), ivec3(ivec2(gl_FragCoord.xy), ViewIndex), 0);
-#else
-	vec4 mask = texelFetch(sampler2D(rt_shadow_mask, SAMPLER_NEAREST_CLAMP), ivec2(gl_FragCoord.xy), 0);
-#endif
-	int slot = int(p_slot);
-	return slot == 0 ? mask.r : (slot == 1 ? mask.g : (slot == 2 ? mask.b : mask.a));
+	uint slot = uint(p_slot);
+	// The mask does not have a channel per light in the scene: each pixel keeps
+	// the few raytraced lights that actually reach it, and the index texture
+	// records which.
+	ivec2 coord = ivec2(gl_FragCoord.xy);
+	uvec4 slots = texelFetch(usampler2D(rt_shadow_index, SAMPLER_NEAREST_CLAMP), coord, 0);
+	vec4 mask = texelFetch(sampler2D(rt_shadow_mask, SAMPLER_NEAREST_CLAMP), coord, 0);
+
+	if (slots.r == slot) {
+		return mask.r;
+	}
+	if (slots.g == slot) {
+		return mask.g;
+	}
+	if (slots.b == slot) {
+		return mask.b;
+	}
+	if (slots.a == slot) {
+		return mask.a;
+	}
+	// More raytraced lights reach this pixel than the mask has channels, and
+	// this one was not among the strongest. Leaving the weakest light unshadowed
+	// is the least visible way to run out of room.
+	return 1.0;
 }
 #endif // !USING_MOBILE_RENDERER
 

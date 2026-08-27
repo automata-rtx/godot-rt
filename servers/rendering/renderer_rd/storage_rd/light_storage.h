@@ -476,6 +476,12 @@ private:
 	bool shadow_cubemaps_used = false;
 	bool shadow_dual_paraboloid_used = false;
 
+	// Whether this light's shadow comes from the raytraced mask. Deliberately a
+	// pure function of the light and of whether there is anything to trace
+	// against, so that the culler and the light buffer agree without having to
+	// visit lights in the same order.
+	bool _light_uses_raytraced_shadows(const Light *p_light) const;
+
 public:
 	// Lights granted a channel in the raytraced shadow mask this frame, in
 	// mask-channel order. Filled by update_light_buffers().
@@ -647,6 +653,8 @@ public:
 	virtual void light_instance_set_aabb(RID p_light_instance, const AABB &p_aabb) override;
 	virtual void light_instance_set_shadow_transform(RID p_light_instance, const Projection &p_projection, const Transform3D &p_transform, float p_far, float p_split, int p_pass, float p_shadow_texel_size, float p_bias_scale = 1.0, float p_range_begin = 0, const Vector2 &p_uv_scale = Vector2()) override;
 	virtual void light_instance_mark_visible(RID p_light_instance) override;
+
+	virtual bool light_instance_uses_raytraced_shadows(RID p_light_instance) const override;
 
 	virtual bool light_instance_is_shadow_visible_at_position(RID p_light_instance, const Vector3 &p_position) const override {
 		const LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
@@ -867,7 +875,7 @@ public:
 		}
 		return false;
 	}
-	void update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows);
+	void update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, bool p_use_raytraced_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows);
 
 	/* REFLECTION PROBE */
 

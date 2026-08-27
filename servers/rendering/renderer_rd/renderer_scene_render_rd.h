@@ -253,6 +253,12 @@ public:
 
 	virtual void base_uniforms_changed() = 0;
 
+	// True only for renderers that actually sample the raytraced shadow mask.
+	// Both the acceleration structures and the mask live on this base class, so
+	// without this the mobile renderer would look like it supported them and
+	// lights would lose their shadow maps without gaining a mask.
+	virtual bool _uses_raytraced_shadows() const { return false; }
+
 	virtual bool is_raytracing_scene_available() const override;
 	virtual bool is_raytracing_debug_enabled() const override;
 	virtual void update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances) override;

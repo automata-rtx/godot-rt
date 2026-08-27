@@ -10,6 +10,10 @@
 // weights, which depend only on the surface, and differ only in how far the
 // filter is allowed to reach: a light whose occluder is close to the receiver
 // keeps a tight shadow, one whose occluder is far away gets a wide penumbra.
+//
+// Each pixel chooses its own four lights, so a neighbor only contributes when
+// it carries the same lights in the same channels. Channel assignments are
+// sorted by light index, which makes that a single equality test.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -23,6 +27,11 @@ layout(rgba8, set = 0, binding = 5) uniform restrict writeonly image2D dest_visi
 // Only written on the first iteration, which is what next frame reprojects.
 layout(rgba8, set = 0, binding = 6) uniform restrict writeonly image2D dest_history_visibility;
 layout(rg16f, set = 0, binding = 7) uniform restrict writeonly image2D dest_history_meta;
+
+// Which light each channel of the mask carries. Constant through the denoiser,
+// so this is the trace's own output on every iteration.
+layout(set = 0, binding = 8) uniform usampler2D source_index;
+layout(rgba8ui, set = 0, binding = 9) uniform restrict writeonly uimage2D dest_history_index;
 
 layout(push_constant, std430) uniform Params {
 	mat4 inv_view_projection;
@@ -58,6 +67,7 @@ void main() {
 
 	vec4 center = texelFetch(source_visibility, pos, 0);
 	float center_depth = texelFetch(source_depth, pos, 0).r;
+	uvec4 center_index = texelFetch(source_index, pos, 0);
 
 	if (center_depth <= 0.0) {
 		// Sky: nothing to filter, and the surrounding geometry must not bleed in.
@@ -65,6 +75,7 @@ void main() {
 		if (params.write_history != 0u) {
 			imageStore(dest_history_visibility, pos, center);
 			imageStore(dest_history_meta, pos, vec4(0.0, 0.0, 0.0, 0.0));
+			imageStore(dest_history_index, pos, center_index);
 		}
 		return;
 	}
@@ -97,6 +108,12 @@ void main() {
 
 			float tap_depth = texelFetch(source_depth, tap, 0).r;
 			if (tap_depth <= 0.0) {
+				continue;
+			}
+
+			// A neighbor lit by a different set of lights holds unrelated values
+			// in these channels, so it is skipped rather than blended.
+			if (texelFetch(source_index, tap, 0) != center_index) {
 				continue;
 			}
 
@@ -136,6 +153,7 @@ void main() {
 
 	if (params.write_history != 0u) {
 		imageStore(dest_history_visibility, pos, result);
+		imageStore(dest_history_index, pos, center_index);
 
 		vec3 world_position = reconstruct_world_position(pos, center_depth);
 		float view_distance = length(world_position - params.camera_position);

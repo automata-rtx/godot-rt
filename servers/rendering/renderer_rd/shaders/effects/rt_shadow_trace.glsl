@@ -9,22 +9,41 @@
 
 #extension GL_EXT_ray_query : enable
 
-#define MAX_RT_LIGHTS 4
+#define TILE_SIZE 8
+#define TILE_THREADS (TILE_SIZE * TILE_SIZE)
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+// Lights kept per pixel. The mask is one RGBA8 texel per pixel, so this is
+// four; it bounds how many raytraced lights can overlap a single pixel, not
+// how many the scene may contain.
+#define LIGHTS_PER_PIXEL 4
+
+// Lights kept per screen tile after the coarse cull. Overflow drops lights
+// from the tile, which can only happen where more than this many raytraced
+// lights reach one 8x8 block of pixels.
+#define MAX_TILE_LIGHTS 128
+
+// Slot value meaning "this channel carries no light". Matches RT_SLOT_NONE in
+// light_data_inc.glsl.
+#define SLOT_NONE 255u
+
+layout(local_size_x = TILE_SIZE, local_size_y = TILE_SIZE, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
 layout(set = 0, binding = 1) uniform sampler2D source_depth;
 
-// Per-light visibility in [0, 1], one channel per light.
+// Visibility in [0, 1] for the four lights this pixel selected.
 layout(rgba8, set = 0, binding = 2) uniform restrict writeonly image2D dest_visibility;
+
+// Which light each of those four channels belongs to, as an index into the
+// light buffer. SLOT_NONE marks an unused channel.
+layout(rgba8ui, set = 0, binding = 3) uniform restrict writeonly uimage2D dest_index;
 
 // Mean distance to the occluders that were hit, normalized by the light's
 // range. The denoiser needs this to size its filter: penumbra width grows with
 // the distance between receiver and blocker, which is what makes a raytraced
 // shadow harden at contact.
-layout(rgba8, set = 0, binding = 3) uniform restrict writeonly image2D dest_hit_distance;
+layout(rgba8, set = 0, binding = 4) uniform restrict writeonly image2D dest_hit_distance;
 
 struct RTLight {
 	vec3 position;
@@ -36,11 +55,11 @@ struct RTLight {
 	float size;
 	uint is_spot;
 	uint mask;
-	float pad;
+	float energy;
 };
 
-layout(set = 0, binding = 4, std140) uniform RTLights {
-	RTLight data[MAX_RT_LIGHTS];
+layout(set = 0, binding = 5, std430) restrict readonly buffer RTLights {
+	RTLight data[];
 }
 rt_lights;
 
@@ -60,6 +79,24 @@ layout(push_constant, std430) uniform Params {
 	float pad;
 }
 params;
+
+// Coarse bounds of the geometry in this tile, so the light cull below runs once
+// per tile instead of once per pixel.
+shared uint tile_bounds_min[3];
+shared uint tile_bounds_max[3];
+shared uint tile_light_count;
+shared uint tile_lights[MAX_TILE_LIGHTS];
+
+// Maps a float onto a uint whose unsigned order matches the float's order, so
+// that atomicMin and atomicMax can reduce world space coordinates.
+uint order_preserving_bits(float value) {
+	uint bits = floatBitsToUint(value);
+	return (bits & 0x80000000u) != 0u ? ~bits : (bits | 0x80000000u);
+}
+
+float order_preserving_float(uint bits) {
+	return uintBitsToFloat((bits & 0x80000000u) != 0u ? (bits & 0x7fffffffu) : ~bits);
+}
 
 // Interleaved gradient noise. Cheap, and its spatial distribution is far better
 // behaved than a plain hash, which matters because the spatial filter runs over
@@ -95,48 +132,167 @@ vec3 reconstruct_world_position(ivec2 pos, float depth) {
 	return world.xyz / world.w;
 }
 
+// Rough estimate of how much this light contributes here, used to keep the
+// strongest few when more lights reach a pixel than the mask has channels.
+// Dropping the weakest is what makes the per pixel limit hard to notice.
+float light_importance(RTLight light, vec3 world_position, float distance_to_light) {
+	float falloff = max(1.0 - distance_to_light / max(light.radius, 0.0001), 0.0);
+	// Floored so that a light left at zero energy still ranks above an empty
+	// channel rather than silently losing its shadow.
+	return max(light.energy, 0.0001) * falloff * falloff;
+}
+
 void main() {
 	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-	if (any(greaterThanEqual(pos, params.screen_size))) {
+	uint thread = gl_LocalInvocationIndex;
+
+	// Threads outside the screen still take part in the barriers below, so no
+	// invocation may return before the tile is culled.
+	bool in_bounds = all(lessThan(pos, params.screen_size));
+	float depth = in_bounds ? texelFetch(source_depth, pos, 0).r : 0.0;
+
+	// Godot uses reverse-Z, so 0 is the far plane: a depth of 0 is sky.
+	bool has_surface = in_bounds && depth > 0.0;
+
+	vec3 world_position = has_surface ? reconstruct_world_position(pos, depth) : vec3(0.0);
+
+	if (thread < 3u) {
+		tile_bounds_min[thread] = 0xffffffffu;
+		tile_bounds_max[thread] = 0u;
+	}
+	if (thread == 0u) {
+		tile_light_count = 0u;
+	}
+
+	barrier();
+
+	if (has_surface) {
+		for (int axis = 0; axis < 3; axis++) {
+			uint bits = order_preserving_bits(world_position[axis]);
+			atomicMin(tile_bounds_min[axis], bits);
+			atomicMax(tile_bounds_max[axis], bits);
+		}
+	}
+
+	barrier();
+
+	// Uniform across the workgroup: every thread reads the same shared values.
+	bool tile_has_surface = tile_bounds_min[0] <= tile_bounds_max[0];
+	vec3 bounds_min = vec3(
+			order_preserving_float(tile_bounds_min[0]),
+			order_preserving_float(tile_bounds_min[1]),
+			order_preserving_float(tile_bounds_min[2]));
+	vec3 bounds_max = vec3(
+			order_preserving_float(tile_bounds_max[0]),
+			order_preserving_float(tile_bounds_max[1]),
+			order_preserving_float(tile_bounds_max[2]));
+
+	if (tile_has_surface) {
+		// Sphere against the tile's bounding box. Conservative for spot lights,
+		// which is the right way to be wrong: an extra candidate costs a rejected
+		// distance test, a missing one costs a shadow.
+		for (uint i = thread; i < params.light_count; i += uint(TILE_THREADS)) {
+			RTLight light = rt_lights.data[i];
+			vec3 closest = clamp(light.position, bounds_min, bounds_max);
+			vec3 offset = closest - light.position;
+			if (dot(offset, offset) <= light.radius * light.radius) {
+				uint slot = atomicAdd(tile_light_count, 1u);
+				if (slot < uint(MAX_TILE_LIGHTS)) {
+					tile_lights[slot] = i;
+				}
+			}
+		}
+	}
+
+	barrier();
+
+	uint tile_lights_used = min(tile_light_count, uint(MAX_TILE_LIGHTS));
+
+	uint selected[LIGHTS_PER_PIXEL];
+	float score[LIGHTS_PER_PIXEL];
+	for (int k = 0; k < LIGHTS_PER_PIXEL; k++) {
+		selected[k] = SLOT_NONE;
+		score[k] = 0.0;
+	}
+
+	if (!in_bounds) {
 		return;
 	}
 
-	// Fully lit by default, so any early out leaves the pixel unshadowed rather
-	// than black.
-	vec4 visibility = vec4(1.0);
-	vec4 hit_distance = vec4(0.0);
+	vec3 normal = vec3(0.0, 1.0, 0.0);
 
-	float depth = texelFetch(source_depth, pos, 0).r;
+	if (has_surface) {
+		// Geometric normal from neighboring depth taps. The normal buffer holds
+		// view space normals and converting them here would need the camera basis,
+		// which does not fit in the 128 byte push constant alongside the inverse
+		// view projection. The denoiser reads that buffer directly instead, where
+		// view space comparisons between neighbors need no conversion at all.
+		ivec2 max_pos = params.screen_size - ivec2(1);
+		ivec2 pos_x = min(pos + ivec2(1, 0), max_pos);
+		ivec2 pos_y = min(pos + ivec2(0, 1), max_pos);
+		vec3 position_x = reconstruct_world_position(pos_x, texelFetch(source_depth, pos_x, 0).r);
+		vec3 position_y = reconstruct_world_position(pos_y, texelFetch(source_depth, pos_y, 0).r);
 
-	// Godot uses reverse-Z, so 0 is the far plane. Skip the sky entirely.
-	if (depth <= 0.0) {
-		imageStore(dest_visibility, pos, visibility);
-		imageStore(dest_hit_distance, pos, hit_distance);
-		return;
-	}
+		normal = cross(position_x - world_position, position_y - world_position);
+		float normal_length = length(normal);
+		if (normal_length < 1e-12) {
+			normal = normalize(params.camera_position - world_position);
+		} else {
+			normal /= normal_length;
+		}
+		// The winding depends on the handedness of the projection; force the normal
+		// to face the viewer, which holds for every visible surface.
+		if (dot(normal, params.camera_position - world_position) < 0.0) {
+			normal = -normal;
+		}
 
-	vec3 world_position = reconstruct_world_position(pos, depth);
+		// Keep the strongest few lights that actually reach this pixel.
+		for (uint t = 0u; t < tile_lights_used; t++) {
+			uint index = tile_lights[t];
+			RTLight light = rt_lights.data[index];
 
-	// Geometric normal from neighboring depth taps. The normal buffer holds
-	// view space normals and converting them here would need the camera basis,
-	// which does not fit in the 128 byte push constant alongside the inverse
-	// view projection. The denoiser reads that buffer directly instead, where
-	// view space comparisons between neighbors need no conversion at all.
-	ivec2 max_pos = params.screen_size - ivec2(1);
-	vec3 position_x = reconstruct_world_position(min(pos + ivec2(1, 0), max_pos), texelFetch(source_depth, min(pos + ivec2(1, 0), max_pos), 0).r);
-	vec3 position_y = reconstruct_world_position(min(pos + ivec2(0, 1), max_pos), texelFetch(source_depth, min(pos + ivec2(0, 1), max_pos), 0).r);
+			vec3 to_light = light.position - world_position;
+			float distance_to_light = length(to_light);
+			if (distance_to_light > light.radius || distance_to_light < 0.0001) {
+				continue;
+			}
 
-	vec3 normal = cross(position_x - world_position, position_y - world_position);
-	float normal_length = length(normal);
-	if (normal_length < 1e-12) {
-		normal = normalize(params.camera_position - world_position);
-	} else {
-		normal /= normal_length;
-	}
-	// The winding depends on the handedness of the projection; force the normal
-	// to face the viewer, which holds for every visible surface.
-	if (dot(normal, params.camera_position - world_position) < 0.0) {
-		normal = -normal;
+			if (light.is_spot != 0u) {
+				vec3 light_dir = to_light / distance_to_light;
+				// Outside the cone the light contributes nothing, so leave it lit
+				// and let the regular attenuation take care of it.
+				if (dot(-light_dir, light.direction) < light.cos_spot_angle) {
+					continue;
+				}
+			}
+
+			float candidate_score = light_importance(light, world_position, distance_to_light);
+			uint candidate_index = index;
+			for (int k = 0; k < LIGHTS_PER_PIXEL; k++) {
+				if (candidate_score > score[k]) {
+					float moved_score = score[k];
+					uint moved_index = selected[k];
+					score[k] = candidate_score;
+					selected[k] = candidate_index;
+					candidate_score = moved_score;
+					candidate_index = moved_index;
+				}
+			}
+		}
+
+		// Sort the survivors by light index so that two pixels lit by the same set
+		// of lights end up with byte identical channel assignments. The denoiser
+		// compares those assignments to decide whether a neighbor is filterable,
+		// and an equality test is only meaningful if the order is canonical.
+		for (int a = 0; a < LIGHTS_PER_PIXEL - 1; a++) {
+			for (int b = 0; b < LIGHTS_PER_PIXEL - 1 - a; b++) {
+				if (selected[b] > selected[b + 1]) {
+					uint swap_index = selected[b];
+					selected[b] = selected[b + 1];
+					selected[b + 1] = swap_index;
+				}
+			}
+		}
 	}
 
 	// One rotation per pixel, advanced every frame. The temporal filter then
@@ -144,33 +300,28 @@ void main() {
 	// re-averaging the same ones.
 	float phi = interleaved_gradient_noise(vec2(pos), params.frame_index) * 6.2831853;
 
-	uint light_count = min(params.light_count, uint(MAX_RT_LIGHTS));
+	vec4 visibility = vec4(1.0);
+	vec4 hit_distance = vec4(0.0);
+	uvec4 slots = uvec4(SLOT_NONE);
 
-	for (uint i = 0u; i < light_count; i++) {
-		RTLight light = rt_lights.data[i];
+	for (int k = 0; k < LIGHTS_PER_PIXEL; k++) {
+		slots[k] = selected[k];
+		if (selected[k] == SLOT_NONE) {
+			continue;
+		}
+
+		RTLight light = rt_lights.data[selected[k]];
 
 		vec3 to_light = light.position - world_position;
 		float distance_to_light = length(to_light);
-
-		if (distance_to_light > light.radius || distance_to_light < 0.0001) {
-			continue;
-		}
-
 		vec3 light_dir = to_light / distance_to_light;
 
 		// Surfaces facing away from the light are fully shadowed and need no ray.
-		float n_dot_l = dot(normal, light_dir);
-		if (n_dot_l <= 0.0) {
-			visibility[i] = 0.0;
+		// The forward pass shades with the normal mapped normal, which can still
+		// face the light, so the mask has to say so rather than rely on N dot L.
+		if (dot(normal, light_dir) <= 0.0) {
+			visibility[k] = 0.0;
 			continue;
-		}
-
-		if (light.is_spot != 0u) {
-			// Outside the cone the light contributes nothing, so leave it lit and
-			// let the regular attenuation take care of it.
-			if (dot(-light_dir, light.direction) < light.cos_spot_angle) {
-				continue;
-			}
 		}
 
 		float ray_length = distance_to_light;
@@ -178,8 +329,9 @@ void main() {
 			ray_length = min(ray_length, params.max_ray_distance);
 		}
 
-		// Offset along the normal to avoid self-intersection, scaled by distance
-		// because the reconstructed position is least precise far away.
+		// Offset along the normal to avoid self-intersection, scaled by
+		// distance because the reconstructed position is least precise far
+		// away.
 		float offset_scale = params.normal_bias * (1.0 + distance_to_light * 0.01);
 		vec3 origin = world_position + normal * offset_scale;
 
@@ -213,15 +365,16 @@ void main() {
 			}
 		}
 
-		visibility[i] = 1.0 - (occluded / float(sample_count));
+		visibility[k] = 1.0 - (occluded / float(sample_count));
 
 		if (occluded > 0.0) {
 			// Mean blocker distance, normalized so it survives an 8 bit channel.
 			float mean_blocker = blocker_distance_sum / occluded;
-			hit_distance[i] = clamp(mean_blocker / max(light.radius, 0.0001), 0.0, 1.0);
+			hit_distance[k] = clamp(mean_blocker / max(light.radius, 0.0001), 0.0, 1.0);
 		}
 	}
 
 	imageStore(dest_visibility, pos, visibility);
+	imageStore(dest_index, pos, slots);
 	imageStore(dest_hit_distance, pos, hit_distance);
 }
