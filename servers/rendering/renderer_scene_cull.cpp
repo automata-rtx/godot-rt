@@ -3719,7 +3719,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 		rt_instance_scratch.clear();
 
-		uint32_t dbg_total = 0, dbg_not_mesh = 0, dbg_no_shadow = 0, dbg_bad = 0;
+		uint32_t dbg_total = 0, dbg_not_mesh = 0, dbg_no_shadow = 0, dbg_bad = 0, dbg_skinned = 0;
 
 		const uint32_t instance_data_count = scenario->instance_data.size();
 		for (uint32_t i = 0; i < instance_data_count; i++) {
@@ -3741,15 +3741,32 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 			RendererSceneRender::RaytracingInstance rt_instance;
 			rt_instance.mesh = idata.base_rid;
+			rt_instance.mesh_instance = idata.instance->mesh_instance;
 			rt_instance.transform = idata.instance->transform;
 			rt_instance.layer_mask = idata.layer_mask;
 			rt_instance_scratch.push_back(rt_instance);
+
+			if (rt_instance.mesh_instance.is_valid()) {
+				// The skeleton pass only runs for instances that survived frustum
+				// culling, so a character behind the camera would otherwise be
+				// frozen at whatever pose it held when it was last on screen, and
+				// cast that stale shadow. Casters are deliberately not frustum
+				// culled here, so each one is marked for skinning explicitly.
+				RSG::mesh_storage->mesh_instance_check_for_update(rt_instance.mesh_instance);
+				dbg_skinned++;
+			}
+		}
+
+		if (dbg_skinned > 0) {
+			// Flush before the structures are built, so they are built from this
+			// frame's skinned vertices rather than last frame's.
+			RSG::mesh_storage->update_mesh_instances();
 		}
 
 		if (scene_render->is_raytracing_debug_enabled()) {
 			static String last;
-			String cur = vformat("RT_DEBUG cull: scenario_instances=%d not_mesh=%d no_shadow_flag=%d bad=%d -> kept=%d",
-					(int)dbg_total, (int)dbg_not_mesh, (int)dbg_no_shadow, (int)dbg_bad, (int)rt_instance_scratch.size());
+			String cur = vformat("RT_DEBUG cull: scenario_instances=%d not_mesh=%d no_shadow_flag=%d bad=%d -> kept=%d (skinned=%d)",
+					(int)dbg_total, (int)dbg_not_mesh, (int)dbg_no_shadow, (int)dbg_bad, (int)rt_instance_scratch.size(), (int)dbg_skinned);
 			if (cur != last) {
 				last = cur;
 				print_line(cur);

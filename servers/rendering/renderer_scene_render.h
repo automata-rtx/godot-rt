@@ -329,6 +329,9 @@ public:
 	// still casts shadows.
 	struct RaytracingInstance {
 		RID mesh;
+		// Set only for skinned or blend-shaped geometry, whose vertices are
+		// deformed per instance and so cannot share the mesh's structure.
+		RID mesh_instance;
 		Transform3D transform;
 		uint32_t layer_mask = 0xFFFFFFFF;
 	};

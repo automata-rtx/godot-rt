@@ -206,7 +206,7 @@ void RaytracingScene::_dequantize_positions(RID p_source_buffer, RID p_dest_buff
 	RD::get_singleton()->compute_list_end();
 }
 
-bool RaytracingScene::_build_blas_geometry(RID p_mesh, uint32_t p_surface, BlasEntry &r_entry) {
+bool RaytracingScene::_build_blas_geometry(RID p_mesh, RID p_mesh_instance, uint32_t p_surface, BlasEntry &r_entry) {
 	MeshStorage *mesh_storage = MeshStorage::get_singleton();
 
 	void *surface = mesh_storage->mesh_get_surface(p_mesh, p_surface);
@@ -233,11 +233,25 @@ bool RaytracingScene::_build_blas_geometry(RID p_mesh, uint32_t p_surface, BlasE
 		return false;
 	}
 
-	RID vertex_buffer = mesh_storage->mesh_surface_get_vertex_buffer(surface);
+	// A skinned surface traces against the skeleton pass's output rather than
+	// the mesh's rest-pose vertices.
+	const bool skinned = p_mesh_instance.is_valid();
+	RID vertex_buffer = skinned ? mesh_storage->mesh_instance_get_vertex_buffer(p_mesh_instance, p_surface)
+								: mesh_storage->mesh_surface_get_vertex_buffer(surface);
 	if (vertex_buffer.is_null()) {
-		ERR_PRINT_ONCE("Raytraced shadows: mesh surface has no vertex buffer; it cannot cast shadows.");
-		return false;
+		if (skinned) {
+			// A mesh instance exists but this surface is not deformed (no bones and
+			// no blend shapes), so the mesh's own buffer is still correct.
+			vertex_buffer = mesh_storage->mesh_surface_get_vertex_buffer(surface);
+		}
+		if (vertex_buffer.is_null()) {
+			ERR_PRINT_ONCE("Raytraced shadows: mesh surface has no vertex buffer; it cannot cast shadows.");
+			return false;
+		}
 	}
+
+	r_entry.skinned = skinned && vertex_buffer != mesh_storage->mesh_surface_get_vertex_buffer(surface);
+	r_entry.source_buffer = vertex_buffer;
 
 	const bool compressed = format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES;
 
@@ -256,6 +270,9 @@ bool RaytracingScene::_build_blas_geometry(RID p_mesh, uint32_t p_surface, BlasE
 		_dequantize_positions(vertex_buffer, position_buffer, vertex_count, source_stride, mesh_storage->mesh_surface_get_aabb(surface));
 
 		r_entry.position_buffer = position_buffer;
+		r_entry.compressed = true;
+		r_entry.source_stride = source_stride;
+		r_entry.source_aabb = mesh_storage->mesh_surface_get_aabb(surface);
 		position_stride = sizeof(float) * 3;
 	} else {
 		// Uncompressed positions are already a tightly packed float32x3 block at
@@ -282,7 +299,10 @@ bool RaytracingScene::_build_blas_geometry(RID p_mesh, uint32_t p_surface, BlasE
 	}
 
 	RD::AccelerationStructureGeometry geometries[1] = { geometry };
-	r_entry.blas = RD::get_singleton()->blas_create(geometries, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
+	// Skinned geometry is rebuilt every frame the pose moves, so build speed
+	// matters more than trace speed there; static geometry is built once.
+	r_entry.blas = RD::get_singleton()->blas_create(geometries,
+			r_entry.skinned ? RD::ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT : RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
 	if (r_entry.blas.is_null()) {
 		// Most often this means the source buffers were created without the
 		// acceleration structure usage bits, which are only applied when the
@@ -303,23 +323,44 @@ bool RaytracingScene::_build_blas_geometry(RID p_mesh, uint32_t p_surface, BlasE
 	return true;
 }
 
-RaytracingScene::BlasEntry *RaytracingScene::_get_or_create_blas(RID p_mesh, uint32_t p_surface) {
+RaytracingScene::BlasEntry *RaytracingScene::_get_or_create_blas(RID p_mesh, RID p_mesh_instance, uint32_t p_surface) {
+	MeshStorage *mesh_storage = MeshStorage::get_singleton();
+
 	SurfaceKey key;
-	key.mesh = p_mesh;
 	key.surface = p_surface;
+
+	if (p_mesh_instance.is_valid()) {
+		// Key on the skinned buffer: it is unique per (instance, surface), and
+		// the skeleton pass alternates between two of them when motion vectors
+		// are on, so each gets its own structure to rebuild in place.
+		key.source = mesh_storage->mesh_instance_get_vertex_buffer(p_mesh_instance, p_surface);
+	}
+	if (key.source.is_null()) {
+		key.source = p_mesh;
+	}
 
 	BlasEntry *existing = blas_cache.getptr(key);
 	if (existing) {
 		existing->last_used_frame = frame;
+		if (existing->state == BLAS_READY && existing->skinned) {
+			const uint64_t version = mesh_storage->mesh_instance_get_last_change(p_mesh_instance, p_surface);
+			if (version != existing->skin_version) {
+				existing->skin_version = version;
+				_refresh_skinned_blas(*existing);
+			}
+		}
 		return existing;
 	}
 
 	BlasEntry entry;
 	entry.last_used_frame = frame;
 
-	if (_build_blas_geometry(p_mesh, p_surface, entry)) {
+	if (_build_blas_geometry(p_mesh, p_mesh_instance, p_surface, entry)) {
 		entry.state = BLAS_READY;
 		built_surface_count++;
+		if (entry.skinned) {
+			entry.skin_version = mesh_storage->mesh_instance_get_last_change(p_mesh_instance, p_surface);
+		}
 	} else {
 		entry.state = BLAS_INELIGIBLE;
 		skipped_surface_count++;
@@ -327,6 +368,51 @@ RaytracingScene::BlasEntry *RaytracingScene::_get_or_create_blas(RID p_mesh, uin
 
 	blas_cache.insert(key, entry);
 	return blas_cache.getptr(key);
+}
+
+void RaytracingScene::_refresh_skinned_blas(BlasEntry &r_entry) {
+	if (r_entry.blas.is_null()) {
+		return;
+	}
+
+	// The geometry description was fixed when the structure was created and
+	// still points at the same buffer, so the pose is picked up by rebuilding
+	// in place. There is no refit entry point on RenderingDevice, but a rebuild
+	// reuses the existing scratch allocation.
+	if (r_entry.compressed && r_entry.position_buffer.is_valid()) {
+		// Compressed skinned output has to be expanded again for the new pose.
+		_dequantize_positions(r_entry.source_buffer, r_entry.position_buffer, r_entry.vertex_count,
+				r_entry.source_stride, r_entry.source_aabb);
+	}
+
+	if (RD::get_singleton()->blas_build(r_entry.blas) != OK) {
+		ERR_PRINT_ONCE("Raytraced shadows: rebuilding a skinned mesh's acceleration structure failed; its shadow will be stale.");
+	}
+}
+
+void RaytracingScene::_evict_stale_blas() {
+	// Skinned structures are per instance, so without eviction every character
+	// that ever existed would keep one alive. Static entries are cheap to keep
+	// but follow the same rule for simplicity.
+	constexpr uint64_t FRAMES_UNTIL_EVICTION = 60;
+
+	LocalVector<SurfaceKey> to_remove;
+	for (const KeyValue<SurfaceKey, BlasEntry> &E : blas_cache) {
+		if (frame - E.value.last_used_frame > FRAMES_UNTIL_EVICTION) {
+			to_remove.push_back(E.key);
+		}
+	}
+
+	for (const SurfaceKey &key : to_remove) {
+		BlasEntry *entry = blas_cache.getptr(key);
+		if (entry->blas.is_valid() && RD::get_singleton()->acceleration_structure_is_valid(entry->blas)) {
+			RD::get_singleton()->free_rid(entry->blas);
+		}
+		if (entry->position_buffer.is_valid()) {
+			RD::get_singleton()->free_rid(entry->position_buffer);
+		}
+		blas_cache.erase(key);
+	}
 }
 
 void RaytracingScene::_ensure_tlas(uint32_t p_instance_count) {
@@ -378,7 +464,7 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 
 		const int surface_count = mesh_storage->mesh_get_surface_count(instance.mesh);
 		for (int surface = 0; surface < surface_count; surface++) {
-			BlasEntry *entry = _get_or_create_blas(instance.mesh, surface);
+			BlasEntry *entry = _get_or_create_blas(instance.mesh, instance.mesh_instance, surface);
 			if (!entry || entry->state != BLAS_READY) {
 				continue;
 			}
@@ -425,6 +511,8 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 			print_line(cur);
 		}
 	}
+
+	_evict_stale_blas();
 
 	if (instance_scratch.is_empty()) {
 		return;

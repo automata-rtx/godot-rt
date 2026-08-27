@@ -69,20 +69,27 @@ private:
 		BLAS_INELIGIBLE,
 	};
 
-	// A BLAS is keyed on (mesh RID, surface index) so that every instance of the
-	// same mesh shares one acceleration structure.
+	// Static geometry is keyed on (mesh RID, surface index) so every instance of
+	// the same mesh shares one acceleration structure.
+	//
+	// Skinned geometry cannot share: its vertices are deformed per instance. It
+	// is keyed on the skinned vertex buffer instead, which is already unique per
+	// (instance, surface). The skeleton pass double buffers that target when
+	// motion vectors are enabled, so keying on the buffer gives each of the two
+	// its own structure and they are rebuilt in place rather than recreated
+	// every time the pair alternates.
 	struct SurfaceKey {
-		RID mesh;
+		RID source;
 		uint32_t surface = 0;
 
 		bool operator==(const SurfaceKey &p_other) const {
-			return mesh == p_other.mesh && surface == p_other.surface;
+			return source == p_other.source && surface == p_other.surface;
 		}
 	};
 
 	struct SurfaceKeyHasher {
 		static _FORCE_INLINE_ uint32_t hash(const SurfaceKey &p_key) {
-			return hash_murmur3_one_32(p_key.surface, p_key.mesh.get_id());
+			return hash_murmur3_one_32(p_key.surface, p_key.source.get_id());
 		}
 	};
 
@@ -95,6 +102,15 @@ private:
 		uint32_t index_count = 0;
 		uint64_t last_used_frame = 0;
 		BlasState state = BLAS_UNBUILT;
+
+		// Skinned surfaces are rebuilt whenever the skeleton pass has written a
+		// new pose; skin_version tracks the value that was last built from.
+		bool skinned = false;
+		bool compressed = false;
+		uint64_t skin_version = 0;
+		uint32_t source_stride = 0;
+		AABB source_aabb;
+		RID source_buffer;
 	};
 
 	HashMap<SurfaceKey, BlasEntry, SurfaceKeyHasher> blas_cache;
@@ -125,8 +141,10 @@ private:
 	// Per-frame scratch, kept as members to avoid reallocating every frame.
 	LocalVector<RD::AccelerationStructureInstance> instance_scratch;
 
-	BlasEntry *_get_or_create_blas(RID p_mesh, uint32_t p_surface);
-	bool _build_blas_geometry(RID p_mesh, uint32_t p_surface, BlasEntry &r_entry);
+	BlasEntry *_get_or_create_blas(RID p_mesh, RID p_mesh_instance, uint32_t p_surface);
+	bool _build_blas_geometry(RID p_mesh, RID p_mesh_instance, uint32_t p_surface, BlasEntry &r_entry);
+	void _refresh_skinned_blas(BlasEntry &r_entry);
+	void _evict_stale_blas();
 	void _dequantize_positions(RID p_source_buffer, RID p_dest_buffer, uint32_t p_vertex_count, uint32_t p_source_stride, const AABB &p_aabb);
 	void _ensure_tlas(uint32_t p_instance_count);
 
