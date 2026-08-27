@@ -108,7 +108,7 @@ public:
 	void set_param(Param p_param, real_t p_value);
 	real_t get_param(Param p_param) const;
 
-	void _apply_raytraced_shadow_defaults();
+	void _apply_local_light_shadow_defaults();
 
 	void set_shadow(bool p_enable);
 	bool has_shadow() const;

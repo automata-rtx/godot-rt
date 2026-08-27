@@ -658,14 +658,17 @@ void OmniLight3D::_bind_methods() {
 	BIND_ENUM_CONSTANT(SHADOW_CUBE);
 }
 
-// When raytraced shadows are enabled project-wide, newly created local lights
-// cast shadows by default and use a small physical emitter radius so they get
-// soft, contact-hardening shadows without any configuration. Hard shadows
-// remain available by setting the light size back to zero.
-void Light3D::_apply_raytraced_shadow_defaults() {
-	if (!bool(GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/enabled"))) {
-		return;
-	}
+// Newly created local lights cast shadows and have a small physical emitter
+// radius, so they get soft, contact-hardening shadows without any
+// configuration. Hard shadows remain available by setting the light size back
+// to zero.
+//
+// Deliberately unconditional. A scene stores only those properties that differ
+// from a freshly constructed node's, so making these defaults depend on a
+// project setting would mean a scene authored with raytraced shadows on never
+// recorded them, and every light in it would silently lose its shadow the
+// moment that setting was off.
+void Light3D::_apply_local_light_shadow_defaults() {
 	set_shadow(true);
 	set_param(PARAM_SIZE, 0.05);
 }
@@ -673,7 +676,7 @@ void Light3D::_apply_raytraced_shadow_defaults() {
 OmniLight3D::OmniLight3D() :
 		Light3D(RSE::LIGHT_OMNI) {
 	set_shadow_mode(SHADOW_CUBE);
-	_apply_raytraced_shadow_defaults();
+	_apply_local_light_shadow_defaults();
 }
 
 PackedStringArray SpotLight3D::get_configuration_warnings() const {
@@ -706,7 +709,7 @@ SpotLight3D::SpotLight3D() :
 		Light3D(RSE::LIGHT_SPOT) {
 	// Decrease the default shadow bias to better suit most scenes.
 	set_param(PARAM_SHADOW_BIAS, 0.03);
-	_apply_raytraced_shadow_defaults();
+	_apply_local_light_shadow_defaults();
 }
 
 void AreaLight3D::set_area_texture(const Ref<Texture2D> &p_texture) {
