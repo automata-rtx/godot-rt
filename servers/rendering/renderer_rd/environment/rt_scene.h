@@ -150,6 +150,15 @@ private:
 	static constexpr uint32_t MAX_BLAS_BUILDS_PER_FRAME = 64;
 	static constexpr uint32_t MAX_BLAS_BUILD_TRIANGLES_PER_FRAME = 1 << 20;
 
+	// The top level structure only has to be rebuilt when what it describes
+	// changes. A frame where nothing moved and nothing was built rebuilds it for
+	// the same answer, and that is a device buffer upload plus a real build.
+	uint32_t tlas_contents_hash = 0;
+	// Whether the structure currently holds a successful build, which outlives a
+	// frame; tlas_valid says only whether this frame may trace against it.
+	bool tlas_built = false;
+	bool blas_changed_this_frame = false;
+
 	uint32_t blas_builds_remaining = 0;
 	uint32_t blas_build_triangles_remaining = 0;
 	uint32_t deferred_surface_count = 0;

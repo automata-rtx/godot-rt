@@ -33,6 +33,7 @@
 #include "core/config/project_settings.h"
 #include "core/os/os.h"
 #include "core/string/print_string.h"
+#include "core/templates/hashfuncs.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/rendering_server_globals.h"
@@ -166,6 +167,7 @@ void RaytracingScene::free_all() {
 	}
 	tlas_capacity = 0;
 	tlas_valid = false;
+	tlas_built = false;
 }
 
 void RaytracingScene::_dequantize_positions(RID p_source_buffer, RID p_dest_buffer, uint32_t p_vertex_count, uint32_t p_source_stride, const AABB &p_aabb) {
@@ -380,6 +382,7 @@ RaytracingScene::BlasEntry *RaytracingScene::_get_or_create_blas(RID p_mesh, RID
 				const uint64_t version = mesh_storage->mesh_instance_get_last_change(p_mesh_instance, p_surface);
 				if (version != existing->skin_version) {
 					existing->skin_version = version;
+					blas_changed_this_frame = true;
 					_refresh_skinned_blas(*existing);
 				}
 			}
@@ -411,6 +414,7 @@ RaytracingScene::BlasEntry *RaytracingScene::_get_or_create_blas(RID p_mesh, RID
 		skipped_surface_count++;
 	}
 
+	blas_changed_this_frame = true;
 	blas_cache.insert(key, entry);
 	return blas_cache.getptr(key);
 }
@@ -484,6 +488,10 @@ void RaytracingScene::_ensure_tlas(uint32_t p_instance_count) {
 		tlas_valid = false;
 	}
 
+	// A fresh structure describes nothing yet, so the next build is mandatory
+	// however little the scene changed.
+	tlas_built = false;
+
 	tlas = RD::get_singleton()->tlas_create(new_capacity, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
 	if (tlas.is_null()) {
 		ERR_PRINT_ONCE(vformat("Raytraced shadows: tlas_create() failed for %d instances; no raytraced shadows will be cast.", new_capacity));
@@ -510,6 +518,7 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 	blas_builds_remaining = MAX_BLAS_BUILDS_PER_FRAME;
 	blas_build_triangles_remaining = MAX_BLAS_BUILD_TRIANGLES_PER_FRAME;
 	deferred_surface_count = 0;
+	blas_changed_this_frame = false;
 
 	for (const InstanceData &instance : p_instances) {
 		if (instance.mesh.is_null()) {
@@ -567,17 +576,6 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 		WARN_PRINT(vformat("Raytraced shadows: %d mesh surface(s) cannot be raytraced and will not cast shadows (non-triangle geometry, 2D vertices, or empty vertex arrays). %d surface(s) built successfully.", skipped_surface_count, built_surface_count));
 	}
 
-	if (rtdbg) {
-		static String last;
-		String cur = vformat("RT_DEBUG update: in_instances=%d tlas_instances=%d blas_cache=%d skipped_surfaces=%d deferred_surfaces=%d",
-				(int)p_instances.size(), (int)instance_scratch.size(), (int)blas_cache.size(), (int)skipped_surface_count,
-				(int)deferred_surface_count);
-		if (cur != last) {
-			last = cur;
-			print_line(cur);
-		}
-	}
-
 	_evict_stale_blas();
 
 	if (instance_scratch.is_empty()) {
@@ -589,9 +587,54 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 		return;
 	}
 
+	// A structure that describes the same geometry in the same places as last
+	// frame does not need building again. Rebuilding a structure whose geometry
+	// changed is not optional, though, so any build or refresh below forces it:
+	// the bounds a top level structure caches for a mesh go stale the moment
+	// that mesh's own structure is rebuilt.
+	// Summed rather than chained, so that the order the casters came out of the
+	// scene's spatial index in does not count as a change. Only the set matters:
+	// a ray query reads nothing that depends on an instance's position in the
+	// array, so two orderings of the same instances describe the same scene.
+	uint32_t contents_hash = hash_murmur3_one_64(instance_scratch.size());
+	for (const RD::AccelerationStructureInstance &rd_instance : instance_scratch) {
+		uint32_t entry_hash = hash_murmur3_one_64(rd_instance.blas.get_id());
+		entry_hash = hash_murmur3_one_32(rd_instance.mask, entry_hash);
+		for (int row = 0; row < 3; row++) {
+			for (int column = 0; column < 3; column++) {
+				entry_hash = hash_murmur3_one_real(rd_instance.transform.basis.rows[row][column], entry_hash);
+			}
+		}
+		entry_hash = hash_murmur3_one_real(rd_instance.transform.origin.x, entry_hash);
+		entry_hash = hash_murmur3_one_real(rd_instance.transform.origin.y, entry_hash);
+		entry_hash = hash_murmur3_one_real(rd_instance.transform.origin.z, entry_hash);
+		contents_hash += hash_fmix32(entry_hash);
+	}
+
+	const bool rebuild = !tlas_built || blas_changed_this_frame || contents_hash != tlas_contents_hash;
+
+	if (rtdbg) {
+		static String last;
+		String cur = vformat("RT_DEBUG update: in_instances=%d tlas_instances=%d blas_cache=%d skipped_surfaces=%d deferred_surfaces=%d rebuilt=%d",
+				(int)p_instances.size(), (int)instance_scratch.size(), (int)blas_cache.size(), (int)skipped_surface_count,
+				(int)deferred_surface_count, int(rebuild));
+		if (cur != last) {
+			last = cur;
+			print_line(cur);
+		}
+	}
+
+	if (!rebuild) {
+		// The build from an earlier frame still describes this scene.
+		tlas_valid = true;
+		return;
+	}
+	tlas_contents_hash = contents_hash;
+
 	Error err = RD::get_singleton()->tlas_build(tlas, instance_scratch);
 	if (err != OK) {
 		ERR_PRINT_ONCE(vformat("Raytraced shadows: tlas_build() failed with error %d; no raytraced shadows will be cast.", (int)err));
 	}
 	tlas_valid = (err == OK);
+	tlas_built = tlas_valid;
 }
