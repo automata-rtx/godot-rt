@@ -22,6 +22,9 @@
 // lights reach one 8x8 block of pixels.
 #define MAX_TILE_LIGHTS 128
 
+// Rays cast before the shader decides whether the rest can change the answer.
+#define PROBE_SAMPLES 2u
+
 // Slot value meaning "this channel carries no light". Matches RT_SLOT_NONE in
 // light_data_inc.glsl.
 #define SLOT_NONE 255u
@@ -362,12 +365,19 @@ void main() {
 		uint sample_count = light.size > 0.0 ? max(requested_samples, 1u) : 1u;
 		float occluded = 0.0;
 		float blocker_distance_sum = 0.0;
+		uint traced = 0u;
 
 		for (uint s = 0u; s < sample_count; s++) {
+			// Take the innermost and outermost points of the disk first, so the
+			// two probe rays span the emitter rather than clustering in its
+			// middle. The rest follow in their original order; this is a
+			// permutation of the same sample set, so nothing is weighted twice.
+			uint sample_index = s == 0u ? 0u : (s == 1u ? sample_count - 1u : s - 1u);
+
 			vec3 direction = light_dir;
 
 			if (light.size > 0.0) {
-				vec2 disk = vogel_disk_sample(s, sample_count, phi) * light.size;
+				vec2 disk = vogel_disk_sample(sample_index, sample_count, phi) * light.size;
 				vec3 target = light.position + tangent * disk.x + bitangent * disk.y;
 				direction = normalize(target - origin);
 			}
@@ -379,13 +389,25 @@ void main() {
 
 			rayQueryProceedEXT(ray_query);
 
+			traced++;
+
 			if (rayQueryGetIntersectionTypeEXT(ray_query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
 				occluded += 1.0;
 				blocker_distance_sum += rayQueryGetIntersectionTEXT(ray_query, true);
 			}
+
+			// Two rays spanning the emitter that agree put this point wholly
+			// inside the shadow or wholly outside it, and the emitter is small
+			// enough on screen that the rays between them would agree too. Only
+			// the penumbra, where they disagree, pays for the full set — which
+			// is a small part of any frame and most of what the samples are for.
+			if (traced == PROBE_SAMPLES && sample_count > PROBE_SAMPLES &&
+					(occluded == 0.0 || occluded == float(PROBE_SAMPLES))) {
+				break;
+			}
 		}
 
-		visibility[k] = 1.0 - (occluded / float(sample_count));
+		visibility[k] = 1.0 - (occluded / float(traced));
 
 		if (occluded > 0.0) {
 			// Mean blocker distance, normalized so it survives an 8 bit channel.
