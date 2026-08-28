@@ -3215,8 +3215,11 @@
 		<member name="rendering/lights_and_shadows/raytraced_shadows/max_ray_distance" type="float" setter="" getter="" default="0.0">
 			Maximum length of a raytraced shadow ray, in meters. Rays are never traced further than the distance to the light, so this only clamps very large lights. [code]0.0[/code] means no additional limit.
 		</member>
-		<member name="rendering/lights_and_shadows/raytraced_shadows/samples_per_light" type="int" setter="" getter="" default="4">
-			Number of shadow rays traced per pixel per raytraced light. Higher values reduce the noise produced by soft shadows at the cost of performance. Lights with a [member Light3D.light_size] of [code]0.0[/code] cast hard shadows and ignore this setting.
+		<member name="rendering/lights_and_shadows/raytraced_shadows/samples_per_light" type="int" setter="" getter="" default="1">
+			Number of shadow rays traced per pixel per raytraced light, per frame.
+			The denoiser accumulates over many frames, so one ray per frame is enough to resolve the soft shadow of an ordinary light: at the default [member Light3D.light_size] the result is indistinguishable from four rays a frame while costing substantially less. Raise it only for a light with a large [member Light3D.light_size], whose penumbra is wide enough that one ray per frame leaves its center washed out.
+			Rays past the second are only traced where the first two disagree, so the step from one to two is the one that costs; beyond that the setting is close to free.
+			Lights with a [member Light3D.light_size] of [code]0.0[/code] cast hard shadows and ignore this setting.
 		</member>
 		<member name="rendering/lights_and_shadows/tighter_shadow_caster_culling" type="bool" setter="" getter="" default="true">
 			If [code]true[/code], items that cannot cast shadows into the view frustum will not be rendered into shadow maps.
