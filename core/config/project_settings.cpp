@@ -1847,6 +1847,11 @@ ProjectSettings::ProjectSettings() {
 	// or below one pixel it switches off completely at a hard edge, so contact
 	// shadows stay crisp; raising it trades that crispness for smoother penumbrae.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels", PROPERTY_HINT_RANGE, "0,8,0.1"), 1.0);
+	// How far a reprojected history sample may sit outside what this frame sees
+	// around it, in standard deviations, before it is pulled back in. This is
+	// what stops a moving shadow trailing across a surface. Lower reacts faster
+	// and accumulates less; zero disables it.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma", PROPERTY_HINT_RANGE, "0,8,0.1"), 2.0);
 	GLOBAL_DEF_RST_BASIC("rendering/lights_and_shadows/raytraced_shadows/directional/enabled", false);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale", PROPERTY_HINT_RANGE, "0.5,8,0.1,or_greater"), 2.0);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters", PROPERTY_HINT_ENUM, "Disabled,Near Camera,Full Distance"), 1);

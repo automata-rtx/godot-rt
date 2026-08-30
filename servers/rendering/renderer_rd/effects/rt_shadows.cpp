@@ -277,6 +277,7 @@ void RTShadows::_temporal(RID p_depth_texture, const Buffers &p_buffers, const S
 	// sample is the same surface.
 	push_constant.depth_tolerance = 0.02f;
 	push_constant.max_history = MAX(1.0f, p_settings.max_history);
+	push_constant.clamp_sigma = MAX(0.0f, p_settings.history_clamp_sigma);
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, temporal_pipeline);

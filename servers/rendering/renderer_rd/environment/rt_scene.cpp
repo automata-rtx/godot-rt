@@ -57,6 +57,7 @@ bool RaytracingScene::setting_denoise = true;
 int RaytracingScene::setting_denoise_passes = 3;
 int RaytracingScene::setting_denoise_frames = 32;
 float RaytracingScene::setting_denoise_min_filter = 1.0f;
+float RaytracingScene::setting_denoise_clamp_sigma = 2.0f;
 bool RaytracingScene::setting_directional_enabled = false;
 float RaytracingScene::setting_directional_caster_scale = 2.0f;
 int RaytracingScene::setting_directional_scatter = RaytracingScene::DIRECTIONAL_SCATTER_NEAR_CAMERA;
@@ -79,6 +80,7 @@ void RaytracingScene::register_settings() {
 	setting_denoise_passes = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes");
 	setting_denoise_frames = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames");
 	setting_denoise_min_filter = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels");
+	setting_denoise_clamp_sigma = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma");
 	setting_directional_enabled = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/enabled");
 	setting_directional_caster_scale = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale");
 	setting_directional_scatter = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters");
@@ -151,6 +153,11 @@ float RaytracingScene::get_denoiser_max_history() {
 float RaytracingScene::get_denoiser_min_filter_pixels() {
 	register_settings();
 	return CLAMP(setting_denoise_min_filter, 0.0f, 8.0f);
+}
+
+float RaytracingScene::get_denoiser_history_clamp_sigma() {
+	register_settings();
+	return CLAMP(setting_denoise_clamp_sigma, 0.0f, 8.0f);
 }
 
 RaytracingScene::RaytracingScene() {

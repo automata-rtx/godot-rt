@@ -146,6 +146,10 @@ public:
 		// measured, in pixels. At or below one pixel the filter switches itself
 		// off entirely at a hard edge, which is what keeps contact shadows crisp.
 		float min_filter_pixels = 1.0f;
+		// How far outside the current frame's local spread a reprojected history
+		// sample may sit before it is pulled back in, in standard deviations.
+		// Zero disables the test and restores the old, freely trailing behavior.
+		float history_clamp_sigma = 2.0f;
 	};
 
 private:
@@ -181,6 +185,9 @@ private:
 		int32_t screen_size[2];
 		float depth_tolerance;
 		float max_history;
+
+		float clamp_sigma;
+		float pad[3];
 	};
 
 	struct AtrousPushConstant {

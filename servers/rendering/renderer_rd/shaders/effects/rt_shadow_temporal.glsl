@@ -65,6 +65,11 @@ layout(push_constant, std430) uniform Params {
 	ivec2 screen_size;
 	float depth_tolerance;
 	float max_history;
+
+	// How far outside the current frame's local spread the history is allowed to
+	// sit, in standard deviations. Zero disables the test.
+	float clamp_sigma;
+	float pad[3];
 }
 params;
 
@@ -164,6 +169,47 @@ void main() {
 				// target elsewhere in the chain.
 				history_length = (length_sum / weight_sum) * params.max_history;
 			}
+		}
+	}
+
+	// Reject history that this frame could not plausibly have produced.
+	//
+	// The surface test above only asks whether the same surface is still here.
+	// It cannot see a shadow move ACROSS a surface: the floor under a moving
+	// blocker reprojects perfectly, passes every test, and hands back a shadow
+	// that is no longer there. With a thirty-two frame window that trails for
+	// half a second.
+	//
+	// So measure what this frame actually sees nearby, and clamp the history
+	// into that range. Where the neighborhood agrees -- open floor, deep umbra --
+	// the spread is nil and the history is pinned to the truth immediately.
+	// Inside a penumbra, where one ray per pixel makes neighbors genuinely
+	// disagree, the spread is wide and accumulation proceeds untouched. The test
+	// costs nothing where it is not needed and everything where it is.
+	if (params.clamp_sigma > 0.0 && history_length > 0.0) {
+		vec4 moment1 = vec4(0.0);
+		vec4 moment2 = vec4(0.0);
+		float taps = 0.0;
+		for (int cy = -1; cy <= 1; cy++) {
+			for (int cx = -1; cx <= 1; cx++) {
+				ivec2 tap = clamp(pos + ivec2(cx, cy), ivec2(0), params.screen_size - ivec2(1));
+				// A neighbor carrying different lights describes something else.
+				if (texelFetch(source_index, tap, 0) != current_index) {
+					continue;
+				}
+				vec4 v = VIS_DECODE(texelFetch(source_visibility, tap, 0));
+				moment1 += v;
+				moment2 += v * v;
+				taps += 1.0;
+			}
+		}
+		if (taps > 0.0) {
+			moment1 /= taps;
+			moment2 /= taps;
+			vec4 sigma = sqrt(max(moment2 - moment1 * moment1, vec4(0.0)));
+			history = clamp(history,
+					moment1 - sigma * params.clamp_sigma,
+					moment1 + sigma * params.clamp_sigma);
 		}
 	}
 
