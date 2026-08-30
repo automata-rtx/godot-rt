@@ -2576,7 +2576,12 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	RD::get_singleton()->draw_command_begin_label("Render 3D Transparent Pass");
 
+	// Only this pass's uniform buffer carries the bit. The depth pre-pass and the
+	// opaque pass build their own, and must not: a fragment in either of those IS
+	// in the pre-pass, and so is exactly what the raytraced shadow mask describes.
+	p_render_data->scene_data->alpha_pass = true;
 	uint32_t transparent_pass_uniform_buffer_index = _setup_environment(p_render_data, is_reflection_probe, screen_size, screen_size, p_default_bg_color, false);
+	p_render_data->scene_data->alpha_pass = false;
 
 	rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_ALPHA, p_render_data, is_multiview, radiance_texture, samplers, transparent_pass_uniform_buffer_index, true);
 

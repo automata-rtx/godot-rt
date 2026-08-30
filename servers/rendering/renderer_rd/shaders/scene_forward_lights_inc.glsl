@@ -24,6 +24,23 @@
 // reads gl_FragCoord: scene_forward_clustered_inc.glsl is included by the
 // vertex stage too, where that builtin does not exist, and defining it there
 // fails to compile every Forward+ vertex variant.
+// Whether the raytraced shadow mask answers for THIS fragment.
+//
+// The mask is traced from the depth pre-pass, so it only describes fragments
+// that are in it. A genuinely alpha blended fragment is not: reading the mask at
+// its pixel returns the visibility of whatever opaque surface lies behind it,
+// which is a confident and wrong answer rather than a missing one.
+//
+// Not simply "am I in the alpha pass". Alpha to coverage and depth_prepass_alpha
+// materials are drawn in the transparent list but DO write pre-pass depth, so the
+// mask does describe them; those are known at compile time and skip the runtime
+// test entirely.
+#if defined(USE_OPAQUE_PREPASS) || defined(ALPHA_ANTIALIASING_EDGE_USED)
+#define RT_MASK_ANSWERS_HERE true
+#else
+#define RT_MASK_ANSWERS_HERE (!bool(scene_data_block.data.flags & SCENE_DATA_FLAGS_IN_ALPHA_PASS))
+#endif
+
 float rt_shadow_lookup(float p_slot) {
 	if (p_slot >= RT_SLOT_NONE) {
 		return 1.0;
@@ -544,10 +561,12 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 #ifndef SHADOWS_DISABLED
 	bool rt_shadowed = false;
 #ifndef USING_MOBILE_RENDERER
-	// Raytraced shadows replace the shadow map for lights that were granted a
-	// slot in the screen-space mask. Lights without a slot fall through to the
-	// regular shadow atlas path below.
-	if (omni_lights.data[idx].rt_slot < RT_SLOT_NONE) {
+	// Raytraced shadows replace the shadow map for lights granted a slot in the
+	// screen-space mask, on fragments that mask actually describes. A light with
+	// no slot, or a fragment the mask cannot answer for, falls through to the
+	// atlas path below -- which itself only samples an atlas that was really
+	// rendered, and otherwise leaves the fragment lit.
+	if (omni_lights.data[idx].rt_slot < RT_SLOT_NONE && RT_MASK_ANSWERS_HERE) {
 		rt_shadowed = true;
 		if (omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_opacity > 0.001) {
 			shadow = half(rt_shadow_lookup(omni_lights.data[idx].rt_slot));
@@ -556,7 +575,7 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	}
 #endif
 	// Omni light shadow.
-	if (!rt_shadowed && omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_opacity > 0.001) {
+	if (!rt_shadowed && omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_map_opacity > 0.001) {
 		// there is a shadowmap
 		vec2 texel_size = scene_data_block.data.shadow_atlas_pixel_size;
 		vec4 base_uv_rect = omni_lights.data[idx].atlas_rect;
@@ -872,7 +891,7 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	bool rt_shadowed = false;
 #ifndef USING_MOBILE_RENDERER
 	// See the omni light path above.
-	if (spot_lights.data[idx].rt_slot < RT_SLOT_NONE) {
+	if (spot_lights.data[idx].rt_slot < RT_SLOT_NONE && RT_MASK_ANSWERS_HERE) {
 		rt_shadowed = true;
 		if (spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_opacity > 0.001) {
 			shadow = half(rt_shadow_lookup(spot_lights.data[idx].rt_slot));
@@ -881,7 +900,7 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	}
 #endif
 	// Spot light shadow.
-	if (!rt_shadowed && spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_opacity > 0.001) {
+	if (!rt_shadowed && spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_map_opacity > 0.001) {
 		vec3 normal_bias = vec3(normal) * light_length * spot_lights.data[idx].shadow_normal_bias * (1.0 - abs(dot(normal, light_rel_vec_norm)));
 
 		//there is a shadowmap

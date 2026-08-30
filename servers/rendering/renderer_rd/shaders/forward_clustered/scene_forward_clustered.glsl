@@ -2411,19 +2411,14 @@ void fragment_shader(in SceneData scene_data) {
 
 				float shadow = 1.0;
 
-				// Raytraced shadows replace the cascade maps for a sun that was
-				// granted a slot in the screen-space mask.
-				//
-				// This is decided on the slot alone, with no test for which pass is
-				// running, so the alpha pass takes it too. The mask is built from the
-				// depth pre-pass, which a genuinely alpha-blended surface is not in,
-				// so such a surface reads the mask at its own screen position and gets
-				// the visibility of whatever OPAQUE surface lies behind it. That is
-				// wrong, and it is wrong whether or not the sun keeps a shadow map,
-				// because this branch is taken either way. Alpha scissor and alpha
-				// hash materials do write the depth pre-pass and are unaffected.
+				// Raytraced shadows replace the cascade maps for a sun granted a slot
+				// in the screen-space mask, on fragments that mask actually describes.
+				// A genuinely alpha blended fragment is not in the depth pre-pass the
+				// mask was traced from, so it falls through to the cascade path below,
+				// which samples an atlas only if one was really rendered and otherwise
+				// leaves the fragment lit.
 				bool rt_shadowed = false;
-				if (directional_lights.data[i].rt_slot < RT_SLOT_NONE) {
+				if (directional_lights.data[i].rt_slot < RT_SLOT_NONE && RT_MASK_ANSWERS_HERE) {
 					rt_shadowed = true;
 					if (directional_lights.data[i].shadow_opacity > 0.001) {
 						shadow = rt_shadow_lookup(directional_lights.data[i].rt_slot);
@@ -2431,7 +2426,7 @@ void fragment_shader(in SceneData scene_data) {
 					}
 				}
 
-				if (!rt_shadowed && directional_lights.data[i].shadow_opacity > 0.001) {
+				if (!rt_shadowed && directional_lights.data[i].shadow_map_opacity > 0.001) {
 					float depth_z = -vertex.z;
 					vec3 light_dir = directional_lights.data[i].direction;
 					vec3 base_normal_bias = geo_normal * (1.0 - max(0.0, dot(light_dir, -geo_normal)));
