@@ -3196,9 +3196,22 @@
 		<member name="rendering/lights_and_shadows/positional_shadow/soft_shadow_filter_quality.mobile" type="int" setter="" getter="" default="0">
 			Lower-end override for [member rendering/lights_and_shadows/positional_shadow/soft_shadow_filter_quality] on mobile devices, due to performance concerns or driver support.
 		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/accurate_occluder_distance" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], a shadow ray keeps looking for the [i]closest[/i] occluder instead of stopping at the first one it reaches.
+			Whether a point is in shadow is the same answer either way, so this changes no shadow's shape. What it changes is the distance the penumbra is estimated from, and so how far the denoiser is allowed to filter: with it off, a ray that happens to hit a distant occluder first reports a wide penumbra where the shadow is actually sharp, and the contact edge softens.
+			Turning it off is the standard shadow-ray optimization and may be worth measurable time on some hardware.
+		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled" type="bool" setter="" getter="" default="true">
 			If [code]true[/code], raytraced shadows are denoised before being applied. The denoiser keeps its own temporal history and does not depend on temporal antialiasing, so the result is usable with SMAA, FXAA or no antialiasing at all.
 			Disabling this shows the raw traced result, which is only usable at a high [member rendering/lights_and_shadows/raytraced_shadows/samples_per_light].
+		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma" type="float" setter="" getter="" default="2.0">
+			How far a reprojected history sample may sit outside what this frame sees around it, in standard deviations, before it is pulled back in.
+			This is what stops a moving shadow trailing across a surface: reprojection follows the surface, but a shadow that moves [i]across[/i] a stationary surface has no motion of its own to follow, so its old value would otherwise persist for as long as the history does. Lower values react faster and accumulate less; [code]0.0[/code] disables the clamp entirely.
+		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels" type="float" setter="" getter="" default="1.0">
+			How narrowly the spatial filter may work where the trace measured a penumbra, in pixels.
+			At or below one pixel the filter switches off completely at a hard edge, so a shadow touching the surface that casts it stays crisp. Raising it trades that crispness for smoother wide penumbrae.
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes" type="int" setter="" getter="" default="3">
 			Number of edge-stopping wavelet passes run over the shadow mask. Each pass doubles its reach, so every additional pass widens the filter considerably at a roughly constant cost. Higher values suppress more noise but can soften wide penumbrae.
@@ -3211,9 +3224,20 @@
 			A directional light has no range, so nothing bounds its casters the way a lamp's own sphere does. What has to enter the acceleration structure is whatever can throw a shadow onto the part of the world the camera can see: the visible frustum, cut off at the shadow distance, swept back towards the light by this multiple of it.
 			Raising it lets more distant landmarks — a ridgeline, a cliff, a tall building across a valley — cast onto ground the player walks on, which matters most when the sun is low. It costs roughly proportionally more geometry in the acceleration structure, which makes every ray in the frame slightly slower, not only the sun's.
 		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode" type="int" setter="" getter="" default="2">
+			What a [DirectionalLight3D]'s [member DirectionalLight3D.directional_shadow_mode] is replaced with once the raytraced mask drives its shading, overriding the value set on the node.
+			What still reads the map at that point is volumetric fog for [OmniLight3D] and [SpotLight3D] lights, subsurface transmittance, alpha-blended surfaces and reflection probes. None of those inspect it closely, so it does not need cascade density. [code]Keep Authored[/code] leaves the node's own setting alone.
+			[b]Note:[/b] This applies whenever raytraced directional shadows are available, so it also changes the atlas layout for [DirectionalLight3D] nodes that are not themselves raytraced.
+		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size" type="int" setter="" getter="" default="1024">
+			An upper bound on [member rendering/lights_and_shadows/directional_shadow/size] once raytraced directional shadows are available, for the same reason as [member rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode]. [code]0[/code] leaves the requested size alone.
+			[b]Note:[/b] This bounds the whole directional shadow atlas, which every [DirectionalLight3D] shares, not only the raytraced ones.
+		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/enabled" type="bool" setter="" getter="" default="false">
-			If [code]true[/code], [DirectionalLight3D] nodes take their shadow from the raytraced mask instead of cascaded shadow maps.
-			[b]Note:[/b] Not yet implemented. The caster gathering it controls is in place and measurable, but directional lights still render and sample cascades.
+			If [code]true[/code], [DirectionalLight3D] nodes take their shadow from the raytraced mask instead of cascaded shadow maps, competing for the same four per-pixel mask channels as every [OmniLight3D] and [SpotLight3D].
+			A directional light has no range to bound its shadow casters, so this also turns on the separate caster gathering described by [member rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale] and [member rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters].
+			Requires [member rendering/lights_and_shadows/raytraced_shadows/enabled].
+			[b]Note:[/b] The sun still renders a much reduced shadow map for the effects that cannot read the mask; see [member rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode].
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters" type="int" setter="" getter="" default="1">
 			Whether [MultiMesh] and [GridMap] geometry casts raytraced shadows from a [DirectionalLight3D], and how far.
@@ -3226,8 +3250,9 @@
 		<member name="rendering/lights_and_shadows/raytraced_shadows/enabled" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], [OmniLight3D] and [SpotLight3D] nodes cast hardware-raytraced shadows instead of using the shadow atlas. Requires the Forward+ renderer, the Vulkan rendering driver, and a GPU that supports hardware ray queries; the setting has no effect otherwise.
 			Lights that cast raytraced shadows are skipped when the shadow atlas is rendered, so a scene may contain far more shadow-casting lights than the atlas has room for. Cost scales with how many raytraced lights reach a given pixel rather than with how many the scene contains: where more than four of them overlap, the four contributing most light at that pixel are shadowed and the rest are left unshadowed there.
-			[b]Note:[/b] This is an experimental feature. [DirectionalLight3D] and [AreaLight3D] nodes continue to use shadow maps, and geometry that cannot be raytraced (alpha-scissor materials, particles and non-triangle meshes) does not cast raytraced shadows.
-			[b]Note:[/b] A raytraced light has no shadow map unless [member Light3D.shadow_map_enabled] asks for one, and the effects that sample a shadow map rather than the screen keep working but stop being shadowed by that light: volumetric fog is lit by it without casting light shafts, and subsurface transmittance falls back to the material's own transmittance depth. Light projectors are unaffected. Multiview (XR) rendering and reflection probes keep using shadow maps.
+			[b]Note:[/b] This is an experimental feature. [AreaLight3D] nodes continue to use shadow maps; [DirectionalLight3D] nodes do too unless [member rendering/lights_and_shadows/raytraced_shadows/directional/enabled] is also set.
+			[b]Note:[/b] Only [MeshInstance3D] and [MultiMeshInstance3D] geometry casts a raytraced shadow, and only its triangle surfaces with 3D vertex positions. Particles, [CSGShape3D] and non-triangle primitives cast nothing. Alpha-scissor materials do cast, but their cutout is [i]ignored[/i]: a leaf card casts the shadow of the whole quad rather than of the leaf. Give foliage a real silhouette, or turn its shadow off.
+			[b]Note:[/b] A raytraced light has no shadow map unless [member Light3D.shadow_map_enabled] asks for one, and the effects that read a shadow map rather than the screen keep working but stop being shadowed by that light. Volumetric fog traces its own ray for a raytraced [DirectionalLight3D], so sun shafts survive, but it is still lit without shafts by a raytraced [OmniLight3D] or [SpotLight3D]. Subsurface transmittance falls back to the material's own transmittance depth for every raytraced light. Light projectors are unaffected. Multiview (XR) rendering and reflection probes keep using shadow maps.
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/max_ray_distance" type="float" setter="" getter="" default="0.0">
 			Maximum length of a raytraced shadow ray, in meters. Rays are never traced further than the distance to the light, so this only clamps very large lights. [code]0.0[/code] means no additional limit.

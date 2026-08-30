@@ -54,7 +54,7 @@
 		<member name="editor_only" type="bool" setter="set_editor_only" getter="is_editor_only" default="false">
 			If [code]true[/code], the light only appears in the editor and will not be visible at runtime. If [code]true[/code], the light will never be baked in [LightmapGI] regardless of its [member light_bake_mode].
 		</member>
-		<member name="light_angular_distance" type="float" setter="set_param" getter="get_param" default="0.0" keywords="pcss">
+		<member name="light_angular_distance" type="float" setter="set_param" getter="get_param" default="0.25" keywords="pcss">
 			The light's angular size in degrees. Increasing this will make shadows softer at greater distances (also called percentage-closer soft shadows, or PCSS). Only available for [DirectionalLight3D]s. For reference, the Sun from the Earth is approximately [code]0.5[/code]. Increasing this value above [code]0.0[/code] for lights with shadows enabled will have a noticeable performance cost due to PCSS.
 			[b]Note:[/b] [member light_angular_distance] is not affected by [member Node3D.scale] (the light's scale or its parent's scale).
 			[b]Note:[/b] PCSS for directional lights is only supported in the Forward+ rendering method, not Mobile or Compatibility.
@@ -124,7 +124,7 @@
 		</member>
 		<member name="shadow_map_enabled" type="bool" setter="set_shadow_map_enabled" getter="is_shadow_map_enabled" default="false">
 			If [code]true[/code], a shadow map is rendered for this light even when it takes its own shadow from the raytraced shadow mask (see [member ProjectSettings.rendering/lights_and_shadows/raytraced_shadows/enabled]).
-			Volumetric fog and subsurface transmittance read a shadow map by construction: the mask only carries visibility at visible surfaces, which cannot answer for a point inside the fog or under a surface. A raytraced light therefore lights the fog without casting light shafts through it, and falls back to the material's own transmittance depth, unless this is enabled.
+			Some effects read a shadow map by construction: the mask only carries visibility at visible surfaces, which cannot answer for a point inside the fog or under a surface. Volumetric fog traces its own ray for a raytraced [DirectionalLight3D] and needs nothing here, but a raytraced [OmniLight3D] or [SpotLight3D] lights the fog without casting light shafts through it unless this is enabled. Subsurface transmittance falls back to the material's own transmittance depth for every raytraced light unless this is enabled.
 			This costs a shadow atlas quadrant and a shadow map render, which is what raytraced shadows exist to avoid, so enable it only on the lights that need it. It has no effect on a light that already uses a shadow map.
 		</member>
 		<member name="shadow_normal_bias" type="float" setter="set_param" getter="get_param" default="2.0">
