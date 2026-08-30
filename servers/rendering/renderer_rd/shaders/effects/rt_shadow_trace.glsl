@@ -34,6 +34,12 @@
 // light_data_inc.glsl.
 #define SLOT_NONE 255u
 
+// Which reading of the type-dependent fields above applies. Matches
+// RTShadows::LightType.
+#define LIGHT_TYPE_OMNI 0u
+#define LIGHT_TYPE_SPOT 1u
+#define LIGHT_TYPE_DIRECTIONAL 2u
+
 layout(local_size_x = TILE_SIZE, local_size_y = TILE_SIZE, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
@@ -53,21 +59,36 @@ layout(rgba8ui, set = 0, binding = 3) uniform restrict writeonly uimage2D dest_i
 // shadow harden at contact.
 layout(rgba8, set = 0, binding = 4) uniform restrict writeonly image2D dest_hit_distance;
 
+// A directional light shares this record, and the same per pixel competition for
+// the mask's four channels, with every lamp; it reinterprets four fields rather
+// than needing its own. Must match RTShadows::LightParams.
 struct RTLight {
+	// Omni and spot: world position and world range. Directional: the camera's
+	// position, and the furthest view DEPTH at which the culler gathered casters,
+	// which is where the shadow must have faded out. Both types keep a positive
+	// radius while live, so the gap test in the tile cull stays a single test.
 	vec3 position;
 	float radius;
 
+	// Omni and spot: the direction the light points, away from it. Directional:
+	// the direction TOWARD the light. World space either way.
 	vec3 direction;
 	float cos_spot_angle;
 
+	// Omni and spot: emitter radius in meters. Directional: the tangent of the
+	// angular radius, which is the same quantity per unit of distance.
 	float size;
-	uint is_spot;
+	uint light_type;
 	uint mask;
 	float energy;
 
 	float bias;
 	float normal_bias;
-	vec2 pad;
+
+	// Directional only, both in view depth: where the shadow starts fading out,
+	// and how long a ray may be.
+	float fade_from;
+	float max_ray_length;
 };
 
 layout(set = 0, binding = 5, std430) restrict readonly buffer RTLights {
@@ -166,7 +187,15 @@ vec3 reconstruct_world_position(ivec2 pos, float depth) {
 // strongest few when more lights reach a pixel than the mask has channels.
 // Dropping the weakest is what makes the per pixel limit hard to notice.
 float light_importance(RTLight light, vec3 to_light_normalized, vec3 normal, float distance_to_light) {
-	float falloff = max(1.0 - distance_to_light / max(light.radius, 0.0001), 0.0);
+	// A directional light does not attenuate: wherever it reaches it reaches at
+	// full strength, right out to the edge of the range the culler gathered
+	// casters for. Its shadow has already faded to nothing by then, so losing the
+	// channel there costs nothing. In practice this means the sun outranks a lamp
+	// on any surface the lamp is not close to, which is the right way round
+	// outdoors.
+	float falloff = light.light_type == LIGHT_TYPE_DIRECTIONAL
+			? 1.0
+			: max(1.0 - distance_to_light / max(light.radius, 0.0001), 0.0);
 	// A light below the horizon of the surface is already fully shadowed by the
 	// surface itself, so it must not take a channel from one that is not: with
 	// lamps on every side of a room, that is most of them.
@@ -189,6 +218,19 @@ void main() {
 	bool has_surface = in_bounds && depth > 0.0;
 
 	vec3 world_position = has_surface ? reconstruct_world_position(pos, depth) : vec3(0.0);
+
+	// Two different measures of how far away this surface is, both needed below.
+	//
+	// view_depth is along the camera's forward axis. That, not the radial
+	// distance, is what Godot's directional shadow fade is keyed on, so keying a
+	// raytraced sun's range on it makes the hand off land exactly where the
+	// cascade path's own fade would have put it.
+	//
+	// view_distance is radial, which is what an angular size projects through, so
+	// it is what the penumbra conversion needs.
+	vec3 camera_forward = rotate_by_quaternion(params.camera_rotation, vec3(0.0, 0.0, -1.0));
+	float view_depth = dot(world_position - params.camera_position, camera_forward);
+	float view_distance = max(length(world_position - params.camera_position), 0.0001);
 
 	if (thread < 3u) {
 		tile_bounds_min[thread] = 0xffffffffu;
@@ -222,6 +264,34 @@ void main() {
 			order_preserving_float(tile_bounds_max[2]));
 
 	if (tile_has_surface) {
+		// Directional lights are claimed first, in a pass of their own, so a tile
+		// crowded with lamps drops lamps rather than the sun. Only the low
+		// MAX_TILE_LIGHTS entries are ever read, so claiming early is what
+		// guarantees inclusion. There can be at most eight directional lights, so
+		// this pass cannot fill the array by itself.
+		//
+		// No geometric test: a directional light reaches every surface there is.
+		// The only question is whether the surface is inside the range the culler
+		// gathered casters for, and that is a per pixel question about view DEPTH.
+		// A sphere around the camera would answer a different one — radial
+		// distance is always at least the view depth, so such a test would reject
+		// tiles the per pixel check accepts, and the corners of the frame would
+		// lose the sun well before the fade was meant to start.
+		for (uint i = thread; i < params.light_count; i += uint(TILE_THREADS)) {
+			RTLight light = rt_lights.data[i];
+			if (light.radius <= 0.0 || light.light_type != LIGHT_TYPE_DIRECTIONAL) {
+				continue;
+			}
+			uint slot = atomicAdd(tile_light_count, 1u);
+			if (slot < uint(MAX_TILE_LIGHTS)) {
+				tile_lights[slot] = i;
+			}
+		}
+	}
+
+	barrier();
+
+	if (tile_has_surface) {
 		// Sphere against the tile's bounding box. Conservative for spot lights,
 		// which is the right way to be wrong: an extra candidate costs a rejected
 		// distance test, a missing one costs a shadow.
@@ -231,7 +301,7 @@ void main() {
 			// raytraced shadow, so the buffer can hold gaps where an index belongs
 			// to a light that is not in this pass. A gap is zeroed, and a light of
 			// no radius lights nothing.
-			if (light.radius <= 0.0) {
+			if (light.radius <= 0.0 || light.light_type == LIGHT_TYPE_DIRECTIONAL) {
 				continue;
 			}
 			vec3 closest = clamp(light.position, bounds_min, bounds_max);
@@ -278,15 +348,28 @@ void main() {
 			uint index = tile_lights[t];
 			RTLight light = rt_lights.data[index];
 
-			vec3 to_light = light.position - world_position;
-			float distance_to_light = length(to_light);
-			if (distance_to_light > light.radius || distance_to_light < 0.0001) {
-				continue;
+			vec3 light_dir;
+			float distance_to_light;
+			if (light.light_type == LIGHT_TYPE_DIRECTIONAL) {
+				// Nothing to run to: the ray direction is the light's own. What
+				// bounds it is how far the culler gathered casters, measured the way
+				// the cascade fade measures it, because past that the structure holds
+				// nothing to hit and every ray would come back falsely lit.
+				light_dir = light.direction;
+				distance_to_light = view_depth;
+				if (view_depth > light.radius) {
+					continue;
+				}
+			} else {
+				vec3 to_light = light.position - world_position;
+				distance_to_light = length(to_light);
+				if (distance_to_light > light.radius || distance_to_light < 0.0001) {
+					continue;
+				}
+				light_dir = to_light / distance_to_light;
 			}
 
-			vec3 light_dir = to_light / distance_to_light;
-
-			if (light.is_spot != 0u) {
+			if (light.light_type == LIGHT_TYPE_SPOT) {
 				// Outside the cone the light contributes nothing, so leave it lit
 				// and let the regular attenuation take care of it.
 				if (dot(-light_dir, light.direction) < light.cos_spot_angle) {
@@ -346,10 +429,31 @@ void main() {
 		}
 
 		RTLight light = rt_lights.data[selected[k]];
+		bool is_directional = light.light_type == LIGHT_TYPE_DIRECTIONAL;
 
-		vec3 to_light = light.position - world_position;
-		float distance_to_light = length(to_light);
-		vec3 light_dir = to_light / distance_to_light;
+		vec3 light_dir;
+		float distance_to_light;
+		float ray_length;
+		// How far this surface is into the sun's fade, 0 before it starts and 1
+		// past the end of the range the culler gathered casters for. Beyond that
+		// the structure holds nothing to hit, so a traced answer would be a
+		// confident, wrong "lit" and the landscape would show a hard seam at
+		// exactly the shadow distance. Fading here rather than in the forward pass
+		// keeps the mask itself continuous, which is what the denoiser filters and
+		// reprojects.
+		float range_fade = 0.0;
+
+		if (is_directional) {
+			light_dir = light.direction;
+			distance_to_light = view_distance;
+			ray_length = light.max_ray_length;
+			range_fade = smoothstep(light.fade_from, max(light.radius, light.fade_from + 0.0001), view_depth);
+		} else {
+			vec3 to_light = light.position - world_position;
+			distance_to_light = length(to_light);
+			light_dir = to_light / distance_to_light;
+			ray_length = distance_to_light;
+		}
 
 		// Surfaces facing away from the light are fully shadowed and need no ray.
 		// The forward pass shades with the normal mapped normal, which can still
@@ -359,14 +463,20 @@ void main() {
 			continue;
 		}
 
-		float ray_length = distance_to_light;
+		// Nothing left to resolve once the fade is complete, and no structure to
+		// resolve it against.
+		if (range_fade >= 1.0) {
+			continue;
+		}
+
 		if (params.max_ray_distance > 0.0) {
 			ray_length = min(ray_length, params.max_ray_distance);
 		}
 
 		// Offset along the normal to avoid self-intersection, scaled by
 		// distance because the reconstructed position is least precise far
-		// away.
+		// away. For the sun that distance is how far the surface is from the
+		// camera, since there is no light to be far from.
 		float offset_scale = light.normal_bias * (1.0 + distance_to_light * 0.01);
 		vec3 origin = world_position + normal * offset_scale;
 
@@ -390,8 +500,16 @@ void main() {
 
 			if (light.size > 0.0) {
 				vec2 disk = vogel_disk_sample(sample_index, sample_count, phi) * light.size;
-				vec3 target = light.position + tangent * disk.x + bitangent * disk.y;
-				direction = normalize(target - origin);
+				if (is_directional) {
+					// The sun is not a disk at a place, it is a disk of directions.
+					// Offsetting a unit vector perpendicularly by tan(angle) and
+					// renormalizing sweeps exactly the cone it subtends, wherever the
+					// receiver happens to be.
+					direction = normalize(light_dir + tangent * disk.x + bitangent * disk.y);
+				} else {
+					vec3 target = light.position + tangent * disk.x + bitangent * disk.y;
+					direction = normalize(target - origin);
+				}
 			}
 
 			rayQueryEXT ray_query;
@@ -421,6 +539,10 @@ void main() {
 
 		visibility[k] = 1.0 - (occluded / float(traced));
 
+		// Hand back to fully lit across the same window the cascade path uses, so
+		// a sun that gave up its shadow map stops shadowing where it always did.
+		visibility[k] = mix(visibility[k], 1.0, range_fade);
+
 		if (occluded > 0.0) {
 			float mean_blocker = blocker_distance_sum / occluded;
 
@@ -430,13 +552,23 @@ void main() {
 			// gives nearly zero; one right up against the light gives an enormous
 			// smear. This is what makes a raytraced shadow harden at contact, and
 			// the denoiser can only preserve it if it is told how wide to filter.
-			float blocker_to_light = max(distance_to_light - mean_blocker, 0.0001);
-			float penumbra_world = light.size * (mean_blocker / blocker_to_light);
+			// For a lamp, similar triangles: the emitter's own radius scaled by how
+			// much closer the blocker sits to the receiver than to the light. For
+			// the sun there is no "to the light" — the source subtends a fixed
+			// angle, so its penumbra is just how far that angle has spread over the
+			// gap. That is the same formula in the limit, with light.size already
+			// holding the tangent instead of a radius.
+			float penumbra_world;
+			if (is_directional) {
+				penumbra_world = mean_blocker * light.size;
+			} else {
+				float blocker_to_light = max(distance_to_light - mean_blocker, 0.0001);
+				penumbra_world = light.size * (mean_blocker / blocker_to_light);
+			}
 
 			// Reported in pixels rather than meters, because pixels are the unit
 			// the denoiser's kernel is measured in. Anything else leaves it
 			// guessing, and guessing wide is what washes a contact shadow out.
-			float view_distance = max(length(world_position - params.camera_position), 0.0001);
 			float penumbra_pixels = penumbra_world * params.focal_pixels / view_distance;
 			hit_distance[k] = clamp(penumbra_pixels / MAX_PENUMBRA_PIXELS, 0.0, 1.0);
 		}

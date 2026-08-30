@@ -1794,9 +1794,11 @@ bool RendererSceneRenderRD::is_raytracing_debug_enabled() const {
 }
 
 bool RendererSceneRenderRD::is_raytraced_directional_available() const {
-	// Not yet: directional lights still take their shadow from the cascade maps.
-	// The caster gathering below it is built and settable so the volume can be
-	// measured before anything depends on it.
+	// Gates both halves of the directional path at once: the casters the culler
+	// sweeps out of the camera frustum, and whether a sun is allowed to take its
+	// shadow from the mask. They have to answer to the same question, because a
+	// sun that gave up its map with an empty structure to trace against would be
+	// unshadowed everywhere.
 	return RendererRD::RaytracingScene::is_directional_enabled() && is_raytracing_scene_available();
 }
 

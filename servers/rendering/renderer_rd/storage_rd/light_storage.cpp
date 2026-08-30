@@ -728,7 +728,15 @@ bool LightStorage::_light_is_raytraced_shadow_candidate(const Light *p_light) co
 	if (p_light == nullptr || !p_light->shadow) {
 		return false;
 	}
-	// Area and directional lights keep their shadow maps for now.
+	if (p_light->type == RSE::LIGHT_DIRECTIONAL) {
+		// Behind its own setting, and behind the same question the culler asks
+		// before it gathers directional casters. A sun that gave up its shadow map
+		// with nothing in the structure to trace against would come back lit
+		// everywhere, which is worse than a coarse cascade.
+		const RendererSceneRenderRD *scene_render = RendererSceneRenderRD::get_singleton();
+		return scene_render != nullptr && scene_render->is_raytraced_directional_available();
+	}
+	// Area lights keep their shadow maps for now.
 	return p_light->type == RSE::LIGHT_OMNI || p_light->type == RSE::LIGHT_SPOT;
 }
 
@@ -747,6 +755,19 @@ bool LightStorage::_light_uses_raytraced_shadows(const Light *p_light) const {
 	}
 	const RaytracingScene *rt_scene = RaytracingScene::get_singleton();
 	return rt_scene != nullptr && rt_scene->has_traceable_scene();
+}
+
+void LightStorage::_rt_light_store(uint32_t p_slot, const RTShadows::LightParams &p_light) {
+	// Slots are held across frames, so this pass's buffer can be sparse: the gaps
+	// are zeroed, and the trace skips a light of zero radius.
+	if (p_slot >= rt_lights.size()) {
+		const uint32_t first_gap = rt_lights.size();
+		rt_lights.resize(p_slot + 1);
+		for (uint32_t gap = first_gap; gap <= p_slot; gap++) {
+			rt_lights[gap] = RTShadows::LightParams();
+		}
+	}
+	rt_lights[p_slot] = p_light;
 }
 
 uint32_t LightStorage::_rt_slot_acquire(LightInstance *p_light_instance, uint64_t p_frame) {
@@ -1034,6 +1055,78 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 					light_data.fade_to = -light_data.shadow_split_offsets[limit];
 				}
 
+				// The cascades above are still built and still correct when the sun's
+				// opaque shading comes from the mask instead. Volumetric fog samples a
+				// froxel, subsurface transmittance samples a point under a surface, and
+				// anything outside the depth pre-pass has no mask pixel to read: none of
+				// them can be answered by a screen space mask, so they keep the map.
+				light_data.shadow_map_opacity = light_data.shadow_opacity;
+
+				// Raytraced shadows. The sun competes for the mask's four channels on
+				// the same terms as every lamp; only the geometry of its ray differs.
+				// Always written, because directional_lights is a persistent array
+				// indexed by the light count: a sun that fails the gate below would
+				// otherwise inherit whatever slot sat at this index last frame and read
+				// another light's channel.
+				light_data.rt_slot = RT_SLOT_NONE;
+				if (rt_shadows_available && light_instance->raytraced_shadow) {
+					RTShadows::LightParams rt_light = {};
+					rt_light.light_type = RTShadows::LIGHT_TYPE_DIRECTIONAL;
+
+					// World space, and pointing TOWARD the light, which is the ray's own
+					// direction. Note this is the opposite sense to a lamp's direction,
+					// which is the spot axis pointing away from it, and it is not
+					// light_data.direction above, which is in view space.
+					const Vector3 towards_light = light_transform.basis.xform(Vector3(0, 0, 1)).normalized();
+					rt_light.direction[0] = towards_light.x;
+					rt_light.direction[1] = towards_light.y;
+					rt_light.direction[2] = towards_light.z;
+
+					// No position to speak of. The camera's is what the sun's receiver
+					// range is measured from, so that is what the record carries.
+					rt_light.position[0] = p_camera_transform.origin.x;
+					rt_light.position[1] = p_camera_transform.origin.y;
+					rt_light.position[2] = p_camera_transform.origin.z;
+
+					// Where the shadow has to be gone by, and where it starts going.
+					// Both are the negation of the fade the cascade path just computed,
+					// so the raytraced sun hands over at exactly the distance the shadow
+					// mapped one did, and the two cannot drift apart. Beyond it the
+					// culler gathered no casters, so a traced answer there would be a
+					// confident, wrong "lit".
+					rt_light.radius = MAX(-light_data.fade_to, 0.001f);
+					rt_light.fade_from = MAX(-light_data.fade_from, 0.0f);
+
+					// A metric radius means nothing for a source at infinity, so this
+					// field carries the tangent of the angular radius instead. Matches
+					// the convention softshadow_angle already uses above, so a project
+					// that sets light_angular_distance gets the same softness whichever
+					// path draws the shadow.
+					const float angular_degrees = light->param[RSE::LIGHT_PARAM_SIZE] > 0.0
+							? (float)light->param[RSE::LIGHT_PARAM_SIZE]
+							: RT_DIRECTIONAL_DEFAULT_ANGULAR_RADIUS;
+					rt_light.size = Math::tan(Math::deg_to_rad(angular_degrees));
+
+					// How long a ray may be. A shadow ray only has to reach the far side
+					// of the volume the culler filled, which it swept from the camera
+					// frustum; anything longer is traversal spent on empty space.
+					rt_light.max_ray_length = rt_light.radius * (1.0f + MAX(0.0f, RendererSceneRenderRD::get_singleton()->get_raytraced_directional_caster_scale()));
+
+					rt_light.energy = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_ENERGY]);
+					rt_light.bias = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_SHADOW_BIAS]) * 0.05f;
+					rt_light.normal_bias = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS]) * 0.015f;
+
+					const uint32_t caster_mask = light->shadow_caster_mask;
+					uint32_t folded = (caster_mask & 0xFF) | ((caster_mask >> 8) & 0xFF) | ((caster_mask >> 16) & 0xFF) | ((caster_mask >> 24) & 0xFF);
+					rt_light.mask = folded == 0 ? 0xFF : folded;
+
+					const uint32_t slot = _rt_slot_acquire(light_instance, rt_frame);
+					if (slot != RT_SLOT_UNASSIGNED) {
+						_rt_light_store(slot, rt_light);
+						light_data.rt_slot = float(slot);
+					}
+				}
+
 				r_directional_light_count++;
 			} break;
 			case RSE::LIGHT_OMNI: {
@@ -1274,7 +1367,7 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 			rt_light.cos_spot_angle = Math::cos(Math::deg_to_rad(light->param[RSE::LIGHT_PARAM_SPOT_ANGLE]));
 
 			rt_light.size = size;
-			rt_light.is_spot = (type == RSE::LIGHT_SPOT) ? 1u : 0u;
+			rt_light.light_type = (type == RSE::LIGHT_SPOT) ? RTShadows::LIGHT_TYPE_SPOT : RTShadows::LIGHT_TYPE_OMNI;
 			// Used to rank lights where more of them reach a pixel than the mask
 			// has channels, so that the ones that are dropped are the ones whose
 			// shadow would be least visible.
@@ -1304,16 +1397,7 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 
 			const uint32_t slot = _rt_slot_acquire(light_instance, rt_frame);
 			if (slot != RT_SLOT_UNASSIGNED) {
-				// Slots are held across frames, so this pass's buffer can be sparse:
-				// the gaps are zeroed, and the trace skips a light of zero radius.
-				if (slot >= rt_lights.size()) {
-					const uint32_t first_gap = rt_lights.size();
-					rt_lights.resize(slot + 1);
-					for (uint32_t gap = first_gap; gap <= slot; gap++) {
-						rt_lights[gap] = RTShadows::LightParams();
-					}
-				}
-				rt_lights[slot] = rt_light;
+				_rt_light_store(slot, rt_light);
 				light_data.rt_slot = float(slot);
 			}
 		}

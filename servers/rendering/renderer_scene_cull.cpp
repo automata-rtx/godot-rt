@@ -3769,6 +3769,26 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		const uint32_t max_raytraced = RSG::light_storage->light_get_max_raytraced_shadows();
 		uint32_t raytraced_used = 0;
 
+		// Directional lights first, and outside the positional loop, because they
+		// are never in scene_cull_result.lights: they have no bounds to cull
+		// against (light_get_aabb returns an empty AABB for them) and live in
+		// scenario->directional_lights instead. Deciding them first also means the
+		// sun holds a mask slot before the lamps compete for what is left, which
+		// matches the order the trace itself prefers.
+		for (Instance *directional : scenario->directional_lights) {
+			InstanceLightData *light = static_cast<InstanceLightData *>(directional->base_data);
+			if (light == nullptr) {
+				continue;
+			}
+			const bool visible = directional->visible && (directional->layer_mask & p_visible_layers);
+			bool raytraced = visible && mask_available && p_using_shadows && raytraced_used < max_raytraced &&
+					RSG::light_storage->light_instance_can_use_raytraced_shadows(light->instance);
+			if (raytraced) {
+				raytraced_used++;
+			}
+			RSG::light_storage->light_instance_set_raytraced_shadow(light->instance, raytraced);
+		}
+
 		for (uint32_t i = 0; i < (uint32_t)scene_cull_result.lights.size(); i++) {
 			InstanceLightData *light = static_cast<InstanceLightData *>(scene_cull_result.lights[i]->base_data);
 

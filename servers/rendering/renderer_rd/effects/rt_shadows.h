@@ -66,16 +66,41 @@ public:
 	// LIGHTS_PER_PIXEL in rt_shadow_trace.glsl.
 	static constexpr uint32_t LIGHTS_PER_PIXEL = 4;
 
+	// What a record's type-dependent fields mean. Must match the LIGHT_TYPE_
+	// defines in rt_shadow_trace.glsl.
+	enum LightType : uint32_t {
+		LIGHT_TYPE_OMNI = 0,
+		LIGHT_TYPE_SPOT = 1,
+		LIGHT_TYPE_DIRECTIONAL = 2,
+	};
+
 	// CPU-side mirror of the shader's RTLight struct. std430 layout.
+	//
+	// A directional light shares this record, and the same per pixel competition
+	// for the mask's four channels, with every lamp. It has no position and no
+	// metric range, so it reinterprets four fields rather than needing its own;
+	// `light_type` says which reading applies. Keeping one record means the trace
+	// keeps one cull, one selection and one ray loop.
 	struct LightParams {
+		// Omni and spot: the light's world position. Directional: the camera's,
+		// which is what the sun's receiver range is measured from.
 		float position[3];
+		// Omni and spot: the light's world range. Directional: the furthest view
+		// depth at which the culler still gathered casters, which is where the
+		// shadow has to have faded out. Positive for any live light either way,
+		// which is what lets the trace treat a zero radius as an unused slot.
 		float radius;
 
+		// Omni and spot: the direction the light points, away from it.
+		// Directional: the direction TOWARD the light, which is the ray's own.
+		// World space in both cases.
 		float direction[3];
 		float cos_spot_angle;
 
+		// Omni and spot: the emitter's radius in meters. Directional: the tangent
+		// of the angular radius, which is the same thing per unit of distance.
 		float size;
-		uint32_t is_spot;
+		uint32_t light_type;
 		uint32_t mask;
 		float energy;
 
@@ -85,8 +110,15 @@ public:
 		// down rather than used raw.
 		float bias;
 		float normal_bias;
-		float pad[2];
+
+		// Directional only, and both in view depth. Where the shadow starts fading
+		// out, and how long a ray may be. The fade matches the one the cascade
+		// path applies, so a sun that gives up its shadow map hands over at the
+		// same distance it always did.
+		float fade_from;
+		float max_ray_length;
 	};
+	static_assert(sizeof(LightParams) == 64, "RTLight and LightParams must agree.");
 
 	// The textures the trace and the denoiser work through. Owned by the render
 	// buffers so they follow the viewport's size and lifetime.
