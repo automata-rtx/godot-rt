@@ -417,7 +417,7 @@ void Light3D::_bind_methods() {
 	// Only allow texture types that display correctly.
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "light_projector", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D,-AnimatedTexture,-AtlasTexture,-CameraTexture,-CanvasTexture,-MeshTexture,-Texture2DRD,-ViewportTexture"), "set_projector", "get_projector");
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "light_size", PROPERTY_HINT_RANGE, "0,1,0.001,or_greater,suffix:m"), "set_param", "get_param", PARAM_SIZE);
-	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "light_angular_distance", PROPERTY_HINT_RANGE, "0,90,0.01,degrees"), "set_param", "get_param", PARAM_SIZE);
+	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "light_angular_distance", PROPERTY_HINT_RANGE, "0,5,0.001,or_greater,degrees"), "set_param", "get_param", PARAM_SIZE);
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "light_negative"), "set_negative", "is_negative");
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "light_specular", PROPERTY_HINT_RANGE, "0,16,0.001,or_greater"), "set_param", "get_param", PARAM_SPECULAR);
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_bake_mode", PROPERTY_HINT_ENUM, "Disabled,Static,Dynamic"), "set_bake_mode", "get_bake_mode");
@@ -628,6 +628,20 @@ DirectionalLight3D::DirectionalLight3D() :
 	set_param(PARAM_SHADOW_FADE_START, 0.8);
 	// Increase the default shadow normal bias to better suit most scenes.
 	set_param(PARAM_SHADOW_NORMAL_BIAS, 2.0);
+	// A sun with a real angular size, so its shadows sharpen at contact and soften
+	// with distance instead of being uniformly hard. Godot's own guidance calls
+	// 0.5 a realistic sun, so this is half of that.
+	//
+	// Deliberately unconditional, for the same reason
+	// Light3D::_apply_local_light_shadow_defaults() is: a scene stores only what
+	// differs from a freshly constructed node, so a default that depended on a
+	// project setting would never be recorded, and a scene authored with
+	// raytraced shadows on would lose it the moment that setting was off.
+	//
+	// This is visible without raytracing too: a nonzero angular distance puts the
+	// cascade path on its PCSS branch and widens each cascade's extents. Set it
+	// back to zero for the hard, uniform shadows earlier versions produced.
+	set_param(PARAM_SIZE, 0.25);
 	set_param(PARAM_INTENSITY, 100000.0); // Specified in Lux, approximate mid-day sun.
 	set_param(PARAM_SPECULAR, 1.0);
 	set_shadow_mode(SHADOW_PARALLEL_4_SPLITS);

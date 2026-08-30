@@ -1125,14 +1125,12 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 					rt_light.fade_from = MAX(-light_data.fade_from, 0.0f);
 
 					// A metric radius means nothing for a source at infinity, so this
-					// field carries the tangent of the angular radius instead. Matches
-					// the convention softshadow_angle already uses above, so a project
-					// that sets light_angular_distance gets the same softness whichever
-					// path draws the shadow.
-					const float angular_degrees = light->param[RSE::LIGHT_PARAM_SIZE] > 0.0
-							? (float)light->param[RSE::LIGHT_PARAM_SIZE]
-							: RT_DIRECTIONAL_DEFAULT_ANGULAR_RADIUS;
-					rt_light.size = Math::tan(Math::deg_to_rad(angular_degrees));
+					// field carries the tangent of the angular radius instead. Read
+					// straight off light_angular_distance, with no default of its own:
+					// the same number the cascade path turns into softshadow_angle, so
+					// the two agree and the inspector value is the one in use. Editing
+					// it takes effect on the next frame.
+					rt_light.size = Math::tan(Math::deg_to_rad((float)light->param[RSE::LIGHT_PARAM_SIZE]));
 
 					// How long a ray may be. A shadow ray only has to reach the far side
 					// of the volume the culler filled, which it swept from the camera
@@ -1141,7 +1139,16 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 
 					rt_light.energy = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_ENERGY]);
 					rt_light.bias = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_SHADOW_BIAS]) * 0.05f;
-					rt_light.normal_bias = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS]) * 0.015f;
+					// Half the scale a lamp gets, because DirectionalLight3D defaults
+					// its normal bias to 2.0 where a lamp defaults to 1.0. That larger
+					// default exists to clear a cascade's depth texels, which are coarse
+					// and get coarser with distance; a ray has no texels to clear. Left
+					// at the raw scale the sun's rays would start twice as far off the
+					// surface as a lamp's, which lifts a contact shadow away from the
+					// object casting it -- the shadow-map artifact raytracing is
+					// supposed to remove. Halving it means the same number in the
+					// inspector buys the same offset in meters whatever the light is.
+					rt_light.normal_bias = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS]) * 0.0075f;
 
 					const uint32_t caster_mask = light->shadow_caster_mask;
 					uint32_t folded = (caster_mask & 0xFF) | ((caster_mask >> 8) & 0xFF) | ((caster_mask >> 16) & 0xFF) | ((caster_mask >> 24) & 0xFF);

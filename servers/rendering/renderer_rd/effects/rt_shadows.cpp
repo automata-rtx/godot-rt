@@ -288,7 +288,7 @@ void RTShadows::_temporal(RID p_depth_texture, const Buffers &p_buffers, const S
 
 void RTShadows::_atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_normal_roughness,
 		const Buffers &p_buffers, const Size2i &p_size, const Projection &p_inv_projection,
-		int p_step_size, bool p_write_history) {
+		int p_step_size, bool p_write_history, float p_min_filter_pixels) {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 	TextureStorage *texture_storage = TextureStorage::get_singleton();
 	RID sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
@@ -343,9 +343,9 @@ void RTShadows::_atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_nor
 	push_constant.write_history = p_write_history ? 1u : 0u;
 	push_constant.depth_sigma = 0.02f;
 	push_constant.normal_sigma = 64.0f;
-	// Never collapse the kernel completely: even a contact shadow benefits from
-	// a pixel or so of filtering at one ray per frame.
-	push_constant.min_filter_pixels = 1.5f;
+	// At or below one pixel this switches the filter off entirely wherever the
+	// trace measured no penumbra, which is what keeps a contact shadow crisp.
+	push_constant.min_filter_pixels = p_min_filter_pixels;
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, atrous_pipeline);
@@ -422,7 +422,7 @@ void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 		RID dest = last ? p_buffers.output_mask : ((source == p_buffers.denoise_a) ? p_buffers.denoise_b : p_buffers.denoise_a);
 
 		_atrous(source, dest, p_depth_texture, p_normal_roughness, p_buffers, p_screen_size,
-				inv_projection, 1 << i, i == 0);
+				inv_projection, 1 << i, i == 0, p_settings.min_filter_pixels);
 
 		source = dest;
 	}

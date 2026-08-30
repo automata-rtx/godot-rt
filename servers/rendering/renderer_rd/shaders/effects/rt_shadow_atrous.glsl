@@ -102,10 +102,40 @@ void main() {
 	//
 	// A pixel with little accumulated history is still noisy whatever its
 	// penumbra, so it keeps the wide filter until the history fills in.
-	vec4 penumbra_pixels = clamp(hit_distance, vec4(0.0), vec4(1.0)) * MAX_PENUMBRA_PIXELS;
+	vec4 penumbra_pixels = clamp(hit_distance, vec4(0.0), vec4(1.0));
+
+	// The center pixel's own penumbra is not enough to size the filter. With one
+	// sample per pixel a point inside a penumbra either hits a blocker or misses,
+	// and the ones that miss report no penumbra at all, because there was no
+	// blocker to measure a distance to. Sizing from the center alone therefore
+	// filters the shadowed half of a penumbra and leaves the lit half speckled.
+	//
+	// Taking the widest penumbra any immediate neighbor reports fixes that, and
+	// costs nothing where it matters most: at a real contact edge every neighbor
+	// also reports zero, so the filter still switches itself off entirely.
+	for (int ny = -1; ny <= 1; ny++) {
+		for (int nx = -1; nx <= 1; nx++) {
+			ivec2 ntap = clamp(pos + ivec2(nx, ny), ivec2(0), params.screen_size - ivec2(1));
+			if (texelFetch(source_index, ntap, 0) != center_index) {
+				continue;
+			}
+			penumbra_pixels = max(penumbra_pixels,
+					clamp(texelFetch(source_hit_distance, ntap, 0), vec4(0.0), vec4(1.0)));
+		}
+	}
+	penumbra_pixels *= MAX_PENUMBRA_PIXELS;
+
+	// Whether there is anything here to smooth at all. A blocker resting on the
+	// surface produces a penumbra of literally zero, and with one sample per pixel
+	// every ray around it agrees, so the traced answer is already exact. Filtering
+	// it is pure loss, and it is exactly the contact hardening that makes a
+	// raytraced shadow worth tracing. So both floors below -- the constant one and
+	// the wide one a pixel gets while its history fills in -- apply only where a
+	// penumbra was actually measured.
+	vec4 has_penumbra = step(vec4(0.0001), penumbra_pixels);
 	float history_boost = 1.0 - clamp(history_length, 0.0, 1.0);
 	float floor_pixels = max(params.min_filter_pixels, history_boost * MAX_PENUMBRA_PIXELS);
-	vec4 reach_pixels = max(penumbra_pixels, vec4(floor_pixels));
+	vec4 reach_pixels = max(penumbra_pixels, has_penumbra * floor_pixels);
 
 	vec4 sum = center * KERNEL[0] * KERNEL[0];
 	vec4 weight_sum = vec4(KERNEL[0] * KERNEL[0]);

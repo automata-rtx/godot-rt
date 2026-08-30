@@ -209,17 +209,6 @@ private:
 	// leaves the view for a moment comes back to the same channel.
 	static constexpr uint64_t RT_SLOT_GRACE_FRAMES = 4;
 
-	// Angular RADIUS in degrees a directional light traces with when its
-	// light_angular_distance is left at zero, matching the convention
-	// softshadow_angle uses. Godot's own guidance calls 0.5 a realistic sun, so
-	// this is half of that: crisp at contact, softening with distance.
-	//
-	// Applied to the ray path only, deliberately, rather than to the node's
-	// default. Setting light_angular_distance on the node would switch the
-	// cascade path into its PCSS branch and widen every cascade's extents for
-	// projects that never turn raytraced shadows on.
-	static constexpr float RT_DIRECTIONAL_DEFAULT_ANGULAR_RADIUS = 0.25f;
-
 	// Slots handed out during the pass being set up. Steady state is zero: a
 	// light that keeps its slot keeps the denoiser history that goes with it.
 	uint32_t rt_slots_assigned_this_frame = 0;

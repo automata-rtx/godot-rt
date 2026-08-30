@@ -62,6 +62,7 @@ private:
 	static bool setting_denoise;
 	static int setting_denoise_passes;
 	static int setting_denoise_frames;
+	static float setting_denoise_min_filter;
 	static bool setting_directional_enabled;
 	static float setting_directional_caster_scale;
 	static int setting_directional_scatter;
@@ -214,6 +215,7 @@ public:
 	static bool is_denoiser_enabled();
 	static int get_denoiser_iterations();
 	static float get_denoiser_max_history();
+	static float get_denoiser_min_filter_pixels();
 
 	// True when the setting is on AND the device can actually trace rays.
 	bool is_available() const { return supported && is_enabled(); }

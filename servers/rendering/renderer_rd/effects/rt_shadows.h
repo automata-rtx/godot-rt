@@ -142,6 +142,10 @@ public:
 		bool denoise = true;
 		uint32_t atrous_iterations = 3;
 		float max_history = 32.0f;
+		// Narrowest the spatial filter is allowed to reach where a penumbra was
+		// measured, in pixels. At or below one pixel the filter switches itself
+		// off entirely at a hard edge, which is what keeps contact shadows crisp.
+		float min_filter_pixels = 1.0f;
 	};
 
 private:
@@ -220,7 +224,7 @@ private:
 			const Settings &p_settings);
 	void _atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_normal_roughness,
 			const Buffers &p_buffers, const Size2i &p_size, const Projection &p_inv_projection,
-			int p_step_size, bool p_write_history);
+			int p_step_size, bool p_write_history, float p_min_filter_pixels);
 
 public:
 	bool is_valid() const { return valid; }
