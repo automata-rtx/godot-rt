@@ -62,6 +62,10 @@ private:
 	static bool setting_denoise;
 	static int setting_denoise_passes;
 	static int setting_denoise_frames;
+	static bool setting_directional_enabled;
+	static float setting_directional_caster_scale;
+	static int setting_directional_scatter;
+	static float setting_directional_scatter_distance;
 
 	enum BlasState {
 		BLAS_UNBUILT,
@@ -180,6 +184,22 @@ public:
 	// Registers the project settings. Safe to call more than once.
 	static void register_settings();
 	// True when GODOT_RT_DEBUG is set in the environment. Cached on first use.
+	// How far past a directional light's shadow distance geometry is still
+	// gathered as a caster, as a multiple of that distance. A sun has no range
+	// to cull against, so this is what bounds its acceleration structure.
+	static bool is_directional_enabled();
+	static float get_directional_caster_scale();
+	// Disabled / Near Camera / Full Distance. A MultiMesh contributes one entry
+	// per element, so a scattered field can flood the structure under a light
+	// that reaches the whole level.
+	enum DirectionalScatterMode {
+		DIRECTIONAL_SCATTER_DISABLED,
+		DIRECTIONAL_SCATTER_NEAR_CAMERA,
+		DIRECTIONAL_SCATTER_FULL_DISTANCE,
+	};
+	static DirectionalScatterMode get_directional_scatter_mode();
+	static float get_directional_scatter_distance();
+
 	static bool debug_enabled();
 	// True when the project setting is on. Does not imply hardware support.
 	static bool is_enabled();

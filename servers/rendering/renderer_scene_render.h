@@ -339,6 +339,21 @@ public:
 		uint32_t surface_mask = 0xFFFFFFFF;
 	};
 
+	// How a directional light's casters are bounded. A sun has no range, so the
+	// structure is bounded by the visible frustum swept towards the light, and
+	// by a policy for scattered geometry which would otherwise flood it. Both
+	// are project settings so they can scale with the graphics options.
+	enum RaytracedScatterMode {
+		RAYTRACED_SCATTER_DISABLED,
+		RAYTRACED_SCATTER_NEAR_CAMERA,
+		RAYTRACED_SCATTER_FULL_DISTANCE,
+	};
+	// True when directional lights take their shadow from the raytraced mask.
+	virtual bool is_raytraced_directional_available() const { return false; }
+	virtual float get_raytraced_directional_caster_scale() const { return 0.0f; }
+	virtual RaytracedScatterMode get_raytraced_scatter_mode() const { return RAYTRACED_SCATTER_DISABLED; }
+	virtual float get_raytraced_scatter_distance() const { return 0.0f; }
+
 	// True when the project setting is on and the device supports ray queries.
 	virtual bool is_raytracing_scene_available() const { return false; }
 	// True when this render will actually produce a raytraced shadow mask that

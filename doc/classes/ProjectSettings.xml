@@ -3206,6 +3206,23 @@
 		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames" type="int" setter="" getter="" default="32">
 			Number of frames the denoiser blends shadows over. Higher values are smoother and more stable but take longer to react when a light or the camera moves; the history is discarded outright when a surface is disoccluded, so this does not cause shadows to trail behind geometry.
 		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale" type="float" setter="" getter="" default="2.0">
+			How far past a [DirectionalLight3D]'s [member DirectionalLight3D.directional_shadow_max_distance] geometry is still gathered as a shadow caster, as a multiple of that distance.
+			A directional light has no range, so nothing bounds its casters the way a lamp's own sphere does. What has to enter the acceleration structure is whatever can throw a shadow onto the part of the world the camera can see: the visible frustum, cut off at the shadow distance, swept back towards the light by this multiple of it.
+			Raising it lets more distant landmarks — a ridgeline, a cliff, a tall building across a valley — cast onto ground the player walks on, which matters most when the sun is low. It costs roughly proportionally more geometry in the acceleration structure, which makes every ray in the frame slightly slower, not only the sun's.
+		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/enabled" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], [DirectionalLight3D] nodes take their shadow from the raytraced mask instead of cascaded shadow maps.
+			[b]Note:[/b] Not yet implemented. The caster gathering it controls is in place and measurable, but directional lights still render and sample cascades.
+		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters" type="int" setter="" getter="" default="1">
+			Whether [MultiMesh] and [GridMap] geometry casts raytraced shadows from a [DirectionalLight3D], and how far.
+			Scatter is the one case that can flood the acceleration structure under a directional light: the light reaches the whole level, and every element is its own entry. [code]Disabled[/code] leaves scatter out of a directional light's casters entirely, [code]Near Camera[/code] includes it within [member rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance], and [code]Full Distance[/code] treats it like any other caster.
+			This has no effect on scatter under [OmniLight3D] and [SpotLight3D], whose own range already bounds it.
+		</member>
+		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance" type="float" setter="" getter="" default="25.0">
+			How far from the camera [MultiMesh] and [GridMap] geometry casts raytraced shadows from a [DirectionalLight3D], in meters, when [member rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters] is [code]Near Camera[/code].
+		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/enabled" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], [OmniLight3D] and [SpotLight3D] nodes cast hardware-raytraced shadows instead of using the shadow atlas. Requires the Forward+ renderer, the Vulkan rendering driver, and a GPU that supports hardware ray queries; the setting has no effect otherwise.
 			Lights that cast raytraced shadows are skipped when the shadow atlas is rendered, so a scene may contain far more shadow-casting lights than the atlas has room for. Cost scales with how many raytraced lights reach a given pixel rather than with how many the scene contains: where more than four of them overlap, the four contributing most light at that pixel are shadowed and the rest are left unshadowed there.

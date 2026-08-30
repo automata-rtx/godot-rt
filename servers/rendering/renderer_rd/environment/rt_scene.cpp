@@ -56,6 +56,10 @@ float RaytracingScene::setting_max_distance = 0.0f;
 bool RaytracingScene::setting_denoise = true;
 int RaytracingScene::setting_denoise_passes = 3;
 int RaytracingScene::setting_denoise_frames = 32;
+bool RaytracingScene::setting_directional_enabled = false;
+float RaytracingScene::setting_directional_caster_scale = 2.0f;
+int RaytracingScene::setting_directional_scatter = RaytracingScene::DIRECTIONAL_SCATTER_NEAR_CAMERA;
+float RaytracingScene::setting_directional_scatter_distance = 25.0f;
 
 void RaytracingScene::register_settings() {
 	if (settings_registered) {
@@ -71,6 +75,10 @@ void RaytracingScene::register_settings() {
 	setting_denoise = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled");
 	setting_denoise_passes = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes");
 	setting_denoise_frames = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames");
+	setting_directional_enabled = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/enabled");
+	setting_directional_caster_scale = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale");
+	setting_directional_scatter = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters");
+	setting_directional_scatter_distance = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance");
 }
 
 bool RaytracingScene::is_enabled() {
@@ -81,6 +89,27 @@ bool RaytracingScene::is_enabled() {
 int RaytracingScene::get_sample_count() {
 	register_settings();
 	return MAX(1, setting_samples);
+}
+
+bool RaytracingScene::is_directional_enabled() {
+	register_settings();
+	return setting_directional_enabled;
+}
+
+float RaytracingScene::get_directional_caster_scale() {
+	register_settings();
+	return MAX(0.0f, setting_directional_caster_scale);
+}
+
+RaytracingScene::DirectionalScatterMode RaytracingScene::get_directional_scatter_mode() {
+	register_settings();
+	return (DirectionalScatterMode)CLAMP(setting_directional_scatter,
+			(int)DIRECTIONAL_SCATTER_DISABLED, (int)DIRECTIONAL_SCATTER_FULL_DISTANCE);
+}
+
+float RaytracingScene::get_directional_scatter_distance() {
+	register_settings();
+	return MAX(0.0f, setting_directional_scatter_distance);
 }
 
 float RaytracingScene::get_max_distance() {

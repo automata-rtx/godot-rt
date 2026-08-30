@@ -3510,6 +3510,74 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			}
 		}
 
+		// A directional light has no range, so nothing bounds its casters the way
+		// a lamp's own sphere does. What has to be in the structure is whatever
+		// can throw a shadow onto the part of the world the camera can see: the
+		// visible frustum, cut off at the light's shadow distance, swept back
+		// towards the light. How far back is a setting, because how far a ridge
+		// or a building should reach is a look decision and a cost decision at
+		// once, not a constant.
+		rt_directional_bounds_scratch.clear();
+		const RendererSceneRender::RaytracedScatterMode rt_scatter_mode = scene_render->get_raytraced_scatter_mode();
+		const real_t rt_scatter_distance = scene_render->get_raytraced_scatter_distance();
+		const bool rt_directional = scene_render->is_raytraced_directional_available();
+		for (Instance *directional : scenario->directional_lights) {
+			if (!rt_directional) {
+				break;
+			}
+			if (!directional->visible || !(directional->layer_mask & p_visible_layers)) {
+				continue;
+			}
+			InstanceLightData *light = static_cast<InstanceLightData *>(directional->base_data);
+			if (light == nullptr || !RSG::light_storage->light_has_shadow(directional->base)) {
+				continue;
+			}
+
+			const real_t shadow_distance = MAX((real_t)0.001,
+					RSG::light_storage->light_get_param(directional->base, RSE::LIGHT_PARAM_SHADOW_MAX_DISTANCE));
+			const real_t far_distance = p_camera_data->is_orthogonal
+					? shadow_distance
+					: MIN(shadow_distance, (real_t)p_camera_data->main_projection.get_z_far());
+
+			const Transform3D &cam = p_camera_data->main_transform;
+			const real_t near_distance = p_camera_data->main_projection.get_z_near();
+			const Vector2 near_extents = p_camera_data->main_projection.get_viewport_half_extents();
+			// An orthogonal camera's frustum does not widen with distance; a
+			// perspective one grows in proportion to it.
+			const Vector2 far_extents = p_camera_data->is_orthogonal
+					? near_extents
+					: near_extents * (far_distance / MAX(near_distance, (real_t)0.001));
+
+			AABB volume;
+			bool first = true;
+			for (int corner = 0; corner < 8; corner++) {
+				const bool use_far = (corner & 4) != 0;
+				const Vector2 extents = use_far ? far_extents : near_extents;
+				const real_t depth = use_far ? far_distance : near_distance;
+				const Vector3 view_corner(
+						((corner & 1) ? extents.x : -extents.x),
+						((corner & 2) ? extents.y : -extents.y),
+						-depth);
+				const Vector3 world_corner = cam.xform(view_corner);
+				if (first) {
+					volume.position = world_corner;
+					first = false;
+				} else {
+					volume.expand_to(world_corner);
+				}
+			}
+
+			// Sweep the whole thing towards the light. Anything inside the swept
+			// volume can put itself between the light and something visible.
+			const Vector3 towards_light = directional->transform.basis.xform(Vector3(0, 0, 1)).normalized();
+			const real_t sweep = far_distance * scene_render->get_raytraced_directional_caster_scale();
+			AABB swept = volume;
+			swept.position += towards_light * sweep;
+			volume.merge_with(swept);
+
+			rt_directional_bounds_scratch.push_back(volume);
+		}
+
 		struct CullRTCasters {
 			LocalVector<Instance *> *result;
 			uint64_t pass;
@@ -3555,6 +3623,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		cull_casters.rejected = &dbg_noncaster;
 
 		for (const AABB &light_bounds : rt_light_bounds_scratch) {
+			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(light_bounds, cull_casters);
+		}
+		for (const AABB &light_bounds : rt_directional_bounds_scratch) {
 			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(light_bounds, cull_casters);
 		}
 
@@ -3626,6 +3697,28 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 						break;
 					}
 				}
+
+				// A scattered field under a directional light is the one case
+				// that can flood the structure: the light reaches the whole
+				// level, and every blade of grass is its own entry. How far
+				// scatter casts for such a light is therefore a setting, not a
+				// constant, so it can be scaled with the rest of the graphics
+				// options.
+				if (!reached && rt_scatter_mode != RendererSceneRender::RAYTRACED_SCATTER_DISABLED &&
+						!rt_directional_bounds_scratch.is_empty()) {
+					const bool near_enough =
+							rt_scatter_mode == RendererSceneRender::RAYTRACED_SCATTER_FULL_DISTANCE ||
+							element_bounds.get_center().distance_to(camera_position) <= rt_scatter_distance;
+					if (near_enough) {
+						for (const AABB &light_bounds : rt_directional_bounds_scratch) {
+							if (light_bounds.intersects(element_bounds)) {
+								reached = true;
+								break;
+							}
+						}
+					}
+				}
+
 				if (!reached) {
 					continue;
 				}

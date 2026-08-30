@@ -259,6 +259,10 @@ public:
 	// lights would lose their shadow maps without gaining a mask.
 	virtual bool _uses_raytraced_shadows() const { return false; }
 
+	virtual bool is_raytraced_directional_available() const override;
+	virtual float get_raytraced_directional_caster_scale() const override;
+	virtual RaytracedScatterMode get_raytraced_scatter_mode() const override;
+	virtual float get_raytraced_scatter_distance() const override;
 	virtual bool is_raytracing_scene_available() const override;
 	virtual bool is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const override;
 	virtual bool is_raytracing_debug_enabled() const override;

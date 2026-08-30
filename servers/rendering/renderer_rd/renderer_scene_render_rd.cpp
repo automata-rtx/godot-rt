@@ -1793,6 +1793,25 @@ bool RendererSceneRenderRD::is_raytracing_debug_enabled() const {
 	return RendererRD::RaytracingScene::debug_enabled();
 }
 
+bool RendererSceneRenderRD::is_raytraced_directional_available() const {
+	// Not yet: directional lights still take their shadow from the cascade maps.
+	// The caster gathering below it is built and settable so the volume can be
+	// measured before anything depends on it.
+	return RendererRD::RaytracingScene::is_directional_enabled() && is_raytracing_scene_available();
+}
+
+float RendererSceneRenderRD::get_raytraced_directional_caster_scale() const {
+	return RendererRD::RaytracingScene::get_directional_caster_scale();
+}
+
+RendererSceneRender::RaytracedScatterMode RendererSceneRenderRD::get_raytraced_scatter_mode() const {
+	return (RaytracedScatterMode)RendererRD::RaytracingScene::get_directional_scatter_mode();
+}
+
+float RendererSceneRenderRD::get_raytraced_scatter_distance() const {
+	return RendererRD::RaytracingScene::get_directional_scatter_distance();
+}
+
 bool RendererSceneRenderRD::is_raytracing_scene_available() const {
 	return _uses_raytraced_shadows() && raytracing_scene != nullptr && raytracing_scene->is_available() && rt_shadows != nullptr && rt_shadows->is_valid();
 }
