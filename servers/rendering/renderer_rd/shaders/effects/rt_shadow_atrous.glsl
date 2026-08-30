@@ -18,6 +18,10 @@
 // Channel carrying no light. Matches SLOT_NONE in rt_shadow_trace.glsl.
 #define SLOT_NONE 255u
 
+// Widest penumbra the hit distance channel describes, in pixels. Must match
+// MAX_PENUMBRA_PIXELS in rt_shadow_trace.glsl.
+#define MAX_PENUMBRA_PIXELS 32.0
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D source_visibility;
@@ -48,7 +52,7 @@ layout(push_constant, std430) uniform Params {
 
 	float depth_sigma;
 	float normal_sigma;
-	float min_filter_scale;
+	float min_filter_pixels;
 	float pad;
 }
 params;
@@ -89,14 +93,19 @@ void main() {
 	vec4 hit_distance = texelFetch(source_hit_distance, pos, 0);
 	float history_length = texelFetch(source_history_length, pos, 0).r;
 
-	// How far the filter may reach, per light. A blocker far from the receiver
-	// casts a wide penumbra and tolerates a wide filter; a blocker at the contact
-	// point does not, and over-filtering there is what destroys contact hardening.
-	// Pixels with little accumulated history are still noisy and get filtered
-	// harder regardless.
-	vec4 penumbra = clamp(hit_distance, vec4(0.0), vec4(1.0));
+	// How far the filter may reach, per light, in pixels — the same unit the
+	// kernel steps in, so the filter can be made to match the penumbra instead of
+	// merely tapering inside a footprint chosen by the iteration count. A blocker
+	// resting on the surface produces a penumbra a pixel or two wide and must be
+	// filtered that narrowly; filtering it across the eight pixels the last
+	// iteration reaches is exactly what destroys contact hardening.
+	//
+	// A pixel with little accumulated history is still noisy whatever its
+	// penumbra, so it keeps the wide filter until the history fills in.
+	vec4 penumbra_pixels = clamp(hit_distance, vec4(0.0), vec4(1.0)) * MAX_PENUMBRA_PIXELS;
 	float history_boost = 1.0 - clamp(history_length, 0.0, 1.0);
-	vec4 filter_scale = clamp(max(penumbra, vec4(history_boost)), vec4(params.min_filter_scale), vec4(1.0));
+	float floor_pixels = max(params.min_filter_pixels, history_boost * MAX_PENUMBRA_PIXELS);
+	vec4 reach_pixels = max(penumbra_pixels, vec4(floor_pixels));
 
 	vec4 sum = center * KERNEL[0] * KERNEL[0];
 	vec4 weight_sum = vec4(KERNEL[0] * KERNEL[0]);
@@ -141,10 +150,12 @@ void main() {
 
 			vec4 tap_visibility = texelFetch(source_visibility, tap, 0);
 
-			// Per-light reach: a light whose filter_scale is small takes less of
-			// this tap the further away it is.
-			float distance_ratio = length(vec2(x, y)) / 2.0;
-			vec4 reach = clamp((filter_scale - vec4(distance_ratio - 1.0)), vec4(0.0), vec4(1.0));
+			// Per-light reach, measured against where this tap actually lands on
+			// screen. The kernel's step doubles every iteration, so the same tap
+			// offset means one pixel on the first pass and eight on the last; a
+			// tight penumbra simply stops contributing once the step outruns it.
+			float tap_pixels = length(vec2(x, y)) * float(params.step_size);
+			vec4 reach = clamp(vec4(1.0) - vec4(tap_pixels) / reach_pixels, vec4(0.0), vec4(1.0));
 			vec4 weight = vec4(geometric) * reach;
 
 			sum += tap_visibility * weight;
@@ -157,7 +168,14 @@ void main() {
 	imageStore(dest_visibility, pos, result);
 
 	if (params.write_history != 0u) {
-		imageStore(dest_history_visibility, pos, result);
+		// The accumulation is handed back what it produced, NOT what this pass
+		// made of it. Feeding the filtered result back would re-filter an
+		// already-filtered signal every frame, and with a filter that never
+		// fully collapses that compounds without bound: a two pixel kernel ends
+		// up as a twenty pixel smear, and the contact hardening the trace worked
+		// out is the first thing it destroys. Spatial filtering belongs on the
+		// way to the screen, not in the loop.
+		imageStore(dest_history_visibility, pos, center);
 		imageStore(dest_history_index, pos, center_index);
 
 		// Stored raw rather than normalized: the temporal pass compares it against

@@ -25,6 +25,11 @@
 // Rays cast before the shader decides whether the rest can change the answer.
 #define PROBE_SAMPLES 2u
 
+// Widest penumbra the hit distance channel can describe, in pixels. Anything
+// wider saturates, which is harmless: the denoiser's filter is already at its
+// full width by then. Must match MAX_PENUMBRA_PIXELS in rt_shadow_atrous.glsl.
+#define MAX_PENUMBRA_PIXELS 32.0
+
 // Slot value meaning "this channel carries no light". Matches RT_SLOT_NONE in
 // light_data_inc.glsl.
 #define SLOT_NONE 255u
@@ -59,6 +64,10 @@ struct RTLight {
 	uint is_spot;
 	uint mask;
 	float energy;
+
+	float bias;
+	float normal_bias;
+	vec2 pad;
 };
 
 layout(set = 0, binding = 5, std430) restrict readonly buffer RTLights {
@@ -67,7 +76,7 @@ layout(set = 0, binding = 5, std430) restrict readonly buffer RTLights {
 rt_lights;
 
 // View space surface normals from the depth pre-pass, which raytraced shadows
-// force on. Reconstructing a normal from neighbouring depth taps instead would
+// force on. Reconstructing a normal from neighboring depth taps instead would
 // span the discontinuity at every silhouette and offset those rays into the
 // surface, fringing the outline of every object.
 layout(set = 0, binding = 6) uniform sampler2D source_normal_roughness;
@@ -89,8 +98,11 @@ layout(push_constant, std430) uniform Params {
 	// same reason the rotation is a quaternion.
 	uint samples_and_frame;
 
-	float bias;
-	float normal_bias;
+	// Pixels a one meter object covers one meter from the camera, so a penumbra
+	// measured in world units can be reported in the units the denoiser filters
+	// in. The bias pair that used to sit here is now per light.
+	float focal_pixels;
+	float pad;
 }
 params;
 
@@ -355,7 +367,7 @@ void main() {
 		// Offset along the normal to avoid self-intersection, scaled by
 		// distance because the reconstructed position is least precise far
 		// away.
-		float offset_scale = params.normal_bias * (1.0 + distance_to_light * 0.01);
+		float offset_scale = light.normal_bias * (1.0 + distance_to_light * 0.01);
 		vec3 origin = world_position + normal * offset_scale;
 
 		vec3 tangent;
@@ -385,7 +397,7 @@ void main() {
 			rayQueryEXT ray_query;
 			rayQueryInitializeEXT(ray_query, tlas,
 					gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-					light.mask, origin, params.bias, direction, ray_length - params.bias);
+					light.mask, origin, light.bias, direction, ray_length - light.bias);
 
 			rayQueryProceedEXT(ray_query);
 
@@ -410,9 +422,23 @@ void main() {
 		visibility[k] = 1.0 - (occluded / float(traced));
 
 		if (occluded > 0.0) {
-			// Mean blocker distance, normalized so it survives an 8 bit channel.
 			float mean_blocker = blocker_distance_sum / occluded;
-			hit_distance[k] = clamp(mean_blocker / max(light.radius, 0.0001), 0.0, 1.0);
+
+			// How wide this shadow's penumbra actually is, by similar triangles:
+			// the emitter's own width scaled by how much closer the blocker sits
+			// to the receiver than to the light. A blocker resting on the surface
+			// gives nearly zero; one right up against the light gives an enormous
+			// smear. This is what makes a raytraced shadow harden at contact, and
+			// the denoiser can only preserve it if it is told how wide to filter.
+			float blocker_to_light = max(distance_to_light - mean_blocker, 0.0001);
+			float penumbra_world = light.size * (mean_blocker / blocker_to_light);
+
+			// Reported in pixels rather than meters, because pixels are the unit
+			// the denoiser's kernel is measured in. Anything else leaves it
+			// guessing, and guessing wide is what washes a contact shadow out.
+			float view_distance = max(length(world_position - params.camera_position), 0.0001);
+			float penumbra_pixels = penumbra_world * params.focal_pixels / view_distance;
+			hit_distance[k] = clamp(penumbra_pixels / MAX_PENUMBRA_PIXELS, 0.0, 1.0);
 		}
 	}
 

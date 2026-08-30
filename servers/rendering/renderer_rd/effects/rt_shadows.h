@@ -78,6 +78,14 @@ public:
 		uint32_t is_spot;
 		uint32_t mask;
 		float energy;
+
+		// Where the ray starts, in meters. Both come from the light's own shadow
+		// bias properties: a raytraced shadow needs far less offset than a shadow
+		// map, which has to clear a depth texel, so the properties are scaled
+		// down rather than used raw.
+		float bias;
+		float normal_bias;
+		float pad[2];
 	};
 
 	// The textures the trace and the denoiser work through. Owned by the render
@@ -122,12 +130,17 @@ private:
 		// the same reason the rotation is a quaternion.
 		uint32_t samples_and_frame;
 
-		float bias;
-		float normal_bias;
+		// Pixels a one meter object covers at one meter from the camera. Lets the
+		// trace report each penumbra's width in pixels, which is the unit the
+		// denoiser sizes its filter in.
+		float focal_pixels;
+		float pad;
 	};
 
 	struct TemporalPushConstant {
 		float reprojection[16];
+
+		float depth_unproject[4];
 
 		int32_t screen_size[2];
 		float depth_tolerance;
@@ -143,7 +156,7 @@ private:
 
 		float depth_sigma;
 		float normal_sigma;
-		float min_filter_scale;
+		float min_filter_pixels;
 		float pad;
 	};
 
@@ -168,10 +181,11 @@ private:
 	void _ensure_light_buffer(uint32_t p_light_count);
 	void _trace(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, const Buffers &p_buffers,
 			const Size2i &p_size, const Projection &p_inv_view_projection,
-			const Transform3D &p_camera_transform, uint32_t p_light_count,
+			const Transform3D &p_camera_transform, float p_focal_pixels, uint32_t p_light_count,
 			const Settings &p_settings);
 	void _temporal(RID p_depth_texture, const Buffers &p_buffers, const Size2i &p_size,
-			const Projection &p_reprojection, const Settings &p_settings);
+			const Projection &p_reprojection, const Projection &p_inv_projection,
+			const Settings &p_settings);
 	void _atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_normal_roughness,
 			const Buffers &p_buffers, const Size2i &p_size, const Projection &p_inv_projection,
 			int p_step_size, bool p_write_history);

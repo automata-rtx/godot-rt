@@ -42,11 +42,22 @@ layout(push_constant, std430) uniform Params {
 	// test below rather than smeared.
 	mat4 reprojection;
 
+	// Turns a depth buffer value into a distance along the camera's forward
+	// axis, the same four terms the a-trous pass uses. Needed because the
+	// reprojection above carries a scale that has to be undone before the
+	// result can be compared against a stored distance; see below.
+	vec4 depth_unproject;
+
 	ivec2 screen_size;
 	float depth_tolerance;
 	float max_history;
 }
 params;
+
+float linear_view_depth(float depth) {
+	return -(params.depth_unproject.x * depth + params.depth_unproject.y) /
+			(params.depth_unproject.z * depth + params.depth_unproject.w);
+}
 
 void main() {
 	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
@@ -77,10 +88,15 @@ void main() {
 	// Behind the previous camera: there is no history to find.
 	if (previous_clip.w > 0.0) {
 		vec2 previous_uv = (previous_clip.xy / previous_clip.w) * 0.5 + 0.5;
-		// For a perspective projection w is the distance along the camera's forward
-		// axis, so this is where the surface should have been in the previous frame
-		// if it did not move. The history stores what was actually there.
-		float expected_depth = previous_clip.w;
+
+		// The reprojection maps a point given in this frame's normalized device
+		// coordinates, so what comes out is the previous frame's clip position
+		// scaled by the reciprocal of this pixel's view depth. The scale cancels
+		// in the division above, which is why the reprojected position is right,
+		// but it does not cancel in w: that leaves the RATIO of the previous view
+		// depth to this one. Multiplying by this pixel's own view depth turns it
+		// back into the distance the history stores.
+		float expected_depth = previous_clip.w * linear_view_depth(depth);
 
 		// The history is filtered by hand rather than by the sampler: the channel
 		// assignment cannot be interpolated, so each of the four bilinear taps has

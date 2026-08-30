@@ -1266,6 +1266,15 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 			// shadow would be least visible.
 			rt_light.energy = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_ENERGY]);
 
+			// The light's own bias properties, scaled down. A shadow map's bias has
+			// to clear a depth texel, which is coarse and grows with distance from
+			// the light; a ray only has to clear the error in a world position
+			// reconstructed from the depth buffer, which is far smaller. Using the
+			// properties raw would push every shadow away from its caster, so the
+			// same slider means a proportionally smaller offset here.
+			rt_light.bias = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_SHADOW_BIAS]) * 0.05f;
+			rt_light.normal_bias = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS]) * 0.015f;
+
 			// Which layers this light takes shadow casters from, which is a
 			// separate mask from the one deciding what it lights.
 			//
