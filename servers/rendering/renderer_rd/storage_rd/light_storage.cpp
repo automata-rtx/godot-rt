@@ -1082,12 +1082,16 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 					light_data.fade_to = -light_data.shadow_split_offsets[limit];
 				}
 
-				// The cascades above are still built and still correct when the sun's
-				// opaque shading comes from the mask instead. Volumetric fog samples a
-				// froxel, subsurface transmittance samples a point under a surface, and
-				// anything outside the depth pre-pass has no mask pixel to read: none of
-				// them can be answered by a screen space mask, so they keep the map.
-				light_data.shadow_map_opacity = light_data.shadow_opacity;
+				// What the effects that sample the cascade maps rather than the mask -
+				// volumetric fog, subsurface transmittance - should multiply by.
+				//
+				// Zero unless a map was actually rendered. A raytraced sun renders one
+				// only when asked to, so this has to answer the same question the
+				// culler asked before it decided whether to fill the atlas; saying
+				// otherwise would have those effects sampling whatever the atlas
+				// happened to contain.
+				const bool directional_has_map = !light_instance->raytraced_shadow || light->shadow_map;
+				light_data.shadow_map_opacity = directional_has_map ? light_data.shadow_opacity : 0.0f;
 
 				// Raytraced shadows. The sun competes for the mask's four channels on
 				// the same terms as every lamp; only the geometry of its ray differs.

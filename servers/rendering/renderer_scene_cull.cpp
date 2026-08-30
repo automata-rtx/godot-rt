@@ -3810,11 +3810,24 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		// Directional Shadows
 
 		for (uint32_t i = 0; i < cull.shadow_count; i++) {
+			// A raytraced sun reads its surface shadow from the screen space mask,
+			// so nothing samples the cascades it would render into. The same
+			// question the positional loop below asks, asked here.
+			//
+			// The cascade TRANSFORMS are still set either way, and deliberately:
+			// the split distances they carry are what fade_from and fade_to are
+			// derived from, and the raytraced path reads those to know where its
+			// own shadow has to fade out. Skipping the setup as well would leave
+			// the sun with no range at all.
+			const RID directional_instance = cull.shadows[i].light_instance;
+			const bool skip_atlas = RSG::light_storage->light_instance_has_raytraced_shadow(directional_instance) &&
+					!RSG::light_storage->light_instance_needs_shadow_map(directional_instance);
+
 			for (uint32_t j = 0; j < cull.shadows[i].cascade_count; j++) {
 				const Cull::Shadow::Cascade &c = cull.shadows[i].cascades[j];
 				//			print_line("shadow " + itos(i) + " cascade " + itos(j) + " elements: " + itos(c.cull_result.size()));
 				RSG::light_storage->light_instance_set_shadow_transform(cull.shadows[i].light_instance, c.projection, c.transform, c.zfar, c.split, j, c.shadow_texel_size, c.bias_scale, c.range_begin, c.uv_scale);
-				if (max_shadows_used == MAX_UPDATE_SHADOWS) {
+				if (skip_atlas || max_shadows_used == MAX_UPDATE_SHADOWS) {
 					continue;
 				}
 				render_shadow_data[max_shadows_used].light = cull.shadows[i].light_instance;

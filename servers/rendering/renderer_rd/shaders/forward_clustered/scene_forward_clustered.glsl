@@ -2412,10 +2412,16 @@ void fragment_shader(in SceneData scene_data) {
 				float shadow = 1.0;
 
 				// Raytraced shadows replace the cascade maps for a sun that was
-				// granted a slot in the screen-space mask. The mask is built from the
-				// depth pre-pass, so it only answers for pixels that are in it: a
-				// genuinely alpha-blended surface has no entry and falls through to
-				// the cascade path below, which is why the sun keeps its map.
+				// granted a slot in the screen-space mask.
+				//
+				// This is decided on the slot alone, with no test for which pass is
+				// running, so the alpha pass takes it too. The mask is built from the
+				// depth pre-pass, which a genuinely alpha-blended surface is not in,
+				// so such a surface reads the mask at its own screen position and gets
+				// the visibility of whatever OPAQUE surface lies behind it. That is
+				// wrong, and it is wrong whether or not the sun keeps a shadow map,
+				// because this branch is taken either way. Alpha scissor and alpha
+				// hash materials do write the depth pre-pass and are unaffected.
 				bool rt_shadowed = false;
 				if (directional_lights.data[i].rt_slot < RT_SLOT_NONE) {
 					rt_shadowed = true;
