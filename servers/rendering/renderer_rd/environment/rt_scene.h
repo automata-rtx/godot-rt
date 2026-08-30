@@ -66,6 +66,8 @@ private:
 	static float setting_directional_caster_scale;
 	static int setting_directional_scatter;
 	static float setting_directional_scatter_distance;
+	static int setting_directional_demoted_mode;
+	static int setting_directional_demoted_size;
 
 	enum BlasState {
 		BLAS_UNBUILT,
@@ -188,6 +190,10 @@ public:
 	// gathered as a caster, as a multiple of that distance. A sun has no range
 	// to cull against, so this is what bounds its acceleration structure.
 	static bool is_directional_enabled();
+	// 0 keeps whatever the light was authored with, 1 Orthogonal, 2 two splits.
+	static int get_directional_demoted_mode();
+	// Zero keeps the project's own directional shadow atlas size.
+	static int get_directional_demoted_size();
 	static float get_directional_caster_scale();
 	// Disabled / Near Camera / Full Distance. A MultiMesh contributes one entry
 	// per element, so a scattered field can flood the structure under a light

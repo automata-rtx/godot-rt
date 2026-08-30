@@ -1847,6 +1847,13 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale", PROPERTY_HINT_RANGE, "0.5,8,0.1,or_greater"), 2.0);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters", PROPERTY_HINT_ENUM, "Disabled,Near Camera,Full Distance"), 1);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance", PROPERTY_HINT_RANGE, "0,500,1,or_greater"), 25.0);
+	// What the sun's shadow map is demoted to once the mask drives its opaque
+	// shading. What is left of it answers volumetric fog, subsurface
+	// transmittance, alpha-blended surfaces and reflection probes, none of which
+	// need cascade density, so it can be far smaller and far coarser than a map
+	// that had to hold up under direct inspection.
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode", PROPERTY_HINT_ENUM, "Keep Authored,Orthogonal,2 Splits"), 2);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size", PROPERTY_HINT_RANGE, "0,4096"), 1024);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/block_size_kb", PROPERTY_HINT_RANGE, "4,2048,1,or_greater"), 256);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/max_size_mb", PROPERTY_HINT_RANGE, "1,1024,1,or_greater"), 128);

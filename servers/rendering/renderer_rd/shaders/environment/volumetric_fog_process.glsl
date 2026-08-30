@@ -399,7 +399,11 @@ void main() {
 			if (directional_lights.data[i].volumetric_fog_energy > 0.001) {
 				vec3 shadow_attenuation = vec3(1.0);
 
-				if (directional_lights.data[i].shadow_opacity > 0.001) {
+				// shadow_map_opacity, not shadow_opacity: a froxel is not on a
+				// surface, so it has no pixel in the screen-space raytraced mask and
+				// has to keep sampling the cascade map. A raytraced sun keeps that map
+				// for exactly this reason.
+				if (directional_lights.data[i].shadow_map_opacity > 0.001) {
 					float depth_z = -view_pos.z;
 
 					vec4 pssm_coord;
@@ -433,7 +437,7 @@ void main() {
 
 					shadow = mix(shadow, 1.0, smoothstep(directional_lights.data[i].fade_from, directional_lights.data[i].fade_to, view_pos.z)); //done with negative values for performance
 
-					shadow_attenuation = mix(vec3(1.0 - directional_lights.data[i].shadow_opacity), vec3(1.0), shadow);
+					shadow_attenuation = mix(vec3(1.0 - directional_lights.data[i].shadow_map_opacity), vec3(1.0), shadow);
 				}
 
 				total_light += shadow_attenuation * directional_lights.data[i].color * directional_lights.data[i].energy * henyey_greenstein(dot(safe_normalize(view_pos), safe_normalize(directional_lights.data[i].direction)), params.phase_g) * directional_lights.data[i].volumetric_fog_energy;

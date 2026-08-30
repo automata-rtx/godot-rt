@@ -51,7 +51,8 @@ LightStorage::LightStorage() {
 
 	TextureStorage *texture_storage = TextureStorage::get_singleton();
 
-	directional_shadow.size = GLOBAL_GET("rendering/lights_and_shadows/directional_shadow/size");
+	directional_shadow.requested_size = GLOBAL_GET("rendering/lights_and_shadows/directional_shadow/size");
+	directional_shadow.size = directional_shadow.requested_size;
 	directional_shadow.use_16_bits = GLOBAL_GET("rendering/lights_and_shadows/directional_shadow/16_bits");
 
 	using_lightmap_array = true; // high end
@@ -436,7 +437,9 @@ RSE::LightDirectionalShadowMode LightStorage::light_directional_get_shadow_mode(
 	const Light *light = light_owner.get_or_null(p_light);
 	ERR_FAIL_NULL_V(light, RSE::LIGHT_DIRECTIONAL_SHADOW_ORTHOGONAL);
 
-	return light->directional_shadow_mode;
+	// Not light->directional_shadow_mode: a raytraced sun's map is demoted. The
+	// authored value is left untouched so it round-trips through the editor.
+	return _light_directional_effective_shadow_mode(light);
 }
 
 void LightStorage::light_area_set_size(RID p_light, const Vector2 &p_size) {
@@ -740,6 +743,30 @@ bool LightStorage::_light_is_raytraced_shadow_candidate(const Light *p_light) co
 	return p_light->type == RSE::LIGHT_OMNI || p_light->type == RSE::LIGHT_SPOT;
 }
 
+RSE::LightDirectionalShadowMode LightStorage::_light_directional_effective_shadow_mode(const Light *p_light) const {
+	// A sun whose opaque shading comes from the raytraced mask still renders a
+	// shadow map, but nothing looks at it directly any more: what is left reading
+	// it is volumetric fog, subsurface transmittance, alpha-blended surfaces and
+	// reflection probes. None of those need cascade density, so the map is cut
+	// down to what they do need.
+	//
+	// Keyed on whether the light COULD be raytraced rather than on whether it was
+	// this pass, because the cascade count has to be the same answer for the
+	// culler, the atlas layout and the light buffer. Those three run at different
+	// points and a disagreement puts cascades in the wrong atlas rects.
+	//
+	// Safe only because unused cascade slots are now filled from the last real
+	// one; before that, fewer cascades meant the shaders' final `else` read an
+	// identity matrix.
+	if (p_light->type == RSE::LIGHT_DIRECTIONAL) {
+		const int demoted = RendererRD::RaytracingScene::get_directional_demoted_mode();
+		if (demoted != 0 && _light_uses_raytraced_shadows(p_light)) {
+			return demoted == 1 ? RSE::LIGHT_DIRECTIONAL_SHADOW_ORTHOGONAL : RSE::LIGHT_DIRECTIONAL_SHADOW_PARALLEL_2_SPLITS;
+		}
+	}
+	return p_light->directional_shadow_mode;
+}
+
 bool LightStorage::_light_uses_raytraced_shadows(const Light *p_light) const {
 	if (!_light_is_raytraced_shadow_candidate(p_light)) {
 		return false;
@@ -979,7 +1006,7 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 				light_data.bake_mode = light->bake_mode;
 
 				if (light_data.shadow_opacity > 0.001) {
-					RSE::LightDirectionalShadowMode smode = light->directional_shadow_mode;
+					RSE::LightDirectionalShadowMode smode = _light_directional_effective_shadow_mode(light);
 
 					light_data.soft_shadow_scale = light->param[RSE::LIGHT_PARAM_SHADOW_BLUR];
 					light_data.softshadow_angle = angular_diameter;
@@ -3135,7 +3162,37 @@ uint32_t LightStorage::get_shadow_atlas_depth_usage_bits() {
 
 /* DIRECTIONAL SHADOW */
 
+void LightStorage::_apply_directional_shadow_size() {
+	int size = directional_shadow.requested_size;
+
+	// A sun that takes its opaque shading from the raytraced mask leaves behind a
+	// map that only volumetric fog, subsurface transmittance, alpha-blended
+	// surfaces and reflection probes read. None of them inspect it closely, so it
+	// does not need to be the size a directly visible shadow would.
+	const int demoted = RendererRD::RaytracingScene::get_directional_demoted_size();
+	if (demoted > 0) {
+		const RendererSceneRenderRD *scene_render = RendererSceneRenderRD::get_singleton();
+		if (scene_render != nullptr && scene_render->is_raytraced_directional_available()) {
+			size = MIN(size, demoted);
+		}
+	}
+
+	size = Math::nearest_power_of_2_templated(size);
+	if (size == directional_shadow.size) {
+		return;
+	}
+
+	directional_shadow.size = size;
+	if (directional_shadow.depth.is_valid()) {
+		RD::get_singleton()->free_rid(directional_shadow.depth);
+		directional_shadow.depth = RID();
+		RendererSceneRenderRD::get_singleton()->base_uniforms_changed();
+	}
+}
+
 void LightStorage::update_directional_shadow_atlas() {
+	_apply_directional_shadow_size();
+
 	if (directional_shadow.depth.is_null() && directional_shadow.size > 0) {
 		RD::TextureFormat tf;
 		tf.format = get_shadow_atlas_depth_format(directional_shadow.use_16_bits);
@@ -3152,10 +3209,13 @@ void LightStorage::update_directional_shadow_atlas() {
 void LightStorage::directional_shadow_atlas_set_size(int p_size, bool p_16_bits) {
 	p_size = Math::nearest_power_of_2_templated(p_size);
 
-	if (directional_shadow.size == p_size && directional_shadow.use_16_bits == p_16_bits) {
+	if (directional_shadow.requested_size == p_size && directional_shadow.use_16_bits == p_16_bits) {
 		return;
 	}
 
+	// Recorded rather than applied: what actually gets allocated is reconciled
+	// against the raytraced demotion in _apply_directional_shadow_size().
+	directional_shadow.requested_size = p_size;
 	directional_shadow.size = p_size;
 	directional_shadow.use_16_bits = p_16_bits;
 

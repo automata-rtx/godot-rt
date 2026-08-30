@@ -60,6 +60,8 @@ bool RaytracingScene::setting_directional_enabled = false;
 float RaytracingScene::setting_directional_caster_scale = 2.0f;
 int RaytracingScene::setting_directional_scatter = RaytracingScene::DIRECTIONAL_SCATTER_NEAR_CAMERA;
 float RaytracingScene::setting_directional_scatter_distance = 25.0f;
+int RaytracingScene::setting_directional_demoted_mode = 2;
+int RaytracingScene::setting_directional_demoted_size = 1024;
 
 void RaytracingScene::register_settings() {
 	if (settings_registered) {
@@ -79,6 +81,8 @@ void RaytracingScene::register_settings() {
 	setting_directional_caster_scale = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale");
 	setting_directional_scatter = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters");
 	setting_directional_scatter_distance = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance");
+	setting_directional_demoted_mode = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode");
+	setting_directional_demoted_size = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size");
 }
 
 bool RaytracingScene::is_enabled() {
@@ -94,6 +98,16 @@ int RaytracingScene::get_sample_count() {
 bool RaytracingScene::is_directional_enabled() {
 	register_settings();
 	return setting_directional_enabled;
+}
+
+int RaytracingScene::get_directional_demoted_mode() {
+	register_settings();
+	return setting_directional_demoted_mode;
+}
+
+int RaytracingScene::get_directional_demoted_size() {
+	register_settings();
+	return setting_directional_demoted_size;
 }
 
 float RaytracingScene::get_directional_caster_scale() {

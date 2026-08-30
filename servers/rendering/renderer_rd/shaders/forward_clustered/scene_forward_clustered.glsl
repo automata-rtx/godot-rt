@@ -2680,7 +2680,10 @@ void fragment_shader(in SceneData scene_data) {
 #ifdef LIGHT_TRANSMITTANCE_USED
 			float transmittance_z = transmittance_depth;
 #ifndef SHADOWS_DISABLED
-			if (directional_lights.data[i].shadow_opacity > 0.001) {
+			// shadow_map_opacity, not shadow_opacity: transmittance needs a depth
+			// from the light's point of view to measure thickness with, which a
+			// screen-space mask cannot give it. A raytraced sun keeps its map.
+			if (directional_lights.data[i].shadow_map_opacity > 0.001) {
 				float depth_z = -vertex.z;
 
 				if (depth_z < directional_lights.data[i].shadow_split_offsets.x) {

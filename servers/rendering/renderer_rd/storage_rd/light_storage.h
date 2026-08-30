@@ -515,10 +515,19 @@ private:
 		RID fb; //when renderign direct
 
 		int light_count = 0;
+		// What is actually allocated. May be smaller than requested_size when a
+		// raytraced sun has demoted its map.
 		int size = 0;
+		// What the project, or directional_shadow_atlas_set_size, asked for. Kept
+		// so the full size comes back if raytraced directional shadows are off.
+		int requested_size = 0;
 		bool use_16_bits = true;
 		int current_light = 0;
 	} directional_shadow;
+
+	// Reconciles the requested size against the demotion setting and reallocates
+	// if they disagree. Cheap when nothing changed.
+	void _apply_directional_shadow_size();
 
 	/* SHADOW CUBEMAPS */
 
@@ -541,6 +550,7 @@ private:
 	// visit lights in the same order.
 	bool _light_is_raytraced_shadow_candidate(const Light *p_light) const;
 	bool _light_uses_raytraced_shadows(const Light *p_light) const;
+	RSE::LightDirectionalShadowMode _light_directional_effective_shadow_mode(const Light *p_light) const;
 
 public:
 	// The raytraced light buffer for the pass that was last set up, indexed by
