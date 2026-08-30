@@ -34,7 +34,11 @@ float rt_shadow_lookup(float p_slot) {
 	// records which.
 	ivec2 coord = ivec2(gl_FragCoord.xy);
 	uvec4 slots = texelFetch(usampler2D(rt_shadow_index, SAMPLER_NEAREST_CLAMP), coord, 0);
+	// The mask stores the square root of visibility, so that its eight bits per
+	// channel are spent where a shadow's detail is rather than spread evenly over
+	// a range that is mostly fully lit. Squaring here undoes that.
 	vec4 mask = texelFetch(sampler2D(rt_shadow_mask, SAMPLER_NEAREST_CLAMP), coord, 0);
+	mask *= mask;
 
 	if (slots.r == slot) {
 		return mask.r;

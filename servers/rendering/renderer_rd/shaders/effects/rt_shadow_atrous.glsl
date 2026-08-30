@@ -18,6 +18,20 @@
 // Channel carrying no light. Matches SLOT_NONE in rt_shadow_trace.glsl.
 #define SLOT_NONE 255u
 
+// Visibility is stored as its square root and squared on read. Eight bits spread
+// evenly over [0,1] put the same absolute step everywhere, but a shadow's detail
+// is all at the dark end, where that step is a large RELATIVE error and shows as
+// banding across a wide penumbra. Storing the root spends about five times more
+// of the range below a quarter visibility, where the eye is, and gives up
+// precision near fully lit, where nothing is happening.
+//
+// Filtering still happens in linear visibility. Averaging roots and squaring the
+// result, which is what NVIDIA's SIGMA does, would darken every penumbra by
+// Jensen's inequality: that is a look change, not a precision gain, so the
+// encode and decode bracket the storage only.
+#define VIS_DECODE(v) ((v) * (v))
+#define VIS_ENCODE(v) sqrt(max(v, vec4(0.0)))
+
 // Widest penumbra the hit distance channel describes, in pixels. Must match
 // MAX_PENUMBRA_PIXELS in rt_shadow_trace.glsl.
 #define MAX_PENUMBRA_PIXELS 32.0
@@ -70,7 +84,7 @@ void main() {
 		return;
 	}
 
-	vec4 center = texelFetch(source_visibility, pos, 0);
+	vec4 center = VIS_DECODE(texelFetch(source_visibility, pos, 0));
 	float center_depth = texelFetch(source_depth, pos, 0).r;
 	uvec4 center_index = texelFetch(source_index, pos, 0);
 
@@ -80,9 +94,9 @@ void main() {
 	// screen, and skipping it here is what keeps the denoiser's cost
 	// proportional to how much of the frame the raytraced lights actually touch.
 	if (center_depth <= 0.0 || center_index == uvec4(SLOT_NONE)) {
-		imageStore(dest_visibility, pos, center);
+		imageStore(dest_visibility, pos, VIS_ENCODE(center));
 		if (params.write_history != 0u) {
-			imageStore(dest_history_visibility, pos, center);
+			imageStore(dest_history_visibility, pos, VIS_ENCODE(center));
 			imageStore(dest_history_meta, pos, vec4(0.0, 0.0, 0.0, 0.0));
 			imageStore(dest_history_index, pos, center_index);
 		}
@@ -123,8 +137,6 @@ void main() {
 					clamp(texelFetch(source_hit_distance, ntap, 0), vec4(0.0), vec4(1.0)));
 		}
 	}
-	penumbra_pixels *= MAX_PENUMBRA_PIXELS;
-
 	// Whether there is anything here to smooth at all. A blocker resting on the
 	// surface produces a penumbra of literally zero, and with one sample per pixel
 	// every ray around it agrees, so the traced answer is already exact. Filtering
@@ -132,6 +144,8 @@ void main() {
 	// raytraced shadow worth tracing. So both floors below -- the constant one and
 	// the wide one a pixel gets while its history fills in -- apply only where a
 	// penumbra was actually measured.
+	penumbra_pixels *= MAX_PENUMBRA_PIXELS;
+
 	vec4 has_penumbra = step(vec4(0.0001), penumbra_pixels);
 	float history_boost = 1.0 - clamp(history_length, 0.0, 1.0);
 	float floor_pixels = max(params.min_filter_pixels, history_boost * MAX_PENUMBRA_PIXELS);
@@ -178,7 +192,7 @@ void main() {
 				continue;
 			}
 
-			vec4 tap_visibility = texelFetch(source_visibility, tap, 0);
+			vec4 tap_visibility = VIS_DECODE(texelFetch(source_visibility, tap, 0));
 
 			// Per-light reach, measured against where this tap actually lands on
 			// screen. The kernel's step doubles every iteration, so the same tap
@@ -195,7 +209,7 @@ void main() {
 
 	vec4 result = sum / max(weight_sum, vec4(1e-6));
 
-	imageStore(dest_visibility, pos, result);
+	imageStore(dest_visibility, pos, VIS_ENCODE(result));
 
 	if (params.write_history != 0u) {
 		// The accumulation is handed back what it produced, NOT what this pass
@@ -205,7 +219,7 @@ void main() {
 		// up as a twenty pixel smear, and the contact hardening the trace worked
 		// out is the first thing it destroys. Spatial filtering belongs on the
 		// way to the screen, not in the loop.
-		imageStore(dest_history_visibility, pos, center);
+		imageStore(dest_history_visibility, pos, VIS_ENCODE(center));
 		imageStore(dest_history_index, pos, center_index);
 
 		// Stored raw rather than normalized: the temporal pass compares it against

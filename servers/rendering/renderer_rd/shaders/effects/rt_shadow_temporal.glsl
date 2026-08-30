@@ -14,6 +14,20 @@
 // Channel carrying no light. Matches SLOT_NONE in rt_shadow_trace.glsl.
 #define SLOT_NONE 255u
 
+// Visibility is stored as its square root and squared on read. Eight bits spread
+// evenly over [0,1] put the same absolute step everywhere, but a shadow's detail
+// is all at the dark end, where that step is a large RELATIVE error and shows as
+// banding across a wide penumbra. Storing the root spends about five times more
+// of the range below a quarter visibility, where the eye is, and gives up
+// precision near fully lit, where nothing is happening.
+//
+// Filtering still happens in linear visibility. Averaging roots and squaring the
+// result, which is what NVIDIA's SIGMA does, would darken every penumbra by
+// Jensen's inequality: that is a look change, not a precision gain, so the
+// encode and decode bracket the storage only.
+#define VIS_DECODE(v) ((v) * (v))
+#define VIS_ENCODE(v) sqrt(max(v, vec4(0.0)))
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D source_visibility;
@@ -65,7 +79,7 @@ void main() {
 		return;
 	}
 
-	vec4 current = texelFetch(source_visibility, pos, 0);
+	vec4 current = VIS_DECODE(texelFetch(source_visibility, pos, 0));
 	float depth = texelFetch(source_depth, pos, 0).r;
 
 	uvec4 current_index = texelFetch(source_index, pos, 0);
@@ -74,7 +88,7 @@ void main() {
 	// accumulate, and leaving a history behind would bleed into whatever moves
 	// in front of it later.
 	if (depth <= 0.0 || current_index == uvec4(SLOT_NONE)) {
-		imageStore(dest_visibility, pos, current);
+		imageStore(dest_visibility, pos, VIS_ENCODE(current));
 		imageStore(dest_history_length, pos, vec4(0.0));
 		return;
 	}
@@ -138,7 +152,7 @@ void main() {
 				}
 
 				float weight = tap_weights[i];
-				visibility_sum += texelFetch(history_visibility, tap, 0) * weight;
+				visibility_sum += VIS_DECODE(texelFetch(history_visibility, tap, 0)) * weight;
 				length_sum += previous_meta.g * weight;
 				weight_sum += weight;
 			}
@@ -162,6 +176,6 @@ void main() {
 
 	vec4 accumulated = mix(history, current, alpha);
 
-	imageStore(dest_visibility, pos, accumulated);
+	imageStore(dest_visibility, pos, VIS_ENCODE(accumulated));
 	imageStore(dest_history_length, pos, vec4(history_length / max(params.max_history, 1.0)));
 }

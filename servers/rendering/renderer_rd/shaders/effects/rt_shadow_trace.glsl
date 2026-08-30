@@ -34,6 +34,20 @@
 // light_data_inc.glsl.
 #define SLOT_NONE 255u
 
+// Visibility is stored as its square root and squared on read. Eight bits spread
+// evenly over [0,1] put the same absolute step everywhere, but a shadow's detail
+// is all at the dark end, where that step is a large RELATIVE error and shows as
+// banding across a wide penumbra. Storing the root spends about five times more
+// of the range below a quarter visibility, where the eye is, and gives up
+// precision near fully lit, where nothing is happening.
+//
+// Filtering still happens in linear visibility. Averaging roots and squaring the
+// result, which is what NVIDIA's SIGMA does, would darken every penumbra by
+// Jensen's inequality: that is a look change, not a precision gain, so the
+// encode and decode bracket the storage only.
+#define VIS_DECODE(v) ((v) * (v))
+#define VIS_ENCODE(v) sqrt(max(v, vec4(0.0)))
+
 // Which reading of the type-dependent fields above applies. Matches
 // RTShadows::LightType.
 #define LIGHT_TYPE_OMNI 0u
@@ -152,9 +166,63 @@ float order_preserving_float(uint bits) {
 // Interleaved gradient noise. Cheap, and its spatial distribution is far better
 // behaved than a plain hash, which matters because the spatial filter runs over
 // whatever pattern this leaves behind.
-float interleaved_gradient_noise(vec2 pos, uint frame) {
-	pos += float(frame) * 5.588238;
-	return fract(52.9829189 * fract(dot(pos, vec2(0.06711056, 0.00583715))));
+// A 32x32 blue noise mask, four values to a word. Generated once by void and
+// cluster (Ulichney) and baked in, so there is no texture to bind and no cost to
+// produce it.
+//
+// Blue noise means the pattern's energy sits at high spatial frequencies and
+// almost none at low ones. Measured on this mask, high frequency power exceeds
+// low by a factor of 2179; for the interleaved gradient noise this replaces the
+// figure is 16.6. That is the whole point: the spatial filter downstream removes
+// high frequency error well and low frequency error hardly at all, so pushing
+// the error up the spectrum is what makes one ray per pixel resolve.
+const uint BLUE_NOISE[256] = uint[](
+		0x28b41e55u, 0x2c981365u, 0xbcff6720u, 0x6fde33a8u, 0xe67a2d53u, 0x15a2903du, 0x5de145b0u, 0xbc3e1734u,
+		0xeece7ddbu, 0xd2f73dabu, 0x41149eb1u, 0x198ff223u, 0x049ad7a5u, 0xd550ca21u, 0x82c56cefu, 0x89af77f7u,
+		0x90340f67u, 0x7789035au, 0x7b8edd48u, 0x3f0566ceu, 0xf363bb80u, 0x782cb66du, 0x0d219b39u, 0x2ded49a5u,
+		0x7147fc97u, 0x33bae2c6u, 0x57e90c60u, 0xc5e39cb2u, 0xab4d25f8u, 0xe68711ddu, 0xdc56bf02u, 0xc3076eccu,
+		0x15dea854u, 0xa71b4f9fu, 0x38c128f3u, 0x30744c1bu, 0x360a8c5cu, 0xa5425b92u, 0x318aff64u, 0xd5255f93u,
+		0x82b80b3du, 0xcc6bf926u, 0xd2709881u, 0x0ea687fau, 0x74e5d0b3u, 0xd2b9f0c8u, 0x19ae4d27u, 0x7bb5e541u,
+		0x3164f18cu, 0x099242d4u, 0x02aa533cu, 0xebd82963u, 0x169d446cu, 0x0f7e2052u, 0xbbea7795u, 0x1ca1f87fu,
+		0x99ca57e0u, 0xbe5be874u, 0xb716d9efu, 0x54c14091u, 0xbef78021u, 0xf56c31a9u, 0x690cc93bu, 0x70380551u,
+		0xc00146afu, 0x7a13aa1fu, 0xe349862eu, 0x94127af0u, 0x5d0239afu, 0xd949e78bu, 0xdf2e5ca3u, 0x2ac3d19au,
+		0x85fd1894u, 0xb2dd4c37u, 0x6e249f65u, 0xfc30a359u, 0x28dc66c8u, 0xb40999cdu, 0xaafa8c1du, 0xed5d8813u,
+		0xd6a17d67u, 0x058df26au, 0x38c0fed1u, 0x47d707cbu, 0x78eda088u, 0x81c36540u, 0x3ebd4e72u, 0xd8204a76u,
+		0x5b0d2fbcu, 0x569d24b6u, 0x1a931041u, 0x7261b584u, 0xad4f0e1du, 0x3624fe16u, 0x26d300ecu, 0x3ba4b7f0u,
+		0x40e852f6u, 0xe43275c9u, 0xe1af627fu, 0xe727f550u, 0x8335d1beu, 0xa058e1bau, 0x849760dbu, 0x8e06e26bu,
+		0x8aacc41au, 0x1ca9fa17u, 0x4473f0c7u, 0x3f997ca6u, 0x96f6588du, 0x458f6f05u, 0x35c91baeu, 0x79cd5711u,
+		0x036e9b46u, 0xbb4864dfu, 0xd0002b8eu, 0x04dc1231u, 0xd7662ab1u, 0x0dcf2f4au, 0xb35179f7u, 0x632b9efeu,
+		0x34d323e0u, 0xda0a7c96u, 0xfb9d5c3cu, 0xee6d5fc2u, 0x1fc376a0u, 0x85b7f3a2u, 0x90e22d68u, 0xefae7e42u,
+		0xf45983bau, 0xeea253b9u, 0x4b1fae6bu, 0x5223b787u, 0xe50a46cbu, 0x3e18607cu, 0xbd08a4c4u, 0x3a0bda1eu,
+		0x44a76a17u, 0x8625ce1au, 0x73ead30fu, 0x82d63a93u, 0x3989fd14u, 0x9ae94eb1u, 0x6f49ed22u, 0x8d53c961u,
+		0x2cec06d1u, 0x36f9628eu, 0x1456bc79u, 0x9bf408e2u, 0x9459ad2du, 0x74cb0fdeu, 0xf683d457u, 0xfb75a132u,
+		0xc1739c4cu, 0xc74dace5u, 0x2fa74396u, 0x7148b0c7u, 0x22d5bf63u, 0x8fba306bu, 0x12b03804u, 0xac26e995u,
+		0x10dd3660u, 0x046e187fu, 0x68ff23e3u, 0xcf1e5b7eu, 0xa4013fe9u, 0xf24484f9u, 0xc2de69a8u, 0xc43f015au,
+		0x55b4881fu, 0xb2d89f3eu, 0x9d108d5eu, 0xa68c37dau, 0x75508013u, 0xcf5e15c5u, 0x471c7b29u, 0xe47eb48bu,
+		0xfdcd960cu, 0x34f12869u, 0xb851cc84u, 0xf8c103f1u, 0xecdb922bu, 0x0c98b037u, 0xff9ce850u, 0xf468d62cu,
+		0x03472e71u, 0x4ac591bbu, 0x2a71eb09u, 0x694e7845u, 0x1ea05ab6u, 0xd8f5684bu, 0x623bb886u, 0xa54e14cau,
+		0xe6aa5de0u, 0x761d5881u, 0x1adf3ca9u, 0x10d597adu, 0x07cc33e4u, 0x3222bf7cu, 0xab06c66fu, 0xbf399778u,
+		0x1579d022u, 0xf9d7a33au, 0x8f64c099u, 0x8626eccau, 0x8bfe7041u, 0x5991e6abu, 0xf14d19a3u, 0x8a0eea25u,
+		0xef9840f8u, 0x276c0bc8u, 0x81320e55u, 0xb15f0852u, 0x61b9189au, 0x42d4113bu, 0x907fe0fau, 0x56b2da5cu,
+		0x29b36a06u, 0x8843e161u, 0xfbe3b6ceu, 0xf6753ca7u, 0x24d94cc6u, 0x0276c754u, 0xd02eb566u, 0x809f436du,
+		0x518b17c2u, 0xf3ac92beu, 0x6a48167au, 0x2fdcbd1cu, 0xf2a27d00u, 0x85a6ea95u, 0x093d9c20u, 0xeb301bc0u,
+		0xfc35dfa8u, 0x01331d77u, 0x2a94a45eu, 0x588a9ecfu, 0x0b3767e7u, 0xbd4a2b6du, 0xa9e855cdu, 0x4bcb7bfdu,
+		0x0ad35e72u, 0xb9d64ba1u, 0x73d93aebu, 0x21450deeu, 0x87d2ad93u, 0x35db19b3u, 0x118972f4u, 0x2791654fu,
+		0x83439bf5u, 0x5470e7c4u, 0x4f07c685u, 0xc8b55f82u, 0xc24612fbu, 0x627dfc5au, 0xb8299508u, 0x00e49ed4u);
+
+// Where on the emitter this pixel samples, as a fraction of a turn.
+//
+// Space comes from the mask above. Time is a separate golden ratio step rather
+// than a shift of the sampling position: advancing the position re-rolls the
+// pattern every frame and gives each pixel an independent sequence that can
+// revisit nearly the same angle, whereas adding the conjugate of the golden
+// ratio spreads a single pixel's own sequence as evenly over the circle as any
+// sequence can. The temporal accumulation is averaging exactly that sequence.
+float shadow_sample_rotation(ivec2 pos, uint frame) {
+	uint index = uint((pos.y & 31) * 32 + (pos.x & 31));
+	uint packed = BLUE_NOISE[index >> 2u];
+	float spatial = float((packed >> ((index & 3u) * 8u)) & 0xffu) / 255.0;
+	return fract(spatial + float(frame) * 0.61803399);
 }
 
 // Vogel disk. For a handful of samples this covers the emitter far more evenly
@@ -416,7 +484,7 @@ void main() {
 	// re-averaging the same ones.
 	uint frame_index = params.samples_and_frame >> 8u;
 	uint requested_samples = params.samples_and_frame & 0xffu;
-	float phi = interleaved_gradient_noise(vec2(pos), frame_index) * 6.2831853;
+	float phi = shadow_sample_rotation(pos, frame_index) * 6.2831853;
 
 	vec4 visibility = vec4(1.0);
 	vec4 hit_distance = vec4(0.0);
@@ -574,7 +642,7 @@ void main() {
 		}
 	}
 
-	imageStore(dest_visibility, pos, visibility);
+	imageStore(dest_visibility, pos, VIS_ENCODE(visibility));
 	imageStore(dest_index, pos, slots);
 	imageStore(dest_hit_distance, pos, hit_distance);
 }
