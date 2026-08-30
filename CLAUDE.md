@@ -39,7 +39,7 @@ Not covered, and silently falling back or losing shadowing:
 - **`AreaLight3D`** — always shadow maps.
 - **`GPUParticles3D`** — casts no raytraced shadow at all. A caster must be mesh-backed
   (`INSTANCE_MESH`) or multimesh-backed (`INSTANCE_MULTIMESH`), which does include `CSGShape3D`,
-  `CPUParticles3D`, `GridMap` and `Sprite3D`, and its surfaces must be triangles with 3D positions.
+  `CPUParticles3D` and `GridMap`, and its surfaces must be triangles with 3D positions.
 - **Alpha-scissor materials** — cast, but the cutout is *ignored*: a leaf card casts the shadow of
   the whole quad. This is the one that bites when authoring foliage. (Alpha-*blended* and
   screen-reading materials cast nothing, exactly as with shadow maps.)

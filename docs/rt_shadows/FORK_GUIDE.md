@@ -84,8 +84,9 @@ An object must pass all of these:
 
 1. **Visible.** `instance->visible`, and `cast_shadows != SHADOW_CASTING_SETTING_OFF`.
 2. **Mesh- or multimesh-backed.** `INSTANCE_MESH` or `INSTANCE_MULTIMESH` only. That includes
-   `MeshInstance3D`, `MultiMeshInstance3D`, `CSGShape3D`, `CPUParticles3D`, `GridMap` and
-   `Sprite3D`/`Label3D`. **`GPUParticles3D` casts nothing.**
+   `MeshInstance3D`, `MultiMeshInstance3D`, `CSGShape3D`, `CPUParticles3D` and `GridMap`.
+   **`GPUParticles3D` casts nothing.** (`Sprite3D` and `Label3D` are mesh-backed and so pass this
+   test, but their default transparent material fails the next one.)
 3. **A material Godot already considers a caster.** The same test the shadow map path makes, so
    glass and shaders that discard depth do not start casting solid shadows just because the light
    became raytraced. Per-surface, via `shadow_caster_surface_mask`.
