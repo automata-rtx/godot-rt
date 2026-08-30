@@ -11,6 +11,30 @@
 > For what the code actually does now, read **`FORK_GUIDE.md`** in this directory. For how it hooks
 > into the engine and how to re-apply it to a newer Godot, read **`PORTING.md`**. Where this
 > document and those two disagree, they are right and this is out of date.
+>
+> An audit against the shipped code found these specific statements to be false. They are listed
+> because the document is detailed and confident enough to mislead a reader who does not know:
+>
+> - **§10.1, §11 and D9** say alpha-tested foliage casts *no* shadow. It casts a **wrong** one — the
+>   shadow of its whole uncut quad, because rays are traced with `gl_RayFlagsOpaqueEXT`. This is the
+>   likeliest authoring bug in a project built on this fork, and the document argues from the
+>   opposite premise.
+> - **D8** proposes a `Light3D.shadow_mode` enum (`AUTO`/`OFF`/`SHADOW_MAP`/`RT_ONLY`). Abandoned.
+>   What shipped is one bool, `Light3D.shadow_map_enabled`.
+> - **D3** proposes 8 denoised slots plus an inline ray-query overflow path in the forward shader.
+>   What shipped is 4 per-pixel channels with **no** overflow path.
+> - **D7** proposes replacing the hand-rolled denoiser with NVIDIA NRD SIGMA. That did not happen;
+>   three of SIGMA's ideas were adopted into the existing denoiser instead.
+> - **D9** says the feature cannot be enabled without raytracing hardware. It can — the engine warns
+>   and falls back to shadow maps.
+> - **§7.1**'s project-setting names are fictional, and its claim that they are live-toggleable is
+>   false: every setting is read once at startup.
+> - **§10.1 and §11** say directional lights are not covered. They shipped.
+> - **§11** says area lights are covered from Phase 3. `AreaLight3D` is not covered at all.
+> - **§10.4, "What will not change for existing projects"**, is the most misleading page here.
+>   Nearly every bullet is now false, starting with the node defaults.
+>
+> D1, D2, D5, D6, D8b and D10 are the decisions that survived intact.
 
 **Design & viability document**
 Target: Godot 4.8-dev (this fork) · Vulkan only · Forward+ (`forward_clustered`) only · 3D only

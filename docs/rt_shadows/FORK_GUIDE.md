@@ -34,9 +34,19 @@ Why they are unconditional rather than keyed to the raytracing setting: because 
 non-default values, a default that depended on a project setting would never be recorded, and a
 scene authored with raytracing on would silently lose every light's shadow the moment it was off.
 
-**These defaults change how a scene looks even with raytracing disabled.** A non-zero
-`light_angular_distance` puts the ordinary cascade path onto its PCSS branch and widens each
-cascade's extents. Set the size back to `0.0` for the hard, uniform shadows stock Godot gives you.
+**These defaults change how a scene looks and what it costs even with raytracing disabled, in every
+renderer.** Four consequences, none of them obvious:
+
+- A non-zero `light_angular_distance` puts the ordinary cascade path onto its PCSS branch and widens
+  each cascade's extents.
+- `ProceduralSkyMaterial` and `PhysicalSkyMaterial` read the same property as the sun's angular
+  diameter, so **a default `DirectionalLight3D` now draws a visible sun disk** where vanilla draws
+  none.
+- `LightmapGI` bakes read it too, so **bakes are now soft-shadowed and slower** by default.
+- Every mesh lit by a default `OmniLight3D` or `SpotLight3D` now compiles and runs the
+  `use_light_soft_shadows` shader specialization, on Forward+ and Mobile alike.
+
+Set the size back to `0.0` for the hard, uniform, cheaper behaviour stock Godot gives you.
 
 ### 1.2 New API
 
@@ -102,11 +112,30 @@ An object must pass all of these:
 Compressed (16-bit) vertex positions are *not* a blocker — they are expanded by a dequantize pass
 into a raytracing-legal buffer.
 
-### The two traps
+### Five traps
 
 **Alpha-scissor materials cast the shadow of their whole quad.** Rays are traced with
 `gl_RayFlagsOpaqueEXT`, so the cutout is never evaluated. A leaf card casts a rectangle. Give
 foliage real geometry, or turn its shadow off, or give that light a shadow map.
+
+**Anything a vertex shader does is invisible to the shadow.** The acceleration structure is built
+from the mesh's *stored* vertices at the node's *authored* transform. So a `BaseMaterial3D` with
+`billboard_mode` set, a `Sprite3D` / `AnimatedSprite3D` / `Label3D`, a `fixed_size` or `grow`
+material, and any custom shader whose `vertex()` moves geometry all cast a shadow of geometry that
+is not where you see it. Skinning and blend shapes are the exception — those run in a compute
+pre-pass whose output the structure reads, so they are correct.
+
+**Mesh LODs and `ArrayMesh.shadow_mesh` are ignored.** The full-detail LOD 0 index buffer is always
+traced, so `mesh_lod_threshold` and a cheap shadow proxy do not reduce raytraced shadow cost the way
+they reduce shadow-map cost.
+
+**A mesh updated in place keeps its old shadow.** The structure for a static surface is cached on
+`(mesh RID, surface index)` and only *skinned* surfaces carry a version check
+(`mesh_instance_get_last_change`). So `ArrayMesh.surface_update_vertex_region()`, an `ImmediateMesh`
+rewritten into the same buffers, or any equivalent in-place vertex edit leaves the shadow frozen at
+the geometry the structure was first built from. Replacing the surface outright — `clear_surfaces()`
+and re-add, which is what `PrimitiveMesh` does on any property change — allocates a new buffer and
+is handled correctly.
 
 **Casters are deliberately not frustum-culled.** Something behind the camera still casts into view —
 that is a feature, and it is why shadows do not pop as you turn. It also means the acceleration
@@ -114,21 +143,69 @@ structure holds more than what is on screen. Casters are gathered from each ligh
 sun, having no range, uses the visible frustum cut off at the shadow distance and swept toward the
 light by `caster_distance_scale`. Above 65,536 gathered casters the rest are dropped with a warning.
 
+### Masks behave differently
+
+`shadow_caster_mask` and `VisualInstance3D.layers` are 32-bit, but a ray query's instance mask is
+8-bit. The fork folds 32 down to 8 by OR-ing the four bytes, which is conservative — it never
+excludes something it should include — but it means **layers 9–32 alias onto layers 1–8**. A mask
+that would separate layer 1 from layer 9 under shadow maps will not separate them here.
+
+A fold that comes out zero is promoted to `0xFF`. So a `shadow_caster_mask` of 0, which under shadow
+maps means "nothing casts", means **everything casts** here.
+
+`Light3D.shadow_reverse_cull_face` has no effect on a raytraced shadow: the mask is per-scenario
+while that setting is per-light, so triangle facing is never culled. For the same reason
+`GeometryInstance3D.cast_shadow = ON` and `DOUBLE_SIDED` behave identically.
+
 ---
 
-## 3. What raytraced shadows do not cover
+## 3. Vanilla knobs that stop doing anything
+
+This is the fastest way to waste an afternoon. On a light that is actually raytraced, everything
+that tunes a shadow *map* is inert, because no map is rendered:
+
+| You reach for | It does | Reach for instead |
+| --- | --- | --- |
+| `Light3D.shadow_blur` | nothing | `light_size` / `light_angular_distance` |
+| `positional_shadow/atlas_size` and its quadrant subdivisions | nothing | — (no atlas quadrant is claimed) |
+| `positional_shadow/soft_shadow_filter_quality` | nothing | `denoiser/spatial_passes`, `denoiser/min_filter_pixels` |
+| `directional_shadow/size` | capped to 1024 | `directional/demoted_shadow_size` |
+| `directional_shadow/soft_shadow_filter_quality` | nothing | `samples_per_light` |
+| `DirectionalLight3D.directional_shadow_mode` | overridden to 2 splits | `directional/demoted_shadow_mode` |
+| `Light3D.shadow_bias` / `shadow_normal_bias` | rescaled into ray `tmin` and a world-space normal offset in metres — same properties, very different magnitudes | tune by eye, not by shadow-map intuition |
+
+Setting the positional atlas size to 0 no longer removes positional shadows either.
+
+Softness comes from the light's physical size; noise comes from `samples_per_light` and the
+denoiser. If a shadow looks wrong, that is the axis to move along.
+
+---
+
+## 4. What raytraced shadows do not cover
 
 | Area | Behaviour |
 | --- | --- |
 | `AreaLight3D` | Always shadow maps. |
-| XR / multiview | Shadow maps. A stereo pair would need a trace and full denoiser history per eye. |
+| XR / multiview | Shadow maps — but the acceleration structure is still built and the depth pre-pass still forced, so an XR project pays the cost and gets nothing. |
 | Reflection probes | Shadow maps. The acceleration structure is not built during probe passes, and probes render before viewports, so a probe cannot trace. |
 | Mobile and Compatibility renderers | Shadow maps. Forward+ only. |
 | Subsurface transmittance | **Known gap.** Falls back to the material's own transmittance depth for any raytraced light. `shadow_map_enabled` restores it. |
 | Volumetric fog, raytraced `OmniLight3D`/`SpotLight3D` | Lit, but casts no light shafts. `shadow_map_enabled` restores it. |
-| Volumetric fog, raytraced `DirectionalLight3D` | **Works.** The fog traces its own ray per froxel. |
-| Alpha-blended surfaces | Read the shadow map, not the mask — the mask holds one answer per pixel and it belongs to the opaque surface behind the glass. |
+| Volumetric fog, raytraced `DirectionalLight3D` | **Works.** The fog traces its own ray per froxel. Note that ray is culled by the light's `cull_mask`, not its `shadow_caster_mask` — an inconsistency with the surface path. |
+| Alpha-blended surfaces | **Receive no shadow at all** from a raytraced light. They cannot read the mask (it holds one answer per pixel, belonging to the opaque surface behind the glass) and there is no map to fall back to. |
+| Materials with `depth_draw_never` or `depth_test_disabled` | Cast a raytraced shadow where vanilla casts none, and never receive one. |
 | Light projectors | Unaffected. |
+| SDFGI, VoxelGI, LightmapGI, decals | Unaffected by the raytraced path itself — but see the note on lightmap bake times below. |
+
+### The four-light ceiling
+
+The mask is one RGBA8 texel per pixel, so **at most four raytraced lights are shadowed at any one
+pixel**. Where more overlap, the four contributing most light there win. The losers are not
+degraded — they are rendered **fully unshadowed at that pixel, with no shadow-map fallback**. In
+practice this is only visible where five or more shadow-casting lights genuinely overlap on the same
+surface. Up to 255 raytraced lights may exist in a frame overall.
+
+A light faded out by `distance_fade` still holds its mask slot and still costs trace work.
 
 ### Side effects of enabling directional raytracing
 
@@ -144,7 +221,7 @@ configurable via `directional/demoted_shadow_*`. Set the mode to `Keep Authored`
 
 ---
 
-## 4. How it works, in enough detail to reason about cost
+## 5. How it works, in enough detail to reason about cost
 
 **Per frame, in order:**
 
@@ -189,7 +266,7 @@ dark end where a shadow's detail is.
 
 ---
 
-## 5. Tuning
+## 6. Tuning
 
 Start with the defaults. In order of what actually moves the picture:
 
@@ -208,7 +285,7 @@ Remember these all need an engine restart to take effect.
 
 ---
 
-## 6. Diagnostics
+## 7. Diagnostics
 
 Set `GODOT_RT_DEBUG=1` in the environment. Each frame prints, when it changes:
 
@@ -224,7 +301,7 @@ RT_DEBUG pre_opaque: whether the mask ran, how many lights took slots, whether a
 
 ---
 
-## 7. Known gaps
+## 8. Known gaps
 
 - **Subsurface transmittance** still reads the cascade map (task deferred). The fix is the same
   shape as the fog one: trace toward the light instead of range-finding in the cascade, with the
@@ -236,6 +313,22 @@ RT_DEBUG pre_opaque: whether the mask ran, how many lights took slots, whether a
   shadow map fallback.
 - **The per-instance directional caster cull runs before the raytraced decision**, so reordering it
   risks double-spending the mask slot budget.
+- **Orthogonal cameras are not handled well, in two places.** The penumbra width is converted to
+  pixels with a perspective formula (`penumbra_world * focal_pixels / view_distance`), which under
+  an orthogonal projection collapses towards zero — the spatial denoiser then sees no penumbra and
+  switches itself off, leaving only temporal accumulation, so shadows look noisy. Separately, the
+  directional caster gather ignores `directional_shadow_max_distance` for an orthogonal camera and
+  sizes the caster volume from `Camera3D.far` instead, which defaults to 4000. An isometric or 2.5D
+  project will feel both of these. Neither is hard to fix; neither has been.
+- **The fog's shadow ray is culled by the light's `cull_mask`**, where the surface trace uses
+  `shadow_caster_mask`. The two should agree.
+- **The first frame that has both volumetric fog and a raytraced sun stalls** while two shader
+  variants compile. That is the price of not compiling them for projects that never need them.
+- **A `MultiMesh` populated through `multimesh_set_buffer` is read back from the GPU** the first time
+  it is a raytraced caster, and pays a CPU cache sync on every upload thereafter. Its per-element
+  cost is also paid every frame on the render thread; `visible_instance_count` is the only property
+  that shrinks it.
 - **CI runs Windows only.** The Linux jobs that were dropped carried the `--doctool` class reference
-  check, the GDExtension API compatibility check, the unit tests, and the export/converter tests.
+  check, the GDExtension API compatibility check, and the export/converter tests. Unit tests are
+  not among them — the Windows job runs `--test` itself.
   If you change a bound property, run `godot --headless --doctool .` yourself and commit the result.

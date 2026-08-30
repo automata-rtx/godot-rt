@@ -486,7 +486,9 @@ Small, but three separate CI rounds were burned on it the first time.
 - `codespell` rewrites British spellings in prose *and* in shader comments, and its write-changes
   mode makes the hook exit non-zero.
 - If CI is narrowed to one platform, the dropped Linux jobs take the `--doctool` class-reference
-  check, the GDExtension API compatibility check, the unit tests and the export tests with them.
+  check, the GDExtension API compatibility check and the export tests with them — but check what
+  the surviving platform still runs before claiming a check is gone; this fork's Windows job runs
+  the unit tests, and the guide wrongly said otherwise for a while.
 
 ---
 

@@ -22,8 +22,13 @@ values a new node actually gets — not a project setting you can look up.
 | `DirectionalLight3D.light_angular_distance` | `0.0` | **`0.25`** |
 
 New lights therefore cast soft, contact-hardening shadows with no configuration. Set the size back
-to `0.0` for hard shadows. These defaults apply whether or not raytraced shadows are enabled — a
-non-zero angular distance also puts the ordinary cascade path on its PCSS branch.
+to `0.0` for hard shadows.
+
+These apply in **every** renderer, whether or not raytraced shadows are enabled, and they reach
+further than shadows: a non-zero angular distance puts the cascade path on its PCSS branch, makes
+`ProceduralSkyMaterial`/`PhysicalSkyMaterial` draw a visible **sun disk**, makes `LightmapGI` bakes
+soft-shadowed and slower, and makes every mesh lit by a default lamp compile the
+`use_light_soft_shadows` specialization.
 
 `Light3D` gains one property, `shadow_map_enabled` (and `RenderingServer.light_set_shadow_map_enabled`).
 
@@ -51,6 +56,22 @@ Not covered, and silently falling back or losing shadowing:
 `Light3D.shadow_map_enabled` buys a light back its shadow map for the effects above, at the cost of
 an atlas quadrant and a shadow map render.
 
+## Traps when authoring for raytraced shadows
+
+- **Vertex shaders are invisible to the shadow.** The structure holds the mesh's stored vertices at
+  the node's authored transform, so billboards, `Sprite3D`, `Label3D`, `fixed_size`/`grow`
+  materials and any custom `vertex()` cast a shadow of geometry that is not where you see it.
+  Skinning and blend shapes are fine — they run in a compute pre-pass the structure reads.
+- **Mesh LODs and `ArrayMesh.shadow_mesh` are ignored**; LOD 0 is always traced.
+- **Everything that tunes a shadow *map* is inert** on a raytraced light: `shadow_blur`, atlas size
+  and quadrants, soft-shadow filter quality. Softness comes from `light_size` /
+  `light_angular_distance`; noise from `samples_per_light` and the denoiser settings.
+- **`shadow_caster_mask` and `layers` fold from 32 bits to 8**, so layers 9–32 alias onto 1–8; and a
+  mask of `0` is promoted to "everything casts" rather than "nothing casts".
+  `shadow_reverse_cull_face` does nothing.
+- **At most four raytraced lights are shadowed per pixel.** Where more overlap, the losers render
+  **fully unshadowed there**, with no shadow-map fallback.
+
 ## Two behaviours that surprise people
 
 - **All fifteen `raytraced_shadows/*` settings are read once at startup** and cached for the process
@@ -75,6 +96,7 @@ an atlas quadrant and a shadow map render.
 Set `GODOT_RT_DEBUG=1` to print per-frame acceleration structure and shadow mask diagnostics.
 
 CI was narrowed to Windows only, which dropped the checks that ran on Linux — the `--doctool` class
-reference check, the GDExtension API compatibility check, and the unit tests. **If you add or
+reference check and the GDExtension API compatibility check. (Unit tests still run: the Windows
+job runs `--test`.) **If you add or
 change a bound property, run `godot --headless --doctool .` yourself and commit the result**;
 nothing else will catch it.

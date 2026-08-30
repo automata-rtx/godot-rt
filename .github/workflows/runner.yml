@@ -11,7 +11,7 @@ concurrency:
 #
 # Note that dropping the Linux jobs also drops the checks that only ran there:
 # the --doctool class reference check, the GDExtension API compatibility check,
-# the unit tests, and the project export/converter tests.
+# and the project export/converter tests. (Unit tests are not lost: the Windows job runs --test.)
 
 jobs:
   # First stage: Only static checks, fast and prevent expensive builds from running.

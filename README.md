@@ -1,4 +1,18 @@
-# Godot Engine
+# Godot Engine — godot-rt fork
+
+> **This is a fork of Godot 4.8-dev with hardware ray-traced shadows added to the Forward+
+> renderer.** It is not stock Godot: some `Light3D` node defaults differ, and several renderer
+> behaviours around lights, shadows and volumetric fog differ with them.
+>
+> - **[`docs/rt_shadows/FORK_GUIDE.md`](docs/rt_shadows/FORK_GUIDE.md)** — everything that differs
+>   from vanilla Godot, what casts a raytraced shadow, and what is not covered. Start here. It is
+>   self-contained, so it can be copied into a game project built on this engine.
+> - **[`docs/rt_shadows/PORTING.md`](docs/rt_shadows/PORTING.md)** — how the system attaches to the
+>   engine, and the staged recipe for re-applying it to a newer Godot.
+> - **[`CLAUDE.md`](CLAUDE.md)** — the short version, loaded automatically by AI coding assistants
+>   working in this repository.
+>
+> Everything below is the upstream Godot README.
 
 <p align="center">
   <a href="https://godotengine.org">
