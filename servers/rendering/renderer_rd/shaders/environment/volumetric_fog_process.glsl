@@ -1,8 +1,16 @@
 #[compute]
 
-#version 450
+// Ray query requires GLSL 460: glslang gates the rayQueryEXT keyword and every
+// rayQuery*EXT builtin on version >= 460. Only the raytraced density variants
+// declare the extension or name a ray query type, so every other variant still
+// compiles to a module that asks the device for no raytracing capability at all.
+#version 460
 
 #VERSION_DEFINES
+
+#ifdef USE_RAYTRACED_SHADOWS
+#extension GL_EXT_ray_query : enable
+#endif
 
 #ifdef USE_VULKAN_MEMORY_MODEL
 #pragma use_vulkan_memory_model
@@ -56,6 +64,14 @@ layout(set = 0, binding = 8) uniform sampler linear_sampler;
 
 #ifdef MODE_DENSITY
 layout(rgba16f, set = 0, binding = 9) uniform restrict writeonly image3D density_map;
+#endif
+
+#ifdef USE_RAYTRACED_SHADOWS
+// A set of its own, bound only by the raytraced density dispatch. Set 0 is the
+// large shared set every variant builds and set 1 belongs to SDFGI, so putting
+// the structure here means the other variants' uniform sets are byte for byte
+// what they were.
+layout(set = 2, binding = 0) uniform accelerationStructureEXT tlas;
 #endif
 
 #ifdef MODE_FOG
@@ -186,6 +202,11 @@ layout(set = 0, binding = 15, std140) uniform Params {
 
 	vec2 sky_border_size;
 	vec2 pad;
+
+	// xyz: the camera's world position. cam_rotation below only rotates, so this
+	// is what carries a view space froxel the rest of the way into the world the
+	// acceleration structure is built in.
+	vec4 cam_position;
 
 	mat3x4 cam_rotation;
 	mat4 to_prev_view;
@@ -399,11 +420,68 @@ void main() {
 			if (directional_lights.data[i].volumetric_fog_energy > 0.001) {
 				vec3 shadow_attenuation = vec3(1.0);
 
-				// shadow_map_opacity, not shadow_opacity: a froxel is not on a
-				// surface, so it has no pixel in the screen-space raytraced mask and
-				// has to keep sampling the cascade map. A raytraced sun keeps that map
-				// for exactly this reason.
-				if (directional_lights.data[i].shadow_map_opacity > 0.001) {
+				// Folds away to a constant in every variant that cannot trace.
+				bool answered_by_ray = false;
+
+#ifdef USE_RAYTRACED_SHADOWS
+				if (directional_lights.data[i].rt_slot != RT_SLOT_NONE) {
+					answered_by_ray = true;
+
+					// A froxel is not on a surface, so it has no pixel in the screen
+					// space raytraced mask and cannot read the answer the surfaces got.
+					// It traces its own ray instead, which is what keeps light shafts
+					// alive under a sun that renders no shadow map at all.
+					vec3 world_pos = mat3(params.cam_rotation) * view_pos + params.cam_position.xyz;
+					vec3 ray_dir = mat3(params.cam_rotation) * directional_lights.data[i].direction;
+
+					// One ray per froxel is the whole budget, so a penumbra has to come
+					// from spreading rays across frames rather than across samples. The
+					// offset is the same for every froxel in a frame, so this stays a
+					// global jitter like the position one above rather than per froxel
+					// noise, and it is applied under the same condition: a cell with no
+					// history to accumulate into would only get noisier for it.
+					if (reproject_amount > 0.0 && directional_lights.data[i].softshadow_angle > 0.0) {
+						vec3 up = abs(ray_dir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+						vec3 tangent = normalize(cross(up, ray_dir));
+						vec3 bitangent = cross(ray_dir, tangent);
+
+						// Halton is already stratified over the 16 frame cycle, so mapping
+						// it to the disk by area keeps that stratification instead of
+						// bunching samples at the centre.
+						vec2 h = halton_map[params.temporal_frame].xy;
+						float radius = sqrt(h.x) * directional_lights.data[i].softshadow_angle;
+						float phi = h.y * M_TAU;
+						ray_dir += (tangent * cos(phi) + bitangent * sin(phi)) * radius;
+					}
+
+					ray_dir = normalize(ray_dir);
+
+					// The same distance the screen space trace uses, taken from the same
+					// field, so the fog stops finding occluders exactly where the culler
+					// stopped gathering them.
+					float ray_length = max(-directional_lights.data[i].fade_to, 0.001);
+
+					rayQueryEXT ray_query;
+					rayQueryInitializeEXT(ray_query, tlas,
+							gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+							directional_lights.data[i].mask, world_pos, 0.01, ray_dir, ray_length);
+					while (rayQueryProceedEXT(ray_query)) {
+					}
+
+					float shadow = rayQueryGetIntersectionTypeEXT(ray_query, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+
+					shadow = mix(shadow, 1.0, smoothstep(directional_lights.data[i].fade_from, directional_lights.data[i].fade_to, view_pos.z)); //done with negative values for performance
+
+					// shadow_opacity, not shadow_map_opacity: this is the raytraced
+					// answer, and a raytraced sun with no map has its map opacity zeroed.
+					shadow_attenuation = mix(vec3(1.0 - directional_lights.data[i].shadow_opacity), vec3(1.0), shadow);
+				}
+#endif
+
+				// shadow_map_opacity, not shadow_opacity: a froxel that is not
+				// raytraced has to keep sampling the cascade map, and a sun that keeps
+				// a map for the fog to read is exactly why that map still exists.
+				if (!answered_by_ray && directional_lights.data[i].shadow_map_opacity > 0.001) {
 					float depth_z = -view_pos.z;
 
 					vec4 pssm_coord;

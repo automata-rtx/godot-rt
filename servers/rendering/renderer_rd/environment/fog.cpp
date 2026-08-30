@@ -59,6 +59,10 @@ int Fog::_get_fog_shader_group() {
 	}
 }
 
+int Fog::_get_fog_raytraced_shader_group() {
+	return _get_fog_shader_group() + VolumetricFogShader::SHADER_GROUP_BASE_RAYTRACED;
+}
+
 int Fog::_get_fog_variant() {
 	RenderingDevice *rd = RD::get_singleton();
 	bool use_32_bit_atomics = rd->has_feature(RD::SUPPORTS_IMAGE_ATOMIC_32_BIT);
@@ -312,8 +316,14 @@ ALBEDO = vec3(1.0);
 			for (int no_atomics = 0; no_atomics < 2; no_atomics++) {
 				String base_define = vk_memory_model ? "\n#define USE_VULKAN_MEMORY_MODEL" : "";
 				base_define += no_atomics ? "\n#define NO_IMAGE_ATOMICS" : "";
+				// Must be pushed in VOLUMETRIC_FOG_PROCESS_SHADER_* order: the variant
+				// index is that enum offset by a whole group of them per device
+				// combination, which is what _get_fog_process_variant computes.
+				const int raytraced_group = shader_group + VolumetricFogShader::SHADER_GROUP_BASE_RAYTRACED;
 				volumetric_fog_modes.push_back(ShaderRD::VariantDefine(shader_group, base_define + "\n#define MODE_DENSITY\n", false));
 				volumetric_fog_modes.push_back(ShaderRD::VariantDefine(shader_group, base_define + "\n#define MODE_DENSITY\n#define ENABLE_SDFGI\n", false));
+				volumetric_fog_modes.push_back(ShaderRD::VariantDefine(raytraced_group, base_define + "\n#define MODE_DENSITY\n#define USE_RAYTRACED_SHADOWS\n", false));
+				volumetric_fog_modes.push_back(ShaderRD::VariantDefine(raytraced_group, base_define + "\n#define MODE_DENSITY\n#define ENABLE_SDFGI\n#define USE_RAYTRACED_SHADOWS\n", false));
 				volumetric_fog_modes.push_back(ShaderRD::VariantDefine(shader_group, base_define + "\n#define MODE_FILTER\n", false));
 				volumetric_fog_modes.push_back(ShaderRD::VariantDefine(shader_group, base_define + "\n#define MODE_FOG\n", false));
 				volumetric_fog_modes.push_back(ShaderRD::VariantDefine(shader_group, base_define + "\n#define MODE_COPY\n", false));
@@ -326,10 +336,46 @@ ALBEDO = vec3(1.0);
 
 		volumetric_fog.process_shader_version = volumetric_fog.process_shader.version_create();
 		for (int i = 0; i < VolumetricFogShader::VOLUMETRIC_FOG_PROCESS_SHADER_MAX; i++) {
+			if (i == VolumetricFogShader::VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY_RAYTRACED ||
+					i == VolumetricFogShader::VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY_RAYTRACED_WITH_SDFGI) {
+				// Their group is not enabled, so there is no shader to build a pipeline
+				// from yet. _ensure_raytraced_density_pipelines does both, the first
+				// time a frame actually has fog and a raytraced sun in it.
+				continue;
+			}
 			volumetric_fog.process_pipelines[i].create_compute_pipeline(volumetric_fog.process_shader.version_get_shader(volumetric_fog.process_shader_version, _get_fog_process_variant(i)));
 		}
 		volumetric_fog.params_ubo = RD::get_singleton()->uniform_buffer_create(sizeof(VolumetricFogShader::ParamsUBO));
 	}
+}
+
+bool Fog::_ensure_raytraced_density_pipelines() {
+	if (volumetric_fog.raytraced_pipelines_ready) {
+		return true;
+	}
+	if (volumetric_fog.process_shader_version.is_null()) {
+		return false;
+	}
+
+	// Enabling the group is what compiles the two variants, and it happens once.
+	// Until a frame has both volumetric fog and a raytraced directional light in
+	// it, nothing here has run and the shaders do not exist.
+	volumetric_fog.process_shader.enable_group(_get_fog_raytraced_shader_group());
+
+	const int indices[2] = {
+		VolumetricFogShader::VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY_RAYTRACED,
+		VolumetricFogShader::VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY_RAYTRACED_WITH_SDFGI
+	};
+	for (int i = 0; i < 2; i++) {
+		RID shader = volumetric_fog.process_shader.version_get_shader(volumetric_fog.process_shader_version, _get_fog_process_variant(indices[i]));
+		if (shader.is_null()) {
+			return false;
+		}
+		volumetric_fog.process_pipelines[indices[i]].create_compute_pipeline(shader);
+	}
+
+	volumetric_fog.raytraced_pipelines_ready = true;
+	return true;
 }
 
 void Fog::free_fog_shader() {
@@ -542,6 +588,9 @@ Fog::VolumetricFog::~VolumetricFog() {
 
 	if (sdfgi_uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(sdfgi_uniform_set)) {
 		RD::get_singleton()->free_rid(sdfgi_uniform_set);
+	}
+	if (tlas_uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(tlas_uniform_set)) {
+		RD::get_singleton()->free_rid(tlas_uniform_set);
 	}
 	if (sky_uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(sky_uniform_set)) {
 		RD::get_singleton()->free_rid(sky_uniform_set);
@@ -1062,6 +1111,37 @@ void Fog::volumetric_fog_update(const VolumetricFogSettings &p_settings, const P
 		}
 	}
 
+	// A froxel has no pixel in the screen space shadow mask, so once the sun's
+	// shadow map is demoted away the fog has nothing left to sample and its light
+	// shafts disappear. Given a structure to trace against, the density pass casts
+	// its own ray per froxel instead. The caller leaves the structure null unless
+	// a directional light actually took a mask slot this frame, so a project with
+	// no raytraced shadows stops on the first term and none of this exists: the
+	// variants are never compiled and the dispatch below is the one it always was.
+	bool using_raytraced_shadows = p_settings.tlas.is_valid() && _ensure_raytraced_density_pipelines();
+
+	if (using_raytraced_shadows) {
+		if (fog->tlas_uniform_set_source != p_settings.tlas || fog->tlas_uniform_set.is_null() || !RD::get_singleton()->uniform_set_is_valid(fog->tlas_uniform_set)) {
+			if (fog->tlas_uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(fog->tlas_uniform_set)) {
+				RD::get_singleton()->free_rid(fog->tlas_uniform_set);
+			}
+
+			Vector<RD::Uniform> uniforms;
+			{
+				RD::Uniform u;
+				u.uniform_type = RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE;
+				u.binding = 0;
+				u.append_id(p_settings.tlas);
+				uniforms.push_back(u);
+			}
+
+			fog->tlas_uniform_set = RD::get_singleton()->uniform_set_create(uniforms, volumetric_fog.process_shader.version_get_shader(volumetric_fog.process_shader_version, _get_fog_process_variant(VolumetricFogShader::VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY_RAYTRACED)), 2);
+			fog->tlas_uniform_set_source = p_settings.tlas;
+		}
+
+		using_raytraced_shadows = fog->tlas_uniform_set.is_valid();
+	}
+
 	fog->length = RendererSceneRenderRD::get_singleton()->environment_get_volumetric_fog_length(p_settings.env);
 	fog->spread = RendererSceneRenderRD::get_singleton()->environment_get_volumetric_fog_detail_spread(p_settings.env);
 
@@ -1119,6 +1199,13 @@ void Fog::volumetric_fog_update(const VolumetricFogSettings &p_settings, const P
 	params.detail_spread = RendererSceneRenderRD::get_singleton()->environment_get_volumetric_fog_detail_spread(p_settings.env);
 	params.gi_inject = RendererSceneRenderRD::get_singleton()->environment_get_volumetric_fog_gi_inject(p_settings.env);
 
+	// cam_rotation below only rotates. The acceleration structure is built in
+	// world space, so a froxel's view space position needs this too.
+	params.cam_position[0] = p_cam_transform.origin.x;
+	params.cam_position[1] = p_cam_transform.origin.y;
+	params.cam_position[2] = p_cam_transform.origin.z;
+	params.cam_position[3] = 0;
+
 	params.cam_rotation[0] = p_cam_transform.basis[0][0];
 	params.cam_rotation[1] = p_cam_transform.basis[1][0];
 	params.cam_rotation[2] = p_cam_transform.basis[2][0];
@@ -1173,12 +1260,24 @@ void Fog::volumetric_fog_update(const VolumetricFogSettings &p_settings, const P
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 
-	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, volumetric_fog.process_pipelines[using_sdfgi ? VolumetricFogShader::VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY_WITH_SDFGI : VolumetricFogShader::VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY].get_rid());
+	int density_variant;
+	if (using_raytraced_shadows) {
+		density_variant = using_sdfgi ? VolumetricFogShader::VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY_RAYTRACED_WITH_SDFGI : VolumetricFogShader::VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY_RAYTRACED;
+	} else {
+		density_variant = using_sdfgi ? VolumetricFogShader::VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY_WITH_SDFGI : VolumetricFogShader::VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY;
+	}
 
+	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, volumetric_fog.process_pipelines[density_variant].get_rid());
+
+	// Set 0 is identical across all four density variants, so the one set built
+	// above serves whichever of them runs.
 	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, fog->gi_dependent_sets.process_uniform_set_density, 0);
 
 	if (using_sdfgi) {
 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, fog->sdfgi_uniform_set, 1);
+	}
+	if (using_raytraced_shadows) {
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, fog->tlas_uniform_set, 2);
 	}
 	RD::get_singleton()->compute_list_dispatch_threads(compute_list, fog->width, fog->height, fog->depth);
 	RD::get_singleton()->compute_list_add_barrier(compute_list);

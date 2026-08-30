@@ -1387,6 +1387,14 @@ void RenderForwardClustered::_update_volumetric_fog(Ref<RenderSceneBuffersRD> p_
 		settings.directional_shadow_depth = RendererRD::LightStorage::get_singleton()->directional_shadow_get_texture();
 		settings.directional_light_buffer = RendererRD::LightStorage::get_singleton()->get_directional_light_buffer();
 
+		// Only when a directional light actually got a mask slot this frame. The
+		// fog cannot read that mask, so it traces the same shadow for itself; left
+		// null, it samples cascades exactly as it always has and pays nothing.
+		if (RendererRD::LightStorage::get_singleton()->has_raytraced_directional_shadows((uint32_t)p_directional_light_count) &&
+				raytracing_scene != nullptr) {
+			settings.tlas = raytracing_scene->get_tlas();
+		}
+
 		settings.vfog = fog;
 		settings.cluster_builder = rb_data->cluster_builder;
 		settings.rbgi = rbgi;

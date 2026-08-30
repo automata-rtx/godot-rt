@@ -962,6 +962,17 @@ public:
 		}
 		return false;
 	}
+	// Whether any directional light in the buffer got a raytraced mask slot this
+	// frame. Consumers that cannot read that mask, such as volumetric fog, use it
+	// to decide whether they have to trace the shadow themselves.
+	bool has_raytraced_directional_shadows(const uint32_t p_directional_light_count) {
+		for (uint32_t i = 0; i < p_directional_light_count; i++) {
+			if (directional_lights[i].shadow_opacity > 0.001 && directional_lights[i].rt_slot != RT_SLOT_NONE) {
+				return true;
+			}
+		}
+		return false;
+	}
 	void update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, bool p_use_raytraced_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows);
 
 	/* REFLECTION PROBE */
