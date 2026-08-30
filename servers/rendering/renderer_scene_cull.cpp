@@ -3533,11 +3533,16 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				continue;
 			}
 
-			const real_t shadow_distance = MAX((real_t)0.001,
-					RSG::light_storage->light_get_param(directional->base, RSE::LIGHT_PARAM_SHADOW_MAX_DISTANCE));
-			const real_t far_distance = p_camera_data->is_orthogonal
-					? shadow_distance
-					: MIN(shadow_distance, (real_t)p_camera_data->main_projection.get_z_far());
+			// The same derivation _light_instance_setup_directional_shadow() makes, so
+			// the casters end exactly where the cascades do. A shadow max distance of
+			// zero means "as far as the camera sees", and an orthogonal camera ignores
+			// the setting entirely.
+			const real_t shadow_max = RSG::light_storage->light_get_param(directional->base, RSE::LIGHT_PARAM_SHADOW_MAX_DISTANCE);
+			real_t far_distance = p_camera_data->main_projection.get_z_far();
+			if (shadow_max > 0 && !p_camera_data->is_orthogonal) {
+				far_distance = MIN(shadow_max, far_distance);
+			}
+			far_distance = MAX(far_distance, (real_t)p_camera_data->main_projection.get_z_near() + (real_t)0.001);
 
 			const Transform3D &cam = p_camera_data->main_transform;
 			const real_t near_distance = p_camera_data->main_projection.get_z_near();

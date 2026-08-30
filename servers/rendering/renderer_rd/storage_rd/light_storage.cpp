@@ -970,30 +970,44 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 					int limit = smode == RSE::LIGHT_DIRECTIONAL_SHADOW_ORTHOGONAL ? 0 : (smode == RSE::LIGHT_DIRECTIONAL_SHADOW_PARALLEL_2_SPLITS ? 1 : 3);
 					light_data.blend_splits = (smode != RSE::LIGHT_DIRECTIONAL_SHADOW_ORTHOGONAL) && light->directional_blend_splits;
 					for (int j = 0; j < 4; j++) {
-						Rect2 atlas_rect = light_instance->shadow_transform[j].atlas_rect;
+						// Only cascades up to `limit` were set up this frame; the rest hold
+						// whatever a previous mode left behind, or a default-constructed
+						// ShadowTransform whose projection is the identity and whose far plane
+						// is zero. Every cascade chain in the shaders ends in an `else` that
+						// reads slot 3, so the unused slots are filled from the last real
+						// cascade instead. Surface shading and fog never noticed because the
+						// distance fade bleaches their result at exactly that depth, but
+						// subsurface transmittance has no such fade and was reading a zero far
+						// plane as zero thickness, which is full light through a solid object.
+						// GLES3 already does this for `split` alone.
+						//
+						// For the default four splits `limit` is 3, so `src` is `j` throughout
+						// and nothing changes.
+						const int src = MIN(j, limit);
+						Rect2 atlas_rect = light_instance->shadow_transform[src].atlas_rect;
 						Projection correction;
 						correction.set_depth_correction(false, true, false);
-						Projection matrix = correction * light_instance->shadow_transform[j].camera;
-						float split = j <= limit ? light_instance->shadow_transform[j].split : 0;
+						Projection matrix = correction * light_instance->shadow_transform[src].camera;
+						float split = light_instance->shadow_transform[src].split;
 
 						Projection bias;
 						bias.set_light_bias();
 						Projection rectm;
 						rectm.set_light_atlas_rect(atlas_rect);
 
-						Transform3D modelview = (inverse_transform * light_instance->shadow_transform[j].transform).inverse();
+						Transform3D modelview = (inverse_transform * light_instance->shadow_transform[src].transform).inverse();
 
 						Projection shadow_mtx = rectm * bias * matrix * modelview;
 						light_data.shadow_split_offsets[j] = split;
-						float bias_scale = light_instance->shadow_transform[j].bias_scale * light_data.soft_shadow_scale;
+						float bias_scale = light_instance->shadow_transform[src].bias_scale * light_data.soft_shadow_scale;
 						light_data.shadow_bias[j] = light->param[RSE::LIGHT_PARAM_SHADOW_BIAS] / 100.0 * bias_scale;
-						light_data.shadow_normal_bias[j] = light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS] * light_instance->shadow_transform[j].shadow_texel_size;
+						light_data.shadow_normal_bias[j] = light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS] * light_instance->shadow_transform[src].shadow_texel_size;
 						light_data.shadow_transmittance_bias[j] = light->param[RSE::LIGHT_PARAM_TRANSMITTANCE_BIAS] / 100.0 * bias_scale;
-						light_data.shadow_z_range[j] = light_instance->shadow_transform[j].farplane;
-						light_data.shadow_range_begin[j] = light_instance->shadow_transform[j].range_begin;
+						light_data.shadow_z_range[j] = light_instance->shadow_transform[src].farplane;
+						light_data.shadow_range_begin[j] = light_instance->shadow_transform[src].range_begin;
 						RendererRD::MaterialStorage::store_camera(shadow_mtx, light_data.shadow_matrices[j]);
 
-						Vector2 uv_scale = light_instance->shadow_transform[j].uv_scale;
+						Vector2 uv_scale = light_instance->shadow_transform[src].uv_scale;
 						uv_scale *= atlas_rect.size; //adapt to atlas size
 						switch (j) {
 							case 0: {
