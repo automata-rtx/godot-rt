@@ -1,5 +1,17 @@
 # Raytraced Shadows for Godot Forward+ (Vulkan)
 
+> **HISTORICAL — do not treat this as a description of the shipped code.**
+>
+> This is the design and viability study written *before* implementation. It is kept for the
+> reasoning behind the approach and for the survey of what the engine already provided, both of
+> which are still useful. But the system was built by discovering things the study did not know,
+> and several of its decisions were changed or abandoned along the way — the per-light shadow mode
+> enum, the slot count, and the denoiser plan among them.
+>
+> For what the code actually does now, read **`FORK_GUIDE.md`** in this directory. For how it hooks
+> into the engine and how to re-apply it to a newer Godot, read **`PORTING.md`**. Where this
+> document and those two disagree, they are right and this is out of date.
+
 **Design & viability document**
 Target: Godot 4.8-dev (this fork) · Vulkan only · Forward+ (`forward_clustered`) only · 3D only
 
