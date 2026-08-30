@@ -71,7 +71,13 @@ All under `rendering/lights_and_shadows/raytraced_shadows/`.
 
 **Every one of these is read once at startup and cached for the process lifetime**
 (`RaytracingScene::register_settings`, guarded by a `settings_registered` flag). Changing one at
-runtime does nothing until restart, including the ones the editor does not label restart-required.
+runtime does nothing until restart, including the thirteen the editor does not label
+restart-required.
+
+For `enabled` there is a deeper reason than the cache: `MeshStorage::mesh_add_surface` decides a
+vertex buffer's creation bits at upload time, before the rendering device or the renderer exist. A
+mesh uploaded while the setting was off has no buffer an acceleration structure can be built from,
+so turning the setting on mid-session could not work even if the value were re-read.
 
 Requires Forward+, the Vulkan driver, and a GPU with ray query support. Without ray query it prints
 a warning and every light falls back to shadow maps, so a project stays playable.

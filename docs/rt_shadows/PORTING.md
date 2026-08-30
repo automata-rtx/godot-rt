@@ -5,240 +5,528 @@ someone — or something — that was not here when it was written the first tim
 
 It is deliberately **not** a diff. On a newer engine the line numbers will be wrong, some functions
 will have been renamed, and some structures will have gained fields. What survives that is the
-*shape* of the integration: which upstream thing each piece hooks into, what kind of hook it is, and
-— the part that breaks quietly — what the hook assumes about the engine around it.
+*shape* of the integration: which upstream thing each piece hooks into, what it assumes about the
+engine around it, and what the failure looks like when that assumption stops holding.
 
-Read `FORK_GUIDE.md` first for what the system does. This document is about how it attaches.
+Most of the value here is in the **pitfalls**. Nearly every one is a bug that actually shipped and
+had to be found again later, usually by measurement rather than by reading. They are recorded with
+their symptoms because the symptom is rarely a crash — it is a picture that looks slightly wrong.
+
+Read `FORK_GUIDE.md` first for what the system does. This is about how it attaches.
 
 Upstream base for the original work: `b56a91878e7c94977e4af978968e41d0670c0a8b` (Godot 4.8-dev).
 To see any piece as it was written: `git diff b56a91878..HEAD -- <path>`.
 
 ---
 
-## 1. The one fact that makes this tractable
+## Stage 0 — Preflight: is the raytracing layer still there?
 
-Godot 4.7/4.8 already shipped a complete hardware-raytracing layer inside `RenderingDevice` —
-acceleration structure creation and building, ray-query feature detection, an acceleration-structure
-uniform type, barrier handling — with **no user of it anywhere in the renderer**.
+Godot 4.7/4.8 shipped a **complete hardware-raytracing layer inside `RenderingDevice`** — BLAS/TLAS
+create and build, `UNIFORM_TYPE_ACCELERATION_STRUCTURE`, `SUPPORTS_RAY_QUERY` and
+`SUPPORTS_BUFFER_DEVICE_ADDRESS` feature queries, AS-aware buffer creation bits, render-graph
+barrier tracking — with **no consumer anywhere in the renderer**. This fork is a re-integration, not
+a reimplementation. If that layer has changed shape, that is the single largest risk in the port and
+you must know it before writing anything else.
 
-So this fork is not fighting an existing design. Every driver-level piece was already there and
-already debugged; all of the work is renderer work in C++ and GLSL. If a newer Godot still has that
-layer, the port is a re-integration, not a reimplementation. **Check this first.** If the API has
-changed shape, that is the largest single risk in the whole port, and it is worth establishing
-before touching anything else.
+The one thing the fork *added* to `RenderingDevice`: **`acceleration_structure_is_valid(RID)`**,
+mirroring the existing `*_is_valid` queries. It exists because an acceleration structure is freed
+implicitly when a buffer it was built from is freed, and the owning mesh can be destroyed first — a
+cache that outlives its source meshes must be able to ask whether a handle is still live. A dead
+handle takes the whole `tlas_build` down.
 
-The specific things relied on:
+**Done when:** a throwaway `#version 460` compute shader with `#extension GL_EXT_ray_query : enable`,
+an `accelerationStructureEXT` at set 0 binding 0 and a `rayQueryInitializeEXT`/`ProceedEXT` loop
+compiles and links through Godot's own shader build, and a one-triangle BLAS plus one-instance TLAS
+report true from the new validity query.
 
-- `RD::SUPPORTS_RAY_QUERY` as a device feature query.
-- `RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE` bindable in an ordinary compute shader's uniform set.
-- BLAS/TLAS create and build entry points on `RenderingDevice`.
-- Shaders compiled to SPIR-V at a version that permits `SPV_KHR_ray_query`.
+**Pitfalls:**
 
-Two toolchain quirks that cost time to discover:
-
-- **glslang gates `rayQueryEXT` and every `rayQuery*EXT` builtin on `#version 460`.** Any shader that
-  traces must be 460, not Godot's usual 450. This is why `rt_shadow_trace.glsl` carries a comment
-  saying it is the only 450 exception, and why `volumetric_fog_process.glsl` was bumped wholesale.
-- **Godot's `re-spirv` specialization-constant optimizer does not understand `OpTypeRayQueryKHR`.**
-  It prints `OpTypeRayQueryKHR is not supported yet.` and returns false, and the unoptimized SPIR-V
-  is used instead. This is harmless and expected — do not chase it as an error. It is also a useful
-  signal: counting those lines tells you exactly how many ray-query modules a run compiled.
+- **glslang gates the `rayQueryEXT` keyword and every `rayQuery*EXT` builtin on `#version 460`.**
+  Every other shader in `renderer_rd` is 450. `accelerationStructureEXT` itself has *no* version
+  gate, so a 450 shader compiles the uniform fine and only fails at the first `rayQueryEXT` — the
+  error reads like a shader-specific bug rather than a version problem. Ray query also cannot be
+  hidden behind a preprocessor branch in a 450 shader; the whole file must go to 460.
+- **Godot's `re-spirv` optimizer does not understand `OpTypeRayQueryKHR`.** It prints
+  `OpTypeRayQueryKHR is not supported yet.` and falls back to unoptimized SPIR-V. Harmless and
+  expected — do not chase it. It is also the cheapest instrument available: counting those lines
+  counts exactly how many ray-query modules a run compiled.
+- **`tlas_build` rejects a zero `hit_sbt_range`** even for ray-query-only use with no shader binding
+  table anywhere. Pass a synthetic `HitShaderBindingTableRange(int64_t(1) << 32)`.
+- A TLAS's `max_instance_count` is frozen at create time; scratch buffers are per-structure and
+  never pooled; build-input buffers need `DEVICE_ADDRESS` as well as the AS-input bit.
+- **There is no refit or compaction entry point.** Every "update" of a BLAS is a full `blas_build`
+  on the same RID.
+- The Vulkan container targets SPIR-V 1.4 with a Vulkan 1.1 client — exactly the minimum
+  `GL_EXT_ray_query` needs. Check `RenderingShaderContainerFormatVulkan::get_shader_spirv_version`.
 
 ---
 
-## 2. The seams, by subsystem
+## The rebuild order
 
-For each: the upstream thing it attaches to, what kind of attachment, and what it assumes.
+The 41 commits in this branch are in the order the work was *discovered*, which includes false
+starts and later corrections. Do not follow that order; follow this one. Each stage ends somewhere
+you can check before continuing.
 
-### 2.1 Acceleration structure — `rt_scene.{h,cpp}` (new files)
+### 1. Settings and availability
 
-Wholly new, so there is nothing to merge; the question is only where it is called from.
+Register the setting family, stand up `RaytracingScene` as a settings-plus-capability object with an
+empty `update()`, thread the renderer-agnostic virtuals from `RendererSceneRender` down to
+`RenderForwardClustered`, and widen mesh buffer creation bits. **Nothing traces yet and no pixel
+changes.**
 
-| Hooks into | Kind | Assumes |
-| --- | --- | --- |
-| `RendererSceneRenderRD` (owns a `RaytracingScene`) | new member + call-in | that there is one scene-render singleton per renderer |
-| `MeshStorage::mesh_surface_get_format` / `_get_primitive` | reads | the `ARRAY_FLAG_COMPRESS_ATTRIBUTES`, `ARRAY_FLAG_USE_2D_VERTICES`, `ARRAY_FLAG_USES_EMPTY_VERTEX_ARRAY` flags keep their meaning |
-| Vertex buffer layout | **fragile** | that a surface's positions are the first attribute, and that compressed positions are 16-bit normalized within the surface AABB |
+**Done when:** the engine boots with the setting on and off, a startup line reports whether
+raytracing is *active* (the setting being on and the device being able to trace are different
+questions and only the second matters), every frame is byte-identical to the unmodified engine, and
+with the setting on a mesh's vertex buffer is created with `DEVICE_ADDRESS` and AS-build-input usage.
 
-**The vertex format is the most fragile thing in the port.** Godot revises mesh formats between
-versions. `rt_dequantize.glsl` exists solely because compressed positions are not a legal
-acceleration-structure vertex format and must be expanded to `R32G32B32_SFLOAT`. If a newer Godot
-changes the compression scheme, that shader and the format tests around it are what needs rewriting.
-Everything else in this file is bookkeeping: a per-surface BLAS cache, a TLAS rebuilt when it stops
-describing the scene, and per-frame build budgets.
+- The settings must be registered in `ProjectSettings`' own constructor, not near their consumer.
+  `mesh_add_surface` decides buffer creation bits at upload time, **before the RenderingDevice and
+  the renderer exist** — which is also exactly why the master setting is restart-required.
+- Gate the buffer bits on `SUPPORTS_RAY_QUERY` as well as `SUPPORTS_BUFFER_DEVICE_ADDRESS`. Testing
+  only the setting and device address gave every mesh buffer AS usage nothing could consume on
+  D3D12, whose `has_feature()` has no `SUPPORTS_RAY_QUERY` case and returns false.
+- `_uses_raytraced_shadows()` must be a separate virtual, because the RT objects live on the shared
+  RD base class. Without it the Mobile renderer looks capable, and its lights lose their shadow maps
+  without gaining a mask.
+- New include directions upstream does not otherwise have: `storage_rd` → `environment`
+  (`mesh_storage.cpp` includes `rt_scene.h`), and `environment` → a generated shader header in
+  `effects/`.
+- clang `-Werror` rejects unused private fields; GCC and MSVC do not implement the diagnostic. A
+  leftover flag cost a CI round.
 
-To re-find it on a new engine: search for where the renderer decides a surface's vertex format, and
-for `ARRAY_FLAG_COMPRESS_ATTRIBUTES`.
+### 2. Acceleration structure
 
-### 2.2 Skinning — `mesh_storage.{h,cpp}`
+One BLAS per mesh surface, one TLAS per frame, from a caster list gathered in the culler by querying
+the geometry index with each candidate light's bounds. Includes the dequantize pass. **Build the
+light-volume gather directly** — the fork started with a whole-scenario walk, which ties cost to
+level size and had to be replaced anyway.
 
-| Hooks into | Kind | Assumes |
-| --- | --- | --- |
-| The skinning compute pre-pass's output buffer | added usage flags | that skinned vertices land in a persistent GPU buffer, double-buffered, uncompressed |
-| `mesh_instance_check_for_update` / `update_mesh_instances` | inserted call | that marking an instance and then flushing produces this frame's pose |
+**Done when:** `GODOT_RT_DEBUG=1` prints a non-zero TLAS entry count, and the count follows the
+lights' reach rather than the level size. On a 400 m level of 2000 props lit by four ten-metre
+lamps, the structure held seven casters, reached by visiting nineteen nodes of the geometry index.
 
-Godot's importers already disable vertex compression for skinned and morph-target meshes, so skinned
-geometry is *already* in the format raytracing wants. This is why characters were the easy case.
+- **The vertex format is the most fragile thing in the whole port.** Godot's default compressed
+  positions (`ARRAY_FLAG_COMPRESS_ATTRIBUTES`, `R16G16B16A16_UNORM` normalized into the surface
+  AABB) are not a legal AS vertex format; `rt_dequantize.glsl` exists only to expand them to
+  `R32G32B32_SFLOAT`. Decode is `position.xyz * aabb.size + aabb.position`. If the newer engine
+  changed the scheme, that shader and the format tests are what must be rewritten. **Re-find it** by
+  grepping `_mesh_surface_generate_version_for_input_mask` for
+  `offset = i == ARRAY_NORMAL ? position_stride * s->vertex_count : 0` — if positions are no longer
+  a contiguous `float32x3` block at offset 0 ahead of the attribute block, the zero-copy path is gone.
+- Uncompressed surfaces are zero-copy: point at the surface buffer with offset 0, stride 12.
+  Classify ineligible surfaces once (non-`PRIMITIVE_TRIANGLES`, `ARRAY_FLAG_USE_2D_VERTICES`,
+  `ARRAY_FLAG_USES_EMPTY_VERTEX_ARRAY`, zero vertices) rather than retesting per frame.
+- Use the surface's **LOD-0** index buffer; a LOD silhouette does not match the shadow the raster
+  path would have cast.
+- Set `ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT` on every instance.
+  `shadow_reverse_cull_face` is per-light while the TLAS is per-scenario, so flip-facing cannot be
+  honoured at all.
+- TLAS instance sourcing must live in `RendererSceneCull` — `render_forward_clustered` cannot reach
+  `Scenario` or `Instance`. Gather before the shadow loops; skip entirely for reflection-probe renders.
+- Report each failure kind separately. `blas_create` failure almost always means the mesh was
+  uploaded before the setting was on, which is the thing that makes the setting restart-required.
+- Deduplicate with a per-`Instance` pass stamp: one instance is returned by every light that touches it.
 
-The one non-obvious requirement: the skeleton pass normally only runs for instances that survived
-frustum culling. Raytraced casters are deliberately *not* frustum-culled, so each off-screen caster
-must be marked for skinning explicitly, and the flush must happen **before** the structure is built —
-otherwise a character behind the camera casts the pose it held when it was last on screen.
+### 3. Light slot pipeline
 
-### 2.3 Caster gathering — `renderer_scene_cull.cpp`
+Give each raytraced light a stable index into a GPU light buffer and carry that index plus a second
+opacity down to the shaders, **with nothing reading either yet**. Its own stage because it isolates
+the highest-risk quiet breakage in the port.
 
-| Hooks into | Kind | Assumes |
-| --- | --- | --- |
-| `Scenario::indexers[INDEXER_GEOMETRY]`, queried by AABB | inserted query | that a spatial index of non-frustum-culled geometry exists and can be queried by region |
-| The per-light shadow loop | new branch | that light instances are set up before shadow passes are decided |
-| `InstanceGeometryData::can_cast_shadows` and the material caster test | reads | that the same test the shadow map path uses is reachable here |
+**Done when:** `GODOT_RT_DEBUG` prints `new_slots=N` on the first frame and `new_slots=0` on every
+frame after, including while walking through a ring of eight lamps that fully reorders the light
+buffer. The render is still byte-identical.
 
-This is the piece that makes "shadows from things behind the player" work, and it rests entirely on
-that geometry indexer being present and region-queryable. It has been stable in Godot for a long
-time; if it is gone, this is a redesign, not a port.
+- **`LightData` / `DirectionalLightData` are hand-maintained mirrors of the GLSL structs.** The fork
+  *consumed the existing trailing pad* rather than growing them — `float pad[2]` became
+  `float rt_slot; float shadow_map_opacity;` on both sides. Do not grow either struct, or every
+  offset after the change moves silently and lighting goes subtly wrong rather than crashing.
+  **If the newer Godot has repurposed that padding, find two other slots and update both sides
+  together, keeping `sizeof` identical.**
+- `DirectionalLightData`'s pad changes type from `uvec2` to two floats deliberately — the shader
+  compares `rt_slot` as a float against `255.0`.
+- **Slots must be sticky** (a light keeps its index while it keeps casting, plus a four-frame grace
+  period). The denoiser's temporal history records which light each mask channel carried, so a light
+  that changes index invalidates the whole screen's history. Assigning in light-buffer order — which
+  is sorted by distance to camera — re-rolls every index as the camera moves.
+- The buffer is therefore **sparse**: a slot may belong to a light outside this pass. Zero the gaps
+  and let the trace skip them by `radius <= 0`. That is also why a live light's radius must stay
+  positive whatever its type.
+- **Grant a slot only when a built TLAS exists this frame.** A slot with nothing behind it makes the
+  forward shader skip the shadow atlas *and* read "fully lit" from the mask: the light casts no
+  shadow from any source, which is strictly worse than not enabling the feature.
+- The per-instance ray cull mask folds from the light's **`shadow_caster_mask`**, not its cull mask
+  (which decides what the light *lights*). Fold 32 bits to 8 by OR-ing the four bytes —
+  conservative, never under-inclusive — and promote a zero fold to `0xFF`.
 
-Also here: the gate that **skips rendering a shadow map** for a raytraced light, and the sun's
-swept-frustum caster volume. Note the ordering constraint recorded in `FORK_GUIDE.md` — the
-per-instance directional caster cull currently runs before the raytraced decision.
+### 4. Trace and mask
 
-### 2.4 Light data — `light_storage.{h,cpp}`, `light_data_inc.glsl`
+First raytraced shadow on screen: the trace compute shader, the mask and its companion index
+texture, the forward-pass read, and the depth prerequisites. **Build the per-pixel top-four
+selection from the start**; the fork's first design was a global channel-per-light mask, which caps
+a scene at four lights and was thrown away.
 
-| Hooks into | Kind | Assumes |
-| --- | --- | --- |
-| `LightData` / `DirectionalLightData` GPU structs | **new struct fields** | that the C++ struct and the GLSL struct stay byte-identical |
-| `RendererLightStorage` abstract interface | new virtual methods | that dummy and GLES3 backends must also implement them |
-| `_light_instance_setup_directional_shadow` | new branch | cascade setup, `shadow_split_offsets`, and `fade_from`/`fade_to` derivation |
+**Done when:** an omni light over a box casts a correct traced shadow with the setting on and the
+stock shadow map with it off; a room of many overlapping lamps each shadow correctly; a project with
+the setting off renders byte-identically.
 
-**The struct correspondence is maintained by hand.** `rt_slot` and `shadow_map_opacity` were added
-to both sides. If a newer Godot adds a field to `LightData`, the two will silently disagree and
-lighting will be subtly wrong rather than crash. There is a `static_assert(sizeof(LightParams) == 64)`
-guarding the trace shader's own record — add the same discipline to any struct you extend.
+- **`rt_shadow_lookup()` must live in `scene_forward_lights_inc.glsl`** (fragment-only), *not* in
+  `scene_forward_clustered_inc.glsl`, which the `#[vertex]` stage also includes. `gl_FragCoord` does
+  not exist there, every Forward+ vertex variant fails to compile, and **the symptom is the editor
+  appearing to hang on the splash screen** with the CPU at 90–120 ms and the GPU idle. That file is
+  also shared with the mobile renderer, so every added block needs `#ifndef USING_MOBILE_RENDERER`.
+- `texelFetch` on a bare `texture2D` requires `GL_EXT_samplerless_texture_functions`, which these
+  shaders do not enable. Build a combined sampler — `sampler2D(rt_shadow_mask, SAMPLER_NEAREST_CLAMP)` —
+  the way `ssil_buffer` and `ssr_buffer` do.
+- Reconstruct world position with `scene_data->get_cam_projection()` / `get_cam_transform()`, which
+  carry the reverse-Z + Y-flip correction and the TAA jitter the depth buffer was written with.
+  Using the raw members collapses every pixel to ~0.1 units from the camera and the mask comes out
+  black wherever geometry was drawn.
+- Read the real view-space normal from the normal/roughness pre-pass and rotate it to world space
+  with a **quaternion** in the push constant. A normal crossed from two neighbouring depth taps
+  fringes every silhouette; the camera basis will not fit in 128 bytes beside the inverse
+  view-projection.
+- `normal_roughness` is not produced by default — that is why `depth_pass_mode` is forced.
+  `has_normal_roughness()` is a sticky global and must not be used as a gate. Reflection-probe
+  renders have no `rb_data` at all.
+- **Bindings 37 and 38** are appended to `RENDER_PASS_UNIFORM_SET` (set 1); upstream's highest was
+  36. They must be added on **every** path through `_setup_render_pass_uniform_set`, including
+  reflection-probe and no-render-buffer renders, with fallbacks: `DEFAULT_RD_TEXTURE_WHITE` for the
+  mask and a new 1×1 all-`0xFF` `R8G8B8A8_UINT` texture for the index — none of the shared default
+  textures are integer-formatted. **On a newer engine, find the highest binding in that set and
+  renumber both the C++ pushes and the GLSL declarations in lockstep.**
 
-Two semantic distinctions to preserve, because they are easy to collapse by accident:
+### 5. Denoiser
 
-- `shadow_opacity` — the light's authored shadow strength. Used by anything reading the mask.
-- `shadow_map_opacity` — zero for a raytraced light with no map. Used by anything sampling cascades.
+Temporal accumulation plus an edge-stopping à-trous filter, both keeping their own history so the
+feature does not depend on the image's TAA.
 
-Getting these the wrong way round produces a scene that looks right until you add fog.
+**Done when:** after ninety frames of camera movement the denoised result is byte-identical to a
+converged render from the same pose, and a camera orbiting at 3.4°/frame lands within 2/255 of a
+static converged render.
 
-Also here: `_light_directional_effective_shadow_mode`, which demotes a raytraced sun's cascade
-count. It is keyed on whether the light *could* be raytraced rather than whether it *was* this pass,
-because the culler, the atlas layout and the light buffer run at different points and must agree.
-Getting that wrong puts cascades in the wrong atlas rectangles.
+- **Reproject with the camera, not motion vectors.** The velocity buffer is written by the opaque
+  colour pass, which runs *after* the mask is needed, so it is a frame stale; under MSAA it is only
+  resolved when TAA or an upscaler asks. Camera reprojection is exact for static geometry, and
+  geometry that moved on its own is then rejected by the surface test rather than smeared.
+- The `w` of a reprojected position is the previous clip position scaled by the reciprocal of view
+  depth — **a ratio, not a distance**. Comparing it against a tolerance in metres fails every pixel
+  every frame, and the failure is silent: it shows only as a spatial filter that never narrows.
+  Store the history's depth as a raw view distance and compare that.
+- **Feed the temporal stage back its own output as history, never the à-trous result.** Filtering
+  inside the loop compounds without bound — a two-pixel kernel arrives on screen as a twenty-pixel
+  smear.
+- Write and read history length in the same units. Writing it normalized and reading it raw pins the
+  blend factor at 1 and throws the history away every frame.
+- Channel assignments are per pixel and **cannot be interpolated**: filter the temporal history by
+  hand, accepting or rejecting each bilinear tap on its own, and reject à-trous taps whose index
+  assignment differs from the centre's.
+- Return early where the mask is fully lit in all four channels — in an outdoor scene that is most
+  of the screen, and the 25-tap loop cannot change the answer there. Output is byte-identical.
+- Multiview falls back to the raw signal: these passes are plain 2D and would filter one eye with
+  the other's history.
 
-### 2.5 Frame structure — `render_forward_clustered.cpp`
+### 6. Denoiser quality
 
-| Hooks into | Kind | Assumes |
-| --- | --- | --- |
-| `_pre_opaque_render` | inserted call | depth is resolved and light buffers are filled by this point |
-| `force_depth_pre_pass`, `finish_depth`, `depth_pass_mode` | new branch | that a normal/roughness pre-pass output exists |
-| `_update_volumetric_fog` call site | new argument | that the TLAS is valid at that point in the frame |
+Make one ray per light per frame match a sixteen-sample reference: penumbra-driven filter width,
+blue-noise rotation, sqrt-encoded mask, temporal variance clamp, two-probe early-out, closest-occluder
+distance.
 
-The ordering is the load-bearing part: the trace needs resolved depth, resolved normals, and the
-frame's mask slot assignments, and it must complete before the opaque forward pass reads the mask.
-On a newer engine, re-find the insertion point by looking for where the depth pre-pass is resolved
-and where screen-space effects that consume depth+normals are dispatched.
+**Done when:** RMSE against a sixteen-sample denoiser-off reference stops improving. The fork's
+figures: sun contact 2.85 → 2.73, sun soft 6.79 → 6.33, lamps 1.47 → 1.22.
 
-### 2.6 Forward shading — `scene_forward_lights_inc.glsl` and friends
+- **Decode out of sqrt space everywhere it is read.** Averaging roots and squaring darkens every
+  penumbra by Jensen's inequality; one missed decode lightens every umbra almost invisibly unless
+  you measure it. (NVIDIA's SIGMA filters *in* sqrt space on purpose; this system does not.)
+- `min_filter_pixels` below 1.0 is meaningless and above it greys everything: the kernel's nearest
+  tap sits at exactly 1.0 px, so a floor of 1.5 leaves it at a third weight and turns a perfect step
+  edge into 0.863/0.137 — a two-pixel fringe on every contact shadow.
+- At one sample a ray that misses reports **no** penumbra, so sizing the filter from the centre pixel
+  alone smooths the shadowed half of a penumbra and leaves the lit half speckled. Take the widest
+  penumbra any immediate neighbour reports; at a real contact edge every neighbour reports zero and
+  it costs nothing.
+- **Do not set `gl_RayFlagsTerminateOnFirstHitEXT` by default.** Visibility is identical either way,
+  but the reported distance becomes whichever occluder traversal reached first rather than the
+  nearest, which mis-sizes the penumbra and over-blurs crisp shadows. Keep the flags in the push
+  constant, not a define, so the trade costs no second pipeline.
+- Both floors (`min_filter_pixels` and the history-fill widening) must apply **only where a penumbra
+  was actually measured**, or a freshly disoccluded pixel is filtered across twelve pixels and takes
+  thirty-one frames to recover — every camera turn does that to the newly revealed screen edge.
+- Advance the blue-noise pattern by a golden-ratio step per frame rather than shifting the sampling
+  position; shifting re-rolls the pattern and lets a pixel revisit nearly the same angle.
+- Ray offsets come from the light's own bias properties **scaled down** — a shadow map's bias clears
+  a depth texel, a ray only clears the error in a position reconstructed from depth. A directional
+  light defaults normal bias to 2.0 where a lamp defaults to 1.0, so it needs half the scale or the
+  sun's contact shadows lift off their casters.
 
-| Hooks into | Kind | Assumes |
-| --- | --- | --- |
-| `light_process_omni` / `_spot` / the directional loop | new branch | the shadow term is computed in one identifiable place per light type |
-| Uniform set bindings | **new bindings** | that the indices claimed here stay free |
-| `SCENE_DATA_FLAGS_IN_ALPHA_PASS` | new scene-data flag | that the transparent pass has its own `_setup_environment` call |
+### 7. Deforming casters
 
-`scene_forward_lights_inc.glsl` is **shared with the mobile renderer**, so every raytraced block is
-inside `#ifndef USING_MOBILE_RENDERER`. Forget that and the mobile renderer stops compiling.
+Skinned and blend-shaped meshes cast their current pose, on screen or not.
 
-The alpha-pass flag exists because the mask holds one answer per pixel and it belongs to the opaque
-surface behind the glass; `RT_MASK_ANSWERS_HERE` is the predicate that decides whether a fragment may
-trust the mask.
+**Done when:** a two-bone skeleton bending a bar casts a straight shadow at rest and a bent one at
+0.7 rad, differing over 8.7% of the frame — and still does with the caster above the top of the
+frustum.
 
-### 2.7 The shader-group technique — `fog.{h,cpp}`
+- `update_mesh_instances()` only runs the skeleton pass for instances that survived frustum culling,
+  and raytraced casters are deliberately **not** frustum culled. Without an explicit second
+  mark-and-flush *before* the structures are built, a character behind the camera is frozen at
+  whatever pose it last held on screen.
+- **Key the cache on the skinned vertex buffer, not the mesh.** That buffer is already unique per
+  (instance, surface), and the skeleton pass double-buffers it when motion vectors are on, so keying
+  on the buffer gives each side of the pair its own BLAS rebuilt in place rather than recreated as
+  the pair alternates. A surface with a mesh instance but no deformation falls back to the mesh's
+  shared BLAS. `mesh_instance_get_last_change()` is the staleness version.
+- Godot's importers already disable vertex compression for skinned and morph-target meshes, so
+  skinned geometry is already in the format the AS wants — this is why characters were the easy
+  case, and it is worth re-checking on the newer engine.
+- No refit, so each pose is a full `blas_build` (which does reuse the existing scratch allocation).
+  Per-instance structures need eviction — the fork evicts after 60 unused frames — or every
+  character that ever existed keeps one alive.
 
-Worth reading even if you do not care about fog, because it is the reusable pattern for **adding a
-ray-query variant to an existing shader without costing anything to projects that never use it**:
+### 8. MultiMesh casters
 
-1. Give the raytracing variants a `ShaderRD` group of their own, not the group the normal variants
-   are in.
-2. Do not create their pipelines at init — skip them in the pipeline loop.
-3. Call `enable_group()` lazily, the first frame something actually needs them.
+Expanded CPU-side into one TLAS entry per element sharing one BLAS.
+
+**Done when:** a GridMap interior stops leaking light into the next room; twelve pillars in one
+MultiMesh become twelve TLAS entries backed by one built BLAS.
+
+- A multimesh instance's own AABB covers the whole field, so **without a per-element test** a single
+  large GridMap octant fills the structure with elements no light can reach.
+- Reject 2D multimeshes (`multimesh_uses_3d_transforms`) before calling
+  `multimesh_instance_get_transform`.
+- Because a raytraced light has no shadow-map fallback, an unsupported caster type is an **absent**
+  shadow, not a degraded one — and turning the feature off brings the shadows back, which reads as
+  the feature being broken. Bound the total and say so once rather than truncating silently.
+
+### 9. Caster eligibility
+
+Only surfaces that can actually write a shadow enter the structure, decided per surface.
+
+**Done when:** a pane of glass in front of a lamp costs one fewer structure entry and stops casting
+a solid shadow.
+
+- **This is not the negation of `material_casts_shadows`.** Upstream's predicate deliberately errs
+  toward yes so the instance stays in the shadow render list and each draw decides for itself; a
+  raytraced caster is decided once as it enters the structure and needs the exact answer.
+- A `material_override` replaces every surface, so it zeroes the whole mask; a `next_pass` that does
+  cast rescues a pass that does not; surfaces at index ≥ 32 are always assumed to cast.
+- Alpha-scissor and alpha-hash materials **do** cast, with the cutout ignored — a leaf card throws
+  the shadow of its whole quad. That is a documented limitation, not something this predicate fixes.
+
+### 10. Structure lifetime and budgets
+
+**Done when:** dragging a `BoxMesh`'s size in the inspector no longer prints `Parameter blas is null`
+at frame rate, and shadows survive the session.
+
+- Every `PrimitiveMesh` clears its mesh and re-adds surface zero whenever a property changes, and
+  `ArrayMesh.clear_surfaces()` does the same. That frees the vertex buffer and the structure built
+  from it, so **a cache keyed on the mesh RID hands out a freed handle forever after.**
+- Skipping one bad entry is not enough — validate before the TLAS build too, so one stale entry
+  cannot take down every shadow in the scene.
+- Hash the TLAS contents by **summing** per-instance hashes, not chaining them: a ray query reads
+  nothing that depends on where an instance sits in the array, and the spatial index's iteration
+  order must not read as a change.
+- Any BLAS built or refreshed this frame invalidates the bounds the TLAS cached for it, and a
+  resized TLAS describes nothing yet — both force a rebuild regardless of the hash.
+
+### 11. Drop the shadow maps
+
+A raytraced light stops claiming an atlas quadrant and stops having a map rendered. Add
+`Light3D.shadow_map_enabled` here.
+
+**Done when:** `GODOT_RT_DEBUG` prints `shadow_maps_rendered=0` alongside `raytraced=N`, and a
+spotlight with a projector cookie still projects with no atlas quadrant.
+
+- **Decide in one place, before anything acts on it**, and make the culler ask exactly the question
+  the renderer will later ask itself. The fork's split decision — culler skipping on light
+  eligibility, renderer granting channels only when it would produce a mask — meant that under
+  multiview every omni and spot was skipped by the culler and then denied a channel, and rendered
+  with **no shadow at all**. The same happened to any light past the 255 the mask can address. The
+  culler must also enforce the light limit itself.
+- **Skipping the shadow-map render must not skip `light_instance_set_shadow_transform`**: the
+  cascade split distances carried on those transforms are what `fade_from`/`fade_to` are derived
+  from, and the raytraced path reads them.
+- Keep `shadow_opacity` (what reads the mask) and `shadow_map_opacity` (what samples cascades)
+  strictly distinct. Getting them the wrong way round produces a scene that looks right until you
+  add fog.
+- Three consumers read shadow-map state a raytraced light no longer has: **light projectors** (fixed
+  by computing `shadow_matrix` directly), **subsurface transmittance** (must fall back to the
+  material's own transmittance depth — a screen-space mask cannot give a depth from the light's
+  point of view), and **volumetric fog** (a froxel is not a visible surface, so it lights unshadowed
+  until stage 16).
+
+### 12. Directional casters
+
+Bound the sun's caster set behind its own setting, and fix the cascade-slot fill.
+
+**Done when:** with props every ten metres out to 400 m and a 100 m shadow distance, sweeps of
+0.5×/1×/2×/4× gather 17/22/32/42 casters, each landing exactly where the geometry says.
+
+- Re-derive `far_distance` exactly as the engine does: `z_far`, clamped by
+  `LIGHT_PARAM_SHADOW_MAX_DISTANCE` only when that is `> 0` **and** the camera is not orthogonal,
+  then `MAX(..., z_near + 0.001)`. A max distance of zero means "as far as the camera sees";
+  treating it as a literal zero collapses the volume to a millimetre and gathers nothing, silently.
+  Getting the orthogonal test backwards fails the same way.
+- **Iterate `scenario->directional_lights` directly** — directional lights are never in
+  `scene_cull_result.lights`, because `light_get_aabb` returns an empty AABB for them.
+- **Filling unused cascade slots from the last real one is a prerequisite for stage 14, not a
+  tidy-up.** Every cascade chain in the shaders is a four-way if/else whose final branch reads slot
+  3; with fewer cascades that slot holds a default-constructed `ShadowTransform` — identity
+  projection, zero far plane. Surface shading and fog hide it because the distance fade bleaches the
+  result at exactly that depth, but **subsurface transmittance has no fade**: zero far plane means
+  zero thickness means full light through a solid object, and the zero in `shadow_split_offsets.w`
+  makes the PCF blur factor divide by zero (NaN once blend splits are on). GLES3 already does this
+  for the split offsets alone — extend it to the matrix, ranges, biases and atlas rect.
+
+### 13. Directional trace
+
+The sun takes a slot in the same mask and competes for a pixel's four channels on the same terms as
+every lamp, reusing the 64-byte light record with four fields reinterpreted.
+
+**Done when:** pillars of increasing height give a 10–90% shadow edge width of 0/3/6 px against the
+cascade map's uniform 0/1/1 — the traced sun's penumbra grows with the gap it crosses.
+
+- The trace treats every non-sky pixel as a receiver, but the culler only gathers casters as far as
+  the shadow distance — a surface past that traces against an empty region and comes back
+  confidently **lit**, a hard seam across the landscape at exactly the shadow distance. Carry the
+  negation of the cascade fade in the record and apply the fade **in the trace**, not the forward
+  pass, so the mask the denoiser filters and reprojects stays continuous. Both ends read
+  `shadow_split_offsets[limit]`, so they cannot drift.
+- **Do not tile-cull directional lights with a sphere around the camera**: radial distance is always
+  at least the view depth the fade is keyed on, so such a test rejects tiles the per-pixel check
+  accepts and the corners of the frame lose the sun well before the fade starts. Admit every
+  directional light, and claim them first so a crowded tile drops lamps rather than the sun.
+- Softness follows the `softshadow_angle` convention so both paths agree — but note that a nonzero
+  angular distance also puts the **cascade** path onto its PCSS branch and widens every cascade's
+  extents, visible in projects that never enable raytracing. The node carries `0.25` itself rather
+  than the trace hiding a default behind zero, so the inspector value is what is traced and zero
+  means genuinely hard.
+
+### 14. Directional demotion
+
+Cut the sun's remaining shadow map down to what still reads it, as two settings rather than constants.
+
+**Done when:** instrumented, a raytraced sun allocates the directional atlas **zero** times where a
+non-raytraced scene allocates it once — 2 MiB at the demoted size, 32 MiB at Godot's default.
+
+- **Both readings of the shadow mode must move together.** `update_light_buffers` read
+  `light->directional_shadow_mode` *directly* rather than through the accessor, so overriding the
+  accessor alone leaves the culler emitting two cascades while the buffer still computes
+  `limit == 3` — split offsets of `(s0, s1, 0, 0)`, a `fade_to` of negative zero, and a smoothstep
+  with equal edges.
+- Leave the authored shadow mode untouched on the `Light` so it still round-trips through the
+  editor; only what the renderer asks for changes. Keep `requested_size` separately so the full size
+  comes back if raytracing goes away.
+- Only safe on top of the cascade-slot fill from stage 12.
+
+### 15. Alpha-pass correctness
+
+Stop an alpha-blended fragment reading the mask at its own pixel and wearing the visibility of the
+opaque surface behind it.
+
+**Done when:** a horizontal sheet of glass above a floor in full shade goes from mean luminance 31.6
+to 180.3, and every opaque test scene renders identically.
+
+- "Am I in the alpha pass" is not quite the question. Alpha-to-coverage and `depth_prepass_alpha`
+  materials are drawn in the transparent list but **do** write pre-pass depth, so the mask describes
+  them correctly — those are known at compile time (`USE_OPAQUE_PREPASS` /
+  `ALPHA_ANTIALIASING_EDGE_USED`) and must skip the runtime test entirely. Alpha scissor and alpha
+  hash go through the pre-pass like anything opaque and were never affected.
+- The fallback guards move from `shadow_opacity` to `shadow_map_opacity` at the same time.
+- **Demonstrating this needs a horizontal pane.** A vertical one edge-on to the sun receives almost
+  no direct light, the shadow term is multiplied by nearly nothing, and the bug is invisible. Three
+  test scenes each looked like evidence the fix did nothing.
+
+### 16. Fog: the zero-cost variant pattern
+
+Volumetric fog traces its own directional shadow ray per froxel. **This stage is also the reusable
+pattern for adding a ray-query variant to an existing shader at no cost to projects that never use
+it** — the deferred subsurface-transmittance work should use it, with the structure declared inside
+`#ifdef LIGHT_TRANSMITTANCE_USED`.
+
+**Done when:** on a row of slats lit from behind, the fog's luminance at the darkest point of the
+shadow reads 74.9 against the shadow-mapped render's 75.4 (it read 183.8 with the shafts missing).
+
+All five parts of the pattern are required:
+
+1. Give the raytracing variants a `ShaderRD` **group of their own**.
+2. **Do not create their pipelines at init** — skip those indices in the loop, because
+   `version_get_shader` on a disabled group returns a placeholder.
+3. `enable_group()` **lazily**, the first frame something needs them.
 4. Put the acceleration structure in a **uniform set of its own** that only those variants declare,
    so every other variant's uniform set is byte-for-byte unchanged.
-5. Guard the `#extension GL_EXT_ray_query` and the `accelerationStructureEXT` declaration behind the
-   variant's own `#define`, so non-tracing variants compile to modules that ask the device for no
-   raytracing capability at all — which is what keeps them working on hardware without ray query.
+5. Guard the `#extension` and the `accelerationStructureEXT` declaration behind the variant's own
+   define, so non-tracing variants emit SPIR-V requesting no raytracing capability.
 
-This was verified rather than assumed: with fog on and raytracing off, zero ray-query modules
-compile and the render is byte-identical to the pre-change engine.
+Other pitfalls:
 
-The same pattern is what the deferred subsurface-transmittance work should use, with the declaration
-inside `#ifdef LIGHT_TRANSMITTANCE_USED`.
+- `cam_rotation` only rotates; the structure is world space, so the froxel's view-space position
+  needs the camera translation too — hence `cam_position` in the params UBO and the mirrored `vec4`
+  in the std140 block **at the identical position**. Half-applying this garbles `cam_rotation`,
+  `to_prev_view` and `radiance_inverse_xform`.
+- One ray per froxel is the whole budget, so spread the sun's angular size across **frames**: offset
+  the ray within the cone by the same `halton_map[temporal_frame]` value that already jitters the
+  froxel position, under the same reprojection guard, so it stays a global jitter rather than
+  per-froxel noise.
+- A froxel has no pixel in the mask, so positional lights get no ray and a raytraced lamp lights the
+  fog unshadowed. Leave the TLAS null unless a directional light actually took a slot.
 
-### 2.8 Node and settings surface
+### 17. Docs, defaults and CI
 
-| Hooks into | Kind | Assumes |
-| --- | --- | --- |
-| `Light3D::_bind_methods`, constructors | new property, **changed defaults** | — |
-| `RenderingServer` / `RenderingServerDefault` | new method | that adding one requires touching the dummy and GLES3 stubs too |
-| `ProjectSettings::ProjectSettings()` | new registrations | that settings must exist before the rendering device is created |
-| `doc/classes/*.xml` | generated | that `--doctool` is run and committed |
+Small, but three separate CI rounds were burned on it the first time.
 
-The settings are registered in `project_settings.cpp` rather than near their consumer specifically so
-they exist before the rendering device is constructed. They are then resolved once into statics on
-`RaytracingScene` — which is also why they are all effectively restart-required.
+**Done when:** `godot --headless --doctool .` produces no diff and the style hooks pass.
 
----
-
-## 3. Rebuilding it, in an order that works
-
-The 41 commits in this branch are in the order the work was *discovered*, which includes false starts
-and later corrections. Do not follow that order. Follow this one; each stage ends somewhere you can
-check before continuing.
-
-| # | Stage | Ends when |
-| --- | --- | --- |
-| 1 | Settings, availability detection, a naive acceleration structure over the whole scenario | `GODOT_RT_DEBUG=1` prints a non-zero TLAS instance count |
-| 2 | The trace pass and mask, hard shadows, forward shader reads it | One omni light casts a visibly correct hard shadow |
-| 3 | Per-pixel top-four light selection and the light buffer plumbing | Many overlapping lights each shadow correctly |
-| 4 | Denoiser: temporal reprojection first, then the à-trous passes | One ray per frame looks as good as sixteen did |
-| 5 | Skinned and multimesh geometry | An animated character casts a correct shadow, including off-screen |
-| 6 | Caster culling by light volume instead of the whole scenario | TLAS instance count stops scaling with level size |
-| 7 | Stop rendering shadow maps for raytraced lights | `shadow_maps_rendered=0` with `raytraced=N` |
-| 8 | Directional light in the same light pool | The sun casts a raytraced shadow |
-| 9 | Demote the sun's shadow map | Zero directional atlas allocations for a fully raytraced sun |
-| 10 | Quality: contact hardening, blue noise, sqrt encoding, variance clamp, nearest occluder | RMSE against a high-sample reference stops improving |
-| 11 | Consumers: the alpha-pass fix, then volumetric fog | Sun shafts survive with no shadow map |
-
-**Pitfalls that cost real time the first time.** Each of these was a bug that shipped and had to be
-found again later:
-
-- Unused cascade slots must be filled from the last real one. Fewer cascades otherwise means the
-  shaders' final `else` reads an identity matrix.
-- A shadow ray that stops at the *first* occluder rather than the *closest* gives the right
-  visibility but the wrong penumbra width, and the denoiser over-blurs contact shadows.
-- Temporal history needs a variance clamp, or a shadow moving across a stationary surface trails: the
-  surface has no motion of its own for reprojection to follow.
-- The denoiser's history must be decoded from sqrt space *everywhere* it is read. One missed decode
-  lightens every umbra and is nearly invisible unless you measure it.
-- Skipping the shadow map render must not also skip `set_shadow_transform` — the cascade split
-  distances are derived from it, and the raytraced path reads those.
+- **`--doctool` emits `ProjectSettings` members sorted by name.** Hand-placing new entries next to
+  related ones fails the class-reference check; apply the doctool output verbatim.
+- Changed node defaults propagate into the XML whether or not you edit it, because doctool computes
+  the attribute from the real registered default.
+- A new top-level directory that no `CODEOWNERS` rule matches fails `validate-codeowners --unowned`,
+  and that gates every platform build.
+- `codespell` rewrites British spellings in prose *and* in shader comments, and its write-changes
+  mode makes the hook exit non-zero.
+- If CI is narrowed to one platform, the dropped Linux jobs take the `--doctool` class-reference
+  check, the GDExtension API compatibility check, the unit tests and the export tests with them.
 
 ---
 
-## 4. How to verify a port
+## Quick reference: the seams that break
+
+Sixteen of the 155 mapped integration points were rated fragile — they depend on a data layout, an
+ordering, or a format Godot revises between versions. Check these first.
+
+| Seam | What to verify on the new engine |
+| --- | --- |
+| `RD::AccelerationStructureGeometry` / `blas_build` | Still carries `vertex_buffer`/`offset`/`stride`/`count`/`format` plus index fields, and `blas_build` is still a full in-place rebuild with no refit. |
+| Mesh vertex layout | Positions still a contiguous `float32x3` block at offset 0 ahead of the attribute block; compressed decode still `pos * aabb.size + aabb.position`. |
+| `MeshInstance::Surface` (`vertex_buffer[2]`, `current_buffer`, `last_change`) | `last_change` still set on **every** surface `update_mesh_instances()` dispatches, not only on a buffer flip. |
+| `LightData` / `DirectionalLightData` trailing `pad[2]` | Still unclaimed padding. If upstream took it, find new space and keep `sizeof` identical. |
+| `RENDER_PASS_UNIFORM_SET` bindings 37/38 | Find the new highest binding; renumber C++ and GLSL in lockstep. |
+| `_setup_render_pass_uniform_set` | Bindings added on every path, including probe and no-render-buffer renders. |
+| `update_light_buffers` | Every early-out preserves both invariants: `rt_slot < RT_SLOT_NONE` iff the light has a channel this frame, `shadow_map_opacity > 0.001` iff an atlas rect or cascade was actually written. |
+| `_pre_opaque_render` dispatch site | Depth is resolved before it; the trace is fed `scene_data->get_cam_projection()`, not the raw member. |
+| Directional loop in `scene_forward_clustered.glsl` | Re-derive the three-way split by hand; the lightmap shadowmask handling and the fade smoothstep must be hoisted out so both paths run them. |
+| Fog `Params` UBO / `ParamsUBO` | `cam_position` at the identical offset on both sides. |
+| Fog `ShaderGroup` enum | The four device-capability groups still contiguous and first; `+ SHADER_GROUP_BASE_RAYTRACED` silently maps wrong if a fifth is inserted. |
+| `_get_fog_process_variant` | Still `device_group * VOLUMETRIC_FOG_PROCESS_SHADER_MAX + idx`, and the push order matches the enum position-for-position. |
+| `re-spirv` `SpvIsSupported()` | Still excludes ray-query opcodes so those modules bail out rather than being miscompiled. Watch stderr for the "not supported yet" line. |
+
+---
+
+## How to verify a port
 
 Nothing here needs a real GPU. The original work was validated on **lavapipe** (Mesa's software
 Vulkan) under Xvfb, rendering to PNG and comparing with a small Python script.
 
-Be aware of what that setup distorts: lavapipe traverses the BVH on the CPU, so it **overstates**
-rasterisation cost and **understates** the benefit of ray early-out. Treat its frame times as
-directional only. Image comparisons are trustworthy, and reproducible to the byte.
+Know what that distorts: lavapipe traverses the BVH on the CPU, so it **overstates** rasterisation
+cost and **understates** the benefit of ray early-out. Treat its frame times as directional only.
+Image comparisons are trustworthy and reproducible to the byte.
 
-The technique that settled most questions was RMSE against a high-sample, denoiser-off render of the
-same scene — one-sample-plus-denoiser versus sixteen-sample ground truth. Edge-width metrics were
-tried first and proved unreliable, because they were confounded by the two images having different
-noise levels.
+The technique that settled most questions was **RMSE against a high-sample, denoiser-off render of
+the same scene** — one sample plus denoiser versus sixteen-sample ground truth. Edge-width metrics
+were tried first and proved unreliable, because they were confounded by the two images having
+different noise levels.
 
-For "this change costs nothing when unused", the standard is byte-identical output: build the engine
-with the change, render; stash the change, rebuild, render the same scene; compare checksums.
+For "this change costs nothing when unused", the standard is **byte-identical output**: build with
+the change and render; stash the change, rebuild, render the same scene; compare checksums. That is
+how the fog work was shown to be free.
