@@ -1852,6 +1852,13 @@ ProjectSettings::ProjectSettings() {
 	// what stops a moving shadow trailing across a surface. Lower reacts faster
 	// and accumulates less; zero disables it.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma", PROPERTY_HINT_RANGE, "0,8,0.1"), 2.0);
+	// Whether a shadow ray keeps looking for the CLOSEST occluder instead of
+	// stopping at the first one it reaches. Visibility is identical either way,
+	// so this changes no shadow's shape; what it changes is the distance the
+	// penumbra is estimated from, and so how wide the denoiser filters. Turning
+	// it off is the standard shadow-ray optimization and may be worth real time
+	// on some hardware.
+	GLOBAL_DEF("rendering/lights_and_shadows/raytraced_shadows/accurate_occluder_distance", true);
 	GLOBAL_DEF_RST_BASIC("rendering/lights_and_shadows/raytraced_shadows/directional/enabled", false);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale", PROPERTY_HINT_RANGE, "0.5,8,0.1,or_greater"), 2.0);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters", PROPERTY_HINT_ENUM, "Disabled,Near Camera,Full Distance"), 1);

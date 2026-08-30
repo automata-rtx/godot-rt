@@ -1789,6 +1789,7 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			settings.max_history = RendererRD::RaytracingScene::get_denoiser_max_history();
 			settings.min_filter_pixels = RendererRD::RaytracingScene::get_denoiser_min_filter_pixels();
 			settings.history_clamp_sigma = RendererRD::RaytracingScene::get_denoiser_history_clamp_sigma();
+			settings.accurate_occluder_distance = RendererRD::RaytracingScene::is_accurate_occluder_distance();
 
 			RendererRD::RTShadows::Buffers rt_buffers;
 			bool have_buffers = _ensure_rt_shadow_buffers(rb, internal_size, settings.denoise, rt_buffers);

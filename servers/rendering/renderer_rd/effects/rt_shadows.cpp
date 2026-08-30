@@ -219,6 +219,12 @@ void RTShadows::_trace(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, 
 	store_vector3(p_camera_transform.origin, push_constant.camera_position);
 	push_constant.max_ray_distance = p_settings.max_ray_distance;
 	push_constant.focal_pixels = p_focal_pixels;
+	// gl_RayFlagsOpaqueEXT is 1, gl_RayFlagsTerminateOnFirstHitEXT is 4. Spelled
+	// out because these are shader constants with no C++ header to share.
+	const uint32_t RAY_FLAG_OPAQUE = 1;
+	const uint32_t RAY_FLAG_TERMINATE_ON_FIRST_HIT = 4;
+	push_constant.ray_flags = RAY_FLAG_OPAQUE |
+			(p_settings.accurate_occluder_distance ? 0 : RAY_FLAG_TERMINATE_ON_FIRST_HIT);
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, trace_pipeline);

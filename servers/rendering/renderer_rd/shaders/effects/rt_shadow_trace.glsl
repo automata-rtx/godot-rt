@@ -137,7 +137,8 @@ layout(push_constant, std430) uniform Params {
 	// measured in world units can be reported in the units the denoiser filters
 	// in. The bias pair that used to sit here is now per light.
 	float focal_pixels;
-	float pad;
+	// Traversal flags for every shadow ray this dispatch casts.
+	uint ray_flags;
 }
 params;
 
@@ -581,11 +582,22 @@ void main() {
 			}
 
 			rayQueryEXT ray_query;
-			rayQueryInitializeEXT(ray_query, tlas,
-					gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+			// Terminating on the first hit is the obvious optimization for a shadow
+			// ray, and for a yes-or-no answer it is the right one. But the distance
+			// it reports is then whichever occluder traversal happened to reach
+			// first, not the nearest, and the penumbra estimate below is built
+			// entirely on that distance: a far occluder found before a near one
+			// makes the gap look larger than it is, and a shadow that should be
+			// crisp gets filtered as though it were soft. Which of the two matters
+			// more depends on the hardware, so it is a setting.
+			rayQueryInitializeEXT(ray_query, tlas, params.ray_flags,
 					light.mask, origin, light.bias, direction, ray_length - light.bias);
 
-			rayQueryProceedEXT(ray_query);
+			// Every candidate is opaque, so traversal needs no help from us and
+			// commits its hit on its own; the loop is the form the specification
+			// asks for rather than extra work.
+			while (rayQueryProceedEXT(ray_query)) {
+			}
 
 			traced++;
 

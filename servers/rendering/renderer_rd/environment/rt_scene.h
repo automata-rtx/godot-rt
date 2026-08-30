@@ -64,6 +64,7 @@ private:
 	static int setting_denoise_frames;
 	static float setting_denoise_min_filter;
 	static float setting_denoise_clamp_sigma;
+	static bool setting_accurate_occluder_distance;
 	static bool setting_directional_enabled;
 	static float setting_directional_caster_scale;
 	static int setting_directional_scatter;
@@ -218,6 +219,7 @@ public:
 	static float get_denoiser_max_history();
 	static float get_denoiser_min_filter_pixels();
 	static float get_denoiser_history_clamp_sigma();
+	static bool is_accurate_occluder_distance();
 
 	// True when the setting is on AND the device can actually trace rays.
 	bool is_available() const { return supported && is_enabled(); }

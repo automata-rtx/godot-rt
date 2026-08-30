@@ -150,6 +150,10 @@ public:
 		// sample may sit before it is pulled back in, in standard deviations.
 		// Zero disables the test and restores the old, freely trailing behavior.
 		float history_clamp_sigma = 2.0f;
+		// Whether a shadow ray must find the CLOSEST occluder rather than stopping
+		// at the first one traversal reaches. Visibility is the same either way;
+		// the distance, which is what sizes the penumbra, is not.
+		bool accurate_occluder_distance = true;
 	};
 
 private:
@@ -174,7 +178,10 @@ private:
 		// trace report each penumbra's width in pixels, which is the unit the
 		// denoiser sizes its filter in.
 		float focal_pixels;
-		float pad;
+		// Traversal flags for the shadow rays. Runtime rather than baked in so the
+		// accuracy of the occluder distance can be traded for traversal speed
+		// without a second pipeline.
+		uint32_t ray_flags;
 	};
 
 	struct TemporalPushConstant {
