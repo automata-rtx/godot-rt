@@ -60,6 +60,9 @@ private:
 	static bool settings_registered;
 	static bool setting_enabled;
 	static bool setting_directional_enabled;
+	// This frame's copies of the settings a frame has to see one value of.
+	static int frame_demoted_mode;
+	static int frame_demoted_size;
 
 	enum BlasState {
 		BLAS_UNBUILT,
@@ -182,6 +185,8 @@ public:
 	// gathered as a caster, as a multiple of that distance. A sun has no range
 	// to cull against, so this is what bounds its acceleration structure.
 	static bool is_directional_enabled();
+	// Takes this frame's copy of the settings that have to stay fixed across it.
+	static void update_frame_settings();
 	// 0 keeps whatever the light was authored with, 1 Orthogonal, 2 two splits.
 	static int get_directional_demoted_mode();
 	// Zero keeps the project's own directional shadow atlas size.

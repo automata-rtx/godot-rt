@@ -79,27 +79,32 @@ All under `rendering/lights_and_shadows/raytraced_shadows/`.
 | `directional/demoted_shadow_mode` | `2 Splits` | What a raytraced sun's `directional_shadow_mode` is replaced with. |
 | `directional/demoted_shadow_size` | `1024` | Upper bound on the directional shadow atlas once raytraced directional shadows are available. |
 
-**All of these are live except the two `enabled` flags.** Change one in the inspector, or from a
-script with `ProjectSettings.set_setting()`, and the renderer picks it up on the next frame that
-reads it — no restart. They are read through `GLOBAL_GET_CACHED`, which keeps a typed copy and
-re-reads only when `ProjectSettings` bumps its version, so the steady state costs an integer compare
-rather than a string lookup.
+**All of these are live except the master `enabled` flag.** Change one in the inspector, or from a
+script with `ProjectSettings.set_setting()`, and the renderer picks it up on the next frame — no
+restart. Most are read through `GLOBAL_GET_CACHED`, which keeps a typed copy and re-reads only when
+`ProjectSettings` bumps its version, so the steady state costs an integer compare rather than a
+string lookup.
 
 Each is clamped on read, because a live value arrives straight from the inspector and several
 property hints allow `or_greater`.
 
-The two exceptions are genuinely restart-required, and the editor marks them so:
+Three of them are instead snapshotted once per frame, in `RaytracingScene::update_frame_settings()`,
+called from `RendererSceneRenderRD::update()` before any viewport draws — the same place Godot
+snapshots its own per-frame rendering settings:
 
-- **`enabled`** cannot ever be live. `MeshStorage::mesh_add_surface` decides a vertex buffer's
-  creation bits at upload time, before the rendering device or the renderer exist, so a mesh
-  uploaded while the setting was off has no buffer an acceleration structure could be built from.
-  Re-reading the value would only produce build failures against buffers that can never satisfy it.
-- **`directional/enabled`** is held to the restart-required contract it already declares.
+- `directional/enabled`
+- `directional/demoted_shadow_mode`
+- `directional/demoted_shadow_size`
 
-A caveat worth knowing: settings are applied the moment they change, which can be part-way through a
-frame. Dragging `demoted_shadow_mode` can therefore leave the culler and the light buffer disagreeing
-about the cascade count for a single frame, which looks like one bad frame and corrects itself. That
-is a fine trade for a tuning knob; it is also why the two structural flags are not live.
+All three decide how many cascades a sun gets and how big the atlas holding them is, and that has to
+be the same answer for the culler, the atlas layout and the light buffer, which run at three
+different points in a frame. Read on demand they could disagree within one frame and put cascades in
+the wrong atlas rects. Snapshotting costs them up to one frame of latency and nothing else.
+
+**`enabled` is the one that cannot ever be live.** `MeshStorage::mesh_add_surface` decides a vertex
+buffer's creation bits at upload time, before the rendering device or the renderer exist, so a mesh
+uploaded while the setting was off has no buffer an acceleration structure could be built from.
+Re-reading the value would only produce build failures against buffers that can never satisfy it.
 
 Requires Forward+, the Vulkan driver, and a GPU with ray query support. Without ray query it prints
 a warning and every light falls back to shadow maps, so a project stays playable.
@@ -246,11 +251,15 @@ configurable via `directional/demoted_shadow_*`. Set the mode to `Keep Authored`
 3. **Depth pre-pass with normal/roughness.** Forced on whenever raytracing is available — the trace
    needs both. This is the main unconditional cost of turning the feature on.
 4. **Trace.** One compute dispatch. Per 8×8 tile, cull the lights that reach it; per pixel, keep the
-   four contributing the most light; trace `samples_per_light` rays each. Writes an RGBA8 visibility
+   four contributing the most light; trace `samples_per_light` rays each — all of them, with the
+   emitter sampled as a Vogel disk whose radius is jittered per frame. Writes an RGBA8 visibility
    mask, an RGBA8 hit-distance (penumbra width in pixels), and an RGBA8UI index saying which light
    each channel belongs to.
-5. **Denoise.** Temporal reprojection with variance clamping, then N edge-stopping à-trous passes
-   whose reach is driven by the measured penumbra width.
+5. **Denoise.** Temporal reprojection with variance clamping — floored by the standard error the
+   ray counts carry, so it cannot pin a penumbra's shallow ends to a binary answer, and shortening
+   the accumulation window in proportion to how far it had to correct the history — then N
+   edge-stopping à-trous passes whose reach is driven by the measured penumbra width. The
+   accumulator's 8-bit store is dithered, because it re-reads its own rounded output every frame.
 6. **Volumetric fog**, which traces its own ray per froxel for a raytraced sun.
 7. **Forward pass** samples the mask instead of the shadow atlas.
 
@@ -282,18 +291,28 @@ dark end where a shadow's detail is.
 
 Start with the defaults. In order of what actually moves the picture:
 
-- **Shadow softness** is `light_size` (lamps, in meters) and `light_angular_distance` (the sun, in
-  degrees). A real sun is about `0.5°`; the default `0.25°` is half that. Both are live-editable.
+At the defaults the shadow's width is the width the geometry calls for. Measured against a
+closed-form ground truth — a lamp of known radius over a post of known size, in a scene where the
+50% crossing of the shadow edge lands within a pixel of the analytic answer at every distance — the
+10-90 penumbra comes out at 17/28/38/47/55/51/52 pixels where the geometry asks for
+16.3/26.2/36.0/45.9/51.5/51.5/51.5, and at sixteen samples per light it reproduces it exactly. So
+softness is a property of the light, not of the denoiser, and these are the knobs in order of what
+actually moves the picture:
+
+- **Shadow softness** is `light_size` (lamps, in meters, a radius) and `light_angular_distance` (the
+  sun, in degrees). Godot treats the latter as the disk's angular radius, so the default `0.25°`
+  gives about 94% of the real sun's penumbra despite the class reference quoting `0.5` for the sun.
 - **Too soft at contact?** Lower `denoiser/min_filter_pixels`. At or below `1.0` the filter switches
-  off entirely at a hard edge.
+  off entirely at a hard edge, so `1.0` and `0.0` render identically.
 - **Shadow trails behind a moving object?** Lower `denoiser/history_clamp_sigma`. `2.0` cuts
-  ghosting by roughly 85% against no clamp; lower reacts faster and accumulates less.
-- **Grainy in wide penumbrae?** Raise `samples_per_light` to `2`, or `denoiser/spatial_passes`.
-  Raising samples above 2 is close to free but rarely changes much.
+  ghosting to nothing; what is left after a blocker moves is its new shadow still filling in, not
+  its old one lingering.
+- **Grainy in wide penumbrae?** Raise `samples_per_light`, or `denoiser/spatial_passes`. Samples now
+  cost what they say: every one is traced. They converge on the same shadow, only with less noise.
 - **Slow in an open outdoor scene?** Lower `directional/caster_distance_scale`, or set
   `directional/scatter_casters` to `Disabled`.
 
-Remember these all need an engine restart to take effect.
+All of these take effect on the next frame.
 
 ---
 

@@ -1859,7 +1859,12 @@ ProjectSettings::ProjectSettings() {
 	// it off is the standard shadow-ray optimization and may be worth real time
 	// on some hardware.
 	GLOBAL_DEF("rendering/lights_and_shadows/raytraced_shadows/accurate_occluder_distance", true);
-	GLOBAL_DEF_RST_BASIC("rendering/lights_and_shadows/raytraced_shadows/directional/enabled", false);
+	// Live, unlike the master switch above: nothing about a vertex buffer's
+	// creation depends on it, only which of two shadowing paths a sun takes, and
+	// both are built every frame. It is read once per frame rather than on
+	// demand, because a sun's cascade count has to be the same answer for the
+	// culler, the shadow atlas layout and the light buffer.
+	GLOBAL_DEF_BASIC("rendering/lights_and_shadows/raytraced_shadows/directional/enabled", false);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale", PROPERTY_HINT_RANGE, "0.5,8,0.1,or_greater"), 2.0);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters", PROPERTY_HINT_ENUM, "Disabled,Near Camera,Full Distance"), 1);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance", PROPERTY_HINT_RANGE, "0,500,1,or_greater"), 25.0);

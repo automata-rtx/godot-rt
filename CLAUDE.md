@@ -75,10 +75,12 @@ an atlas quadrant and a shadow map render.
 ## Two behaviors that surprise people
 
 - **`raytraced_shadows/*` settings are live** — change one in the inspector or via
-  `ProjectSettings.set_setting()` and it takes effect next frame. The two exceptions are the
-  `enabled` flags, which are restart-required and marked so. `enabled` could not work live in any
-  case: `MeshStorage::mesh_add_surface` fixes a vertex buffer's creation bits at upload time, so a
-  mesh loaded while it was off has nothing to build a structure from.
+  `ProjectSettings.set_setting()` and it takes effect next frame. The one exception is the master
+  `enabled` flag, which is restart-required and marked so, and could not work live in any case:
+  `MeshStorage::mesh_add_surface` fixes a vertex buffer's creation bits at upload time, so a mesh
+  loaded while it was off has nothing to build a structure from. The three `directional/enabled` and
+  `directional/demoted_shadow_*` settings are live but snapshotted once per frame, because a sun's
+  cascade count has to be one answer for the whole frame.
 - With raytraced directional shadows available, a `DirectionalLight3D`'s
   `directional_shadow_mode` is overridden to 2 splits and the shared directional shadow atlas is
   capped at 1024 — for every directional light, not only raytraced ones. Both are configurable

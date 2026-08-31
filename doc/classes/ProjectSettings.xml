@@ -3237,6 +3237,7 @@
 			If [code]true[/code], [DirectionalLight3D] nodes take their shadow from the raytraced mask instead of cascaded shadow maps, competing for the same four per-pixel mask channels as every [OmniLight3D] and [SpotLight3D].
 			A directional light has no range to bound its shadow casters, so this also turns on the separate caster gathering described by [member rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale] and [member rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters].
 			Requires [member rendering/lights_and_shadows/raytraced_shadows/enabled].
+			Unlike that setting, this one takes effect on the next frame and does not need a restart.
 			[b]Note:[/b] The sun still renders a much reduced shadow map for the effects that cannot read the mask; see [member rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode].
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters" type="int" setter="" getter="" default="1">

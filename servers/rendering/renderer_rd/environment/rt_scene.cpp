@@ -52,6 +52,8 @@ bool RaytracingScene::debug_enabled() {
 bool RaytracingScene::settings_registered = false;
 bool RaytracingScene::setting_enabled = false;
 bool RaytracingScene::setting_directional_enabled = false;
+int RaytracingScene::frame_demoted_mode = 2;
+int RaytracingScene::frame_demoted_size = 1024;
 
 void RaytracingScene::register_settings() {
 	if (settings_registered) {
@@ -70,12 +72,34 @@ void RaytracingScene::register_settings() {
 	// a later value would only produce build failures against buffers that can
 	// never satisfy it.
 	//
-	// `directional/enabled` is declared restart-required in the editor, so it is
-	// held to that promise rather than quietly becoming live.
+	// `directional/enabled` has no such constraint -- it only picks which of two
+	// shadowing paths a sun takes, and both are rebuilt every frame -- so it is
+	// live too, but refreshed once per frame by update_frame_settings() rather
+	// than read wherever it is wanted. See there for why.
 	//
 	// Everything else is read live below.
 	setting_enabled = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/enabled");
 	setting_directional_enabled = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/enabled");
+}
+
+// Refreshed from the frame's own start, before any viewport draws.
+//
+// The other live settings are tuning knobs: a frame that read one of them twice
+// and got two answers would look very slightly wrong for one frame and no more.
+// This one is not like that. Whether a sun is raytraced decides how many
+// cascades it gets, and that has to be the same answer for the culler, for the
+// shadow atlas layout and for the light buffer, which run at three different
+// points in a frame. A value that changed between them would put cascades in
+// the wrong atlas rects. Snapshotting it here, where Godot snapshots its own
+// per-frame rendering settings, is what makes it safe to change while running.
+void RaytracingScene::update_frame_settings() {
+	register_settings();
+	setting_directional_enabled = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/raytraced_shadows/directional/enabled");
+	// The two demotion settings answer the same question from the other side --
+	// how many cascades the sun's leftover map gets, and how large the atlas
+	// holding it is -- so they are fixed for the frame for the same reason.
+	frame_demoted_mode = CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode"), 0, 2);
+	frame_demoted_size = MAX(0, GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size"));
 }
 
 bool RaytracingScene::is_enabled() {
@@ -144,11 +168,11 @@ float RaytracingScene::get_directional_scatter_distance() {
 }
 
 int RaytracingScene::get_directional_demoted_mode() {
-	return CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode"), 0, 2);
+	return frame_demoted_mode;
 }
 
 int RaytracingScene::get_directional_demoted_size() {
-	return MAX(0, GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size"));
+	return frame_demoted_size;
 }
 
 RaytracingScene::RaytracingScene() {

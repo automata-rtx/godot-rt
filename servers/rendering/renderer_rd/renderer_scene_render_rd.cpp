@@ -1560,6 +1560,7 @@ void RendererSceneRenderRD::set_debug_draw_mode(RSE::ViewportDebugDraw p_debug_d
 }
 
 void RendererSceneRenderRD::update() {
+	RendererRD::RaytracingScene::update_frame_settings();
 	sky.update_dirty_skys();
 }
 

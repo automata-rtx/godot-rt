@@ -238,11 +238,41 @@ static converged render.
 ### 6. Denoiser quality
 
 Make one ray per light per frame match a sixteen-sample reference: penumbra-driven filter width,
-blue-noise rotation, sqrt-encoded mask, temporal variance clamp, two-probe early-out, closest-occluder
-distance.
+blue-noise rotation with a jittered radius, sqrt-encoded mask, temporal variance clamp with a
+binomial floor, dithered accumulator stores, closest-occluder distance.
 
-**Done when:** RMSE against a sixteen-sample denoiser-off reference stops improving. The fork's
-figures: sun contact 2.85 → 2.73, sun soft 6.79 → 6.33, lamps 1.47 → 1.22.
+**Done when:** the 10-90 penumbra width matches a closed-form ground truth across a contact
+hardening curve, not merely when an RMSE stops improving. Build the reference from the geometry
+rather than from another render: a lamp of known radius over a post of known size, with a
+perspective camera, and confirm the model first by checking that the 50% crossing of the shadow
+edge lands within a pixel of the analytic edge at every distance. RMSE against a rendered reference
+will not catch any of the three defects below, because all three are present in the reference too.
+
+Recover the shadow term before measuring. Divide the render by an occluder-free render of the same
+scene: that cancels the falloff, the lambert term and the sRGB transfer and leaves visibility, which
+is the quantity the geometry predicts. A 10-90 measured on pixel values instead is a 10-90 of a
+tonemapped product and does not correspond to anything.
+
+Three defects each squeeze or stretch the penumbra, and each is invisible without that ground truth:
+
+- **No pair of rays can early out for a disk.** Probing the emitter with two rays and stopping when
+  they agree is a large saving, but two points on the rim, opposite each other, still both read lit
+  over the whole outer half of a penumbra — where a fifth of the emitter is covered they agree a
+  third of the time — and the binary answer pulls that pixel to fully lit. The umbra side goes the
+  same way. It cost 28% of the penumbra's width at sixteen samples per light and less at lower
+  counts, so the shadow got *sharper* as the sample count rose. Trace every sample. Skipping settled
+  work is still worth having, but it has to learn the penumbra is absent from somewhere other than
+  the rays it is trying to avoid.
+- **A variance clamp needs a floor.** With a handful of rays per pixel the 3x3 neighborhood used for
+  the clamp agrees outright in the shallow ends of a penumbra — at one ray per light and a true
+  visibility of 0.95, about two frames in three — so the measured spread is exactly zero and the
+  history is pinned to that binary answer. It removed a third of every penumbra. Floor the spread
+  with the standard error the ray counts carry, with two pseudo-counts so the floor cannot collapse
+  with the spread.
+- **An 8-bit accumulator that re-reads its own output must round stochastically.** Once the step the
+  accumulator wants is under half a quantization level it stops moving, and not symmetrically: rare
+  large steps land and frequent small ones do not, so the value ratchets. It made the stock penumbra
+  15% too wide. Dither the store by a per-pixel, per-frame fraction of a step.
 
 - **Decode out of sqrt space everywhere it is read.** Averaging roots and squaring darkens every
   penumbra by Jensen's inequality; one missed decode lightens every umbra almost invisibly unless
