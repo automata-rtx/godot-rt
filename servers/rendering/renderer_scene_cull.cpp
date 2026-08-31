@@ -45,9 +45,42 @@
 #endif
 
 //#define DEBUG_CULL_TIME
-#ifdef DEBUG_CULL_TIME
 #include "core/os/os.h"
-#endif
+
+#ifndef _3D_DISABLED
+// What the raytraced shadow path costs the CPU, averaged so that one slow frame
+// does not read as the steady state and one fast one does not hide it.
+//
+// The two halves answer different questions. Gathering scales with how much of
+// the world is within reach of a light, and is the half that grows with world
+// size; building scales with how many surfaces reach the structure and whether
+// any of them moved, and is the half that grows with instance count. Reporting
+// them apart is what makes it possible to tell which one a slow scene is paying
+// for. Peaks alongside the averages because a build spike lands on one frame and
+// is felt as a hitch rather than as a lower average.
+static void _rt_report_cpu_cost(uint64_t p_gather_usec, uint64_t p_build_usec) {
+	constexpr uint32_t REPORT_EVERY = 120;
+	static uint32_t frames = 0;
+	static uint64_t gather_total = 0, build_total = 0, gather_peak = 0, build_peak = 0;
+
+	frames++;
+	gather_total += p_gather_usec;
+	build_total += p_build_usec;
+	gather_peak = MAX(gather_peak, p_gather_usec);
+	build_peak = MAX(build_peak, p_build_usec);
+
+	if (frames < REPORT_EVERY) {
+		return;
+	}
+	print_line(vformat("RT_DEBUG cpu over %d frames: gather avg %.3f ms peak %.3f | build avg %.3f ms peak %.3f | total avg %.3f ms",
+			(int)frames,
+			double(gather_total) / double(frames) / 1000.0, double(gather_peak) / 1000.0,
+			double(build_total) / double(frames) / 1000.0, double(build_peak) / 1000.0,
+			double(gather_total + build_total) / double(frames) / 1000.0));
+	frames = 0;
+	gather_total = build_total = gather_peak = build_peak = 0;
+}
+#endif // _3D_DISABLED
 
 /* HALTON SEQUENCE */
 
@@ -3490,6 +3523,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	if (scene_render->is_raytracing_scene_available() && !p_reflection_probe.is_valid()) {
 		RENDER_TIMESTAMP("Update RT Acceleration Structures");
 
+		const bool rt_time = scene_render->is_raytracing_debug_enabled();
+		const uint64_t rt_started = rt_time ? OS::get_singleton()->get_ticks_usec() : 0;
+
 		// A multimesh contributes one entry per element, so a single GridMap
 		// octant can be worth hundreds. Bounded so that a pathological scene
 		// degrades instead of stalling.
@@ -3754,7 +3790,11 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				print_line(cur);
 			}
 		}
+		const uint64_t rt_gathered = rt_time ? OS::get_singleton()->get_ticks_usec() : 0;
 		scene_render->update_raytracing_scene(rt_instance_scratch);
+		if (rt_time) {
+			_rt_report_cpu_cost(rt_gathered - rt_started, OS::get_singleton()->get_ticks_usec() - rt_gathered);
+		}
 	}
 
 	/* RAYTRACED SHADOWS: DECIDE WHICH LIGHTS GIVE UP THEIR SHADOW MAP */

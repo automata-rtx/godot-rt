@@ -325,10 +325,42 @@ RT_DEBUG cull:       how many instances were visited and how many became casters
 RT_DEBUG update:     TLAS instance count, BLAS cache size, skipped and deferred surfaces
 RT_DEBUG shadows:    how many lights are raytraced, and how many shadow maps still rendered
 RT_DEBUG pre_opaque: whether the mask ran, how many lights took slots, whether a TLAS exists
+RT_DEBUG cpu:        what this path costs the CPU, averaged over 120 frames
 ```
 
 `shadow_maps_rendered=0` with `raytraced=N` is what a fully raytraced scene looks like.
 `skipped_surfaces>0` means geometry was rejected as un-raytraceable.
+
+The `cpu` line is the one to read when the frame is CPU-bound rather than GPU-bound, which is what
+this path is most likely to cost you in a large scene. It separates two halves that scale with
+different things:
+
+- **gather** — finding which of the scene's instances are within reach of a raytraced light. Grows
+  with how much world is inside those volumes, so it is the half that grows with level size and with
+  the sun's shadow distance.
+- **build** — turning those casters into acceleration structures. Grows with the caster count, and
+  spikes on the frame that first builds them (the peak figure, not the average, is what you feel).
+
+### Making it cheaper
+
+Measured in a deliberately hostile scene — three thousand props over a 200 m field, sixteen lamps of
+25 m range, a raytraced sun and a spotlight on the camera — on a slow CPU:
+
+| Change | RT CPU per frame |
+| --- | --- |
+| As described above | 1.28 ms |
+| `DirectionalLight3D.directional_shadow_max_distance` 100 → 50 | 0.99 ms |
+| ...→ 25 | 0.54 ms |
+| Raytraced sun off entirely | 0.45 ms |
+| `directional/caster_distance_scale` 2.0 → 0.5 | 1.12 ms |
+
+**The raytraced sun is two thirds of the cost, and the sun's shadow distance is the lever, not
+`caster_distance_scale`.** A lamp bounds its own casters with its range; a sun has no range, so the
+volume swept for it is the camera frustum out to the shadow distance, pushed back toward the light.
+Shortening the shadow distance shrinks that volume in every direction at once, which is why halving
+it does far more than quartering the sweep. If a raytraced sun is costing more than you want, set
+`directional_shadow_max_distance` to the distance you actually need shadows at, before reaching for
+anything else.
 
 ---
 
