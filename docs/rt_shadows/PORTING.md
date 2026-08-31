@@ -82,6 +82,15 @@ with the setting on a mesh's vertex buffer is created with `DEVICE_ADDRESS` and 
 - The settings must be registered in `ProjectSettings`' own constructor, not near their consumer.
   `mesh_add_surface` decides buffer creation bits at upload time, **before the RenderingDevice and
   the renderer exist** — which is also exactly why the master setting is restart-required.
+- **Latch only the settings that genuinely cannot change; read the rest through
+  `GLOBAL_GET_CACHED`.** The fork's first version resolved all fifteen once behind a
+  `settings_registered` flag, which quietly made every tuning knob restart-required while the editor
+  advertised only two of them as such — so turning the denoiser off in the inspector did nothing at
+  all, with no feedback. `GLOBAL_GET_CACHED` keeps a typed copy keyed on `ProjectSettings`' version
+  counter, so a live read costs an integer compare and the value reaches the renderer on the next
+  frame. Only `enabled` truly has to be latched, for the buffer-bits reason above. Clamp on read
+  rather than on registration: a live value arrives with no validation beyond the property hint, and
+  several hints allow `or_greater`.
 - Gate the buffer bits on `SUPPORTS_RAY_QUERY` as well as `SUPPORTS_BUFFER_DEVICE_ADDRESS`. Testing
   only the setting and device address gave every mesh buffer AS usage nothing could consume on
   D3D12, whose `has_feature()` has no `SUPPORTS_RAY_QUERY` case and returns false.

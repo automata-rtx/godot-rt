@@ -54,23 +54,12 @@ public:
 private:
 	static RaytracingScene *singleton;
 
-	// Project settings, resolved once at startup.
+	// The two settings that decide whether the feature exists at all are latched
+	// at first read and never re-read; every other setting is live, read through
+	// GLOBAL_GET_CACHED in its accessor below. See register_settings().
 	static bool settings_registered;
 	static bool setting_enabled;
-	static int setting_samples;
-	static float setting_max_distance;
-	static bool setting_denoise;
-	static int setting_denoise_passes;
-	static int setting_denoise_frames;
-	static float setting_denoise_min_filter;
-	static float setting_denoise_clamp_sigma;
-	static bool setting_accurate_occluder_distance;
 	static bool setting_directional_enabled;
-	static float setting_directional_caster_scale;
-	static int setting_directional_scatter;
-	static float setting_directional_scatter_distance;
-	static int setting_directional_demoted_mode;
-	static int setting_directional_demoted_size;
 
 	enum BlasState {
 		BLAS_UNBUILT,

@@ -79,15 +79,27 @@ All under `rendering/lights_and_shadows/raytraced_shadows/`.
 | `directional/demoted_shadow_mode` | `2 Splits` | What a raytraced sun's `directional_shadow_mode` is replaced with. |
 | `directional/demoted_shadow_size` | `1024` | Upper bound on the directional shadow atlas once raytraced directional shadows are available. |
 
-**Every one of these is read once at startup and cached for the process lifetime**
-(`RaytracingScene::register_settings`, guarded by a `settings_registered` flag). Changing one at
-runtime does nothing until restart, including the thirteen the editor does not label
-restart-required.
+**All of these are live except the two `enabled` flags.** Change one in the inspector, or from a
+script with `ProjectSettings.set_setting()`, and the renderer picks it up on the next frame that
+reads it — no restart. They are read through `GLOBAL_GET_CACHED`, which keeps a typed copy and
+re-reads only when `ProjectSettings` bumps its version, so the steady state costs an integer compare
+rather than a string lookup.
 
-For `enabled` there is a deeper reason than the cache: `MeshStorage::mesh_add_surface` decides a
-vertex buffer's creation bits at upload time, before the rendering device or the renderer exist. A
-mesh uploaded while the setting was off has no buffer an acceleration structure can be built from,
-so turning the setting on mid-session could not work even if the value were re-read.
+Each is clamped on read, because a live value arrives straight from the inspector and several
+property hints allow `or_greater`.
+
+The two exceptions are genuinely restart-required, and the editor marks them so:
+
+- **`enabled`** cannot ever be live. `MeshStorage::mesh_add_surface` decides a vertex buffer's
+  creation bits at upload time, before the rendering device or the renderer exist, so a mesh
+  uploaded while the setting was off has no buffer an acceleration structure could be built from.
+  Re-reading the value would only produce build failures against buffers that can never satisfy it.
+- **`directional/enabled`** is held to the restart-required contract it already declares.
+
+A caveat worth knowing: settings are applied the moment they change, which can be part-way through a
+frame. Dragging `demoted_shadow_mode` can therefore leave the culler and the light buffer disagreeing
+about the cascade count for a single frame, which looks like one bad frame and corrects itself. That
+is a fine trade for a tuning knob; it is also why the two structural flags are not live.
 
 Requires Forward+, the Vulkan driver, and a GPU with ray query support. Without ray query it prints
 a warning and every light falls back to shadow maps, so a project stays playable.
@@ -307,8 +319,11 @@ RT_DEBUG pre_opaque: whether the mask ran, how many lights took slots, whether a
   shape as the fog one: trace toward the light instead of range-finding in the cascade, with the
   acceleration structure declared inside `#ifdef LIGHT_TRANSMITTANCE_USED` so non-SSS shader
   variants never carry the ray-query capability.
-- **Raytraced settings are all restart-required**, but only `enabled` and `directional/enabled` are
-  registered `GLOBAL_DEF_RST`, so the editor does not say so for the other thirteen.
+- **A setting changed mid-frame is seen mid-frame.** The live settings are re-read the moment
+  `ProjectSettings` changes, so a change that lands between the culler's decision and the light
+  buffer's can leave them disagreeing for one frame. Only `demoted_shadow_mode` has a visible
+  failure mode (cascades briefly in the wrong atlas rects); the rest degrade to a one-frame stale
+  value. Snapshotting the whole set once per frame would remove even that.
 - **A light that loses the four-channel per-pixel competition is unshadowed at that pixel**, with no
   shadow map fallback.
 - **The per-instance directional caster cull runs before the raytraced decision**, so reordering it

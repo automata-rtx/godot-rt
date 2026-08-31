@@ -51,20 +51,7 @@ bool RaytracingScene::debug_enabled() {
 
 bool RaytracingScene::settings_registered = false;
 bool RaytracingScene::setting_enabled = false;
-int RaytracingScene::setting_samples = 4;
-float RaytracingScene::setting_max_distance = 0.0f;
-bool RaytracingScene::setting_denoise = true;
-int RaytracingScene::setting_denoise_passes = 3;
-int RaytracingScene::setting_denoise_frames = 32;
-float RaytracingScene::setting_denoise_min_filter = 1.0f;
-float RaytracingScene::setting_denoise_clamp_sigma = 2.0f;
-bool RaytracingScene::setting_accurate_occluder_distance = true;
 bool RaytracingScene::setting_directional_enabled = false;
-float RaytracingScene::setting_directional_caster_scale = 2.0f;
-int RaytracingScene::setting_directional_scatter = RaytracingScene::DIRECTIONAL_SCATTER_NEAR_CAMERA;
-float RaytracingScene::setting_directional_scatter_distance = 25.0f;
-int RaytracingScene::setting_directional_demoted_mode = 2;
-int RaytracingScene::setting_directional_demoted_size = 1024;
 
 void RaytracingScene::register_settings() {
 	if (settings_registered) {
@@ -72,23 +59,23 @@ void RaytracingScene::register_settings() {
 	}
 	settings_registered = true;
 
-	// The settings themselves are registered in ProjectSettings so that they exist
-	// before the rendering device is created; here we only resolve them once.
+	// The settings themselves are registered in ProjectSettings so that they
+	// exist before the rendering device is created; here we only latch the two
+	// that cannot change without a restart.
+	//
+	// `enabled` decides, in MeshStorage::mesh_add_surface, whether a vertex
+	// buffer is created with acceleration structure usage. That happens at
+	// upload time, before this object exists, so a mesh loaded while the setting
+	// was off has nothing an acceleration structure could be built from. Reading
+	// a later value would only produce build failures against buffers that can
+	// never satisfy it.
+	//
+	// `directional/enabled` is declared restart-required in the editor, so it is
+	// held to that promise rather than quietly becoming live.
+	//
+	// Everything else is read live below.
 	setting_enabled = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/enabled");
-	setting_samples = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/samples_per_light");
-	setting_max_distance = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/max_ray_distance");
-	setting_denoise = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled");
-	setting_denoise_passes = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes");
-	setting_denoise_frames = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames");
-	setting_denoise_min_filter = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels");
-	setting_denoise_clamp_sigma = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma");
-	setting_accurate_occluder_distance = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/accurate_occluder_distance");
 	setting_directional_enabled = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/enabled");
-	setting_directional_caster_scale = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale");
-	setting_directional_scatter = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters");
-	setting_directional_scatter_distance = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance");
-	setting_directional_demoted_mode = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode");
-	setting_directional_demoted_size = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size");
 }
 
 bool RaytracingScene::is_enabled() {
@@ -96,75 +83,72 @@ bool RaytracingScene::is_enabled() {
 	return setting_enabled;
 }
 
-int RaytracingScene::get_sample_count() {
-	register_settings();
-	return MAX(1, setting_samples);
-}
-
 bool RaytracingScene::is_directional_enabled() {
 	register_settings();
 	return setting_directional_enabled;
 }
 
-int RaytracingScene::get_directional_demoted_mode() {
-	register_settings();
-	return setting_directional_demoted_mode;
+// The remaining settings are tuning knobs, and tuning them by restarting the
+// editor is miserable. GLOBAL_GET_CACHED keeps a typed copy and only re-reads it
+// when ProjectSettings bumps its version, so the steady state costs an integer
+// compare rather than a string lookup, and a change in the inspector reaches the
+// renderer on the next frame that asks.
+//
+// Each is clamped here rather than trusted, because a live value arrives
+// straight from the inspector with no validation beyond the property hint, and
+// the hints allow `or_greater` in places.
+
+int RaytracingScene::get_sample_count() {
+	return MAX(1, GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/samples_per_light"));
 }
 
-int RaytracingScene::get_directional_demoted_size() {
-	register_settings();
-	return setting_directional_demoted_size;
+float RaytracingScene::get_max_distance() {
+	return MAX(0.0f, GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/raytraced_shadows/max_ray_distance"));
+}
+
+bool RaytracingScene::is_accurate_occluder_distance() {
+	return GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/raytraced_shadows/accurate_occluder_distance");
+}
+
+bool RaytracingScene::is_denoiser_enabled() {
+	return GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled");
+}
+
+int RaytracingScene::get_denoiser_iterations() {
+	return CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes"), 1, 5);
+}
+
+float RaytracingScene::get_denoiser_max_history() {
+	return float(CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames"), 1, 64));
+}
+
+float RaytracingScene::get_denoiser_min_filter_pixels() {
+	return CLAMP(GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels"), 0.0f, 8.0f);
+}
+
+float RaytracingScene::get_denoiser_history_clamp_sigma() {
+	return CLAMP(GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma"), 0.0f, 8.0f);
 }
 
 float RaytracingScene::get_directional_caster_scale() {
-	register_settings();
-	return MAX(0.0f, setting_directional_caster_scale);
+	return MAX(0.0f, GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale"));
 }
 
 RaytracingScene::DirectionalScatterMode RaytracingScene::get_directional_scatter_mode() {
-	register_settings();
-	return (DirectionalScatterMode)CLAMP(setting_directional_scatter,
+	return (DirectionalScatterMode)CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters"),
 			(int)DIRECTIONAL_SCATTER_DISABLED, (int)DIRECTIONAL_SCATTER_FULL_DISTANCE);
 }
 
 float RaytracingScene::get_directional_scatter_distance() {
-	register_settings();
-	return MAX(0.0f, setting_directional_scatter_distance);
+	return MAX(0.0f, GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance"));
 }
 
-float RaytracingScene::get_max_distance() {
-	register_settings();
-	return setting_max_distance;
+int RaytracingScene::get_directional_demoted_mode() {
+	return CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode"), 0, 2);
 }
 
-bool RaytracingScene::is_denoiser_enabled() {
-	register_settings();
-	return setting_denoise;
-}
-
-int RaytracingScene::get_denoiser_iterations() {
-	register_settings();
-	return CLAMP(setting_denoise_passes, 1, 5);
-}
-
-float RaytracingScene::get_denoiser_max_history() {
-	register_settings();
-	return float(CLAMP(setting_denoise_frames, 1, 64));
-}
-
-float RaytracingScene::get_denoiser_min_filter_pixels() {
-	register_settings();
-	return CLAMP(setting_denoise_min_filter, 0.0f, 8.0f);
-}
-
-float RaytracingScene::get_denoiser_history_clamp_sigma() {
-	register_settings();
-	return CLAMP(setting_denoise_clamp_sigma, 0.0f, 8.0f);
-}
-
-bool RaytracingScene::is_accurate_occluder_distance() {
-	register_settings();
-	return setting_accurate_occluder_distance;
+int RaytracingScene::get_directional_demoted_size() {
+	return MAX(0, GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size"));
 }
 
 RaytracingScene::RaytracingScene() {
