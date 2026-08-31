@@ -489,6 +489,17 @@ Small, but three separate CI rounds were burned on it the first time.
   check, the GDExtension API compatibility check and the export tests with them — but check what
   the surviving platform still runs before claiming a check is gone; this fork's Windows job runs
   the unit tests, and the guide wrongly said otherwise for a while.
+- **A green static-check run on a push says nothing about the same check on the pull request.** The
+  workflow passes `--from-ref` to pre-commit, and that ref differs by event: a push run compares
+  against the previous commit, so it sees only what that push touched, while a pull-request run
+  compares against the base branch and therefore re-checks *every* file the branch has changed. A
+  fixer hook — `codespell` here, with `write-changes = true` — will happily flag a file from a
+  commit twenty pushes ago, and pre-commit fails whenever a hook modifies the tree. Run the hooks
+  yourself over `git diff --name-only <base>..HEAD` before opening the PR.
+- When you run those hook scripts by hand to reproduce a failure, **filter the file list the way the
+  hook config does**. They are fixers, not linters: handing `copyright_headers.py` an unfiltered
+  list prepends C-style banners to XML files, and the resulting mess looks exactly like a second and
+  third CI failure. `file` reporting a `.xml` as "C source" is the giveaway.
 
 ---
 
