@@ -22,9 +22,6 @@
 // lights reach one 8x8 block of pixels.
 #define MAX_TILE_LIGHTS 128
 
-// Rays cast before the shader decides whether the rest can change the answer.
-#define PROBE_SAMPLES 2u
-
 // Widest penumbra the hit distance channel can describe, in pixels. Anything
 // wider saturates, which is harmless: the denoiser's filter is already at its
 // full width by then. Must match MAX_PENUMBRA_PIXELS in rt_shadow_atrous.glsl.
@@ -211,27 +208,50 @@ const uint BLUE_NOISE[256] = uint[](
 		0x0ad35e72u, 0xb9d64ba1u, 0x73d93aebu, 0x21450deeu, 0x87d2ad93u, 0x35db19b3u, 0x118972f4u, 0x2791654fu,
 		0x83439bf5u, 0x5470e7c4u, 0x4f07c685u, 0xc8b55f82u, 0xc24612fbu, 0x627dfc5au, 0xb8299508u, 0x00e49ed4u);
 
-// Where on the emitter this pixel samples, as a fraction of a turn.
-//
-// Space comes from the mask above. Time is a separate golden ratio step rather
-// than a shift of the sampling position: advancing the position re-rolls the
-// pattern every frame and gives each pixel an independent sequence that can
-// revisit nearly the same angle, whereas adding the conjugate of the golden
-// ratio spreads a single pixel's own sequence as evenly over the circle as any
-// sequence can. The temporal accumulation is averaging exactly that sequence.
-float shadow_sample_rotation(ivec2 pos, uint frame) {
+// One value from the blue noise mask, at an arbitrary offset into it. Two
+// offsets far enough apart give two spatially well distributed values that are
+// not copies of each other, which is what the two sampling dimensions need.
+float blue_noise_at(ivec2 pos) {
 	uint index = uint((pos.y & 31) * 32 + (pos.x & 31));
 	uint packed = BLUE_NOISE[index >> 2u];
-	float spatial = float((packed >> ((index & 3u) * 8u)) & 0xffu) / 255.0;
-	return fract(spatial + float(frame) * 0.61803399);
+	return float((packed >> ((index & 3u) * 8u)) & 0xffu) / 255.0;
 }
 
-// Vogel disk. For a handful of samples this covers the emitter far more evenly
-// than independent random points, so the raw signal starts with much less
-// variance for the denoiser to remove.
-vec2 vogel_disk_sample(uint index, uint count, float phi) {
+// Where on the emitter this pixel samples: x is the fraction of a turn, y is
+// where inside the sample's radial stratum it lands.
+//
+// Space comes from the mask above. Time is a separate additive step per
+// dimension rather than a shift of the sampling position: advancing the
+// position re-rolls the pattern every frame and gives each pixel an independent
+// sequence that can revisit nearly the same point, whereas adding an irrational
+// increment spreads a single pixel's own sequence as evenly as any sequence can.
+// The temporal accumulation is averaging exactly that sequence. The two
+// increments are the R2 lattice constants, which stay evenly spread jointly and
+// not merely one dimension at a time.
+vec2 shadow_sample_offsets(ivec2 pos, uint frame) {
+	vec2 spatial = vec2(blue_noise_at(pos), blue_noise_at(pos + ivec2(13, 7)));
+	return fract(spatial + float(frame) * vec2(0.7548776662, 0.5698402910));
+}
+
+// Vogel disk, with the radius jittered inside each sample's stratum rather than
+// pinned to its center.
+//
+// The center is what a fixed 0.5 gives, and at one sample per frame -- the
+// default -- that is sqrt(0.5), so the single ray landed at 70.7% of the
+// emitter's radius on every frame of its life. Only the angle moved, so what
+// the temporal average converged to was the shadow of a RING at 0.707r rather
+// than of the disk. The width that costs is small, since a ring at 0.707r
+// spans nearly the same 10-90 as the disk that contains it, but the shape
+// across the penumbra is wrong: a ring's projection piles up at its two
+// extremes where a disk's bulges in the middle, so the falloff is S-shaped
+// where it should be smooth.
+//
+// Jittering the radius over frames makes that same one ray sweep the whole
+// emitter with the correct area weighting. At higher counts it is ordinary
+// jittered stratification and is still the better estimator.
+vec2 vogel_disk_sample(uint index, uint count, float phi, float radial_jitter) {
 	const float golden_angle = 2.39996323;
-	float r = sqrt((float(index) + 0.5) / float(count));
+	float r = sqrt((float(index) + radial_jitter) / float(count));
 	float theta = float(index) * golden_angle + phi;
 	return vec2(r * cos(theta), r * sin(theta));
 }
@@ -485,7 +505,9 @@ void main() {
 	// re-averaging the same ones.
 	uint frame_index = params.samples_and_frame >> 8u;
 	uint requested_samples = params.samples_and_frame & 0xffu;
-	float phi = shadow_sample_rotation(pos, frame_index) * 6.2831853;
+	vec2 sample_offsets = shadow_sample_offsets(pos, frame_index);
+	float phi = sample_offsets.x * 6.2831853;
+	float radial_jitter = sample_offsets.y;
 
 	vec4 visibility = vec4(1.0);
 	vec4 hit_distance = vec4(0.0);
@@ -554,21 +576,35 @@ void main() {
 		build_basis(light_dir, tangent, bitangent);
 
 		uint sample_count = light.size > 0.0 ? max(requested_samples, 1u) : 1u;
+
+		// Every sample is traced. An earlier version probed the emitter with two
+		// rays first and stopped there when they agreed, which is a large saving
+		// -- most of any frame is wholly lit or wholly shadowed -- but no pair of
+		// rays can answer for a disk. Two points on the rim, opposite each other,
+		// still both read lit over the whole outer half of a penumbra: where a
+		// fifth of the emitter is covered they agree a third of the time, and the
+		// binary answer they then hand back pulls that pixel to fully lit. The
+		// same happens to the umbra side, so the shadow's soft edge is squeezed
+		// from both ends. Measured against the geometry it was returning 72% of
+		// the true penumbra width at sixteen samples per light -- a shadow that
+		// hardens as the sample count RISES, which is the opposite of what the
+		// setting is for.
+		//
+		// The default of one sample never reached the early out, so this costs
+		// nothing at stock settings; it costs exactly the rays that were asked
+		// for at any higher count. Skipping work that is genuinely settled is
+		// still worth having, but it needs to know the penumbra is not here
+		// before it stops, and that has to come from somewhere other than the two
+		// rays it is trying to avoid tracing.
 		float occluded = 0.0;
 		float blocker_distance_sum = 0.0;
 		uint traced = 0u;
 
 		for (uint s = 0u; s < sample_count; s++) {
-			// Take the innermost and outermost points of the disk first, so the
-			// two probe rays span the emitter rather than clustering in its
-			// middle. The rest follow in their original order; this is a
-			// permutation of the same sample set, so nothing is weighted twice.
-			uint sample_index = s == 0u ? 0u : (s == 1u ? sample_count - 1u : s - 1u);
-
 			vec3 direction = light_dir;
 
 			if (light.size > 0.0) {
-				vec2 disk = vogel_disk_sample(sample_index, sample_count, phi) * light.size;
+				vec2 disk = vogel_disk_sample(s, sample_count, phi, radial_jitter) * light.size;
 				if (is_directional) {
 					// The sun is not a disk at a place, it is a disk of directions.
 					// Offsetting a unit vector perpendicularly by tan(angle) and
@@ -604,16 +640,6 @@ void main() {
 			if (rayQueryGetIntersectionTypeEXT(ray_query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
 				occluded += 1.0;
 				blocker_distance_sum += rayQueryGetIntersectionTEXT(ray_query, true);
-			}
-
-			// Two rays spanning the emitter that agree put this point wholly
-			// inside the shadow or wholly outside it, and the emitter is small
-			// enough on screen that the rays between them would agree too. Only
-			// the penumbra, where they disagree, pays for the full set — which
-			// is a small part of any frame and most of what the samples are for.
-			if (traced == PROBE_SAMPLES && sample_count > PROBE_SAMPLES &&
-					(occluded == 0.0 || occluded == float(PROBE_SAMPLES))) {
-				break;
 			}
 		}
 

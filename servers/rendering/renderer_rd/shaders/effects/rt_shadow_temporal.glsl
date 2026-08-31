@@ -69,9 +69,23 @@ layout(push_constant, std430) uniform Params {
 	// How far outside the current frame's local spread the history is allowed to
 	// sit, in standard deviations. Zero disables the test.
 	float clamp_sigma;
-	float pad[3];
+	// Rays per light this frame, so the clamp can tell a neighborhood that
+	// genuinely agrees from one that has too few samples to disagree yet.
+	float sample_count;
+	uint frame_index;
+	float pad;
 }
 params;
+
+// Where in a quantization step this pixel rounds this frame.
+//
+// Interleaved gradient noise for the spatial part, advanced by the conjugate of
+// the golden ratio for the temporal one, so a single pixel's own sequence
+// spreads evenly over the step rather than repeating a handful of positions.
+float dither_offset(ivec2 pos, uint frame) {
+	float spatial = fract(52.9829189 * fract(dot(vec2(pos), vec2(0.06711056, 0.00583715))));
+	return fract(spatial + float(frame) * 0.61803399);
+}
 
 float linear_view_depth(float depth) {
 	return -(params.depth_unproject.x * depth + params.depth_unproject.y) /
@@ -207,6 +221,27 @@ void main() {
 			moment1 /= taps;
 			moment2 /= taps;
 			vec4 sigma = sqrt(max(moment2 - moment1 * moment1, vec4(0.0)));
+
+			// The spread of the neighborhood is not all of the uncertainty in it.
+			// Each of those values is a count of blocked rays out of a handful,
+			// so in the shallow ends of a penumbra the nine of them agree often
+			// -- at one ray per light and a true visibility of 0.95, about two
+			// frames in three -- and the measured spread is then exactly zero.
+			// Clamping to a window of no width pins the accumulated value to that
+			// binary answer, and doing it over and over erases the tails of every
+			// penumbra: measured against the geometry it was removing a third of
+			// the shadow's soft edge.
+			//
+			// So floor the spread with the standard error those ray counts
+			// actually carry. The two pseudo counts are the usual continuity
+			// correction, and they are what stops the floor collapsing along with
+			// the spread when the samples happen to be unanimous. It tightens on
+			// its own as the sample count rises, because then unanimity really
+			// does mean the answer is 0 or 1.
+			float trials = max(taps * params.sample_count, 1.0);
+			vec4 corrected = (moment1 * trials + 2.0) / (trials + 4.0);
+			sigma = max(sigma, sqrt(corrected * (1.0 - corrected) / (trials + 4.0)));
+
 			history = clamp(history,
 					moment1 - sigma * params.clamp_sigma,
 					moment1 + sigma * params.clamp_sigma);
@@ -222,6 +257,20 @@ void main() {
 
 	vec4 accumulated = mix(history, current, alpha);
 
-	imageStore(dest_visibility, pos, VIS_ENCODE(accumulated));
+	// Rounding to eight bits is not a detail here, because this accumulator
+	// re-reads its own rounded output every frame. Once the step it wants to take
+	// is smaller than half a quantization level the value stops moving, and that
+	// is not symmetric: in the lit end of a penumbra at one ray per light, the
+	// occasional blocked ray is a step down large enough to land while the many
+	// lit rays each ask for a step up too small to, so the value ratchets darker
+	// and the shadow's soft edge creeps outward. Against the geometry that was
+	// making a stock penumbra about 15% wider than it should be, which is
+	// exactly the softening the traced answer exists to avoid.
+	//
+	// Offsetting by a per pixel, per frame fraction of a step before the store
+	// makes the rounding error zero mean, so the accumulation converges on the
+	// value it actually computed. It costs one hash and no memory.
+	float dither = dither_offset(pos, params.frame_index) - 0.5;
+	imageStore(dest_visibility, pos, VIS_ENCODE(accumulated) + vec4(dither / 255.0));
 	imageStore(dest_history_length, pos, vec4(history_length / max(params.max_history, 1.0)));
 }

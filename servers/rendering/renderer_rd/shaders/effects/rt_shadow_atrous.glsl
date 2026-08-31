@@ -36,6 +36,12 @@
 // MAX_PENUMBRA_PIXELS in rt_shadow_trace.glsl.
 #define MAX_PENUMBRA_PIXELS 32.0
 
+// How much wider than its own measured penumbra a freshly disoccluded pixel may
+// be filtered while its history refills. Four leaves the widening at its full
+// reach for any penumbra of eight pixels or more, and folds it away entirely at
+// a contact edge, where the traced answer needs no help.
+#define HISTORY_FILL_SCALE 4.0
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D source_visibility;
@@ -147,8 +153,28 @@ void main() {
 	penumbra_pixels *= MAX_PENUMBRA_PIXELS;
 
 	vec4 has_penumbra = step(vec4(0.0001), penumbra_pixels);
+
+	// A pixel whose history has just been thrown away has only this frame's one
+	// ray to go on, so it is widened while the history refills. That is worth
+	// doing -- without it a disocclusion is a burst of single-sample noise -- but
+	// it was not bounded by what the geometry allows: the old code widened to
+	// MAX_PENUMBRA_PIXELS outright, so a contact shadow whose true penumbra is a
+	// fifth of a pixel was smeared over thirty-one of them, which is the exact
+	// mistake the penumbra estimate exists to prevent, made one line after it was
+	// computed.
+	//
+	// Capping the widening by a multiple of the measured penumbra leaves it
+	// untouched wherever it was doing real work -- a wide penumbra still reaches
+	// the full width -- and removes it where there was never anything to hide,
+	// because a contact shadow's rays all agree and its raw answer is exact.
+	//
+	// The decay is deliberately still spread over the whole accumulation window
+	// rather than a few frames. Shortening it was tried and made freshly
+	// disoccluded pixels visibly grainy: the noise this hides outlives the first
+	// handful of frames at one sample per light.
 	float history_boost = 1.0 - clamp(history_length, 0.0, 1.0);
-	float floor_pixels = max(params.min_filter_pixels, history_boost * MAX_PENUMBRA_PIXELS);
+	vec4 fill_pixels = history_boost * min(vec4(MAX_PENUMBRA_PIXELS), penumbra_pixels * HISTORY_FILL_SCALE);
+	vec4 floor_pixels = max(vec4(params.min_filter_pixels), fill_pixels);
 	vec4 reach_pixels = max(penumbra_pixels, has_penumbra * floor_pixels);
 
 	vec4 sum = center * KERNEL[0] * KERNEL[0];

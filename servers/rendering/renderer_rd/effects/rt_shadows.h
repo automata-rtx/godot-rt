@@ -194,7 +194,9 @@ private:
 		float max_history;
 
 		float clamp_sigma;
-		float pad[3];
+		float sample_count;
+		uint32_t frame_index;
+		float pad;
 	};
 
 	struct AtrousPushConstant {
