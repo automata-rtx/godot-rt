@@ -46,7 +46,7 @@ renderer.** Four consequences, none of them obvious:
 - Every mesh lit by a default `OmniLight3D` or `SpotLight3D` now compiles and runs the
   `use_light_soft_shadows` shader specialization, on Forward+ and Mobile alike.
 
-Set the size back to `0.0` for the hard, uniform, cheaper behaviour stock Godot gives you.
+Set the size back to `0.0` for the hard, uniform, cheaper behavior stock Godot gives you.
 
 ### 1.2 New API
 
@@ -172,7 +172,7 @@ that tunes a shadow *map* is inert, because no map is rendered:
 | `directional_shadow/size` | capped to 1024 | `directional/demoted_shadow_size` |
 | `directional_shadow/soft_shadow_filter_quality` | nothing | `samples_per_light` |
 | `DirectionalLight3D.directional_shadow_mode` | overridden to 2 splits | `directional/demoted_shadow_mode` |
-| `Light3D.shadow_bias` / `shadow_normal_bias` | rescaled into ray `tmin` and a world-space normal offset in metres — same properties, very different magnitudes | tune by eye, not by shadow-map intuition |
+| `Light3D.shadow_bias` / `shadow_normal_bias` | rescaled into ray `tmin` and a world-space normal offset in meters — same properties, very different magnitudes | tune by eye, not by shadow-map intuition |
 
 Setting the positional atlas size to 0 no longer removes positional shadows either.
 
@@ -183,7 +183,7 @@ denoiser. If a shadow looks wrong, that is the axis to move along.
 
 ## 4. What raytraced shadows do not cover
 
-| Area | Behaviour |
+| Area | Behavior |
 | --- | --- |
 | `AreaLight3D` | Always shadow maps. |
 | XR / multiview | Shadow maps — but the acceleration structure is still built and the depth pre-pass still forced, so an XR project pays the cost and gets nothing. |

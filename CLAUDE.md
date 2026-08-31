@@ -2,7 +2,7 @@
 
 **This is not vanilla Godot.** It is Godot 4.8-dev with hardware ray-traced shadows added to the
 Forward+ renderer. Almost all of the engine is untouched, but a handful of node defaults and
-renderer behaviours differ from stock Godot. Answering from memory of vanilla Godot will produce
+renderer behaviors differ from stock Godot. Answering from memory of vanilla Godot will produce
 wrong code and wrong advice in exactly the areas people ask about most: lights, shadows, and what
 a scene costs.
 
@@ -72,7 +72,7 @@ an atlas quadrant and a shadow map render.
 - **At most four raytraced lights are shadowed per pixel.** Where more overlap, the losers render
   **fully unshadowed there**, with no shadow-map fallback.
 
-## Two behaviours that surprise people
+## Two behaviors that surprise people
 
 - **All fifteen `raytraced_shadows/*` settings are read once at startup** and cached for the process
   lifetime (`RaytracingScene::register_settings`). Changing one at runtime does nothing until

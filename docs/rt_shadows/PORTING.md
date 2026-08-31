@@ -120,7 +120,7 @@ lamps, the structure held seven casters, reached by visiting nineteen nodes of t
   path would have cast.
 - Set `ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT` on every instance.
   `shadow_reverse_cull_face` is per-light while the TLAS is per-scenario, so flip-facing cannot be
-  honoured at all.
+  honored at all.
 - TLAS instance sourcing must live in `RendererSceneCull` — `render_forward_clustered` cannot reach
   `Scenario` or `Instance`. Gather before the shadow loops; skip entirely for reflection-probe renders.
 - Report each failure kind separately. `blas_create` failure almost always means the mesh was
@@ -183,7 +183,7 @@ the setting off renders byte-identically.
   Using the raw members collapses every pixel to ~0.1 units from the camera and the mask comes out
   black wherever geometry was drawn.
 - Read the real view-space normal from the normal/roughness pre-pass and rotate it to world space
-  with a **quaternion** in the push constant. A normal crossed from two neighbouring depth taps
+  with a **quaternion** in the push constant. A normal crossed from two neighboring depth taps
   fringes every silhouette; the camera basis will not fit in 128 bytes beside the inverse
   view-projection.
 - `normal_roughness` is not produced by default — that is why `depth_pass_mode` is forced.
@@ -210,7 +210,7 @@ static converged render.
   resolved when TAA or an upscaler asks. Camera reprojection is exact for static geometry, and
   geometry that moved on its own is then rejected by the surface test rather than smeared.
 - The `w` of a reprojected position is the previous clip position scaled by the reciprocal of view
-  depth — **a ratio, not a distance**. Comparing it against a tolerance in metres fails every pixel
+  depth — **a ratio, not a distance**. Comparing it against a tolerance in meters fails every pixel
   every frame, and the failure is silent: it shows only as a spatial filter that never narrows.
   Store the history's depth as a raw view distance and compare that.
 - **Feed the temporal stage back its own output as history, never the à-trous result.** Filtering
@@ -238,12 +238,12 @@ figures: sun contact 2.85 → 2.73, sun soft 6.79 → 6.33, lamps 1.47 → 1.22.
 - **Decode out of sqrt space everywhere it is read.** Averaging roots and squaring darkens every
   penumbra by Jensen's inequality; one missed decode lightens every umbra almost invisibly unless
   you measure it. (NVIDIA's SIGMA filters *in* sqrt space on purpose; this system does not.)
-- `min_filter_pixels` below 1.0 is meaningless and above it greys everything: the kernel's nearest
+- `min_filter_pixels` below 1.0 is meaningless and above it grays everything: the kernel's nearest
   tap sits at exactly 1.0 px, so a floor of 1.5 leaves it at a third weight and turns a perfect step
   edge into 0.863/0.137 — a two-pixel fringe on every contact shadow.
-- At one sample a ray that misses reports **no** penumbra, so sizing the filter from the centre pixel
+- At one sample a ray that misses reports **no** penumbra, so sizing the filter from the center pixel
   alone smooths the shadowed half of a penumbra and leaves the lit half speckled. Take the widest
-  penumbra any immediate neighbour reports; at a real contact edge every neighbour reports zero and
+  penumbra any immediate neighbor reports; at a real contact edge every neighbor reports zero and
   it costs nothing.
 - **Do not set `gl_RayFlagsTerminateOnFirstHitEXT` by default.** Visibility is identical either way,
   but the reported distance becomes whichever occluder traversal reached first rather than the
@@ -359,13 +359,13 @@ spotlight with a projector cookie still projects with no atlas quadrant.
 
 Bound the sun's caster set behind its own setting, and fix the cascade-slot fill.
 
-**Done when:** with props every ten metres out to 400 m and a 100 m shadow distance, sweeps of
+**Done when:** with props every ten meters out to 400 m and a 100 m shadow distance, sweeps of
 0.5×/1×/2×/4× gather 17/22/32/42 casters, each landing exactly where the geometry says.
 
 - Re-derive `far_distance` exactly as the engine does: `z_far`, clamped by
   `LIGHT_PARAM_SHADOW_MAX_DISTANCE` only when that is `> 0` **and** the camera is not orthogonal,
   then `MAX(..., z_near + 0.001)`. A max distance of zero means "as far as the camera sees";
-  treating it as a literal zero collapses the volume to a millimetre and gathers nothing, silently.
+  treating it as a literal zero collapses the volume to a millimeter and gathers nothing, silently.
   Getting the orthogonal test backwards fails the same way.
 - **Iterate `scenario->directional_lights` directly** — directional lights are never in
   `scene_cull_result.lights`, because `light_get_aabb` returns an empty AABB for them.
@@ -520,7 +520,7 @@ ordering, or a format Godot revises between versions. Check these first.
 Nothing here needs a real GPU. The original work was validated on **lavapipe** (Mesa's software
 Vulkan) under Xvfb, rendering to PNG and comparing with a small Python script.
 
-Know what that distorts: lavapipe traverses the BVH on the CPU, so it **overstates** rasterisation
+Know what that distorts: lavapipe traverses the BVH on the CPU, so it **overstates** rasterization
 cost and **understates** the benefit of ray early-out. Treat its frame times as directional only.
 Image comparisons are trustworthy and reproducible to the byte.
 

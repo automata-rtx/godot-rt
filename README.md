@@ -2,7 +2,7 @@
 
 > **This is a fork of Godot 4.8-dev with hardware ray-traced shadows added to the Forward+
 > renderer.** It is not stock Godot: some `Light3D` node defaults differ, and several renderer
-> behaviours around lights, shadows and volumetric fog differ with them.
+> behaviors around lights, shadows and volumetric fog differ with them.
 >
 > - **[`docs/rt_shadows/FORK_GUIDE.md`](docs/rt_shadows/FORK_GUIDE.md)** — everything that differs
 >   from vanilla Godot, what casts a raytraced shadow, and what is not covered. Start here. It is
