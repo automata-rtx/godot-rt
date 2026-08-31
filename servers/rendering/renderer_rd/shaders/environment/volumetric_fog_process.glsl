@@ -447,7 +447,7 @@ void main() {
 
 						// Halton is already stratified over the 16 frame cycle, so mapping
 						// it to the disk by area keeps that stratification instead of
-						// bunching samples at the centre.
+						// bunching samples at the center.
 						vec2 h = halton_map[params.temporal_frame].xy;
 						float radius = sqrt(h.x) * directional_lights.data[i].softshadow_angle;
 						float phi = h.y * M_TAU;
