@@ -151,7 +151,7 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 		source.push_back(make_texture(0, nearest, p_depth_texture));
 
 		LocalVector<RD::Uniform> dest;
-		for (uint32_t i = 0; i < 5; i++) {
+		for (uint32_t i = 0; i < DEPTH_MIP_COUNT; i++) {
 			dest.push_back(make_image(i, p_buffers.depth_mips[i]));
 		}
 
@@ -197,11 +197,15 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 		push.full_size[0] = p_full_size.x;
 		push.full_size[1] = p_full_size.y;
 
-		// Turns a normalized device position into a view space ray.
-		push.ndc_to_view_mul[0] = corrected.columns[0][0] != 0.0f ? 2.0f / corrected.columns[0][0] : 0.0f;
-		push.ndc_to_view_mul[1] = corrected.columns[1][1] != 0.0f ? -2.0f / corrected.columns[1][1] : 0.0f;
-		push.ndc_to_view_add[0] = corrected.columns[0][0] != 0.0f ? -corrected.columns[2][0] / corrected.columns[0][0] : 0.0f;
-		push.ndc_to_view_add[1] = corrected.columns[1][1] != 0.0f ? corrected.columns[2][1] / corrected.columns[1][1] : 0.0f;
+		// Turns a screen UV into a view space ray. Derived from the raw
+		// projection, not the depth corrected one, and expressed for a UV in
+		// zero to one -- exactly the form the other screen space effects use.
+		const float tan_half_fov_x = 1.0f / p_projection.columns[0][0];
+		const float tan_half_fov_y = 1.0f / p_projection.columns[1][1];
+		push.uv_to_view_mul[0] = tan_half_fov_x * 2.0f;
+		push.uv_to_view_mul[1] = tan_half_fov_y * -2.0f;
+		push.uv_to_view_add[0] = tan_half_fov_x * -1.0f;
+		push.uv_to_view_add[1] = tan_half_fov_y;
 
 		push.radius = MAX(p_settings.radius, 0.0001f);
 		push.thickness = MAX(p_settings.thickness, 0.0f);

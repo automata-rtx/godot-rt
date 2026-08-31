@@ -1438,6 +1438,105 @@ void RenderForwardClustered::setup_added_decal(const Transform3D &p_transform, c
 
 /* Render scene */
 
+bool RenderForwardClustered::_use_gtao(Ref<RenderSceneBuffersRD> p_render_buffers) const {
+	if (gtao == nullptr || !gtao->is_valid() || p_render_buffers.is_null()) {
+		return false;
+	}
+	// Single view only. Under multiview the occlusion buffer is a layer per eye
+	// and the gather has no notion of a second one, so a stereo pair keeps the
+	// effect it has always had rather than rendering one eye's occlusion twice.
+	if (p_render_buffers->get_view_count() > 1) {
+		return false;
+	}
+	return int(GLOBAL_GET_CACHED(int, "rendering/environment/ssao/method")) == 1;
+}
+
+bool RenderForwardClustered::_ensure_gtao_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_half_resolution, RendererRD::GTAO::Buffers &r_buffers) {
+	if (p_render_buffers.is_null()) {
+		return false;
+	}
+
+	const uint32_t usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
+	const Size2i gather_size = RendererRD::GTAO::gather_size_for(p_size, p_half_resolution);
+
+	// A resolution change, or a switch between the two gather resolutions,
+	// invalidates every one of these at once. They live in their own scope so
+	// dropping them disturbs nothing else the renderer keeps here.
+	if (p_render_buffers->has_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_AO_A)) {
+		const RD::TextureFormat existing = p_render_buffers->get_texture_format(RB_SCOPE_GTAO, RB_TEX_GTAO_AO_A);
+		if (int(existing.width) != gather_size.x || int(existing.height) != gather_size.y) {
+			p_render_buffers->clear_context(RB_SCOPE_GTAO);
+		}
+	}
+
+	if (!p_render_buffers->has_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_DEPTH)) {
+		p_render_buffers->create_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_DEPTH, RD::DATA_FORMAT_R16_SFLOAT, usage,
+				RD::TEXTURE_SAMPLES_1, p_size, 1, RendererRD::GTAO::DEPTH_MIP_COUNT);
+	}
+	if (!p_render_buffers->has_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_AO_A)) {
+		p_render_buffers->create_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_AO_A, RD::DATA_FORMAT_R16G16_SFLOAT, usage,
+				RD::TEXTURE_SAMPLES_1, gather_size, 1);
+		p_render_buffers->create_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_AO_B, RD::DATA_FORMAT_R16G16_SFLOAT, usage,
+				RD::TEXTURE_SAMPLES_1, gather_size, 1);
+	}
+
+	// The buffer the forward pass samples. Deliberately the SAME texture the
+	// legacy effect writes, created with the same format, so nothing downstream
+	// -- the occlusion the forward shader multiplies ambient light by, the near
+	// field bounce approximation on top of it, light affect, specular occlusion
+	// -- has to know which method filled it.
+	if (!p_render_buffers->has_texture(RB_SCOPE_SSAO, RB_FINAL)) {
+		p_render_buffers->create_texture(RB_SCOPE_SSAO, RB_FINAL, RD::DATA_FORMAT_R8_UNORM, usage, RD::TEXTURE_SAMPLES_1);
+	}
+
+	r_buffers.depth_pyramid = p_render_buffers->get_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_DEPTH);
+	for (uint32_t i = 0; i < RendererRD::GTAO::DEPTH_MIP_COUNT; i++) {
+		r_buffers.depth_mips[i] = p_render_buffers->get_texture_slice(RB_SCOPE_GTAO, RB_TEX_GTAO_DEPTH, 0, i);
+	}
+	r_buffers.ao_a = p_render_buffers->get_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_AO_A);
+	r_buffers.ao_b = p_render_buffers->get_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_AO_B);
+	r_buffers.gather_size = gather_size;
+
+	return r_buffers.depth_pyramid.is_valid() && r_buffers.ao_a.is_valid() && r_buffers.ao_b.is_valid();
+}
+
+void RenderForwardClustered::_process_gtao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections) {
+	ERR_FAIL_NULL(gtao);
+	ERR_FAIL_COND(p_render_buffers.is_null());
+	ERR_FAIL_COND(p_environment.is_null());
+
+	RENDER_TIMESTAMP("Process GTAO");
+
+	const Size2i full_size = p_render_buffers->get_internal_size();
+	const bool half_resolution = GLOBAL_GET_CACHED(bool, "rendering/environment/ssao/half_size");
+
+	RendererRD::GTAO::Buffers buffers;
+	if (!_ensure_gtao_buffers(p_render_buffers, full_size, half_resolution, buffers)) {
+		return;
+	}
+
+	// Radius, intensity, power and the fade come from the same Environment
+	// properties the legacy effect reads, so a scene authored against one is
+	// authored against the other. Detail, horizon and sharpness describe the
+	// other estimator and have no counterpart here.
+	RendererRD::GTAO::Settings settings;
+	settings.radius = environment_get_ssao_radius(p_environment);
+	settings.intensity = environment_get_ssao_intensity(p_environment);
+	settings.power = environment_get_ssao_power(p_environment);
+	settings.fade_from = GLOBAL_GET_CACHED(float, "rendering/environment/ssao/fadeout_from");
+	settings.fade_to = GLOBAL_GET_CACHED(float, "rendering/environment/ssao/fadeout_to");
+	settings.scale_radius_with_distance = GLOBAL_GET_CACHED(bool, "rendering/environment/ssao/ground_truth/scale_radius_with_distance");
+	settings.screen_radius = GLOBAL_GET_CACHED(float, "rendering/environment/ssao/ground_truth/screen_radius");
+	settings.thickness = GLOBAL_GET_CACHED(float, "rendering/environment/ssao/ground_truth/thickness");
+	settings.use_bitmask = GLOBAL_GET_CACHED(bool, "rendering/environment/ssao/ground_truth/visibility_bitmask");
+	settings.slice_count = GLOBAL_GET_CACHED(int, "rendering/environment/ssao/ground_truth/slices");
+	settings.steps_per_slice = GLOBAL_GET_CACHED(int, "rendering/environment/ssao/ground_truth/steps_per_slice");
+	settings.half_resolution = half_resolution;
+
+	gtao->render(buffers, p_render_buffers->get_depth_texture(0), p_normal_buffers[0],
+			p_render_buffers->get_texture(RB_SCOPE_SSAO, RB_FINAL), full_size, p_projections[0], settings);
+}
+
 void RenderForwardClustered::_process_ssao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections) {
 	ERR_FAIL_NULL(ss_effects);
 	ERR_FAIL_COND(p_render_buffers.is_null());
@@ -1702,14 +1801,23 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			ss_effects->allocate_last_frame_buffer(rb, p_use_ssil, p_use_ssr);
 		}
 
-		if (p_use_ssao || p_use_ssil) {
+		// Ground truth occlusion builds its own depth pyramid, so it does not
+		// need the deinterleaved one below; when it is the only screen space
+		// effect running, that pass is skipped entirely.
+		const bool use_gtao = p_use_ssao && _use_gtao(rb);
+
+		if ((p_use_ssao && !use_gtao) || p_use_ssil) {
 			RENDER_TIMESTAMP("Prepare Depth for SSAO/SSIL");
 			// Convert our depth buffer data to linear data in
 			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
 				ss_effects->downsample_depth(rb, v, p_render_data->scene_data->view_projection[v]);
 			}
+		}
 
-			if (p_use_ssao) {
+		if (p_use_ssao || p_use_ssil) {
+			if (use_gtao) {
+				_process_gtao(rb, p_render_data->environment, p_normal_roughness_slices, p_render_data->scene_data->view_projection);
+			} else if (p_use_ssao) {
 				_process_ssao(rb, p_render_data->environment, p_normal_roughness_slices, p_render_data->scene_data->view_projection);
 			}
 
@@ -5476,6 +5584,7 @@ RenderForwardClustered::RenderForwardClustered() {
 	taa = memnew(RendererRD::TAA);
 	fsr2_effect = memnew(RendererRD::FSR2Effect);
 	ss_effects = memnew(RendererRD::SSEffects);
+	gtao = memnew(RendererRD::GTAO);
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 	mfx_temporal_effect = memnew(RendererRD::MFXTemporalEffect);
@@ -5486,6 +5595,11 @@ RenderForwardClustered::~RenderForwardClustered() {
 	if (ss_effects != nullptr) {
 		memdelete(ss_effects);
 		ss_effects = nullptr;
+	}
+
+	if (gtao != nullptr) {
+		memdelete(gtao);
+		gtao = nullptr;
 	}
 
 	if (taa != nullptr) {

@@ -58,6 +58,11 @@ namespace RendererRD {
 // far field rather than pulling the near field apart.
 class GTAO {
 public:
+	// Levels in the linear depth pyramid. A march only reaches a coarser level
+	// once its step is far enough out that the full resolution texels it skips
+	// could not have mattered, so five covers the widest radius worth marching.
+	static constexpr uint32_t DEPTH_MIP_COUNT = 5;
+
 	struct Settings {
 		float radius = 1.0f;
 		// Fraction of the effect radius a sample's back face sits behind it.
@@ -81,7 +86,7 @@ public:
 	struct Buffers {
 		// Full internal resolution, five mips, not deinterleaved.
 		RID depth_pyramid;
-		RID depth_mips[5];
+		RID depth_mips[DEPTH_MIP_COUNT];
 		// Gather resolution, (occlusion, view depth).
 		RID ao_a;
 		RID ao_b;
@@ -117,8 +122,8 @@ private:
 		int32_t gather_size[2];
 		int32_t full_size[2];
 
-		float ndc_to_view_mul[2];
-		float ndc_to_view_add[2];
+		float uv_to_view_mul[2];
+		float uv_to_view_add[2];
 
 		float radius;
 		float thickness;

@@ -32,10 +32,11 @@ layout(push_constant, std430) uniform Params {
 	ivec2 gather_size;
 	ivec2 full_size;
 
-	// Turns a normalized device position into a view space ray, the same two
-	// terms the other screen space effects derive from the projection.
-	vec2 ndc_to_view_mul;
-	vec2 ndc_to_view_add;
+	// Turns a screen UV into a view space ray, the same two terms the other
+	// screen space effects derive from the projection. Note the input is a UV in
+	// zero to one, not a normalized device position.
+	vec2 uv_to_view_mul;
+	vec2 uv_to_view_add;
 
 	// World units the march reaches, before any distance scaling.
 	float radius;
@@ -70,11 +71,11 @@ layout(set = 0, binding = 0) uniform sampler2D source_depth;
 layout(rgba8, set = 0, binding = 1) uniform restrict readonly image2D source_normal;
 layout(rg16f, set = 0, binding = 2) uniform restrict writeonly image2D dest_ao;
 
-vec3 ndc_to_view(vec2 ndc, float view_depth) {
+vec3 uv_to_view(vec2 uv, float view_depth) {
 	if (params.orthogonal) {
-		return vec3(params.ndc_to_view_mul * ndc + params.ndc_to_view_add, view_depth);
+		return vec3(params.uv_to_view_mul * uv + params.uv_to_view_add, view_depth);
 	}
-	return vec3((params.ndc_to_view_mul * ndc + params.ndc_to_view_add) * view_depth, view_depth);
+	return vec3((params.uv_to_view_mul * uv + params.uv_to_view_add) * view_depth, view_depth);
 }
 
 // Same decode the existing screen space occlusion uses, so both describe
@@ -126,8 +127,7 @@ void main() {
 	float center_depth = texelFetch(source_depth, full_pos, 0).r;
 
 	vec2 uv = (vec2(full_pos) + 0.5) / vec2(params.full_size);
-	vec2 ndc = uv * 2.0 - 1.0;
-	vec3 center_pos = ndc_to_view(ndc, center_depth);
+	vec3 center_pos = uv_to_view(uv, center_depth);
 	vec3 view_dir = params.orthogonal ? vec3(0.0, 0.0, 1.0) : normalize(-center_pos);
 	vec3 normal = load_view_normal(full_pos);
 
@@ -148,11 +148,14 @@ void main() {
 	float screen_radius_px;
 	if (params.scale_radius_with_distance) {
 		screen_radius_px = params.screen_radius * float(params.full_size.x);
-		world_radius = params.radius * params.screen_radius * center_depth * 2.0;
+		// The radius property becomes a multiplier here rather than a distance,
+		// because the on-screen span is what is being held fixed.
+		world_radius = params.radius * params.screen_radius * abs(params.uv_to_view_mul.x) * center_depth;
 	} else {
-		// Project the world radius onto the screen at this depth.
+		// The whole screen spans uv_to_view_mul.x * depth in view space, so a
+		// world radius is that fraction of it.
 		float view_extent = params.orthogonal ? 1.0 : max(center_depth, 0.0001);
-		screen_radius_px = (world_radius / (abs(params.ndc_to_view_mul.x) * view_extent)) * 0.5 * float(params.full_size.x);
+		screen_radius_px = (world_radius / max(abs(params.uv_to_view_mul.x) * view_extent, 0.0001)) * float(params.full_size.x);
 	}
 	screen_radius_px = clamp(screen_radius_px, 2.0, float(params.full_size.x));
 
@@ -177,8 +180,13 @@ void main() {
 		// direction lifted into view space. Project the normal into it; the
 		// signed angle between that projection and the view direction is where
 		// the arc's center sits.
-		vec3 slice_tangent = normalize(ndc_to_view(ndc + slice_dir * 0.01, center_depth) - center_pos);
-		vec3 slice_bitangent = normalize(cross(slice_tangent, view_dir));
+		// An ORTHONORMAL basis for the slice plane. Stepping along the slice at
+		// constant depth gives a direction that lies in the plane but is not
+		// perpendicular to the view direction under perspective, and measuring
+		// angles against a skewed axis puts every sample at the wrong elevation.
+		vec3 in_plane = uv_to_view(uv + slice_dir * 0.01, center_depth) - center_pos;
+		vec3 slice_bitangent = normalize(cross(in_plane, view_dir));
+		vec3 slice_tangent = cross(view_dir, slice_bitangent);
 		vec3 projected_normal = normal - slice_bitangent * dot(normal, slice_bitangent);
 		float projected_len = length(projected_normal);
 
@@ -187,9 +195,9 @@ void main() {
 			continue;
 		}
 
-		vec3 projected_dir = projected_normal / projected_len;
-		float sign_n = sign(dot(projected_dir, slice_tangent));
-		float n_angle = sign_n * acos(clamp(dot(projected_dir, view_dir), -1.0, 1.0));
+		// Where the arc sits: the signed angle of the projected normal away from
+		// the view direction, measured inside the slice plane.
+		float n_angle = atan(dot(projected_normal, slice_tangent), dot(projected_normal, view_dir));
 
 		uint occupancy = 0u;
 
@@ -209,11 +217,11 @@ void main() {
 
 				// Coarser levels only once a step is far enough out that the
 				// full resolution texels it skips could not have mattered.
+				vec2 sample_uv = (sample_px + 0.5) / vec2(params.full_size);
 				float mip = clamp(floor(log2(offset_px)) - 3.0, 0.0, 4.0);
-				float sample_depth = textureLod(source_depth, (sample_px + 0.5) / vec2(params.full_size), mip).r;
+				float sample_depth = textureLod(source_depth, sample_uv, mip).r;
 
-				vec2 sample_ndc = ((sample_px + 0.5) / vec2(params.full_size)) * 2.0 - 1.0;
-				vec3 sample_pos = ndc_to_view(sample_ndc, sample_depth);
+				vec3 sample_pos = uv_to_view(sample_uv, sample_depth);
 
 				vec3 delta = sample_pos - center_pos;
 				float dist = length(delta);
@@ -221,19 +229,34 @@ void main() {
 					continue;
 				}
 
-				vec3 front_dir = delta / dist;
+				// A sample at or below the shaded surface's own plane cannot
+				// occlude the hemisphere above it. Without this the floor
+				// occludes itself: every neighbor on a flat plane sits exactly
+				// at the horizon, and rounding a range that straddles the end
+				// of the arc marks sectors that should have stayed open.
+				if (dot(delta, normal) <= 0.0) {
+					continue;
+				}
+
 				// The back face is the same sample pushed away from the camera.
 				// Everything between the two is treated as solid; everything
 				// beyond it is open again, which is the whole point.
-				vec3 back_dir = normalize(delta + view_dir * -thickness);
+				vec3 back_delta = delta - view_dir * thickness;
 
-				float front_angle = acos(clamp(dot(front_dir, view_dir), -1.0, 1.0));
-				float back_angle = acos(clamp(dot(back_dir, view_dir), -1.0, 1.0));
+				// Angles have to be measured INSIDE the slice plane and carry a
+				// sign, so each is the sample resolved onto that plane's two
+				// axes. An unsigned angle against the view direction in three
+				// dimensions instead puts a sample lying flat on the shaded
+				// surface -- where the elevation is zero and it should occlude
+				// nothing -- into the middle of the arc, which darkens every
+				// flat plane uniformly.
+				float front_angle = atan(dot(delta, slice_tangent), dot(delta, view_dir));
+				float back_angle = atan(dot(back_delta, slice_tangent), dot(back_delta, view_dir));
 
-				// Both angles into the slice's own coordinate, where 0 and 1
-				// are the two ends of the half turn centered on the normal.
-				float h1 = clamp(((side_sign * -front_angle) - n_angle + HALF_PI) / PI, 0.0, 1.0);
-				float h2 = clamp(((side_sign * -back_angle) - n_angle + HALF_PI) / PI, 0.0, 1.0);
+				// Into the slice's own coordinate, where 0 and 1 are the two
+				// ends of the half turn centered on the projected normal.
+				float h1 = clamp((front_angle - n_angle + HALF_PI) / PI, 0.0, 1.0);
+				float h2 = clamp((back_angle - n_angle + HALF_PI) / PI, 0.0, 1.0);
 				float lo = min(h1, h2);
 				float hi = max(h1, h2);
 
