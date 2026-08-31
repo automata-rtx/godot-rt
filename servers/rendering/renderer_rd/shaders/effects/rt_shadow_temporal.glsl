@@ -242,9 +242,27 @@ void main() {
 			vec4 corrected = (moment1 * trials + 2.0) / (trials + 4.0);
 			sigma = max(sigma, sqrt(corrected * (1.0 - corrected) / (trials + 4.0)));
 
-			history = clamp(history,
+			vec4 clamped = clamp(history,
 					moment1 - sigma * params.clamp_sigma,
 					moment1 + sigma * params.clamp_sigma);
+
+			// How far the clamp had to move the history is a measure of how wrong
+			// it was, and a history that wrong has no business keeping the weight
+			// of a long one. Shortening the window in proportion lets the pixel
+			// re-converge over the next few frames instead of over the whole
+			// window: without it a blocker that moves leaves no stale shadow
+			// behind -- the clamp saw to that -- but its new one fades in over
+			// half a second rather than arriving with it.
+			//
+			// A history sitting inside the window is not moved at all, which is
+			// every pixel in the steady state, so this costs nothing where nothing
+			// is wrong. Taking the worst of the four channels is deliberate: they
+			// share one window, and being late is worse than being brief.
+			vec4 moved = abs(clamped - history);
+			float lag = max(max(moved.x, moved.y), max(moved.z, moved.w));
+			history_length *= 1.0 - clamp(lag, 0.0, 1.0);
+
+			history = clamped;
 		}
 	}
 
