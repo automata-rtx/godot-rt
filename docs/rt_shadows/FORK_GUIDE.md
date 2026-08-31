@@ -354,6 +354,10 @@ Measured in a deliberately hostile scene — three thousand props over a 200 m f
 | Raytraced sun off entirely | 0.45 ms |
 | `directional/caster_distance_scale` 2.0 → 0.5 | 1.12 ms |
 
+Lamps whose bounds already sit inside the sun's caster volume are not queried separately, so in a
+scene where the sun reaches everything the lamps are close to free to gather. That is automatic;
+there is nothing to set.
+
 **The raytraced sun is two thirds of the cost, and the sun's shadow distance is the lever, not
 `caster_distance_scale`.** A lamp bounds its own casters with its range; a sun has no range, so the
 volume swept for it is the camera frustum out to the shadow distance, pushed back toward the light.

@@ -3657,14 +3657,52 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			}
 		};
 
+		// A light whose bounds already sit inside a volume that is about to be
+		// queried anyway contributes nothing but a second descent through the same
+		// part of the index: every instance it would reach is reached by the
+		// enclosing volume, and the pass counter throws the duplicate away at the
+		// leaf. Not querying it changes which casters are gathered not at all.
+		//
+		// It is worth the test because this is the common case and not a corner
+		// one. A raytraced sun's volume is the camera frustum swept towards the
+		// light, and in an interior, a street or a town square that swallows every
+		// lamp in the scene. Measured with sixteen lamps inside one such volume,
+		// their queries were making three fifths of the index visits and finding
+		// nothing the sun had not already found.
+		//
+		// The enclosed volumes are moved to the back rather than dropped, because
+		// the per-element multimesh test below asks a DIFFERENT question of this
+		// same list: whether one element of a multimesh is reached, and it only
+		// consults the directional volumes when scatter_casters allows it to. A
+		// list with the enclosed lamps missing would lose elements those lamps
+		// were the only reason to include.
+		uint32_t rt_light_query_count = rt_light_bounds_scratch.size();
+		if (!rt_directional_bounds_scratch.is_empty()) {
+			uint32_t front = 0;
+			for (uint32_t i = 0; i < rt_light_bounds_scratch.size(); i++) {
+				bool enclosed = false;
+				for (const AABB &directional_bounds : rt_directional_bounds_scratch) {
+					if (directional_bounds.encloses(rt_light_bounds_scratch[i])) {
+						enclosed = true;
+						break;
+					}
+				}
+				if (!enclosed) {
+					SWAP(rt_light_bounds_scratch[front], rt_light_bounds_scratch[i]);
+					front++;
+				}
+			}
+			rt_light_query_count = front;
+		}
+
 		CullRTCasters cull_casters;
 		cull_casters.result = &rt_caster_scratch;
 		cull_casters.pass = rt_caster_pass_counter;
 		cull_casters.visited = &dbg_visited;
 		cull_casters.rejected = &dbg_noncaster;
 
-		for (const AABB &light_bounds : rt_light_bounds_scratch) {
-			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(light_bounds, cull_casters);
+		for (uint32_t i = 0; i < rt_light_query_count; i++) {
+			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(rt_light_bounds_scratch[i], cull_casters);
 		}
 		for (const AABB &light_bounds : rt_directional_bounds_scratch) {
 			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(light_bounds, cull_casters);
