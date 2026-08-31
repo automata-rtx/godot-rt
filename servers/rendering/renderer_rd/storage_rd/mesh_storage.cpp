@@ -30,6 +30,7 @@
 
 #include "mesh_storage.h"
 
+#include "servers/rendering/renderer_rd/environment/rt_scene.h"
 #include "servers/rendering/renderer_viewport.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_types.h"
@@ -376,8 +377,19 @@ void MeshStorage::mesh_add_surface(RID p_mesh, const RenderingServerTypes::Surfa
 
 	const bool use_as_storage = (new_surface.skin_data.size() || mesh->blend_shape_count > 0);
 	const bool requested_storage_buffer = (new_surface.format & RSE::ARRAY_FLAG_USE_STORAGE_BUFFER);
-	const BitField<RD::BufferCreationBits> as_storage_flag = (use_as_storage || requested_storage_buffer) ? RD::BUFFER_CREATION_AS_STORAGE_BIT : 0;
-	const BitField<RD::BufferCreationBits> requested_storage_flag = requested_storage_buffer ? RD::BUFFER_CREATION_AS_STORAGE_BIT : 0;
+
+	// When raytraced shadows are enabled, mesh buffers may be used as acceleration
+	// structure build input. Both the device address and the AS input bits are
+	// required, and neither is validated at build time, so they must be set here.
+	// The compressed-position path also reads the vertex buffer as a storage
+	// buffer in order to expand it, so storage access is requested as well.
+	BitField<RD::BufferCreationBits> raytracing_flags = 0;
+	if (_raytracing_buffers_required()) {
+		raytracing_flags = RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT | RD::BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT | RD::BUFFER_CREATION_AS_STORAGE_BIT;
+	}
+
+	const BitField<RD::BufferCreationBits> as_storage_flag = ((use_as_storage || requested_storage_buffer) ? RD::BUFFER_CREATION_AS_STORAGE_BIT : 0) | raytracing_flags;
+	const BitField<RD::BufferCreationBits> requested_storage_flag = (requested_storage_buffer ? RD::BUFFER_CREATION_AS_STORAGE_BIT : 0) | raytracing_flags;
 
 	if (new_surface.vertex_data.size()) {
 		// If we have an uncompressed surface that contains normals, but not tangents, we need to differentiate the array
@@ -1090,8 +1102,24 @@ void MeshStorage::_mesh_instance_add_surface(MeshInstance *mi, Mesh *mesh, uint3
 	mi->dirty = true;
 }
 
+bool MeshStorage::_raytracing_buffers_required() {
+	// Ray query support is required as well as the setting: only the Vulkan
+	// driver reports SUPPORTS_RAY_QUERY, and there is no reason to give every
+	// mesh buffer acceleration structure usage on a device that cannot trace.
+	return RendererRD::RaytracingScene::is_enabled() &&
+			RD::get_singleton()->has_feature(RD::SUPPORTS_RAY_QUERY) &&
+			RD::get_singleton()->has_feature(RD::SUPPORTS_BUFFER_DEVICE_ADDRESS);
+}
+
 void MeshStorage::_mesh_instance_add_surface_buffer(MeshInstance *mi, Mesh *mesh, MeshInstance::Surface *s, uint32_t p_surface, uint32_t p_buffer_index) {
-	s->vertex_buffer[p_buffer_index] = RD::get_singleton()->vertex_buffer_create(mesh->surfaces[p_surface]->vertex_buffer_size, Vector<uint8_t>(), RD::BUFFER_CREATION_AS_STORAGE_BIT);
+	// The skinned result is what a skinned caster's acceleration structure is
+	// built from, so it needs the same usage bits as a static mesh's buffer.
+	BitField<RD::BufferCreationBits> creation_bits = RD::BUFFER_CREATION_AS_STORAGE_BIT;
+	if (_raytracing_buffers_required()) {
+		creation_bits.set_flag(RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
+		creation_bits.set_flag(RD::BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT);
+	}
+	s->vertex_buffer[p_buffer_index] = RD::get_singleton()->vertex_buffer_create(mesh->surfaces[p_surface]->vertex_buffer_size, Vector<uint8_t>(), creation_bits);
 
 	Vector<RD::Uniform> uniforms;
 	{
@@ -1174,6 +1202,20 @@ void MeshStorage::mesh_instance_check_for_update(RID p_mesh_instance) {
 void MeshStorage::mesh_instance_set_canvas_item_transform(RID p_mesh_instance, const Transform2D &p_transform) {
 	MeshInstance *mi = mesh_instance_owner.get_or_null(p_mesh_instance);
 	mi->canvas_item_transform_2d = p_transform;
+}
+
+RID MeshStorage::mesh_instance_get_vertex_buffer(RID p_mesh_instance, uint32_t p_surface) const {
+	MeshInstance *mi = mesh_instance_owner.get_or_null(p_mesh_instance);
+	ERR_FAIL_NULL_V(mi, RID());
+	ERR_FAIL_UNSIGNED_INDEX_V(p_surface, mi->surfaces.size(), RID());
+	return mi->surfaces[p_surface].vertex_buffer[mi->surfaces[p_surface].current_buffer];
+}
+
+uint64_t MeshStorage::mesh_instance_get_last_change(RID p_mesh_instance, uint32_t p_surface) const {
+	MeshInstance *mi = mesh_instance_owner.get_or_null(p_mesh_instance);
+	ERR_FAIL_NULL_V(mi, 0);
+	ERR_FAIL_UNSIGNED_INDEX_V(p_surface, mi->surfaces.size(), 0);
+	return mi->surfaces[p_surface].last_change;
 }
 
 void MeshStorage::update_mesh_instances() {
@@ -2024,6 +2066,11 @@ RID MeshStorage::_multimesh_get_mesh(RID p_multimesh) const {
 	ERR_FAIL_NULL_V(multimesh, RID());
 
 	return multimesh->mesh;
+}
+
+bool MeshStorage::multimesh_uses_3d_transforms(RID p_multimesh) const {
+	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	return multimesh != nullptr && multimesh->xform_format == RSE::MULTIMESH_TRANSFORM_3D;
 }
 
 Dependency *MeshStorage::multimesh_get_dependency(RID p_multimesh) const {

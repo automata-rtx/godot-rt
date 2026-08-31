@@ -932,7 +932,8 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
 	// Update light and decal buffer first so we know what lights and decals are safe to pair with.
 	uint32_t directional_light_count = 0;
 	uint32_t positional_light_count = 0;
-	light_storage->update_light_buffers(p_render_data, *p_render_data->lights, p_render_data->scene_data->cam_transform, p_render_data->shadow_atlas, using_shadows, directional_light_count, positional_light_count, p_render_data->directional_light_soft_shadows);
+	// The mobile renderer has no raytraced shadow mask, so no light gets an index.
+	light_storage->update_light_buffers(p_render_data, *p_render_data->lights, p_render_data->scene_data->cam_transform, p_render_data->shadow_atlas, using_shadows, false, directional_light_count, positional_light_count, p_render_data->directional_light_soft_shadows);
 	texture_storage->update_decal_buffer(*p_render_data->decals, p_render_data->scene_data->cam_transform);
 
 	p_render_data->directional_light_count = directional_light_count;

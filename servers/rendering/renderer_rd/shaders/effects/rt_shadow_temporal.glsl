@@ -1,0 +1,227 @@
+#[compute]
+
+#version 450
+
+#VERSION_DEFINES
+
+// Temporal accumulation for the raytraced shadow mask.
+//
+// This deliberately keeps its own history rather than leaning on the image's
+// temporal antialiasing: with SMAA, or with no antialiasing at all, nothing
+// downstream would average the shadow signal over time, so the accumulation
+// has to converge on its own.
+
+// Channel carrying no light. Matches SLOT_NONE in rt_shadow_trace.glsl.
+#define SLOT_NONE 255u
+
+// Visibility is stored as its square root and squared on read. Eight bits spread
+// evenly over [0,1] put the same absolute step everywhere, but a shadow's detail
+// is all at the dark end, where that step is a large RELATIVE error and shows as
+// banding across a wide penumbra. Storing the root spends about five times more
+// of the range below a quarter visibility, where the eye is, and gives up
+// precision near fully lit, where nothing is happening.
+//
+// Filtering still happens in linear visibility. Averaging roots and squaring the
+// result, which is what NVIDIA's SIGMA does, would darken every penumbra by
+// Jensen's inequality: that is a look change, not a precision gain, so the
+// encode and decode bracket the storage only.
+#define VIS_DECODE(v) ((v) * (v))
+#define VIS_ENCODE(v) sqrt(max(v, vec4(0.0)))
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D source_visibility;
+layout(set = 0, binding = 1) uniform sampler2D source_depth;
+// Previous frame's filtered visibility.
+layout(set = 0, binding = 3) uniform sampler2D history_visibility;
+// Previous frame's (view depth, history length).
+layout(set = 0, binding = 4) uniform sampler2D history_meta;
+
+layout(rgba8, set = 0, binding = 5) uniform restrict writeonly image2D dest_visibility;
+layout(r8, set = 0, binding = 6) uniform restrict writeonly image2D dest_history_length;
+
+// Which light each channel of the mask carries, this frame and last. Every
+// pixel picks its own set of lights, so a history sample is only usable if it
+// carries the same lights in the same channels.
+layout(set = 0, binding = 7) uniform usampler2D source_index;
+layout(set = 0, binding = 8) uniform usampler2D history_index;
+
+layout(push_constant, std430) uniform Params {
+	// Maps this frame's clip space straight to the previous frame's. Motion
+	// vectors would be the obvious source for this, but they are written during
+	// the opaque pass, which runs after the shadow mask is needed, so reading
+	// them here would reproject against the frame before last. This is exact for
+	// static geometry and for any camera movement; geometry that moved on its
+	// own reprojects as though it had not, and is then rejected by the surface
+	// test below rather than smeared.
+	mat4 reprojection;
+
+	// Turns a depth buffer value into a distance along the camera's forward
+	// axis, the same four terms the a-trous pass uses. Needed because the
+	// reprojection above carries a scale that has to be undone before the
+	// result can be compared against a stored distance; see below.
+	vec4 depth_unproject;
+
+	ivec2 screen_size;
+	float depth_tolerance;
+	float max_history;
+
+	// How far outside the current frame's local spread the history is allowed to
+	// sit, in standard deviations. Zero disables the test.
+	float clamp_sigma;
+	float pad[3];
+}
+params;
+
+float linear_view_depth(float depth) {
+	return -(params.depth_unproject.x * depth + params.depth_unproject.y) /
+			(params.depth_unproject.z * depth + params.depth_unproject.w);
+}
+
+void main() {
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(pos, params.screen_size))) {
+		return;
+	}
+
+	vec4 current = VIS_DECODE(texelFetch(source_visibility, pos, 0));
+	float depth = texelFetch(source_depth, pos, 0).r;
+
+	uvec4 current_index = texelFetch(source_index, pos, 0);
+
+	// Sky, or a pixel no raytraced light reaches. Neither has anything to
+	// accumulate, and leaving a history behind would bleed into whatever moves
+	// in front of it later.
+	if (depth <= 0.0 || current_index == uvec4(SLOT_NONE)) {
+		imageStore(dest_visibility, pos, VIS_ENCODE(current));
+		imageStore(dest_history_length, pos, vec4(0.0));
+		return;
+	}
+
+	vec2 uv = (vec2(pos) + 0.5) / vec2(params.screen_size);
+	vec4 previous_clip = params.reprojection * vec4(uv * 2.0 - 1.0, depth, 1.0);
+
+	float history_length = 0.0;
+	vec4 history = current;
+
+	// Behind the previous camera: there is no history to find.
+	if (previous_clip.w > 0.0) {
+		vec2 previous_uv = (previous_clip.xy / previous_clip.w) * 0.5 + 0.5;
+
+		// The reprojection maps a point given in this frame's normalized device
+		// coordinates, so what comes out is the previous frame's clip position
+		// scaled by the reciprocal of this pixel's view depth. The scale cancels
+		// in the division above, which is why the reprojected position is right,
+		// but it does not cancel in w: that leaves the RATIO of the previous view
+		// depth to this one. Multiplying by this pixel's own view depth turns it
+		// back into the distance the history stores.
+		float expected_depth = previous_clip.w * linear_view_depth(depth);
+
+		// The history is filtered by hand rather than by the sampler: the channel
+		// assignment cannot be interpolated, so each of the four bilinear taps has
+		// to be accepted or rejected on its own before it is weighted in.
+		if (all(greaterThanEqual(previous_uv, vec2(0.0))) && all(lessThan(previous_uv, vec2(1.0)))) {
+			vec2 previous_texel = previous_uv * vec2(params.screen_size) - 0.5;
+			ivec2 base = ivec2(floor(previous_texel));
+			vec2 subpixel = previous_texel - vec2(base);
+
+			vec4 tap_weights = vec4(
+					(1.0 - subpixel.x) * (1.0 - subpixel.y),
+					subpixel.x * (1.0 - subpixel.y),
+					(1.0 - subpixel.x) * subpixel.y,
+					subpixel.x * subpixel.y);
+			ivec2 tap_offsets[4] = ivec2[4](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(1, 1));
+
+			vec4 visibility_sum = vec4(0.0);
+			float length_sum = 0.0;
+			float weight_sum = 0.0;
+
+			for (int i = 0; i < 4; i++) {
+				ivec2 tap = base + tap_offsets[i];
+				if (any(lessThan(tap, ivec2(0))) || any(greaterThanEqual(tap, params.screen_size))) {
+					continue;
+				}
+				if (texelFetch(history_index, tap, 0) != current_index) {
+					continue;
+				}
+
+				vec2 previous_meta = texelFetch(history_meta, tap, 0).rg;
+
+				// Reject the history when the surface that was there is not the
+				// surface that should have been there. The tolerance is relative so
+				// that distant geometry, where depth precision and reprojection error
+				// are both worse, is not rejected purely for being far away.
+				float depth_error = abs(previous_meta.r - expected_depth) / max(expected_depth, 0.001);
+				if (depth_error >= params.depth_tolerance) {
+					continue;
+				}
+
+				float weight = tap_weights[i];
+				visibility_sum += VIS_DECODE(texelFetch(history_visibility, tap, 0)) * weight;
+				length_sum += previous_meta.g * weight;
+				weight_sum += weight;
+			}
+
+			if (weight_sum > 0.0) {
+				history = visibility_sum / weight_sum;
+				// The meta buffer stores the history length normalized against the
+				// same window, so that it survives being written through an 8 bit
+				// target elsewhere in the chain.
+				history_length = (length_sum / weight_sum) * params.max_history;
+			}
+		}
+	}
+
+	// Reject history that this frame could not plausibly have produced.
+	//
+	// The surface test above only asks whether the same surface is still here.
+	// It cannot see a shadow move ACROSS a surface: the floor under a moving
+	// blocker reprojects perfectly, passes every test, and hands back a shadow
+	// that is no longer there. With a thirty-two frame window that trails for
+	// half a second.
+	//
+	// So measure what this frame actually sees nearby, and clamp the history
+	// into that range. Where the neighborhood agrees -- open floor, deep umbra --
+	// the spread is nil and the history is pinned to the truth immediately.
+	// Inside a penumbra, where one ray per pixel makes neighbors genuinely
+	// disagree, the spread is wide and accumulation proceeds untouched. The test
+	// costs nothing where it is not needed and everything where it is.
+	if (params.clamp_sigma > 0.0 && history_length > 0.0) {
+		vec4 moment1 = vec4(0.0);
+		vec4 moment2 = vec4(0.0);
+		float taps = 0.0;
+		for (int cy = -1; cy <= 1; cy++) {
+			for (int cx = -1; cx <= 1; cx++) {
+				ivec2 tap = clamp(pos + ivec2(cx, cy), ivec2(0), params.screen_size - ivec2(1));
+				// A neighbor carrying different lights describes something else.
+				if (texelFetch(source_index, tap, 0) != current_index) {
+					continue;
+				}
+				vec4 v = VIS_DECODE(texelFetch(source_visibility, tap, 0));
+				moment1 += v;
+				moment2 += v * v;
+				taps += 1.0;
+			}
+		}
+		if (taps > 0.0) {
+			moment1 /= taps;
+			moment2 /= taps;
+			vec4 sigma = sqrt(max(moment2 - moment1 * moment1, vec4(0.0)));
+			history = clamp(history,
+					moment1 - sigma * params.clamp_sigma,
+					moment1 + sigma * params.clamp_sigma);
+		}
+	}
+
+	// Exponential moving average with a bounded window. The first frames after a
+	// disocclusion weight the new sample heavily so the shadow appears
+	// immediately; once the window fills, alpha settles at 1 / max_history and
+	// the estimate is stable.
+	history_length = history_length > 0.0 ? min(history_length + 1.0, params.max_history) : 1.0;
+	float alpha = 1.0 / history_length;
+
+	vec4 accumulated = mix(history, current, alpha);
+
+	imageStore(dest_visibility, pos, VIS_ENCODE(accumulated));
+	imageStore(dest_history_length, pos, vec4(history_length / max(params.max_history, 1.0)));
+}

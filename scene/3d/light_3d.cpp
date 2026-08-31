@@ -150,6 +150,15 @@ bool Light3D::get_shadow_reverse_cull_face() const {
 	return reverse_cull;
 }
 
+void Light3D::set_shadow_map_enabled(bool p_enable) {
+	shadow_map = p_enable;
+	RS::get_singleton()->light_set_shadow_map_enabled(light, shadow_map);
+}
+
+bool Light3D::is_shadow_map_enabled() const {
+	return shadow_map;
+}
+
 void Light3D::set_shadow_caster_mask(uint32_t p_caster_mask) {
 	shadow_caster_mask = p_caster_mask;
 	RS::get_singleton()->light_set_shadow_caster_mask(light, shadow_caster_mask);
@@ -381,6 +390,9 @@ void Light3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_shadow_reverse_cull_face", "enable"), &Light3D::set_shadow_reverse_cull_face);
 	ClassDB::bind_method(D_METHOD("get_shadow_reverse_cull_face"), &Light3D::get_shadow_reverse_cull_face);
 
+	ClassDB::bind_method(D_METHOD("set_shadow_map_enabled", "enable"), &Light3D::set_shadow_map_enabled);
+	ClassDB::bind_method(D_METHOD("is_shadow_map_enabled"), &Light3D::is_shadow_map_enabled);
+
 	ClassDB::bind_method(D_METHOD("set_shadow_caster_mask", "caster_mask"), &Light3D::set_shadow_caster_mask);
 	ClassDB::bind_method(D_METHOD("get_shadow_caster_mask"), &Light3D::get_shadow_caster_mask);
 
@@ -405,7 +417,7 @@ void Light3D::_bind_methods() {
 	// Only allow texture types that display correctly.
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "light_projector", PROPERTY_HINT_RESOURCE_TYPE, "Texture2D,-AnimatedTexture,-AtlasTexture,-CameraTexture,-CanvasTexture,-MeshTexture,-Texture2DRD,-ViewportTexture"), "set_projector", "get_projector");
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "light_size", PROPERTY_HINT_RANGE, "0,1,0.001,or_greater,suffix:m"), "set_param", "get_param", PARAM_SIZE);
-	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "light_angular_distance", PROPERTY_HINT_RANGE, "0,90,0.01,degrees"), "set_param", "get_param", PARAM_SIZE);
+	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "light_angular_distance", PROPERTY_HINT_RANGE, "0,5,0.001,or_greater,degrees"), "set_param", "get_param", PARAM_SIZE);
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "light_negative"), "set_negative", "is_negative");
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "light_specular", PROPERTY_HINT_RANGE, "0,16,0.001,or_greater"), "set_param", "get_param", PARAM_SPECULAR);
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_bake_mode", PROPERTY_HINT_ENUM, "Disabled,Static,Dynamic"), "set_bake_mode", "get_bake_mode");
@@ -416,6 +428,7 @@ void Light3D::_bind_methods() {
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "shadow_bias", PROPERTY_HINT_RANGE, "0,10,0.001"), "set_param", "get_param", PARAM_SHADOW_BIAS);
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "shadow_normal_bias", PROPERTY_HINT_RANGE, "0,10,0.001"), "set_param", "get_param", PARAM_SHADOW_NORMAL_BIAS);
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "shadow_reverse_cull_face"), "set_shadow_reverse_cull_face", "get_shadow_reverse_cull_face");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "shadow_map_enabled"), "set_shadow_map_enabled", "is_shadow_map_enabled");
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "shadow_transmittance_bias", PROPERTY_HINT_RANGE, "-16,16,0.001"), "set_param", "get_param", PARAM_TRANSMITTANCE_BIAS);
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "shadow_opacity", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_param", "get_param", PARAM_SHADOW_OPACITY);
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "shadow_blur", PROPERTY_HINT_RANGE, "0,10,0.001"), "set_param", "get_param", PARAM_SHADOW_BLUR);
@@ -615,6 +628,20 @@ DirectionalLight3D::DirectionalLight3D() :
 	set_param(PARAM_SHADOW_FADE_START, 0.8);
 	// Increase the default shadow normal bias to better suit most scenes.
 	set_param(PARAM_SHADOW_NORMAL_BIAS, 2.0);
+	// A sun with a real angular size, so its shadows sharpen at contact and soften
+	// with distance instead of being uniformly hard. Godot's own guidance calls
+	// 0.5 a realistic sun, so this is half of that.
+	//
+	// Deliberately unconditional, for the same reason
+	// Light3D::_apply_local_light_shadow_defaults() is: a scene stores only what
+	// differs from a freshly constructed node, so a default that depended on a
+	// project setting would never be recorded, and a scene authored with
+	// raytraced shadows on would lose it the moment that setting was off.
+	//
+	// This is visible without raytracing too: a nonzero angular distance puts the
+	// cascade path on its PCSS branch and widens each cascade's extents. Set it
+	// back to zero for the hard, uniform shadows earlier versions produced.
+	set_param(PARAM_SIZE, 0.25);
 	set_param(PARAM_INTENSITY, 100000.0); // Specified in Lux, approximate mid-day sun.
 	set_param(PARAM_SPECULAR, 1.0);
 	set_shadow_mode(SHADOW_PARALLEL_4_SPLITS);
@@ -658,9 +685,25 @@ void OmniLight3D::_bind_methods() {
 	BIND_ENUM_CONSTANT(SHADOW_CUBE);
 }
 
+// Newly created local lights cast shadows and have a small physical emitter
+// radius, so they get soft, contact-hardening shadows without any
+// configuration. Hard shadows remain available by setting the light size back
+// to zero.
+//
+// Deliberately unconditional. A scene stores only those properties that differ
+// from a freshly constructed node's, so making these defaults depend on a
+// project setting would mean a scene authored with raytraced shadows on never
+// recorded them, and every light in it would silently lose its shadow the
+// moment that setting was off.
+void Light3D::_apply_local_light_shadow_defaults() {
+	set_shadow(true);
+	set_param(PARAM_SIZE, 0.05);
+}
+
 OmniLight3D::OmniLight3D() :
 		Light3D(RSE::LIGHT_OMNI) {
 	set_shadow_mode(SHADOW_CUBE);
+	_apply_local_light_shadow_defaults();
 }
 
 PackedStringArray SpotLight3D::get_configuration_warnings() const {
@@ -693,6 +736,7 @@ SpotLight3D::SpotLight3D() :
 		Light3D(RSE::LIGHT_SPOT) {
 	// Decrease the default shadow bias to better suit most scenes.
 	set_param(PARAM_SHADOW_BIAS, 0.03);
+	_apply_local_light_shadow_defaults();
 }
 
 void AreaLight3D::set_area_texture(const Ref<Texture2D> &p_texture) {

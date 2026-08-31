@@ -33,6 +33,7 @@
 #include "core/templates/paged_array.h"
 #include "core/templates/rid_owner.h"
 #include "servers/rendering/renderer_rd/cluster_builder_rd.h"
+#include "servers/rendering/renderer_rd/effects/rt_shadows.h"
 #include "servers/rendering/renderer_rd/environment/sky.h"
 #include "servers/rendering/renderer_rd/storage_rd/forward_id_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
@@ -64,6 +65,11 @@ private:
 		Color color = Color(1, 1, 1, 1);
 		RID projector;
 		bool shadow = false;
+		// Render a shadow map for this light even when it takes its own shadow
+		// from the raytraced mask. Volumetric fog and subsurface transmittance
+		// sample a shadow map by construction and cannot read a screen space
+		// mask, so a light that has to occlude either of them needs both.
+		bool shadow_map = false;
 		bool negative = false;
 		bool reverse_cull = false;
 		RSE::LightBakeMode bake_mode = RSE::LIGHT_BAKE_DYNAMIC;
@@ -116,6 +122,17 @@ private:
 		Vector3 spot_vector;
 		float linear_att = 0.0;
 
+		// Set once per frame by the culler: true when this light takes its shadow
+		// from the raytraced mask, in which case no shadow map is rendered for it.
+		bool raytraced_shadow = false;
+
+		// Index into the raytraced shadow mask's light buffer, held for as long
+		// as the light keeps casting a raytraced shadow. The denoiser's history
+		// records which light each channel of the mask carried, so a light that
+		// changed index between frames would throw that history away.
+		uint32_t rt_slot = RT_SLOT_UNASSIGNED;
+		uint64_t rt_slot_frame = 0;
+
 		uint64_t shadow_pass = 0;
 		uint64_t last_scene_pass = 0;
 		uint64_t last_scene_shadow_pass = 0;
@@ -136,6 +153,12 @@ private:
 
 	/* OMNI/SPOT LIGHT DATA */
 
+	// Sentinel stored in LightData::rt_slot for lights that are not raytraced.
+	// Must match RT_SLOT_NONE in light_data_inc.glsl.
+	static constexpr float RT_SLOT_NONE = 255.0f;
+	// A light instance that holds no slot in the raytraced light buffer.
+	static constexpr uint32_t RT_SLOT_UNASSIGNED = 0xffffffffu;
+
 	struct LightData {
 		float position[3];
 		float inv_radius;
@@ -154,7 +177,10 @@ private:
 		float specular_amount;
 		float shadow_opacity;
 
-		float pad[2];
+		float rt_slot; // Raytraced shadow mask channel, or RT_SLOT_NONE.
+		// Shadow strength for the effects that sample the shadow map instead of
+		// the mask, and zero when this light owns no shadow map.
+		float shadow_map_opacity;
 		float atlas_rect[4]; // in omni, used for atlas uv, in spot, used for projector uv
 		float shadow_matrix[16];
 		float shadow_bias;
@@ -167,6 +193,30 @@ private:
 		uint32_t bake_mode;
 		float projector_rect[4];
 	};
+
+	// The raytraced light buffer for the pass being set up. Indexed by the
+	// light's slot, so it can hold gaps where a slot belongs to a light that is
+	// not in this pass; the trace skips a gap by its zero radius.
+	LocalVector<RTShadows::LightParams> rt_lights;
+
+	// Slot ownership. A slot is held by one light instance until that light
+	// stops taking a raytraced shadow, at which point the sweep below returns it
+	// to the free list for another light to take.
+	LocalVector<LightInstance *> rt_slot_owner;
+	LocalVector<uint32_t> rt_free_slots;
+	uint64_t rt_slot_sweep_frame = 0;
+	// Frames a slot is held after its light was last seen, so that a light that
+	// leaves the view for a moment comes back to the same channel.
+	static constexpr uint64_t RT_SLOT_GRACE_FRAMES = 4;
+
+	// Slots handed out during the pass being set up. Steady state is zero: a
+	// light that keeps its slot keeps the denoiser history that goes with it.
+	uint32_t rt_slots_assigned_this_frame = 0;
+
+	uint32_t _rt_slot_acquire(LightInstance *p_light_instance, uint64_t p_frame);
+	void _rt_light_store(uint32_t p_slot, const RTShadows::LightParams &p_light);
+	void _rt_slot_release(LightInstance *p_light_instance);
+	void _rt_slot_sweep(uint64_t p_frame);
 
 	struct LightInstanceDepthSort {
 		float depth;
@@ -208,7 +258,15 @@ private:
 		float shadow_opacity;
 		float fade_from;
 		float fade_to;
-		uint32_t pad[2];
+		// Which channel of the raytraced shadow mask carries this light, or
+		// RT_SLOT_NONE. A float because that is how the shader compares it.
+		float rt_slot;
+		// Shadow strength for the consumers that sample the cascade maps rather
+		// than the mask: volumetric fog, subsurface transmittance, and anything
+		// rendered outside the depth pre-pass. A raytraced sun keeps its cascades,
+		// so this stays set even when shadow_opacity has stopped driving surface
+		// shading.
+		float shadow_map_opacity;
 		uint32_t bake_mode;
 		float volumetric_fog_energy;
 		float shadow_bias[4];
@@ -446,10 +504,19 @@ private:
 		RID fb; //when renderign direct
 
 		int light_count = 0;
+		// What is actually allocated. May be smaller than requested_size when a
+		// raytraced sun has demoted its map.
 		int size = 0;
+		// What the project, or directional_shadow_atlas_set_size, asked for. Kept
+		// so the full size comes back if raytraced directional shadows are off.
+		int requested_size = 0;
 		bool use_16_bits = true;
 		int current_light = 0;
 	} directional_shadow;
+
+	// Reconciles the requested size against the demotion setting and reallocates
+	// if they disagree. Cheap when nothing changed.
+	void _apply_directional_shadow_size();
 
 	/* SHADOW CUBEMAPS */
 
@@ -466,7 +533,20 @@ private:
 	bool shadow_cubemaps_used = false;
 	bool shadow_dual_paraboloid_used = false;
 
+	// Whether this light's shadow comes from the raytraced mask. Deliberately a
+	// pure function of the light and of whether there is anything to trace
+	// against, so that the culler and the light buffer agree without having to
+	// visit lights in the same order.
+	bool _light_is_raytraced_shadow_candidate(const Light *p_light) const;
+	bool _light_uses_raytraced_shadows(const Light *p_light) const;
+	RSE::LightDirectionalShadowMode _light_directional_effective_shadow_mode(const Light *p_light) const;
+
 public:
+	// The raytraced light buffer for the pass that was last set up, indexed by
+	// light slot. Filled by update_light_buffers().
+	const LocalVector<RTShadows::LightParams> &get_rt_lights() const { return rt_lights; }
+	uint32_t get_rt_slots_assigned() const { return rt_slots_assigned_this_frame; }
+
 	static LightStorage *get_singleton();
 
 	LightStorage();
@@ -510,6 +590,7 @@ public:
 	virtual void light_set_cull_mask(RID p_light, uint32_t p_mask) override;
 	virtual void light_set_distance_fade(RID p_light, bool p_enabled, float p_begin, float p_shadow, float p_length) override;
 	virtual void light_set_reverse_cull_face_mode(RID p_light, bool p_enabled) override;
+	virtual void light_set_shadow_map_enabled(RID p_light, bool p_enabled) override;
 	virtual void light_set_shadow_caster_mask(RID p_light, uint32_t p_caster_mask) override;
 	virtual uint32_t light_get_shadow_caster_mask(RID p_light) const override;
 	virtual void light_set_bake_mode(RID p_light, RSE::LightBakeMode p_bake_mode) override;
@@ -616,6 +697,28 @@ public:
 		return light->reverse_cull;
 	}
 
+	virtual bool light_get_shadow_map_enabled(RID p_light) const override {
+		const Light *light = light_owner.get_or_null(p_light);
+		ERR_FAIL_NULL_V(light, false);
+
+		return light->shadow_map;
+	}
+
+	// True when this light needs a shadow map rendered: either it is not
+	// raytraced, or it is and something that cannot read the mask still has to
+	// be occluded by it.
+	virtual bool light_instance_needs_shadow_map(RID p_light_instance) const override {
+		const LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
+		if (light_instance == nullptr) {
+			return false;
+		}
+		if (!light_instance->raytraced_shadow) {
+			return true;
+		}
+		const Light *light = light_owner.get_or_null(light_instance->light);
+		return light != nullptr && light->shadow_map;
+	}
+
 	virtual RSE::LightBakeMode light_get_bake_mode(RID p_light) override;
 	virtual uint32_t light_get_max_sdfgi_cascade(RID p_light) override;
 	virtual uint64_t light_get_version(RID p_light) const override;
@@ -633,6 +736,12 @@ public:
 	virtual void light_instance_set_aabb(RID p_light_instance, const AABB &p_aabb) override;
 	virtual void light_instance_set_shadow_transform(RID p_light_instance, const Projection &p_projection, const Transform3D &p_transform, float p_far, float p_split, int p_pass, float p_shadow_texel_size, float p_bias_scale = 1.0, float p_range_begin = 0, const Vector2 &p_uv_scale = Vector2()) override;
 	virtual void light_instance_mark_visible(RID p_light_instance) override;
+
+	virtual bool light_instance_is_raytraced_shadow_candidate(RID p_light_instance) const override;
+	virtual bool light_instance_can_use_raytraced_shadows(RID p_light_instance) const override;
+	virtual void light_instance_set_raytraced_shadow(RID p_light_instance, bool p_enabled) override;
+	virtual bool light_instance_has_raytraced_shadow(RID p_light_instance) const override;
+	virtual uint32_t light_get_max_raytraced_shadows() const override { return RTShadows::MAX_RT_LIGHTS; }
 
 	virtual bool light_instance_is_shadow_visible_at_position(RID p_light_instance, const Vector3 &p_position) const override {
 		const LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instance);
@@ -853,7 +962,18 @@ public:
 		}
 		return false;
 	}
-	void update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows);
+	// Whether any directional light in the buffer got a raytraced mask slot this
+	// frame. Consumers that cannot read that mask, such as volumetric fog, use it
+	// to decide whether they have to trace the shadow themselves.
+	bool has_raytraced_directional_shadows(const uint32_t p_directional_light_count) {
+		for (uint32_t i = 0; i < p_directional_light_count; i++) {
+			if (directional_lights[i].shadow_opacity > 0.001 && directional_lights[i].rt_slot != RT_SLOT_NONE) {
+				return true;
+			}
+		}
+		return false;
+	}
+	void update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, bool p_use_raytraced_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows);
 
 	/* REFLECTION PROBE */
 

@@ -17,6 +17,7 @@
 	<members>
 		<member name="light_specular" type="float" setter="set_param" getter="get_param" overrides="Light3D" default="0.5" />
 		<member name="shadow_bias" type="float" setter="set_param" getter="get_param" overrides="Light3D" default="0.03" />
+		<member name="shadow_enabled" type="bool" setter="set_shadow" getter="has_shadow" overrides="Light3D" default="true" />
 		<member name="shadow_normal_bias" type="float" setter="set_param" getter="get_param" overrides="Light3D" default="1.0" />
 		<member name="spot_angle" type="float" setter="set_param" getter="get_param" default="45.0">
 			The spotlight's angle in degrees. This is the angular radius, meaning the angle from the -Z axis, the cone's center, to the edge of the cone. The default angular radius of 45 degrees corresponds to a cone with an angular diameter of 90 degrees.

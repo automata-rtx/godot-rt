@@ -51,6 +51,16 @@
 #define RB_TEX_SPECULAR SNAME("specular")
 #define RB_TEX_SPECULAR_MSAA SNAME("specular_msaa")
 #define RB_TEX_NORMAL_ROUGHNESS SNAME("normal_roughness")
+#define RB_SCOPE_RT_SHADOWS SNAME("rt_shadows")
+#define RB_TEX_RT_SHADOW_MASK SNAME("rt_shadow_mask")
+#define RB_TEX_RT_SHADOW_INDEX SNAME("rt_shadow_index")
+#define RB_TEX_RT_RAW_HIT_DISTANCE SNAME("rt_raw_hit_distance")
+#define RB_TEX_RT_DENOISE_A SNAME("rt_denoise_a")
+#define RB_TEX_RT_DENOISE_B SNAME("rt_denoise_b")
+#define RB_TEX_RT_HISTORY_VISIBILITY SNAME("rt_history_visibility")
+#define RB_TEX_RT_HISTORY_INDEX SNAME("rt_history_index")
+#define RB_TEX_RT_HISTORY_META SNAME("rt_history_meta")
+#define RB_TEX_RT_HISTORY_LENGTH SNAME("rt_history_length")
 #define RB_TEX_NORMAL_ROUGHNESS_MSAA SNAME("normal_roughness_msaa")
 #define RB_TEX_VOXEL_GI SNAME("voxel_gi")
 #define RB_TEX_VOXEL_GI_MSAA SNAME("voxel_gi_msaa")
@@ -611,6 +621,9 @@ private:
 	};
 
 	// These are not used in the Forward+ path, it has different light clustering tech.
+	virtual bool _uses_raytraced_shadows() const override { return true; }
+	virtual bool is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const override;
+
 	virtual uint32_t get_max_lights_total() override { return 0; }
 	virtual uint32_t get_max_lights_per_mesh() override { return 0; }
 
@@ -783,6 +796,11 @@ private:
 	void _process_ssil(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform);
 	void _process_ssr(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_slices, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_transform);
 	void _copy_framebuffer_to_ss_effects(Ref<RenderSceneBuffersRD> p_render_buffers, bool p_use_ssil, bool p_use_ssr);
+	// 1x1 all-ones stand-in for the raytraced shadow index texture, bound
+	// wherever the real one does not exist.
+	RID rt_shadow_index_fallback;
+
+	bool _ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_denoise, RendererRD::RTShadows::Buffers &r_buffers);
 	void _pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer);
 	void _process_sss(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection &p_camera);
 

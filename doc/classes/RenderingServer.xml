@@ -2260,6 +2260,14 @@
 				Sets the shadow caster mask for this 3D light. Shadows will only be cast using objects in the selected layers. Equivalent to [member Light3D.shadow_caster_mask].
 			</description>
 		</method>
+		<method name="light_set_shadow_map_enabled">
+			<return type="void" />
+			<param index="0" name="light" type="RID" />
+			<param index="1" name="enabled" type="bool" />
+			<description>
+				If [code]true[/code], renders a shadow map for this 3D light even when it takes its own shadow from the raytraced shadow mask. Equivalent to [member Light3D.shadow_map_enabled].
+			</description>
+		</method>
 		<method name="lightmap_create">
 			<return type="RID" />
 			<description>

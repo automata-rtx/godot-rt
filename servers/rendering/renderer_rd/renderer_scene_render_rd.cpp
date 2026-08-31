@@ -1789,6 +1789,52 @@ RendererSceneRenderRD::RendererSceneRenderRD() {
 	singleton = this;
 }
 
+bool RendererSceneRenderRD::is_raytracing_debug_enabled() const {
+	return RendererRD::RaytracingScene::debug_enabled();
+}
+
+bool RendererSceneRenderRD::is_raytraced_directional_available() const {
+	// Gates both halves of the directional path at once: the casters the culler
+	// sweeps out of the camera frustum, and whether a sun is allowed to take its
+	// shadow from the mask. They have to answer to the same question, because a
+	// sun that gave up its map with an empty structure to trace against would be
+	// unshadowed everywhere.
+	return RendererRD::RaytracingScene::is_directional_enabled() && is_raytracing_scene_available();
+}
+
+float RendererSceneRenderRD::get_raytraced_directional_caster_scale() const {
+	return RendererRD::RaytracingScene::get_directional_caster_scale();
+}
+
+RendererSceneRender::RaytracedScatterMode RendererSceneRenderRD::get_raytraced_scatter_mode() const {
+	return (RaytracedScatterMode)RendererRD::RaytracingScene::get_directional_scatter_mode();
+}
+
+float RendererSceneRenderRD::get_raytraced_scatter_distance() const {
+	return RendererRD::RaytracingScene::get_directional_scatter_distance();
+}
+
+bool RendererSceneRenderRD::is_raytracing_scene_available() const {
+	return _uses_raytraced_shadows() && raytracing_scene != nullptr && raytracing_scene->is_available() && rt_shadows != nullptr && rt_shadows->is_valid();
+}
+
+bool RendererSceneRenderRD::is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const {
+	if (!is_raytracing_scene_available()) {
+		return false;
+	}
+	Ref<RenderSceneBuffersRD> rb = p_render_buffers;
+	// A stereo pair would need a trace and a full set of denoiser history per
+	// eye, so multiview keeps its shadow maps.
+	return rb.is_valid() && rb->get_view_count() == 1;
+}
+
+void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances) {
+	if (raytracing_scene == nullptr) {
+		return;
+	}
+	raytracing_scene->update(p_instances);
+}
+
 void RendererSceneRenderRD::init() {
 	max_cluster_elements = get_max_elements();
 	RendererRD::LightStorage::get_singleton()->set_max_cluster_elements(max_cluster_elements);
@@ -1874,6 +1920,13 @@ void RendererSceneRenderRD::init() {
 	bokeh_dof = memnew(RendererRD::BokehDOF(!can_use_storage));
 	copy_effects = memnew(RendererRD::CopyEffects(raster_effects));
 	debug_effects = memnew(RendererRD::DebugEffects);
+
+	// Raytraced shadows. Both objects are cheap to construct when the feature is
+	// off or unsupported; they simply stay inert.
+	raytracing_scene = memnew(RendererRD::RaytracingScene);
+	if (raytracing_scene->is_available()) {
+		rt_shadows = memnew(RendererRD::RTShadows);
+	}
 	luminance = memnew(RendererRD::Luminance(!can_use_storage));
 	smaa = memnew(RendererRD::SMAA);
 	tone_mapper = memnew(RendererRD::ToneMapper(!can_use_storage));
@@ -1895,6 +1948,12 @@ RendererSceneRenderRD::~RendererSceneRenderRD() {
 	memdelete(bokeh_dof);
 	memdelete(copy_effects);
 	memdelete(debug_effects);
+	if (rt_shadows) {
+		memdelete(rt_shadows);
+	}
+	if (raytracing_scene) {
+		memdelete(raytracing_scene);
+	}
 	memdelete(luminance);
 	memdelete(smaa);
 	memdelete(tone_mapper);

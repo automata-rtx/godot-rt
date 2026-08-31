@@ -213,6 +213,7 @@ private:
 	RD::VertexFormatID _mesh_surface_generate_vertex_format(uint64_t p_surface_format, uint64_t p_input_mask, bool p_instanced_surface, bool p_input_motion_vectors, bool p_point_size_emulated, uint32_t &r_position_stride);
 	void _mesh_surface_generate_version_for_input_mask(Mesh::Surface::Version &v, Mesh::Surface *s, uint64_t p_input_mask, bool p_input_motion_vectors, bool p_point_size_emulated, MeshInstance::Surface *mis = nullptr, uint32_t p_current_buffer = 0, uint32_t p_previous_buffer = 0);
 	void _mesh_surface_clear(Mesh *p_mesh, int p_surface);
+	static bool _raytracing_buffers_required();
 
 	void _mesh_instance_clear(MeshInstance *mi);
 	void _mesh_instance_add_surface(MeshInstance *mi, Mesh *mesh, uint32_t p_surface);
@@ -477,6 +478,27 @@ public:
 		return s->format;
 	}
 
+	// Raw surface buffers, used to build raytracing acceleration structures.
+	_FORCE_INLINE_ uint32_t mesh_surface_get_index_count(void *p_surface) const {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		return s->index_count;
+	}
+
+	_FORCE_INLINE_ RID mesh_surface_get_vertex_buffer(void *p_surface) const {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		return s->vertex_buffer;
+	}
+
+	_FORCE_INLINE_ RID mesh_surface_get_index_buffer(void *p_surface) const {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		return s->index_buffer;
+	}
+
+	_FORCE_INLINE_ uint32_t mesh_surface_get_vertex_buffer_size(void *p_surface) const {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		return s->vertex_buffer_size;
+	}
+
 	_FORCE_INLINE_ Vector4 mesh_surface_get_uv_scale(void *p_surface) {
 		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
 		return s->uv_scale;
@@ -655,6 +677,13 @@ public:
 	virtual void mesh_instance_set_canvas_item_transform(RID p_mesh_instance, const Transform2D &p_transform) override;
 	virtual void update_mesh_instances() override;
 
+	// Skinned geometry lives per instance rather than per mesh: these expose
+	// the buffer the skeleton pass most recently wrote, and a version that
+	// moves whenever it did, so an acceleration structure built from it knows
+	// when it has gone stale.
+	RID mesh_instance_get_vertex_buffer(RID p_mesh_instance, uint32_t p_surface) const;
+	uint64_t mesh_instance_get_last_change(RID p_mesh_instance, uint32_t p_surface) const;
+
 	/* MULTIMESH API */
 
 	bool owns_multimesh(RID p_rid) { return multimesh_owner.owns(p_rid); }
@@ -673,6 +702,7 @@ public:
 	virtual void _multimesh_instance_set_custom_data(RID p_multimesh, int p_index, const Color &p_color) override;
 
 	virtual RID _multimesh_get_mesh(RID p_multimesh) const override;
+	virtual bool multimesh_uses_3d_transforms(RID p_multimesh) const override;
 
 	virtual Transform3D _multimesh_instance_get_transform(RID p_multimesh, int p_index) const override;
 	virtual Transform2D _multimesh_instance_get_transform_2d(RID p_multimesh, int p_index) const override;

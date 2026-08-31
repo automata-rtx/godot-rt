@@ -322,6 +322,48 @@ public:
 		void set_multiview_camera(uint32_t p_view_count, const Transform3D *p_transforms, const Projection *p_projections, bool p_is_orthogonal, bool p_vaspect, uint32_t p_visible_layers = 0xFFFFFFFF);
 	};
 
+	/* RAYTRACED SHADOWS */
+
+	// One mesh instance to place in the raytracing acceleration structure. This
+	// list is deliberately not frustum culled so that geometry behind the camera
+	// still casts shadows.
+	struct RaytracingInstance {
+		RID mesh;
+		// Set only for skinned or blend-shaped geometry, whose vertices are
+		// deformed per instance and so cannot share the mesh's structure.
+		RID mesh_instance;
+		Transform3D transform;
+		uint32_t layer_mask = 0xFFFFFFFF;
+		// One bit per surface of the mesh, clear where the surface's material
+		// cannot write a shadow. Surfaces past the thirty-second always cast.
+		uint32_t surface_mask = 0xFFFFFFFF;
+	};
+
+	// How a directional light's casters are bounded. A sun has no range, so the
+	// structure is bounded by the visible frustum swept towards the light, and
+	// by a policy for scattered geometry which would otherwise flood it. Both
+	// are project settings so they can scale with the graphics options.
+	enum RaytracedScatterMode {
+		RAYTRACED_SCATTER_DISABLED,
+		RAYTRACED_SCATTER_NEAR_CAMERA,
+		RAYTRACED_SCATTER_FULL_DISTANCE,
+	};
+	// True when directional lights take their shadow from the raytraced mask.
+	virtual bool is_raytraced_directional_available() const { return false; }
+	virtual float get_raytraced_directional_caster_scale() const { return 0.0f; }
+	virtual RaytracedScatterMode get_raytraced_scatter_mode() const { return RAYTRACED_SCATTER_DISABLED; }
+	virtual float get_raytraced_scatter_distance() const { return 0.0f; }
+
+	// True when the project setting is on and the device supports ray queries.
+	virtual bool is_raytracing_scene_available() const { return false; }
+	// True when this render will actually produce a raytraced shadow mask that
+	// the forward pass samples. Only then may a light give up its shadow map.
+	virtual bool is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const { return false; }
+	// Whether raytraced shadow tracing should log what it is doing. Lives here
+	// so the renderer-agnostic cull layer can log without reaching into RD.
+	virtual bool is_raytracing_debug_enabled() const { return false; }
+	virtual void update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances) {}
+
 	virtual void render_scene(const Ref<RenderSceneBuffers> &p_render_buffers, const CameraData *p_camera_data, const CameraData *p_prev_camera_data, const PagedArray<RenderGeometryInstance *> &p_instances, const PagedArray<RID> &p_lights, const PagedArray<RID> &p_reflection_probes, const PagedArray<RID> &p_voxel_gi_instances, const PagedArray<RID> &p_decals, const PagedArray<RID> &p_lightmaps, const PagedArray<RID> &p_fog_volumes, RID p_environment, RID p_camera_attributes, RID p_compositor, RID p_shadow_atlas, RID p_occluder_debug_tex, RID p_reflection_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, const RenderShadowData *p_render_shadows, int p_render_shadow_count, const RenderSDFGIData *p_render_sdfgi_regions, int p_render_sdfgi_region_count, float p_window_output_max_value, const RenderSDFGIUpdateData *p_sdfgi_update_data = nullptr, RenderingServerTypes::RenderInfo *r_render_info = nullptr) = 0;
 
 	virtual void render_material(const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region) = 0;

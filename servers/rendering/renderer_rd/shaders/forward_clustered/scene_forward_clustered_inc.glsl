@@ -484,6 +484,18 @@ layout(set = 1, binding = 35) uniform texture2D ssr_buffer;
 layout(set = 1, binding = 36) uniform texture2D ssr_mip_level_buffer;
 #endif // USE_MULTIVIEW
 
+// Raytraced shadow mask. Every pixel carries visibility for the few raytraced
+// lights that actually reach it, and the companion index texture says which
+// lights those are, so the number of raytraced lights in a scene is not bound
+// by the four channels here. Raytraced shadows are not used under multiview,
+// so these stay plain 2D in every variant.
+layout(set = 1, binding = 37) uniform texture2D rt_shadow_mask;
+layout(set = 1, binding = 38) uniform utexture2D rt_shadow_index;
+
+// rt_shadow_lookup(), which samples the mask above, lives in
+// scene_forward_lights_inc.glsl because it reads gl_FragCoord. This file is
+// included by the vertex stage as well, where that builtin does not exist.
+
 #endif
 
 vec4 normal_roughness_compatibility(vec4 p_normal_roughness) {

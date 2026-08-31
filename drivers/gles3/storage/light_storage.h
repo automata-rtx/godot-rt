@@ -332,6 +332,9 @@ public:
 	virtual void light_set_cull_mask(RID p_light, uint32_t p_mask) override;
 	virtual void light_set_distance_fade(RID p_light, bool p_enabled, float p_begin, float p_shadow, float p_length) override;
 	virtual void light_set_reverse_cull_face_mode(RID p_light, bool p_enabled) override;
+	// The GL renderer has no raytraced shadows, so every shadow is already a map.
+	virtual void light_set_shadow_map_enabled(RID p_light, bool p_enabled) override {}
+	virtual bool light_get_shadow_map_enabled(RID p_light) const override { return false; }
 	virtual void light_set_shadow_caster_mask(RID p_light, uint32_t p_caster_mask) override;
 	virtual uint32_t light_get_shadow_caster_mask(RID p_light) const override;
 	virtual void light_set_bake_mode(RID p_light, RSE::LightBakeMode p_bake_mode) override;

@@ -1375,6 +1375,10 @@ public:
 	};
 
 	RID blas_create(Span<AccelerationStructureGeometry> p_geometries, BitField<AccelerationStructureFlagBits> p_flags);
+	// An acceleration structure is freed implicitly when a buffer it was built
+	// from is freed, so an owner that outlives its source geometry has to be
+	// able to ask whether its handle is still live before releasing it.
+	bool acceleration_structure_is_valid(RID p_acceleration_structure);
 	RID tlas_create(uint32_t p_max_instance_count, BitField<AccelerationStructureFlagBits> p_flags);
 
 	typedef int64_t HitShaderBindingTableRange;

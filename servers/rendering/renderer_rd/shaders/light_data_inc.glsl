@@ -1,3 +1,6 @@
+// Sentinel meaning "this light is not raytraced"; must match LightStorage.
+#define RT_SLOT_NONE 255.0
+
 #define LIGHT_BAKE_DISABLED 0
 #define LIGHT_BAKE_STATIC 1
 #define LIGHT_BAKE_DYNAMIC 2
@@ -20,7 +23,11 @@ struct LightData { //this structure needs to be as packed as possible
 
 	float specular_amount;
 	float shadow_opacity;
-	float pad[2];
+	float rt_slot; // raytraced shadow mask channel, or RT_SLOT_NONE
+	// Shadow strength for the effects that sample the shadow map rather than the
+	// mask - volumetric fog, subsurface transmittance - and zero when this light
+	// owns no shadow map. A raytraced light owns one only when asked to.
+	float shadow_map_opacity;
 
 	vec4 atlas_rect; // rect in the shadow atlas
 	mat4 shadow_matrix;
@@ -72,7 +79,8 @@ struct DirectionalLightData {
 	float shadow_opacity;
 	float fade_from;
 	float fade_to;
-	uvec2 pad;
+	float rt_slot; // raytraced shadow mask channel, or RT_SLOT_NONE
+	float shadow_map_opacity; // for the consumers that sample the cascades, not the mask
 	uint bake_mode;
 	float volumetric_fog_energy;
 	vec4 shadow_bias;

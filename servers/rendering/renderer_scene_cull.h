@@ -479,6 +479,10 @@ public:
 
 		uint64_t last_frame_pass;
 
+		// Marks that this instance was already gathered as a raytraced shadow
+		// caster this frame; the gather queries once per light and lights overlap.
+		uint64_t rt_caster_pass = 0;
+
 		uint64_t version; // changes to this, and changes to base increase version
 
 		InstanceBaseData *base_data = nullptr;
@@ -620,6 +624,11 @@ public:
 		HashSet<Instance *> lights;
 		bool can_cast_shadows;
 		bool material_is_animated;
+		// One bit per mesh surface, set when that surface can write a shadow.
+		// Surfaces past the thirty-second are assumed to cast. Only the raytraced
+		// path reads this: the shadow map path makes the same decision per draw,
+		// where it has the material in hand anyway.
+		uint32_t shadow_caster_surface_mask = 0xFFFFFFFF;
 		uint32_t projector_count = 0;
 		uint32_t softshadow_count = 0;
 
@@ -1001,6 +1010,14 @@ public:
 
 	InstanceCullResult scene_cull_result;
 	LocalVector<InstanceCullResult> scene_cull_result_threads;
+
+	// Non-frustum-culled mesh list handed to the raytracing acceleration structure
+	// builder. Kept as a member so it is not reallocated every frame.
+	LocalVector<RendererSceneRender::RaytracingInstance> rt_instance_scratch;
+	LocalVector<Instance *> rt_caster_scratch;
+	LocalVector<AABB> rt_light_bounds_scratch;
+	LocalVector<AABB> rt_directional_bounds_scratch;
+	uint64_t rt_caster_pass_counter = 0;
 
 	RendererSceneRender::RenderShadowData render_shadow_data[MAX_UPDATE_SHADOWS];
 	uint32_t max_shadows_used = 0;

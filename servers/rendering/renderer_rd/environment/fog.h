@@ -50,8 +50,11 @@ private:
 	static Fog *singleton;
 
 	static int _get_fog_shader_group();
+	static int _get_fog_raytraced_shader_group();
 	static int _get_fog_variant();
 	static int _get_fog_process_variant(int p_idx);
+
+	bool _ensure_raytraced_density_pipelines();
 
 	/* FOG VOLUMES */
 
@@ -83,6 +86,18 @@ private:
 			SHADER_GROUP_NO_ATOMICS,
 			SHADER_GROUP_VULKAN_MEMORY_MODEL,
 			SHADER_GROUP_VULKAN_MEMORY_MODEL_NO_ATOMICS,
+			// The density variants that trace a ray, one per device combination
+			// above and in the same order, so a device's raytraced group is its own
+			// group plus SHADER_GROUP_BASE_RAYTRACED. They are groups of their own
+			// because they are the only ones that need the device to support ray
+			// queries, and because nothing should pay to compile them on a project
+			// that never puts a raytraced sun behind volumetric fog. Only the
+			// process shader declares these; the fog material shader has four groups
+			// and must never be asked for one of them.
+			SHADER_GROUP_BASE_RAYTRACED,
+			SHADER_GROUP_NO_ATOMICS_RAYTRACED,
+			SHADER_GROUP_VULKAN_MEMORY_MODEL_RAYTRACED,
+			SHADER_GROUP_VULKAN_MEMORY_MODEL_NO_ATOMICS_RAYTRACED,
 		};
 
 		enum FogSet {
@@ -141,6 +156,8 @@ private:
 		enum {
 			VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY,
 			VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY_WITH_SDFGI,
+			VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY_RAYTRACED,
+			VOLUMETRIC_FOG_PROCESS_SHADER_DENSITY_RAYTRACED_WITH_SDFGI,
 			VOLUMETRIC_FOG_PROCESS_SHADER_FILTER,
 			VOLUMETRIC_FOG_PROCESS_SHADER_FOG,
 			VOLUMETRIC_FOG_PROCESS_SHADER_COPY,
@@ -185,6 +202,8 @@ private:
 			float sky_border_size[2];
 			float pad[2];
 
+			float cam_position[4];
+
 			float cam_rotation[12];
 			float to_prev_view[16];
 			float radiance_inverse_xform[12];
@@ -194,6 +213,10 @@ private:
 
 		RID process_shader_version;
 		PipelineDeferredRD process_pipelines[VOLUMETRIC_FOG_PROCESS_SHADER_MAX];
+
+		// The raytraced density variants are compiled the first frame something
+		// actually asks for them, not at startup.
+		bool raytraced_pipelines_ready = false;
 
 	} volumetric_fog;
 
@@ -329,6 +352,11 @@ public:
 		RID sdfgi_uniform_set;
 		RID sky_uniform_set;
 
+		// Set 2 of the raytraced density variants, holding nothing but the
+		// acceleration structure. Rebuilt when the structure is rebuilt.
+		RID tlas_uniform_set;
+		RID tlas_uniform_set_source;
+
 		int last_shadow_filter = -1;
 
 		// If the device doesn't support image atomics, use storage buffers instead.
@@ -361,6 +389,10 @@ public:
 		RID area_light_atlas;
 		RID directional_shadow_depth;
 		RID directional_light_buffer;
+		// Valid only when a directional light in the buffer above is raytraced and
+		// there is something to trace against. Null otherwise, and the fog samples
+		// shadow maps exactly as it always has.
+		RID tlas;
 
 		// Objects related to our render buffer
 		Ref<VolumetricFog> vfog;

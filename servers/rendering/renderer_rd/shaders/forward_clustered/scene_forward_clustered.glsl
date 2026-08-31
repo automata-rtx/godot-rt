@@ -2411,7 +2411,22 @@ void fragment_shader(in SceneData scene_data) {
 
 				float shadow = 1.0;
 
-				if (directional_lights.data[i].shadow_opacity > 0.001) {
+				// Raytraced shadows replace the cascade maps for a sun granted a slot
+				// in the screen-space mask, on fragments that mask actually describes.
+				// A genuinely alpha blended fragment is not in the depth pre-pass the
+				// mask was traced from, so it falls through to the cascade path below,
+				// which samples an atlas only if one was really rendered and otherwise
+				// leaves the fragment lit.
+				bool rt_shadowed = false;
+				if (directional_lights.data[i].rt_slot < RT_SLOT_NONE && RT_MASK_ANSWERS_HERE) {
+					rt_shadowed = true;
+					if (directional_lights.data[i].shadow_opacity > 0.001) {
+						shadow = rt_shadow_lookup(directional_lights.data[i].rt_slot);
+						shadow = mix(1.0, shadow, directional_lights.data[i].shadow_opacity);
+					}
+				}
+
+				if (!rt_shadowed && directional_lights.data[i].shadow_map_opacity > 0.001) {
 					float depth_z = -vertex.z;
 					vec3 light_dir = directional_lights.data[i].direction;
 					vec3 base_normal_bias = geo_normal * (1.0 - max(0.0, dot(light_dir, -geo_normal)));
@@ -2595,6 +2610,13 @@ void fragment_shader(in SceneData scene_data) {
 						}
 					}
 
+#undef BIAS_FUNC
+				} // shadows
+
+				// Runs for both paths. The hand off to a baked shadowmask is about
+				// where the sun stops being computed, not about how it was computed,
+				// so a raytraced sun has to reach it too.
+				if (rt_shadowed || directional_lights.data[i].shadow_opacity > 0.001) {
 #ifdef USE_LIGHTMAP
 					if (shadowmask_mode == LIGHTMAP_SHADOWMASK_MODE_REPLACE) {
 						shadow = mix(shadow, shadowmask, smoothstep(directional_lights.data[i].fade_from, directional_lights.data[i].fade_to, vertex.z)); //done with negative values for performance
@@ -2602,7 +2624,14 @@ void fragment_shader(in SceneData scene_data) {
 						shadow = shadowmask * mix(shadow, 1.0, smoothstep(directional_lights.data[i].fade_from, directional_lights.data[i].fade_to, vertex.z)); //done with negative values for performance
 					} else {
 #endif
-						shadow = mix(shadow, 1.0, smoothstep(directional_lights.data[i].fade_from, directional_lights.data[i].fade_to, vertex.z)); //done with negative values for performance
+						// Not applied to a raytraced sun: the trace already faded its
+						// visibility to fully lit across this same window, using the
+						// negation of these very numbers, so that the mask the denoiser
+						// filters and reprojects is continuous. Doing it twice would
+						// only reach the same 1.0 sooner.
+						if (!rt_shadowed) {
+							shadow = mix(shadow, 1.0, smoothstep(directional_lights.data[i].fade_from, directional_lights.data[i].fade_to, vertex.z)); //done with negative values for performance
+						}
 #ifdef USE_LIGHTMAP
 					}
 #endif
@@ -2611,9 +2640,7 @@ void fragment_shader(in SceneData scene_data) {
 					diffuse_light *= mix(1.0, shadow, diffuse_light_interp.a);
 					direct_specular_light *= mix(1.0, shadow, specular_light_interp.a);
 #endif
-
-#undef BIAS_FUNC
-				} // shadows
+				}
 
 				if (i < 4) {
 					shadow0 |= uint(clamp(shadow * 255.0, 0.0, 255.0)) << (i * 8);
@@ -2654,7 +2681,10 @@ void fragment_shader(in SceneData scene_data) {
 #ifdef LIGHT_TRANSMITTANCE_USED
 			float transmittance_z = transmittance_depth;
 #ifndef SHADOWS_DISABLED
-			if (directional_lights.data[i].shadow_opacity > 0.001) {
+			// shadow_map_opacity, not shadow_opacity: transmittance needs a depth
+			// from the light's point of view to measure thickness with, which a
+			// screen-space mask cannot give it. A raytraced sun keeps its map.
+			if (directional_lights.data[i].shadow_map_opacity > 0.001) {
 				float depth_z = -vertex.z;
 
 				if (depth_z < directional_lights.data[i].shadow_split_offsets.x) {

@@ -15,6 +15,67 @@
 #define SPEC_CONSTANT_LOOP_ANNOTATION
 #endif
 
+#ifndef USING_MOBILE_RENDERER
+// Raytraced shadow visibility for one light, read from the screen-space mask
+// written before the opaque pass. Returns 1.0 (fully lit) when the light was
+// not granted a slot in the mask.
+//
+// This lives here rather than next to the rt_shadow_mask declaration because it
+// reads gl_FragCoord: scene_forward_clustered_inc.glsl is included by the
+// vertex stage too, where that builtin does not exist, and defining it there
+// fails to compile every Forward+ vertex variant.
+// Whether the raytraced shadow mask answers for THIS fragment.
+//
+// The mask is traced from the depth pre-pass, so it only describes fragments
+// that are in it. A genuinely alpha blended fragment is not: reading the mask at
+// its pixel returns the visibility of whatever opaque surface lies behind it,
+// which is a confident and wrong answer rather than a missing one.
+//
+// Not simply "am I in the alpha pass". Alpha to coverage and depth_prepass_alpha
+// materials are drawn in the transparent list but DO write pre-pass depth, so the
+// mask does describe them; those are known at compile time and skip the runtime
+// test entirely.
+#if defined(USE_OPAQUE_PREPASS) || defined(ALPHA_ANTIALIASING_EDGE_USED)
+#define RT_MASK_ANSWERS_HERE true
+#else
+#define RT_MASK_ANSWERS_HERE (!bool(scene_data_block.data.flags & SCENE_DATA_FLAGS_IN_ALPHA_PASS))
+#endif
+
+float rt_shadow_lookup(float p_slot) {
+	if (p_slot >= RT_SLOT_NONE) {
+		return 1.0;
+	}
+	uint slot = uint(p_slot);
+	// The mask does not have a channel per light in the scene: each pixel keeps
+	// the few raytraced lights that actually reach it, and the index texture
+	// records which.
+	ivec2 coord = ivec2(gl_FragCoord.xy);
+	uvec4 slots = texelFetch(usampler2D(rt_shadow_index, SAMPLER_NEAREST_CLAMP), coord, 0);
+	// The mask stores the square root of visibility, so that its eight bits per
+	// channel are spent where a shadow's detail is rather than spread evenly over
+	// a range that is mostly fully lit. Squaring here undoes that.
+	vec4 mask = texelFetch(sampler2D(rt_shadow_mask, SAMPLER_NEAREST_CLAMP), coord, 0);
+	mask *= mask;
+
+	if (slots.r == slot) {
+		return mask.r;
+	}
+	if (slots.g == slot) {
+		return mask.g;
+	}
+	if (slots.b == slot) {
+		return mask.b;
+	}
+	if (slots.a == slot) {
+		return mask.a;
+	}
+	// More raytraced lights reach this pixel than the mask has channels, and
+	// this one was not among the strongest. Leaving the weakest light unshadowed
+	// is the least visible way to run out of room.
+	return 1.0;
+}
+#endif // !USING_MOBILE_RENDERER
+
 half D_GGX(half NoH, half roughness, hvec3 n, hvec3 h) {
 	half a = NoH * roughness;
 #ifdef EXPLICIT_FP16
@@ -498,8 +559,23 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 
 	half shadow = half(1.0);
 #ifndef SHADOWS_DISABLED
+	bool rt_shadowed = false;
+#ifndef USING_MOBILE_RENDERER
+	// Raytraced shadows replace the shadow map for lights granted a slot in the
+	// screen-space mask, on fragments that mask actually describes. A light with
+	// no slot, or a fragment the mask cannot answer for, falls through to the
+	// atlas path below -- which itself only samples an atlas that was really
+	// rendered, and otherwise leaves the fragment lit.
+	if (omni_lights.data[idx].rt_slot < RT_SLOT_NONE && RT_MASK_ANSWERS_HERE) {
+		rt_shadowed = true;
+		if (omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_opacity > 0.001) {
+			shadow = half(rt_shadow_lookup(omni_lights.data[idx].rt_slot));
+			shadow = mix(half(1.0), shadow, half(omni_lights.data[idx].shadow_opacity));
+		}
+	}
+#endif
 	// Omni light shadow.
-	if (omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_opacity > 0.001) {
+	if (!rt_shadowed && omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_map_opacity > 0.001) {
 		// there is a shadowmap
 		vec2 texel_size = scene_data_block.data.shadow_atlas_pixel_size;
 		vec4 base_uv_rect = omni_lights.data[idx].atlas_rect;
@@ -634,7 +710,11 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	half transmittance_z = transmittance_depth; //no transmittance by default
 	transmittance_color.a *= omni_attenuation;
 #ifndef SHADOWS_DISABLED
-	if (omni_lights.data[idx].shadow_opacity > 0.001) {
+	// Transmittance depth comes from the shadow map: the mask only carries
+	// visibility at the receiving pixel, not the depth of the surface the light
+	// last hit. A raytraced light has one only if it was asked for one, and
+	// without it the material's own transmittance depth stands.
+	if (omni_lights.data[idx].shadow_map_opacity > 0.001) {
 		// Redo shadowmapping, but shrink the model a bit to avoid artifacts.
 		vec2 texel_size = scene_data_block.data.shadow_atlas_pixel_size;
 		vec4 uv_rect = omni_lights.data[idx].atlas_rect;
@@ -808,8 +888,19 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 
 	half shadow = half(1.0);
 #ifndef SHADOWS_DISABLED
+	bool rt_shadowed = false;
+#ifndef USING_MOBILE_RENDERER
+	// See the omni light path above.
+	if (spot_lights.data[idx].rt_slot < RT_SLOT_NONE && RT_MASK_ANSWERS_HERE) {
+		rt_shadowed = true;
+		if (spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_opacity > 0.001) {
+			shadow = half(rt_shadow_lookup(spot_lights.data[idx].rt_slot));
+			shadow = mix(half(1.0), shadow, half(spot_lights.data[idx].shadow_opacity));
+		}
+	}
+#endif
 	// Spot light shadow.
-	if (spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_opacity > 0.001) {
+	if (!rt_shadowed && spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_map_opacity > 0.001) {
 		vec3 normal_bias = vec3(normal) * light_length * spot_lights.data[idx].shadow_normal_bias * (1.0 - abs(dot(normal, light_rel_vec_norm)));
 
 		//there is a shadowmap
@@ -888,7 +979,8 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	half transmittance_z = transmittance_depth;
 	transmittance_color.a *= spot_attenuation;
 #ifndef SHADOWS_DISABLED
-	if (spot_lights.data[idx].shadow_opacity > 0.001) {
+	// See the omni light above: no shadow map means no transmittance depth.
+	if (spot_lights.data[idx].shadow_map_opacity > 0.001) {
 		vec4 splane = (spot_lights.data[idx].shadow_matrix * vec4(vertex - vec3(normal) * spot_lights.data[idx].transmittance_bias, 1.0));
 		splane /= splane.w;
 

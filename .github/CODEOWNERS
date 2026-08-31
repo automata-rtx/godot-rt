@@ -291,6 +291,10 @@
 /thirdparty/                                  @godotengine/buildsystem
 /thirdparty/jolt_physics/                     @godotengine/buildsystem @godotengine/jolt-physics
 
+# Fork-specific design documents
+
+/docs/                                        @automata-rtx
+
 # Buildsystem (After everything to catch all)
 
 /*.*                                          @godotengine/buildsystem

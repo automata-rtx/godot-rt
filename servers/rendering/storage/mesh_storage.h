@@ -146,6 +146,9 @@ public:
 	virtual AABB multimesh_get_custom_aabb(RID p_multimesh) const;
 
 	virtual RID multimesh_get_mesh(RID p_multimesh) const;
+	// True when this multimesh stores 3D transforms. Reading a 2D one as 3D
+	// fails, and only 3D instances can be raytraced shadow casters.
+	virtual bool multimesh_uses_3d_transforms(RID p_multimesh) const { return false; }
 
 	virtual Transform3D multimesh_instance_get_transform(RID p_multimesh, int p_index) const;
 	virtual Transform2D multimesh_instance_get_transform_2d(RID p_multimesh, int p_index) const;

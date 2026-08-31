@@ -37,10 +37,12 @@
 #include "servers/rendering/renderer_rd/effects/fsr.h"
 #include "servers/rendering/renderer_rd/effects/luminance.h"
 #include "servers/rendering/renderer_rd/effects/resolve.h"
+#include "servers/rendering/renderer_rd/effects/rt_shadows.h"
 #include "servers/rendering/renderer_rd/effects/smaa.h"
 #include "servers/rendering/renderer_rd/effects/tone_mapper.h"
 #include "servers/rendering/renderer_rd/effects/vrs.h"
 #include "servers/rendering/renderer_rd/environment/gi.h"
+#include "servers/rendering/renderer_rd/environment/rt_scene.h"
 #include "servers/rendering/renderer_rd/environment/sky.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_data_rd.h"
@@ -63,6 +65,8 @@ protected:
 	RendererRD::BokehDOF *bokeh_dof = nullptr;
 	RendererRD::CopyEffects *copy_effects = nullptr;
 	RendererRD::DebugEffects *debug_effects = nullptr;
+	RendererRD::RaytracingScene *raytracing_scene = nullptr;
+	RendererRD::RTShadows *rt_shadows = nullptr;
 	RendererRD::Luminance *luminance = nullptr;
 	RendererRD::SMAA *smaa = nullptr;
 	RendererRD::ToneMapper *tone_mapper = nullptr;
@@ -248,6 +252,21 @@ public:
 	RID render_buffers_get_default_voxel_gi_buffer();
 
 	virtual void base_uniforms_changed() = 0;
+
+	// True only for renderers that actually sample the raytraced shadow mask.
+	// Both the acceleration structures and the mask live on this base class, so
+	// without this the mobile renderer would look like it supported them and
+	// lights would lose their shadow maps without gaining a mask.
+	virtual bool _uses_raytraced_shadows() const { return false; }
+
+	virtual bool is_raytraced_directional_available() const override;
+	virtual float get_raytraced_directional_caster_scale() const override;
+	virtual RaytracedScatterMode get_raytraced_scatter_mode() const override;
+	virtual float get_raytraced_scatter_distance() const override;
+	virtual bool is_raytracing_scene_available() const override;
+	virtual bool is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const override;
+	virtual bool is_raytracing_debug_enabled() const override;
+	virtual void update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances) override;
 
 	virtual void render_scene(const Ref<RenderSceneBuffers> &p_render_buffers, const CameraData *p_camera_data, const CameraData *p_prev_camera_data, const PagedArray<RenderGeometryInstance *> &p_instances, const PagedArray<RID> &p_lights, const PagedArray<RID> &p_reflection_probes, const PagedArray<RID> &p_voxel_gi_instances, const PagedArray<RID> &p_decals, const PagedArray<RID> &p_lightmaps, const PagedArray<RID> &p_fog_volumes, RID p_environment, RID p_camera_attributes, RID p_compositor, RID p_shadow_atlas, RID p_occluder_debug_tex, RID p_reflection_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, const RenderShadowData *p_render_shadows, int p_render_shadow_count, const RenderSDFGIData *p_render_sdfgi_regions, int p_render_sdfgi_region_count, float p_window_output_max_value, const RenderSDFGIUpdateData *p_sdfgi_update_data = nullptr, RenderingServerTypes::RenderInfo *r_render_info = nullptr) override;
 

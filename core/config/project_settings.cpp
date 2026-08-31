@@ -1835,6 +1835,42 @@ ProjectSettings::ProjectSettings() {
 
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/rendering_device/vsync/frame_queue_size", PROPERTY_HINT_RANGE, "2,3,1"), 2);
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/rendering_device/vsync/swapchain_image_count", PROPERTY_HINT_RANGE, "2,4,1"), 3);
+	// Raytraced shadows. Registered here so that the setting is available before
+	// the rendering device is created and before any Light3D is constructed.
+	GLOBAL_DEF_RST_BASIC("rendering/lights_and_shadows/raytraced_shadows/enabled", false);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/samples_per_light", PROPERTY_HINT_RANGE, "1,16,1"), 1);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/max_ray_distance", PROPERTY_HINT_RANGE, "0,4096,0.1,or_greater"), 0.0);
+	GLOBAL_DEF("rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes", PROPERTY_HINT_RANGE, "1,5,1"), 3);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames", PROPERTY_HINT_RANGE, "1,64,1"), 32);
+	// How narrowly the spatial filter may work where a penumbra was measured. At
+	// or below one pixel it switches off completely at a hard edge, so contact
+	// shadows stay crisp; raising it trades that crispness for smoother penumbrae.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels", PROPERTY_HINT_RANGE, "0,8,0.1"), 1.0);
+	// How far a reprojected history sample may sit outside what this frame sees
+	// around it, in standard deviations, before it is pulled back in. This is
+	// what stops a moving shadow trailing across a surface. Lower reacts faster
+	// and accumulates less; zero disables it.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma", PROPERTY_HINT_RANGE, "0,8,0.1"), 2.0);
+	// Whether a shadow ray keeps looking for the CLOSEST occluder instead of
+	// stopping at the first one it reaches. Visibility is identical either way,
+	// so this changes no shadow's shape; what it changes is the distance the
+	// penumbra is estimated from, and so how wide the denoiser filters. Turning
+	// it off is the standard shadow-ray optimization and may be worth real time
+	// on some hardware.
+	GLOBAL_DEF("rendering/lights_and_shadows/raytraced_shadows/accurate_occluder_distance", true);
+	GLOBAL_DEF_RST_BASIC("rendering/lights_and_shadows/raytraced_shadows/directional/enabled", false);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale", PROPERTY_HINT_RANGE, "0.5,8,0.1,or_greater"), 2.0);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters", PROPERTY_HINT_ENUM, "Disabled,Near Camera,Full Distance"), 1);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance", PROPERTY_HINT_RANGE, "0,500,1,or_greater"), 25.0);
+	// What the sun's shadow map is demoted to once the mask drives its opaque
+	// shading. What is left of it answers volumetric fog, subsurface
+	// transmittance, alpha-blended surfaces and reflection probes, none of which
+	// need cascade density, so it can be far smaller and far coarser than a map
+	// that had to hold up under direct inspection.
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode", PROPERTY_HINT_ENUM, "Keep Authored,Orthogonal,2 Splits"), 2);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size", PROPERTY_HINT_RANGE, "0,4096"), 1024);
+
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/block_size_kb", PROPERTY_HINT_RANGE, "4,2048,1,or_greater"), 256);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/max_size_mb", PROPERTY_HINT_RANGE, "1,1024,1,or_greater"), 128);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/texture_upload_region_size_px", PROPERTY_HINT_RANGE, "1,256,1,or_greater"), 64);

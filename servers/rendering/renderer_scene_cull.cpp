@@ -3476,6 +3476,331 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		}
 	}
 
+	/* RAYTRACED SHADOWS: BUILD ACCELERATION STRUCTURES */
+
+	// The acceleration structure is deliberately NOT built from the culled render
+	// list: geometry behind the camera still has to cast shadows.
+	//
+	// It does not need the whole scenario either. A shadow ray runs from a lit
+	// surface to a light, and both ends of it are inside that light's range, so
+	// anything the ray can hit is inside that range too. Gathering by querying
+	// the geometry index with each candidate light's bounds is therefore exact,
+	// not an approximation, and it is what keeps a large level's cost tied to
+	// what its lights actually reach rather than to how big the level is.
+	if (scene_render->is_raytracing_scene_available() && !p_reflection_probe.is_valid()) {
+		RENDER_TIMESTAMP("Update RT Acceleration Structures");
+
+		// A multimesh contributes one entry per element, so a single GridMap
+		// octant can be worth hundreds. Bounded so that a pathological scene
+		// degrades instead of stalling.
+		constexpr uint32_t MAX_RT_CASTERS = 65536;
+
+		rt_instance_scratch.clear();
+		rt_caster_scratch.clear();
+		rt_light_bounds_scratch.clear();
+		rt_caster_pass_counter++;
+
+		uint32_t dbg_visited = 0, dbg_skinned = 0, dbg_multimesh = 0, dbg_noncaster = 0;
+
+		for (uint32_t i = 0; i < (uint32_t)scene_cull_result.lights.size(); i++) {
+			Instance *light_instance = scene_cull_result.lights[i];
+			InstanceLightData *light = static_cast<InstanceLightData *>(light_instance->base_data);
+			if (RSG::light_storage->light_instance_is_raytraced_shadow_candidate(light->instance)) {
+				rt_light_bounds_scratch.push_back(light_instance->transformed_aabb);
+			}
+		}
+
+		// A directional light has no range, so nothing bounds its casters the way
+		// a lamp's own sphere does. What has to be in the structure is whatever
+		// can throw a shadow onto the part of the world the camera can see: the
+		// visible frustum, cut off at the light's shadow distance, swept back
+		// towards the light. How far back is a setting, because how far a ridge
+		// or a building should reach is a look decision and a cost decision at
+		// once, not a constant.
+		rt_directional_bounds_scratch.clear();
+		const RendererSceneRender::RaytracedScatterMode rt_scatter_mode = scene_render->get_raytraced_scatter_mode();
+		const real_t rt_scatter_distance = scene_render->get_raytraced_scatter_distance();
+		const bool rt_directional = scene_render->is_raytraced_directional_available();
+		for (Instance *directional : scenario->directional_lights) {
+			if (!rt_directional) {
+				break;
+			}
+			if (!directional->visible || !(directional->layer_mask & p_visible_layers)) {
+				continue;
+			}
+			InstanceLightData *light = static_cast<InstanceLightData *>(directional->base_data);
+			if (light == nullptr || !RSG::light_storage->light_has_shadow(directional->base)) {
+				continue;
+			}
+
+			// The same derivation _light_instance_setup_directional_shadow() makes, so
+			// the casters end exactly where the cascades do. A shadow max distance of
+			// zero means "as far as the camera sees", and an orthogonal camera ignores
+			// the setting entirely.
+			const real_t shadow_max = RSG::light_storage->light_get_param(directional->base, RSE::LIGHT_PARAM_SHADOW_MAX_DISTANCE);
+			real_t far_distance = p_camera_data->main_projection.get_z_far();
+			if (shadow_max > 0 && !p_camera_data->is_orthogonal) {
+				far_distance = MIN(shadow_max, far_distance);
+			}
+			far_distance = MAX(far_distance, (real_t)p_camera_data->main_projection.get_z_near() + (real_t)0.001);
+
+			const Transform3D &cam = p_camera_data->main_transform;
+			const real_t near_distance = p_camera_data->main_projection.get_z_near();
+			const Vector2 near_extents = p_camera_data->main_projection.get_viewport_half_extents();
+			// An orthogonal camera's frustum does not widen with distance; a
+			// perspective one grows in proportion to it.
+			const Vector2 far_extents = p_camera_data->is_orthogonal
+					? near_extents
+					: near_extents * (far_distance / MAX(near_distance, (real_t)0.001));
+
+			AABB volume;
+			bool first = true;
+			for (int corner = 0; corner < 8; corner++) {
+				const bool use_far = (corner & 4) != 0;
+				const Vector2 extents = use_far ? far_extents : near_extents;
+				const real_t depth = use_far ? far_distance : near_distance;
+				const Vector3 view_corner(
+						((corner & 1) ? extents.x : -extents.x),
+						((corner & 2) ? extents.y : -extents.y),
+						-depth);
+				const Vector3 world_corner = cam.xform(view_corner);
+				if (first) {
+					volume.position = world_corner;
+					first = false;
+				} else {
+					volume.expand_to(world_corner);
+				}
+			}
+
+			// Sweep the whole thing towards the light. Anything inside the swept
+			// volume can put itself between the light and something visible.
+			const Vector3 towards_light = directional->transform.basis.xform(Vector3(0, 0, 1)).normalized();
+			const real_t sweep = far_distance * scene_render->get_raytraced_directional_caster_scale();
+			AABB swept = volume;
+			swept.position += towards_light * sweep;
+			volume.merge_with(swept);
+
+			rt_directional_bounds_scratch.push_back(volume);
+		}
+
+		struct CullRTCasters {
+			LocalVector<Instance *> *result;
+			uint64_t pass;
+			uint32_t *visited;
+			uint32_t *rejected;
+
+			_FORCE_INLINE_ bool operator()(void *p_data) {
+				Instance *instance = (Instance *)p_data;
+				(*visited)++;
+
+				// Queried once per light, and lights overlap.
+				if (instance->rt_caster_pass == pass) {
+					return false;
+				}
+				instance->rt_caster_pass = pass;
+
+				if (!instance->visible || instance->base.is_null() ||
+						instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_OFF) {
+					return false;
+				}
+				if (instance->base_type != RSE::INSTANCE_MESH && instance->base_type != RSE::INSTANCE_MULTIMESH) {
+					return false;
+				}
+				// The same test the shadow map path makes, so that glass, a material
+				// whose shader discards its depth, and anything else Godot already
+				// considers a non caster does not start casting a solid shadow just
+				// because the light became raytraced.
+				const InstanceGeometryData *geom = static_cast<const InstanceGeometryData *>(instance->base_data);
+				if (geom == nullptr || !geom->can_cast_shadows) {
+					(*rejected)++;
+					return false;
+				}
+
+				result->push_back(instance);
+				return false;
+			}
+		};
+
+		CullRTCasters cull_casters;
+		cull_casters.result = &rt_caster_scratch;
+		cull_casters.pass = rt_caster_pass_counter;
+		cull_casters.visited = &dbg_visited;
+		cull_casters.rejected = &dbg_noncaster;
+
+		for (const AABB &light_bounds : rt_light_bounds_scratch) {
+			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(light_bounds, cull_casters);
+		}
+		for (const AABB &light_bounds : rt_directional_bounds_scratch) {
+			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(light_bounds, cull_casters);
+		}
+
+		for (Instance *instance : rt_caster_scratch) {
+			if (rt_instance_scratch.size() >= MAX_RT_CASTERS) {
+				WARN_PRINT_ONCE(vformat("Raytraced shadows: more than %d shadow casters are within range of a light; the rest will not cast.", MAX_RT_CASTERS));
+				break;
+			}
+
+			const InstanceGeometryData *caster_geom = static_cast<const InstanceGeometryData *>(instance->base_data);
+
+			if (instance->base_type == RSE::INSTANCE_MESH) {
+				RendererSceneRender::RaytracingInstance rt_instance;
+				rt_instance.mesh = instance->base;
+				rt_instance.mesh_instance = instance->mesh_instance;
+				rt_instance.transform = instance->transform;
+				rt_instance.layer_mask = instance->layer_mask;
+				rt_instance.surface_mask = caster_geom->shadow_caster_surface_mask;
+				rt_instance_scratch.push_back(rt_instance);
+
+				if (rt_instance.mesh_instance.is_valid()) {
+					// The skeleton pass only runs for instances that survived frustum
+					// culling, so a character behind the camera would otherwise be
+					// frozen at whatever pose it held when it was last on screen, and
+					// cast that stale shadow. Casters are deliberately not frustum
+					// culled here, so each one is marked for skinning explicitly.
+					RSG::mesh_storage->mesh_instance_check_for_update(rt_instance.mesh_instance);
+					dbg_skinned++;
+				}
+				continue;
+			}
+
+			// A multimesh is one instance in the scene but many in the structure.
+			// Every element shares the mesh, so they also share its acceleration
+			// structure and only differ by transform; that is exactly what the top
+			// level structure is for, and it is how a GridMap or a field of
+			// scattered props casts shadows at all.
+			const RID multimesh = instance->base;
+			const RID mesh = RSG::mesh_storage->multimesh_get_mesh(multimesh);
+			if (mesh.is_null() || !RSG::mesh_storage->multimesh_uses_3d_transforms(multimesh)) {
+				continue;
+			}
+
+			const int total = RSG::mesh_storage->multimesh_get_instance_count(multimesh);
+			const int visible = RSG::mesh_storage->multimesh_get_visible_instances(multimesh);
+			const int count = visible >= 0 ? MIN(visible, total) : total;
+			if (count <= 0) {
+				continue;
+			}
+
+			const AABB mesh_aabb = RSG::mesh_storage->mesh_get_aabb(mesh, RID());
+			dbg_multimesh++;
+
+			for (int element = 0; element < count; element++) {
+				if (rt_instance_scratch.size() >= MAX_RT_CASTERS) {
+					break;
+				}
+
+				const Transform3D element_transform = instance->transform * RSG::mesh_storage->multimesh_instance_get_transform(multimesh, element);
+
+				// The instance's own bounds cover the whole multimesh, so an element
+				// of it can still be far outside every light. Culling per element
+				// keeps a large GridMap octant from filling the structure.
+				bool reached = false;
+				const AABB element_bounds = element_transform.xform(mesh_aabb);
+				for (const AABB &light_bounds : rt_light_bounds_scratch) {
+					if (light_bounds.intersects(element_bounds)) {
+						reached = true;
+						break;
+					}
+				}
+
+				// A scattered field under a directional light is the one case
+				// that can flood the structure: the light reaches the whole
+				// level, and every blade of grass is its own entry. How far
+				// scatter casts for such a light is therefore a setting, not a
+				// constant, so it can be scaled with the rest of the graphics
+				// options.
+				if (!reached && rt_scatter_mode != RendererSceneRender::RAYTRACED_SCATTER_DISABLED &&
+						!rt_directional_bounds_scratch.is_empty()) {
+					const bool near_enough =
+							rt_scatter_mode == RendererSceneRender::RAYTRACED_SCATTER_FULL_DISTANCE ||
+							element_bounds.get_center().distance_to(camera_position) <= rt_scatter_distance;
+					if (near_enough) {
+						for (const AABB &light_bounds : rt_directional_bounds_scratch) {
+							if (light_bounds.intersects(element_bounds)) {
+								reached = true;
+								break;
+							}
+						}
+					}
+				}
+
+				if (!reached) {
+					continue;
+				}
+
+				RendererSceneRender::RaytracingInstance rt_instance;
+				rt_instance.mesh = mesh;
+				rt_instance.transform = element_transform;
+				rt_instance.layer_mask = instance->layer_mask;
+				rt_instance.surface_mask = caster_geom->shadow_caster_surface_mask;
+				rt_instance_scratch.push_back(rt_instance);
+			}
+		}
+
+		if (dbg_skinned > 0) {
+			// Flush before the structures are built, so they are built from this
+			// frame's skinned vertices rather than last frame's.
+			RSG::mesh_storage->update_mesh_instances();
+		}
+
+		if (scene_render->is_raytracing_debug_enabled()) {
+			static String last;
+			String cur = vformat("RT_DEBUG cull: scenario_instances=%d rt_lights=%d visited=%d non_casters=%d casters=%d multimesh=%d -> tlas_entries=%d (skinned=%d)",
+					(int)scenario->instance_data.size(), (int)rt_light_bounds_scratch.size(), (int)dbg_visited,
+					(int)dbg_noncaster, (int)rt_caster_scratch.size(), (int)dbg_multimesh,
+					(int)rt_instance_scratch.size(), (int)dbg_skinned);
+			if (cur != last) {
+				last = cur;
+				print_line(cur);
+			}
+		}
+		scene_render->update_raytracing_scene(rt_instance_scratch);
+	}
+
+	/* RAYTRACED SHADOWS: DECIDE WHICH LIGHTS GIVE UP THEIR SHADOW MAP */
+
+	// Decided here, once, rather than re-derived by the shadow atlas and the
+	// light buffer independently: those two visit lights in different orders and
+	// answer to different conditions, and a light that one of them thinks is
+	// raytraced while the other does not would end up with no shadow at all.
+	{
+		const bool mask_available = !p_reflection_probe.is_valid() &&
+				scene_render->is_raytraced_shadow_mask_available(p_render_buffers);
+		const uint32_t max_raytraced = RSG::light_storage->light_get_max_raytraced_shadows();
+		uint32_t raytraced_used = 0;
+
+		// Directional lights first, and outside the positional loop, because they
+		// are never in scene_cull_result.lights: they have no bounds to cull
+		// against (light_get_aabb returns an empty AABB for them) and live in
+		// scenario->directional_lights instead. Deciding them first also means the
+		// sun holds a mask slot before the lamps compete for what is left, which
+		// matches the order the trace itself prefers.
+		for (Instance *directional : scenario->directional_lights) {
+			InstanceLightData *light = static_cast<InstanceLightData *>(directional->base_data);
+			if (light == nullptr) {
+				continue;
+			}
+			const bool visible = directional->visible && (directional->layer_mask & p_visible_layers);
+			bool raytraced = visible && mask_available && p_using_shadows && raytraced_used < max_raytraced &&
+					RSG::light_storage->light_instance_can_use_raytraced_shadows(light->instance);
+			if (raytraced) {
+				raytraced_used++;
+			}
+			RSG::light_storage->light_instance_set_raytraced_shadow(light->instance, raytraced);
+		}
+
+		for (uint32_t i = 0; i < (uint32_t)scene_cull_result.lights.size(); i++) {
+			InstanceLightData *light = static_cast<InstanceLightData *>(scene_cull_result.lights[i]->base_data);
+
+			bool raytraced = mask_available && p_using_shadows && raytraced_used < max_raytraced &&
+					RSG::light_storage->light_instance_can_use_raytraced_shadows(light->instance);
+			if (raytraced) {
+				raytraced_used++;
+			}
+			RSG::light_storage->light_instance_set_raytraced_shadow(light->instance, raytraced);
+		}
+	}
+
 	//render shadows
 
 	max_shadows_used = 0;
@@ -3485,11 +3810,24 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		// Directional Shadows
 
 		for (uint32_t i = 0; i < cull.shadow_count; i++) {
+			// A raytraced sun reads its surface shadow from the screen space mask,
+			// so nothing samples the cascades it would render into. The same
+			// question the positional loop below asks, asked here.
+			//
+			// The cascade TRANSFORMS are still set either way, and deliberately:
+			// the split distances they carry are what fade_from and fade_to are
+			// derived from, and the raytraced path reads those to know where its
+			// own shadow has to fade out. Skipping the setup as well would leave
+			// the sun with no range at all.
+			const RID directional_instance = cull.shadows[i].light_instance;
+			const bool skip_atlas = RSG::light_storage->light_instance_has_raytraced_shadow(directional_instance) &&
+					!RSG::light_storage->light_instance_needs_shadow_map(directional_instance);
+
 			for (uint32_t j = 0; j < cull.shadows[i].cascade_count; j++) {
 				const Cull::Shadow::Cascade &c = cull.shadows[i].cascades[j];
 				//			print_line("shadow " + itos(i) + " cascade " + itos(j) + " elements: " + itos(c.cull_result.size()));
 				RSG::light_storage->light_instance_set_shadow_transform(cull.shadows[i].light_instance, c.projection, c.transform, c.zfar, c.split, j, c.shadow_texel_size, c.bias_scale, c.range_begin, c.uv_scale);
-				if (max_shadows_used == MAX_UPDATE_SHADOWS) {
+				if (skip_atlas || max_shadows_used == MAX_UPDATE_SHADOWS) {
 					continue;
 				}
 				render_shadow_data[max_shadows_used].light = cull.shadows[i].light_instance;
@@ -3500,6 +3838,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		}
 
 		// Positional Shadows
+		uint32_t dbg_raytraced_lights = 0;
+		uint32_t dbg_shadow_maps_rendered = 0;
+
 		for (uint32_t i = 0; i < (uint32_t)scene_cull_result.lights.size(); i++) {
 			Instance *ins = scene_cull_result.lights[i];
 
@@ -3508,6 +3849,18 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			}
 
 			InstanceLightData *light = static_cast<InstanceLightData *>(ins->base_data);
+
+			// A raytraced light reads its shadow from the screen-space mask, so
+			// neither an atlas quadrant nor a shadow map render is any use to it,
+			// unless it was asked for one anyway: volumetric fog and subsurface
+			// transmittance sample a shadow map by construction, and a screen
+			// space mask cannot answer for a froxel or a point under a surface.
+			if (RSG::light_storage->light_instance_has_raytraced_shadow(light->instance)) {
+				dbg_raytraced_lights++;
+				if (!RSG::light_storage->light_instance_needs_shadow_map(light->instance)) {
+					continue;
+				}
+			}
 
 			if (!RSG::light_storage->light_instance_is_shadow_visible_at_position(light->instance, camera_position)) {
 				continue;
@@ -3642,11 +3995,22 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				if (_light_instance_update_shadow(ins, p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect, p_shadow_atlas, scenario, p_screen_mesh_lod_threshold, p_visible_layers)) {
 					light->make_shadow_dirty();
 				}
+				dbg_shadow_maps_rendered++;
 				RENDER_TIMESTAMP("< Render Light3D " + itos(i));
 			} else {
 				if (redraw) {
 					light->make_shadow_dirty();
 				}
+			}
+		}
+
+		if (scene_render->is_raytracing_debug_enabled()) {
+			static String last;
+			String cur = vformat("RT_DEBUG shadows: positional_lights=%d raytraced=%d shadow_maps_rendered=%d",
+					(int)scene_cull_result.lights.size(), (int)dbg_raytraced_lights, (int)dbg_shadow_maps_rendered);
+			if (cur != last) {
+				last = cur;
+				print_line(cur);
 			}
 		}
 	}
@@ -4200,6 +4564,10 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 
 			bool can_cast_shadows = true;
 			bool is_animated = false;
+			// Surfaces that can write a shadow. Read only by the raytraced path,
+			// which decides once per surface as it builds the structure rather
+			// than per draw.
+			uint32_t caster_surface_mask = 0xFFFFFFFF;
 
 			p_instance->instance_uniforms.materials_start();
 
@@ -4210,6 +4578,10 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 			if (p_instance->material_override.is_valid()) {
 				if (!RSG::material_storage->material_casts_shadows(p_instance->material_override)) {
 					can_cast_shadows = false;
+				}
+				if (RSG::material_storage->material_shadow_casting_disabled(p_instance->material_override)) {
+					// An override replaces every surface, so it decides for all of them.
+					caster_surface_mask = 0;
 				}
 				is_animated = RSG::material_storage->material_is_animated(p_instance->material_override);
 				p_instance->instance_uniforms.materials_append(p_instance->material_override);
@@ -4228,6 +4600,10 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 							} else {
 								if (RSG::material_storage->material_casts_shadows(mat)) {
 									cast_shadows = true;
+								}
+
+								if (i < 32 && RSG::material_storage->material_shadow_casting_disabled(mat)) {
+									caster_surface_mask &= ~(uint32_t(1) << i);
 								}
 
 								if (RSG::material_storage->material_is_animated(mat)) {
@@ -4260,6 +4636,9 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 							} else {
 								if (RSG::material_storage->material_casts_shadows(mat)) {
 									cast_shadows = true;
+								}
+								if (i < 32 && RSG::material_storage->material_shadow_casting_disabled(mat)) {
+									caster_surface_mask &= ~(uint32_t(1) << i);
 								}
 								if (RSG::material_storage->material_is_animated(mat)) {
 									is_animated = true;
@@ -4332,6 +4711,7 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 				geom->can_cast_shadows = can_cast_shadows;
 			}
 
+			geom->shadow_caster_surface_mask = caster_surface_mask;
 			geom->material_is_animated = is_animated;
 
 			if (p_instance->instance_uniforms.materials_finish(p_instance->self)) {
