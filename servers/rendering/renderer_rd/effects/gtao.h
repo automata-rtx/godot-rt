@@ -71,8 +71,8 @@ public:
 		float power = 1.5f;
 		float fade_from = 50.0f;
 		float fade_to = 300.0f;
-		int slice_count = 2;
-		int steps_per_slice = 4;
+		int slice_count = 4;
+		int steps_per_slice = 8;
 		// Hold the march to a fixed share of the screen at every depth rather
 		// than to a fixed distance in the world. Without it the on-screen span
 		// shrinks with distance until the steps land on the same texel and the

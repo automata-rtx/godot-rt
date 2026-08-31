@@ -49,11 +49,11 @@ params;
 
 layout(set = 0, binding = 0) uniform sampler2D source_depth;
 
-layout(r16f, set = 1, binding = 0) uniform restrict writeonly image2D dest_mip0;
-layout(r16f, set = 1, binding = 1) uniform restrict writeonly image2D dest_mip1;
-layout(r16f, set = 1, binding = 2) uniform restrict writeonly image2D dest_mip2;
-layout(r16f, set = 1, binding = 3) uniform restrict writeonly image2D dest_mip3;
-layout(r16f, set = 1, binding = 4) uniform restrict writeonly image2D dest_mip4;
+layout(r32f, set = 1, binding = 0) uniform restrict writeonly image2D dest_mip0;
+layout(r32f, set = 1, binding = 1) uniform restrict writeonly image2D dest_mip1;
+layout(r32f, set = 1, binding = 2) uniform restrict writeonly image2D dest_mip2;
+layout(r32f, set = 1, binding = 3) uniform restrict writeonly image2D dest_mip3;
+layout(r32f, set = 1, binding = 4) uniform restrict writeonly image2D dest_mip4;
 
 shared float tile_depth[TILE][TILE];
 

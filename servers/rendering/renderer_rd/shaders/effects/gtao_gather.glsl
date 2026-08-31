@@ -24,6 +24,9 @@
 #define PI 3.14159265359
 #define HALF_PI 1.57079632679
 
+// Sine of the smallest elevation a sample must clear to count as an occluder.
+#define ANGLE_BIAS 0.03
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(push_constant, std430) uniform Params {
@@ -230,11 +233,12 @@ void main() {
 				}
 
 				// A sample at or below the shaded surface's own plane cannot
-				// occlude the hemisphere above it. Without this the floor
-				// occludes itself: every neighbor on a flat plane sits exactly
-				// at the horizon, and rounding a range that straddles the end
-				// of the arc marks sectors that should have stayed open.
-				if (dot(delta, normal) <= 0.0) {
+				// occlude the hemisphere above it, and one within a few degrees
+				// of that plane is grazing rather than occluding. The floor
+				// would otherwise occlude itself: at any finite depth precision
+				// a coplanar neighbor reconstructs to either side of the plane
+				// at random, and the half that lands above marks sectors.
+				if (dot(delta, normal) < dist * ANGLE_BIAS) {
 					continue;
 				}
 

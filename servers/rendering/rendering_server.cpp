@@ -3757,8 +3757,8 @@ void RenderingServer::init() {
 	// treating every occluder as infinitely deep.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/ground_truth/thickness", PROPERTY_HINT_RANGE, "0.01,2,0.01"), 0.25);
 	GLOBAL_DEF("rendering/environment/ssao/ground_truth/visibility_bitmask", true);
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/slices", PROPERTY_HINT_RANGE, "1,8,1"), 2);
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/steps_per_slice", PROPERTY_HINT_RANGE, "1,16,1"), 4);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/slices", PROPERTY_HINT_RANGE, "1,8,1"), 4);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/steps_per_slice", PROPERTY_HINT_RANGE, "1,16,1"), 8);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/quality", PROPERTY_HINT_ENUM, "Very Low (Fast),Low (Fast),Medium (Average),High (Slow),Ultra (Custom)"), 2);
 	GLOBAL_DEF("rendering/environment/ssil/half_size", true);

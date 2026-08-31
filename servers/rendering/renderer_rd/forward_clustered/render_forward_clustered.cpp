@@ -1470,7 +1470,7 @@ bool RenderForwardClustered::_ensure_gtao_buffers(Ref<RenderSceneBuffersRD> p_re
 	}
 
 	if (!p_render_buffers->has_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_DEPTH)) {
-		p_render_buffers->create_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_DEPTH, RD::DATA_FORMAT_R16_SFLOAT, usage,
+		p_render_buffers->create_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_DEPTH, RD::DATA_FORMAT_R32_SFLOAT, usage,
 				RD::TEXTURE_SAMPLES_1, p_size, 1, RendererRD::GTAO::DEPTH_MIP_COUNT);
 	}
 	if (!p_render_buffers->has_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_AO_A)) {
