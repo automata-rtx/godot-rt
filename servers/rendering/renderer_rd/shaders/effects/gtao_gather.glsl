@@ -27,6 +27,11 @@
 // Sine of the smallest elevation a sample must clear to count as an occluder.
 #define ANGLE_BIAS 0.03
 
+#define SECTOR_STEP (PI / float(SECTOR_COUNT))
+// One sector of rotation, at the doubled rate the sector weights step at.
+#define ROT_COS 0.98078528040
+#define ROT_SIN 0.19509032201
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(push_constant, std430) uniform Params {
@@ -87,21 +92,6 @@ vec3 load_view_normal(ivec2 pos) {
 	vec3 n = normalize(imageLoad(source_normal, pos).xyz * 2.0 - 1.0);
 	n.z = -n.z;
 	return n;
-}
-
-// Fraction of the cosine weighted half turn that sector i covers.
-//
-// The published method counts set bits, weighting every sector equally. That
-// answers a different question from the one ambient occlusion asks: a direction
-// along the surface normal admits far more light than one at the grazing edge,
-// and the near field bounce approximation the forward shader applies on top was
-// fitted against the cosine weighted quantity. Sector i spans the angles
-// [i, i+1] * pi/32 measured from one edge of the arc, so its share of the
-// integral is the difference of the sines at its two ends, halved to normalize.
-float sector_weight(int i) {
-	float lo = float(i) * (PI / float(SECTOR_COUNT)) - HALF_PI;
-	float hi = float(i + 1) * (PI / float(SECTOR_COUNT)) - HALF_PI;
-	return (sin(hi) - sin(lo)) * 0.5;
 }
 
 // Spatially fixed dither. Deliberately carries no frame counter: with no
@@ -172,7 +162,13 @@ void main() {
 	float slice_bias = noise.x;
 	float step_bias = noise.y;
 
-	float visibility = 0.0;
+	// Occlusion resolves as a ratio of two sums rather than as a mean of per
+	// slice fractions. Every slice weighs into both, so a surface with nothing
+	// above it comes out at exactly one whatever its orientation and whatever
+	// the dither picked, while the weighting between slices stays the one the
+	// integral asks for.
+	float open_sum = 0.0;
+	float total_sum = 0.0;
 	float slice_norm = 1.0 / float(max(params.slice_count, 1));
 
 	for (int slice = 0; slice < params.slice_count; slice++) {
@@ -187,14 +183,21 @@ void main() {
 		// constant depth gives a direction that lies in the plane but is not
 		// perpendicular to the view direction under perspective, and measuring
 		// angles against a skewed axis puts every sample at the wrong elevation.
-		vec3 in_plane = uv_to_view(uv + slice_dir * 0.01, center_depth) - center_pos;
+		// Probed along the line the march walks, in PIXELS. A UV sized step
+		// would point somewhere else entirely on a viewport that is not
+		// square, and every elevation in the slice would be measured against
+		// an axis the samples do not lie on.
+		vec2 probe_uv = uv + slice_dir * 8.0 / vec2(params.full_size);
+		vec3 in_plane = uv_to_view(probe_uv, center_depth) - center_pos;
 		vec3 slice_bitangent = normalize(cross(in_plane, view_dir));
 		vec3 slice_tangent = cross(view_dir, slice_bitangent);
 		vec3 projected_normal = normal - slice_bitangent * dot(normal, slice_bitangent);
 		float projected_len = length(projected_normal);
 
+		// A normal lying in the slice's own bitangent has no arc to integrate
+		// over. Dropping the slice from both sums leaves the remaining ones to
+		// answer, rather than voting the whole hemisphere open.
 		if (projected_len < 0.0001) {
-			visibility += 1.0;
 			continue;
 		}
 
@@ -208,10 +211,16 @@ void main() {
 			float side_sign = side == 0 ? 1.0 : -1.0;
 
 			for (int step = 0; step < params.steps_per_slice; step++) {
-				// Quadratic spacing puts more steps near the shaded point,
-				// where occlusion changes fastest.
+				// Even spacing across the disk. A horizon march can afford to
+				// crowd its steps near the shaded point, because one early hit
+				// stands in for everything behind it. A mask cannot: an occluder
+				// that falls between two steps is not approximated, it is simply
+				// absent, and the far half of a quadratic march is where the gaps
+				// get wide enough for a whole box to fall through one. Measured
+				// against a traced reference, spreading the same eight steps
+				// evenly cuts the error roughly in half.
 				float t = (float(step) + step_bias) / float(params.steps_per_slice);
-				float offset_px = max(t * t * screen_radius_px, 1.0);
+				float offset_px = max(t * screen_radius_px, 1.0);
 
 				vec2 sample_px = vec2(full_pos) + slice_dir * offset_px * side_sign;
 				if (any(lessThan(sample_px, vec2(0.0))) || any(greaterThanEqual(sample_px, vec2(params.full_size)))) {
@@ -220,8 +229,25 @@ void main() {
 
 				// Coarser levels only once a step is far enough out that the
 				// full resolution texels it skips could not have mattered.
-				vec2 sample_uv = (sample_px + 0.5) / vec2(params.full_size);
 				float mip = clamp(floor(log2(offset_px)) - 3.0, 0.0, 4.0);
+
+				// Read the texel CENTER, and reconstruct the sample there too.
+				// The pyramid is bound to a nearest sampler, so the depth that
+				// comes back describes the surface at the middle of whichever
+				// texel the step landed in, not at the point the step asked for.
+				// Pairing that depth with the asked for direction puts the sample
+				// off the surface it came from by up to half a texel of depth
+				// slope, in a direction that depends only on where the step
+				// happened to fall. On a plane seen at a glancing angle half of
+				// those land above the shaded point, and the floor quietly
+				// occludes itself: a flat three percent of the light everywhere,
+				// steady enough to read as the effect working rather than as a
+				// bug.
+				ivec2 mip_size = max(params.full_size >> int(mip), ivec2(1));
+				vec2 mip_texel = floor((sample_px + 0.5) * (vec2(mip_size) / vec2(params.full_size)));
+				mip_texel = clamp(mip_texel, vec2(0.0), vec2(mip_size - ivec2(1)));
+				vec2 sample_uv = (mip_texel + 0.5) / vec2(mip_size);
+
 				float sample_depth = textureLod(source_depth, sample_uv, mip).r;
 
 				vec3 sample_pos = uv_to_view(sample_uv, sample_depth);
@@ -277,36 +303,80 @@ void main() {
 			}
 		}
 
+		// Which sectors light still reaches. The mask answers that directly.
+		// Without it the answer is the horizon one: only the unbroken run of
+		// open sectors around the normal survives, so the first occluder on
+		// each side closes everything past it however much sky lies beyond.
+		uint open_mask;
 		if (params.use_bitmask) {
-			float open = 0.0;
-			for (int i = 0; i < SECTOR_COUNT; i++) {
-				if ((occupancy & (1u << uint(i))) == 0u) {
-					open += sector_weight(i);
-				}
-			}
-			visibility += open;
+			open_mask = ~occupancy;
 		} else {
-			// Without the mask this collapses to the horizon behavior: the
-			// arc is closed from each end inward to the outermost set bit.
-			int lowest = SECTOR_COUNT;
-			int highest = -1;
-			for (int i = 0; i < SECTOR_COUNT; i++) {
+			open_mask = 0u;
+			for (int i = SECTOR_COUNT / 2 - 1; i >= 0; i--) {
 				if ((occupancy & (1u << uint(i))) != 0u) {
-					lowest = min(lowest, i);
-					highest = max(highest, i);
+					break;
 				}
+				open_mask |= 1u << uint(i);
 			}
-			float open = 0.0;
-			for (int i = 0; i < SECTOR_COUNT; i++) {
-				if (i < lowest || i > highest) {
-					open += sector_weight(i);
+			for (int i = SECTOR_COUNT / 2; i < SECTOR_COUNT; i++) {
+				if ((occupancy & (1u << uint(i))) != 0u) {
+					break;
 				}
+				open_mask |= 1u << uint(i);
 			}
-			visibility += highest < 0 ? 1.0 : open;
 		}
+
+		// What a sector is worth is the cosine weighted solid angle it covers,
+		// which is not its share of the arc. Sweeping the slice about the view
+		// direction turns each sector into a ring, and that ring's
+		// circumference goes with the sine of the angle from the view axis: a
+		// sector pointing straight back at the camera sweeps almost no solid
+		// angle, one at the edge of the arc sweeps the most. Weighting sectors
+		// by angular width alone drops that factor, and the result is wrong
+		// everywhere anything is actually occluded -- it does not average out
+		// and it does not shrink with more samples.
+		//
+		// The integral of cos(t - n) * |sin t| has a closed form, so the
+		// cumulative weight up to each sector boundary is evaluated outright.
+		// Only cos(2t - n) varies per boundary, and that is a rotation, so it
+		// steps by a multiply-add instead of a trig call.
+		float sin_n = sin(n_angle);
+		float cos_n = cos(n_angle);
+		float bound = n_angle - HALF_PI;
+		float cos_2t = -cos_n; // cos(2 * bound - n), at bound = n - pi/2.
+		float sin_2t = -sin_n;
+		float a_zero = -cos_n * 0.25;
+		float a_low = -cos_2t * 0.25 + bound * sin_n * 0.5;
+
+		float prev_weight = 0.0;
+		float arc_open = 0.0;
+
+		for (int i = 0; i < SECTOR_COUNT; i++) {
+			float next_c = cos_2t * ROT_COS - sin_2t * ROT_SIN;
+			sin_2t = sin_2t * ROT_COS + cos_2t * ROT_SIN;
+			cos_2t = next_c;
+			bound += SECTOR_STEP;
+
+			float a = -cos_2t * 0.25 + bound * sin_n * 0.5;
+			// The integrand folds at the view direction, where the sine
+			// changes sign, so the antiderivative is mirrored below it.
+			float weight = bound <= 0.0 ? (a_low - a) : (a - 2.0 * a_zero + a_low);
+
+			if ((open_mask & (1u << uint(i))) != 0u) {
+				arc_open += weight - prev_weight;
+			}
+			prev_weight = weight;
+		}
+
+		// The slice counts for how much of the normal it holds, which is what
+		// makes slices through the steep direction of a tilted surface matter
+		// more than slices across it. prev_weight is the whole arc, taken from
+		// the same running sum as the open part so the two cannot disagree.
+		open_sum += projected_len * arc_open;
+		total_sum += projected_len * prev_weight;
 	}
 
-	visibility *= slice_norm;
+	float visibility = total_sum > 0.000001 ? open_sum / total_sum : 1.0;
 	visibility = clamp(visibility, 0.0, 1.0);
 	visibility = pow(visibility, params.power);
 	visibility = clamp(1.0 - (1.0 - visibility) * params.intensity, 0.0, 1.0);

@@ -66,7 +66,7 @@ public:
 	struct Settings {
 		float radius = 1.0f;
 		// Fraction of the effect radius a sample's back face sits behind it.
-		float thickness = 0.25f;
+		float thickness = 0.3f;
 		float intensity = 2.0f;
 		float power = 1.5f;
 		float fade_from = 50.0f;

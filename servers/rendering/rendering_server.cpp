@@ -3755,7 +3755,7 @@ void RenderingServer::init() {
 	// How far behind a sample its back face is assumed to sit, as a fraction of
 	// the radius. This is what lets light pass behind a thin surface instead of
 	// treating every occluder as infinitely deep.
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/ground_truth/thickness", PROPERTY_HINT_RANGE, "0.01,2,0.01"), 0.25);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/ground_truth/thickness", PROPERTY_HINT_RANGE, "0.01,2,0.01"), 0.3);
 	GLOBAL_DEF("rendering/environment/ssao/ground_truth/visibility_bitmask", true);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/slices", PROPERTY_HINT_RANGE, "1,8,1"), 4);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/steps_per_slice", PROPERTY_HINT_RANGE, "1,16,1"), 8);
