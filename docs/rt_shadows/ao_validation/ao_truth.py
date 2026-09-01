@@ -2,34 +2,22 @@
 geometry alone. Nothing here reads the engine: the boxes, the camera and the
 sampling are all restated independently, so agreement with a render is evidence
 and not a tautology."""
-import numpy as np, sys, math
 
-BOXES = np.array([
-    [ 0.0, -0.1,  0.0, 20.0,  0.2, 20.0],
-    [-1.2,  0.35, 0.0,  0.7,  0.7,  0.7],
-    [-0.25, 0.35, 0.0,  0.7,  0.7,  0.7],
-    [ 0.7,  0.35, 0.0,  0.7,  0.7,  0.7],
-    [ 1.65, 0.35, 0.0,  0.7,  0.7,  0.7],
-    [ 0.0,  0.8, -1.2,  4.0,  1.6,  0.15],
-    [ 1.6,  0.9,  0.9,  1.6,  0.06, 1.0],
-])
-LO = BOXES[:, :3] - BOXES[:, 3:] * 0.5
-HI = BOXES[:, :3] + BOXES[:, 3:] * 0.5
+import math
+import os
+import sys
 
-CAM_POS = np.array([3.2, 2.4, 3.2])
-CAM_TARGET = np.array([0.0, 0.4, 0.0])
+import numpy as np
+from scenes import active
+
+BOXES, LO, HI, CAM_POS, CAM_TARGET = active()
+
+
 FOV = 75.0
 W = H = 720
 STRIDE = 4
 SAMPLES = 256
 EPS = 1e-3
-
-import os as _os
-if _os.environ.get("AO_SCENE") == "thin":
-    from scene_thin import BOXES as _B, CAM_POS as _CP, CAM_TARGET as _CT
-    BOXES = _B
-    LO, HI = BOXES[:, :3] - BOXES[:, 3:] * 0.5, BOXES[:, :3] + BOXES[:, 3:] * 0.5
-    CAM_POS, CAM_TARGET = _CP, _CT
 
 
 def basis():
@@ -88,7 +76,7 @@ def main(radius, out_path):
 
     ndc_x = (px + 0.5) / W * 2.0 - 1.0
     ndc_y = 1.0 - (py + 0.5) / H * 2.0
-    d = (r * (ndc_x * tan_half)[:, None] + u * (ndc_y * tan_half)[:, None] + f)
+    d = r * (ndc_x * tan_half)[:, None] + u * (ndc_y * tan_half)[:, None] + f
     d /= np.linalg.norm(d, axis=1, keepdims=True)
 
     t, bi = intersect(CAM_POS, d, 1e9)
@@ -103,7 +91,7 @@ def main(radius, out_path):
 
     CHUNK = 3000
     for s in range(0, len(idx), CHUNK):
-        sel = idx[s:s + CHUNK]
+        sel = idx[s : s + CHUNK]
         p = P[sel] + N[sel] * EPS
         n = N[sel]
         tg, bt = onb(n)
@@ -115,25 +103,34 @@ def main(radius, out_path):
         rr = np.sqrt(u1)
         th = 2.0 * np.pi * u2
         lx, ly, lz = rr * np.cos(th), rr * np.sin(th), np.sqrt(np.maximum(1.0 - u1, 0.0))
-        dirs = (tg[:, None, :] * lx[:, :, None] + bt[:, None, :] * ly[:, :, None] + n[:, None, :] * lz[:, :, None])
+        dirs = tg[:, None, :] * lx[:, :, None] + bt[:, None, :] * ly[:, :, None] + n[:, None, :] * lz[:, :, None]
         origins = np.repeat(p, SAMPLES, axis=0)
         dirs = dirs.reshape(-1, 3)
         rad = radius
-        if _os.environ.get("AO_DIST_RADIUS"):
+        if os.environ.get("AO_DIST_RADIUS"):
             # world_radius = screen_radius * (2 * tan_half_fov) * view_depth,
             # the same quantity the gather derives when it holds the march to a
             # fixed share of the screen instead of a fixed distance.
             zc = (P[sel] - CAM_POS) @ f
-            rad = np.repeat(float(_os.environ["AO_DIST_RADIUS"]) * 2.0 * tan_half * zc, SAMPLES)
+            rad = np.repeat(float(os.environ["AO_DIST_RADIUS"]) * 2.0 * tan_half * zc, SAMPLES)
         tt, _ = intersect(origins, dirs, rad)
         blocked = np.isfinite(tt).reshape(m, SAMPLES)
         ao[sel] = 1.0 - blocked.mean(axis=1)
         print("  %d/%d" % (min(s + CHUNK, len(idx)), len(idx)), file=sys.stderr, flush=True)
 
-    np.savez_compressed(out_path, ao=ao.reshape(len(ys), len(xs)),
-                        hit=hit.reshape(len(ys), len(xs)), stride=STRIDE, w=W, h=H, radius=radius)
+    np.savez_compressed(
+        out_path,
+        ao=ao.reshape(len(ys), len(xs)),
+        hit=hit.reshape(len(ys), len(xs)),
+        stride=STRIDE,
+        w=W,
+        h=H,
+        radius=radius,
+    )
     v = ao[hit]
-    print("traced %d pixels, radius %.2f, AO mean %.4f min %.4f max %.4f" % (len(v), radius, v.mean(), v.min(), v.max()))
+    print(
+        "traced %d pixels, radius %.2f, AO mean %.4f min %.4f max %.4f" % (len(v), radius, v.mean(), v.min(), v.max())
+    )
 
 
 if __name__ == "__main__":
