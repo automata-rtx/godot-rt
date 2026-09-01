@@ -540,11 +540,46 @@ Small, but three separate CI rounds were burned on it the first time.
   list prepends C-style banners to XML files, and the resulting mess looks exactly like a second and
   third CI failure. `file` reporting a `.xml` as "C source" is the giveaway.
 
+### 18. Ground truth ambient occlusion
+
+Independent of everything above — it touches no raytracing and can be ported on its own, or left
+out. Four new files plus about a dozen small hooks.
+
+**Done when:** `docs/rt_shadows/ao_validation/` scores a render inside the numbers in section 9 of
+the fork guide, and flipping `Environment.ssao_method` between the two estimators changes what the
+frame looks like without changing anything else.
+
+- `effects/gtao.{h,cpp}` and three `shaders/effects/gtao_*.glsl` are new files. `SCsub` globs both
+  `*.glsl` and `*.cpp`, so no build file changes; the generated class name follows the file name
+  (`gtao_gather.glsl` -> `GtaoGatherShaderRD`).
+- The **only** shared state is `RB_SCOPE_SSAO` / `RB_FINAL`, an `R8_UNORM` full resolution texture.
+  Create it with exactly the format and usage the legacy path creates it with, and create it only
+  if absent. Everything else lives under a private `RB_SCOPE_GTAO`.
+- The pass runs from the same site the legacy one does in `_pre_opaque_render`, and must **skip**
+  `ss_effects->downsample_depth` when it is the only screen space effect active — that pyramid is
+  built for the other estimator and nothing reads it here.
+- `environment_set_ssao_method` is a **separate** `RenderingServer` entry point rather than another
+  parameter on `environment_set_ssao`, which keeps the existing binding hash intact. The chain is
+  the usual five links: `RenderingServer` (pure virtual) -> `RenderingServerDefault` (`FUNC2`) ->
+  `RenderingMethod` (pure virtual) -> `RendererSceneCull` (`PASS2`) -> `RendererSceneRender`
+  (non-virtual, forwards to `RendererEnvironmentStorage`). Miss the `rendering_method.h` link and
+  the error is a pure-virtual instantiation failure far from the change.
+- The enum lives in `rendering_server_enums.h` and needs a `VARIANT_ENUM_CAST_EXT` line and a
+  `BIND_ENUM_CONSTANT` alongside the existing SSAO quality ones.
+- `Environment::_validate_property` hides `ssao_detail`, `ssao_horizon` and `ssao_sharpness` when
+  the ground truth estimator will run; the existing `!= "forward_plus"` branch is the natural place
+  and its `else` was previously empty.
+- Two shader details are load-bearing and were both wrong before they were measured. The depth
+  pyramid is sampled with a **nearest** sampler, so a sample must be reconstructed at the center of
+  the texel its depth came from and not at the position the step asked for. And the per sector
+  weight carries the `|sin t|` Jacobian of the slice parametrization, not the sector's share of the
+  arc. Neither error is visible as noise; both are steady biases that read as the effect working.
+
 ---
 
 ## Quick reference: the seams that break
 
-Sixteen of the 155 mapped integration points were rated fragile — they depend on a data layout, an
+Eighteen of the mapped integration points were rated fragile — they depend on a data layout, an
 ordering, or a format Godot revises between versions. Check these first.
 
 | Seam | What to verify on the new engine |
@@ -561,6 +596,8 @@ ordering, or a format Godot revises between versions. Check these first.
 | Fog `Params` UBO / `ParamsUBO` | `cam_position` at the identical offset on both sides. |
 | Fog `ShaderGroup` enum | The four device-capability groups still contiguous and first; `+ SHADER_GROUP_BASE_RAYTRACED` silently maps wrong if a fifth is inserted. |
 | `_get_fog_process_variant` | Still `device_group * VOLUMETRIC_FOG_PROCESS_SHADER_MAX + idx`, and the push order matches the enum position-for-position. |
+| `RB_SCOPE_SSAO` / `RB_FINAL` format and usage | Still `R8_UNORM` with sampling and storage, and still what the forward shader samples for occlusion. Both estimators write it; if upstream changes it, change both. |
+| `Environment::_validate_property` forward_plus branch | The `else` this fork added is still reachable, i.e. upstream has not put its own `return` in front of it. |
 | `re-spirv` `SpvIsSupported()` | Still excludes ray-query opcodes so those modules bail out rather than being miscompiled. Watch stderr for the "not supported yet" line. |
 
 ---

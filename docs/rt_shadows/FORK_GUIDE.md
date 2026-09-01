@@ -1,8 +1,12 @@
 # The godot-rt fork: what it changes and how to use it
 
-This engine is Godot 4.8-dev with hardware ray-traced shadows added to the Forward+ renderer.
-Everything else about Godot is unchanged, so ordinary Godot knowledge applies — except in the
-places listed here, where it will actively mislead you.
+This engine is Godot 4.8-dev with two additions to the Forward+ renderer: hardware ray-traced
+shadows, and a second ambient occlusion estimator. Everything else about Godot is unchanged, so
+ordinary Godot knowledge applies — except in the places listed here, where it will actively
+mislead you.
+
+Sections 1 to 8 are the shadows. Section 9 is the occlusion; the two are independent and either
+can be used without the other.
 
 This document is self-contained. If you are working in a **game project** that uses this engine
 rather than in the engine repository, copy this file (or the parts you need) into that project so
@@ -54,6 +58,8 @@ Set the size back to `0.0` for the hard, uniform, cheaper behavior stock Godot g
 | --- | --- |
 | `Light3D.shadow_map_enabled` (bool, default `false`) | Render a shadow map for this light *even though* it takes its shadow from the raytraced mask. Buys back volumetric fog shafts and subsurface transmittance for that light, at the cost of an atlas quadrant and a shadow map render. |
 | `RenderingServer.light_set_shadow_map_enabled(light, enabled)` | The server-level equivalent. |
+| `Environment.ssao_method` (enum, default `SSAO_METHOD_DEFAULT`) | Which estimator fills the occlusion buffer for this environment. See section 9. |
+| `RenderingServer.environment_set_ssao_method(env, method)` | The server-level equivalent. |
 
 Nothing was removed or renamed.
 
@@ -402,3 +408,91 @@ anything else.
   check, the GDExtension API compatibility check, and the export/converter tests. Unit tests are
   not among them — the Windows job runs `--test` itself.
   If you change a bound property, run `godot --headless --doctool .` yourself and commit the result.
+
+---
+
+## 9. Ambient occlusion
+
+The fork adds a second estimator behind Godot's existing occlusion buffer. It writes the same
+texture the stock one does, so everything downstream — the occlusion the forward shader multiplies
+ambient light by, light affect, specular occlusion — keeps working without knowing which one ran.
+
+It is **off by default**: `rendering/environment/ssao/method` ships as `Screen Space (Legacy)`, and
+an `Environment` with `ssao_method` left at `Project Default` follows it. A project that has never
+heard of any of this behaves exactly as it did.
+
+### 9.1 What it is
+
+Slice-based horizon marching (Jimenez et al., GTAO, 2016) with a **visibility bitmask** (Therrien,
+Levesque and Gilet, 2023). The difference from a horizon march is what a slice remembers. A horizon
+march keeps one angle per side and treats everything past the first occluder as solid; this keeps a
+32 sector occupancy mask over the slice's half turn, and each sample marks the range of sectors
+between its front face and a back face pushed a fixed distance behind it. Two occluders with sky
+between them stay two occluders, and a thin surface stops occluding once the march passes behind it.
+
+That distinction is the whole point, and it is worth knowing when it pays. Measured against a CPU
+ray trace of the real geometry (mean absolute error / correlation, lower and higher being better):
+
+| scene | bitmask | bitmask off | legacy |
+| --- | --- | --- | --- |
+| thin geometry — a louvre, a standing fin, a table on thin legs | **0.0134 / 0.947** | 0.0346 / 0.875 | 0.0433 / 0.845 |
+| solid boxes | 0.0307 / 0.796 | **0.0235 / 0.859** | 0.0515 / 0.693 |
+
+The mask wins decisively wherever geometry is thin and loses slightly where it is thick, because on
+solid convex shapes "everything behind the first occluder is also occluded" happens to be true. Both
+beat the legacy estimator everywhere. The harness that produced those numbers is in
+`docs/rt_shadows/ao_validation/`, and re-running it is the way to check a change rather than
+arguing about a screenshot.
+
+### 9.2 Turning it on
+
+Either globally, with `rendering/environment/ssao/method = Ground Truth`, or per environment, with
+`Environment.ssao_method`. The per-environment setting exists so two environments in one project can
+be compared directly; `Project Default` on an environment means "follow the project setting", which
+is why old scenes are unaffected.
+
+`Environment.ssao_enabled`, `ssao_radius`, `ssao_intensity` and `ssao_power` mean the same thing to
+both estimators. `ssao_detail`, `ssao_horizon` and `ssao_sharpness` describe the legacy one only and
+the inspector hides them once the other is selected. `rendering/environment/ssao/half_size` and the
+fade distances apply to both; `quality` and `adaptive_target` do not.
+
+### 9.3 The settings that are actually worth touching
+
+Under `rendering/environment/ssao/ground_truth/`.
+
+| Setting | Default | What it is for |
+| --- | --- | --- |
+| `scale_radius_with_distance` | `true` | Hold the march to a fixed share of the screen rather than a fixed distance in the world. Without it the on-screen span shrinks as a surface recedes until the steps land on the same texel and the occlusion disappears. This is what buys coverage at distance, and it is why it is on. |
+| `screen_radius` | `0.05` | The share of screen width that span covers. `Environment.ssao_radius` multiplies it. |
+| `thickness` | `0.3` | How far behind a sample its back face sits, as a fraction of the effect radius. The one genuine tradeoff: raise it toward `1.0` for scenes of thick solid shapes, lower it for foliage, railings and slats. `0.3` is the joint optimum measured across both test scenes. |
+| `visibility_bitmask` | `true` | Off falls back to horizon behavior. Worth a look on a scene that is all solid geometry; not worth it otherwise. |
+| `slices` / `steps_per_slice` | `4` / `8` | The whole sample budget, and cost is linear in both. Raising `steps_per_slice` mostly buys the far half of the march. |
+
+### 9.4 Things to know before you are surprised
+
+- **Forward+ and single view only.** A stereo or XR viewport silently falls back to the legacy
+  estimator, because the occlusion buffer is a layer per eye and the gather has no notion of a
+  second one.
+- **The half resolution setting is genuinely free of consequence here.** Every world space quantity
+  the gather uses is derived from the full resolution pixel footprint, so halving the resolution
+  changes how many pixels get their own answer and nothing else. Measured, half and full differ by
+  0.06 of 255 on average, with under a tenth of a percent of pixels differing by more than 10.
+- **The step spacing is even, not quadratic.** A horizon march can crowd its steps near the shaded
+  point because one early hit stands in for everything behind it; a mask cannot, so an occluder
+  falling between two steps is absent rather than approximated. This is why `steps_per_slice`
+  matters more here than the same number would in a stock GTAO.
+- **Contact on thick solid geometry reads about 0.03 too bright**, and roughly a third of that is
+  inherent to screen space rather than to this implementation — a reference that only sees what the
+  camera sees misses the same occlusion. `thickness` is the knob.
+- **Switching an environment back to the legacy estimator releases the depth pyramid**, which is a
+  full resolution float target with mips. Switching between them per frame would thrash it.
+
+### 9.5 Where the code lives
+
+| File | What it does |
+| --- | --- |
+| `servers/rendering/renderer_rd/effects/gtao.{h,cpp}` | The pass driver: buffer sizing, push constants, the four dispatches. |
+| `shaders/effects/gtao_prefilter.glsl` | Linear view depth pyramid, five mips, biased toward the *farthest* of each quad. Deliberately not the pyramid the other screen space effects build, which is deinterleaved, half resolution based, and biased the other way. |
+| `shaders/effects/gtao_gather.glsl` | The march and the bitmask resolve. |
+| `shaders/effects/gtao_filter.glsl` | A 3x3 edge-aware denoise at gather resolution, then a depth-guided upsample into the shared occlusion buffer. |
+| `render_forward_clustered.cpp` | `_use_gtao`, `_ensure_gtao_buffers`, `_process_gtao`, and the branch that skips the legacy depth downsample when this is the only screen space effect running. |

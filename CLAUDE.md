@@ -86,6 +86,25 @@ an atlas quadrant and a shadow map render.
   capped at 1024 — for every directional light, not only raytraced ones. Both are configurable
   under `raytraced_shadows/directional/demoted_shadow_*`.
 
+## Ambient occlusion is two estimators now
+
+`Environment.ssao_method` and `rendering/environment/ssao/method` choose between the Intel point
+obscurance estimator Godot has always shipped and a slice-based horizon march with a **visibility
+bitmask** (GTAO + Therrien 2023). Both write the same occlusion buffer, so nothing downstream knows
+which ran. Ships **off**: the project setting defaults to legacy and an `Environment` defaults to
+`SSAO_METHOD_DEFAULT`, which follows it.
+
+- `ssao_enabled`, `ssao_radius`, `ssao_intensity`, `ssao_power`, `half_size` and the fade distances
+  apply to both. `ssao_detail`, `ssao_horizon`, `ssao_sharpness`, `quality` and `adaptive_target`
+  are legacy-only and inert on the new one.
+- Tuning lives under `rendering/environment/ssao/ground_truth/`. `thickness` (0.3) is the one real
+  tradeoff: higher suits thick solid shapes, lower suits foliage and slats.
+- **Forward+, single view only.** Stereo/XR falls back to legacy without saying so.
+- Half resolution is close to free of consequence here — the march reach is derived from the full
+  resolution footprint, so half and full differ by 0.06/255 on average.
+- Do not tune it by screenshot. `docs/rt_shadows/ao_validation/` traces the scene on the CPU two
+  ways and scores a render against both; section 9 of the fork guide has the numbers to beat.
+
 ## Working in this repo
 
 - `docs/rt_shadows/FORK_GUIDE.md` — what changed, why, and how to use it. Self-contained; copy it
