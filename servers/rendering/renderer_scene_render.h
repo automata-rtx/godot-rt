@@ -223,6 +223,8 @@ public:
 	float environment_get_ssao_sharpness(RID p_env) const;
 	float environment_get_ssao_direct_light_affect(RID p_env) const;
 	float environment_get_ssao_ao_channel_affect(RID p_env) const;
+	void environment_set_ssao_method(RID p_env, RSE::EnvironmentSSAOMethod p_method);
+	RSE::EnvironmentSSAOMethod environment_get_ssao_method(RID p_env) const;
 
 	virtual void environment_set_ssao_quality(RSE::EnvironmentSSAOQuality p_quality, bool p_half_size, float p_adaptive_target, int p_blur_passes, float p_fadeout_from, float p_fadeout_to) = 0;
 

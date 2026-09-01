@@ -697,6 +697,15 @@ enum EnvironmentSSAOQuality {
 	ENV_SSAO_QUALITY_ULTRA,
 };
 
+// Which estimator fills the occlusion buffer. DEFAULT defers to the project
+// setting, so a scene that has never heard of this keeps whatever the project
+// picked and two Environments in one project can still be compared side by side.
+enum EnvironmentSSAOMethod {
+	ENV_SSAO_METHOD_DEFAULT,
+	ENV_SSAO_METHOD_SCREEN_SPACE,
+	ENV_SSAO_METHOD_GROUND_TRUTH,
+};
+
 enum EnvironmentSSILQuality {
 	ENV_SSIL_QUALITY_VERY_LOW,
 	ENV_SSIL_QUALITY_LOW,

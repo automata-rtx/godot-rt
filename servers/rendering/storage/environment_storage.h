@@ -152,6 +152,7 @@ private:
 		float ssao_sharpness = 0.98;
 		float ssao_direct_light_affect = 0.0;
 		float ssao_ao_channel_affect = 0.0;
+		RSE::EnvironmentSSAOMethod ssao_method = RSE::ENV_SSAO_METHOD_DEFAULT;
 
 		// SSIL
 		bool ssil_enabled = false;
@@ -302,6 +303,8 @@ public:
 	float environment_get_ssao_sharpness(RID p_env) const;
 	float environment_get_ssao_direct_light_affect(RID p_env) const;
 	float environment_get_ssao_ao_channel_affect(RID p_env) const;
+	void environment_set_ssao_method(RID p_env, RSE::EnvironmentSSAOMethod p_method);
+	RSE::EnvironmentSSAOMethod environment_get_ssao_method(RID p_env) const;
 
 	// SSIL
 	void environment_set_ssil(RID p_env, bool p_enable, float p_radius, float p_intensity, float p_sharpness, float p_normal_rejection);

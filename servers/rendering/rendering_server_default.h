@@ -868,6 +868,7 @@ public:
 	FUNC1(environment_set_ssr_roughness_quality, RSE::EnvironmentSSRRoughnessQuality)
 
 	FUNC10(environment_set_ssao, RID, bool, float, float, float, float, float, float, float, float)
+	FUNC2(environment_set_ssao_method, RID, RSE::EnvironmentSSAOMethod)
 	FUNC6(environment_set_ssao_quality, RSE::EnvironmentSSAOQuality, bool, float, int, float, float)
 
 	FUNC6(environment_set_ssil, RID, bool, float, float, float, float)

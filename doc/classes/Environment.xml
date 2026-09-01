@@ -274,6 +274,10 @@
 		<member name="ssao_light_affect" type="float" setter="set_ssao_direct_light_affect" getter="get_ssao_direct_light_affect" default="0.0">
 			The screen-space ambient occlusion intensity in direct light. In real life, ambient occlusion only applies to indirect light, which means its effects can't be seen in direct light. Values higher than [code]0[/code] will make the SSAO effect visible in direct light.
 		</member>
+		<member name="ssao_method" type="int" setter="set_ssao_method" getter="get_ssao_method" enum="Environment.SSAOMethod" default="0">
+			Which estimator fills the screen-space ambient occlusion buffer for this environment. Leave it at [constant SSAO_METHOD_DEFAULT] to follow [member ProjectSettings.rendering/environment/ssao/method]; set it explicitly on two environments to compare the two against each other in one project.
+			[b]Note:[/b] Only effective when using the Forward+ renderer, and [constant SSAO_METHOD_GROUND_TRUTH] additionally falls back to the legacy estimator on a stereo or XR viewport.
+		</member>
 		<member name="ssao_power" type="float" setter="set_ssao_power" getter="get_ssao_power" default="1.5">
 			The distribution of occlusion. A higher value results in darker occlusion, similar to [member ssao_intensity], but with a sharper falloff.
 		</member>
@@ -443,6 +447,15 @@
 		</constant>
 		<constant name="TONE_MAPPER_AGX" value="4" enum="ToneMapper">
 			Uses an adjustable film-like tonemapping curve and desaturates bright values for a more realistic appearance. Better than other tonemappers at maintaining the hue of colors as they become brighter. The slowest tonemapping option.
+		</constant>
+		<constant name="SSAO_METHOD_DEFAULT" value="0" enum="SSAOMethod">
+			Use whichever estimator [member ProjectSettings.rendering/environment/ssao/method] selects. This is the default, so an environment saved before [member ssao_method] existed keeps the method the project picked.
+		</constant>
+		<constant name="SSAO_METHOD_SCREEN_SPACE" value="1" enum="SSAOMethod">
+			Use the point obscurance estimator the engine has always shipped, whatever the project setting says. [member ssao_detail], [member ssao_horizon] and [member ssao_sharpness] tune this one.
+		</constant>
+		<constant name="SSAO_METHOD_GROUND_TRUTH" value="2" enum="SSAOMethod">
+			Use the slice-based horizon march with a visibility bitmask, whatever the project setting says. It is closer to a traced reference, and markedly closer under thin geometry such as foliage, railings and slats, where the assumption that everything behind the first occluder is also occluded is false. Tuned by the [code]rendering/environment/ssao/ground_truth/[/code] project settings alongside [member ssao_radius], [member ssao_intensity] and [member ssao_power].
 		</constant>
 		<constant name="GLOW_BLEND_MODE_ADDITIVE" value="0" enum="GlowBlendMode">
 			Adds the glow effect to the scene.

@@ -1477,6 +1477,14 @@
 				Sets the variables to be used with the screen-space ambient occlusion (SSAO) post-process effect. See [Environment] for more details.
 			</description>
 		</method>
+		<method name="environment_set_ssao_method">
+			<return type="void" />
+			<param index="0" name="env" type="RID" />
+			<param index="1" name="method" type="int" enum="RenderingServer.EnvironmentSSAOMethod" />
+			<description>
+				Sets which estimator fills the screen-space ambient occlusion (SSAO) buffer for this environment. See [member Environment.ssao_method] for more details.
+			</description>
+		</method>
 		<method name="environment_set_ssao_quality">
 			<return type="void" />
 			<param index="0" name="quality" type="int" enum="RenderingServer.EnvironmentSSAOQuality" />
@@ -5842,6 +5850,15 @@
 		</constant>
 		<constant name="ENV_SSAO_QUALITY_ULTRA" value="4" enum="EnvironmentSSAOQuality">
 			Highest quality screen-space ambient occlusion. Uses the adaptive target setting which can be dynamically adjusted to smoothly balance performance and visual quality.
+		</constant>
+		<constant name="ENV_SSAO_METHOD_DEFAULT" value="0" enum="EnvironmentSSAOMethod">
+			Fill the ambient occlusion buffer with whichever estimator [member ProjectSettings.rendering/environment/ssao/method] selects.
+		</constant>
+		<constant name="ENV_SSAO_METHOD_SCREEN_SPACE" value="1" enum="EnvironmentSSAOMethod">
+			Fill the ambient occlusion buffer with the point obscurance estimator the engine has always shipped, whatever the project setting says.
+		</constant>
+		<constant name="ENV_SSAO_METHOD_GROUND_TRUTH" value="2" enum="EnvironmentSSAOMethod">
+			Fill the ambient occlusion buffer with the slice-based horizon march with a visibility bitmask, whatever the project setting says.
 		</constant>
 		<constant name="ENV_SSIL_QUALITY_VERY_LOW" value="0" enum="EnvironmentSSILQuality">
 			Lowest quality of screen-space indirect lighting.

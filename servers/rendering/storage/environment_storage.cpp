@@ -711,6 +711,18 @@ void RendererEnvironmentStorage::environment_set_ssao(RID p_env, bool p_enable, 
 	env->ssao_ao_channel_affect = p_ao_channel_affect;
 }
 
+void RendererEnvironmentStorage::environment_set_ssao_method(RID p_env, RSE::EnvironmentSSAOMethod p_method) {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL(env);
+	env->ssao_method = p_method;
+}
+
+RSE::EnvironmentSSAOMethod RendererEnvironmentStorage::environment_get_ssao_method(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, RSE::ENV_SSAO_METHOD_DEFAULT);
+	return env->ssao_method;
+}
+
 bool RendererEnvironmentStorage::environment_get_ssao_enabled(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, false);

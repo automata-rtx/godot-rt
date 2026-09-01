@@ -1335,6 +1335,7 @@ public:
 
 	// SSAO
 	PASS10(environment_set_ssao, RID, bool, float, float, float, float, float, float, float, float)
+	PASS2(environment_set_ssao_method, RID, RSE::EnvironmentSSAOMethod)
 
 	PASS1RC(bool, environment_get_ssao_enabled, RID)
 	PASS1RC(float, environment_get_ssao_radius, RID)

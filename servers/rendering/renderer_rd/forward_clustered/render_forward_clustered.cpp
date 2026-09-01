@@ -1438,7 +1438,7 @@ void RenderForwardClustered::setup_added_decal(const Transform3D &p_transform, c
 
 /* Render scene */
 
-bool RenderForwardClustered::_use_gtao(Ref<RenderSceneBuffersRD> p_render_buffers) const {
+bool RenderForwardClustered::_use_gtao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment) const {
 	if (gtao == nullptr || !gtao->is_valid() || p_render_buffers.is_null()) {
 		return false;
 	}
@@ -1447,6 +1447,16 @@ bool RenderForwardClustered::_use_gtao(Ref<RenderSceneBuffersRD> p_render_buffer
 	// effect it has always had rather than rendering one eye's occlusion twice.
 	if (p_render_buffers->get_view_count() > 1) {
 		return false;
+	}
+	// The Environment decides for itself when it has an opinion, which is what
+	// makes two of them comparable in one project. Otherwise the project setting
+	// answers, so a scene saved before this property existed keeps the method the
+	// project picked rather than silently changing renderer.
+	if (p_environment.is_valid()) {
+		const RSE::EnvironmentSSAOMethod method = environment_get_ssao_method(p_environment);
+		if (method != RSE::ENV_SSAO_METHOD_DEFAULT) {
+			return method == RSE::ENV_SSAO_METHOD_GROUND_TRUTH;
+		}
 	}
 	return int(GLOBAL_GET_CACHED(int, "rendering/environment/ssao/method")) == 1;
 }
@@ -1804,7 +1814,7 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		// Ground truth occlusion builds its own depth pyramid, so it does not
 		// need the deinterleaved one below; when it is the only screen space
 		// effect running, that pass is skipped entirely.
-		const bool use_gtao = p_use_ssao && _use_gtao(rb);
+		const bool use_gtao = p_use_ssao && _use_gtao(rb, p_render_data->environment);
 
 		if ((p_use_ssao && !use_gtao) || p_use_ssil) {
 			RENDER_TIMESTAMP("Prepare Depth for SSAO/SSIL");
@@ -1818,6 +1828,12 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			if (use_gtao) {
 				_process_gtao(rb, p_render_data->environment, p_normal_roughness_slices, p_render_data->scene_data->view_projection);
 			} else if (p_use_ssao) {
+				// Switching back to the legacy estimator strands the ground truth
+				// depth pyramid, which is a full resolution float target with
+				// mips and worth more than the cost of dropping it.
+				if (rb->has_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_DEPTH)) {
+					rb->clear_context(RB_SCOPE_GTAO);
+				}
 				_process_ssao(rb, p_render_data->environment, p_normal_roughness_slices, p_render_data->scene_data->view_projection);
 			}
 
