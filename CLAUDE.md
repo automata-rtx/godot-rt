@@ -98,7 +98,14 @@ which ran. Ships **off**: the project setting defaults to legacy and an `Environ
   apply to both. `ssao_detail`, `ssao_horizon`, `ssao_sharpness`, `quality` and `adaptive_target`
   are legacy-only and inert on the new one.
 - Tuning lives under `rendering/environment/ssao/ground_truth/`. `thickness` (0.3) is the one real
-  tradeoff: higher suits thick solid shapes, lower suits foliage and slats.
+  tradeoff: higher suits thick solid shapes, lower suits foliage and slats. `screen_radius` (0.05)
+  is a fraction of screen **height**, and `intensity_scale` (0.5) divides down the `ssao_intensity`
+  default of 2.0, which is a legacy-estimator calibration constant.
+- **The strength curve is a ratio, not a subtraction**, so occlusion approaches black without
+  reaching it. The subtractive form clips: at intensity 2.0 every visibility below 0.63 lands on
+  exactly zero, which put 3% of an interior frame on one flat black value and read as harsh wedges.
+  A *flawless* traced occlusion through that curve reproduced the artifact — if occlusion ever looks
+  crushed and speckled, suspect the transfer before the estimator.
 - **Forward+, single view only.** Stereo/XR falls back to legacy without saying so.
 - Half resolution is close to free of consequence here — the march reach is derived from the full
   resolution footprint, so half and full differ by 0.06/255 on average.

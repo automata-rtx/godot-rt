@@ -569,11 +569,32 @@ frame looks like without changing anything else.
 - `Environment::_validate_property` hides `ssao_detail`, `ssao_horizon` and `ssao_sharpness` when
   the ground truth estimator will run; the existing `!= "forward_plus"` branch is the natural place
   and its `else` was previously empty.
-- Two shader details are load-bearing and were both wrong before they were measured. The depth
-  pyramid is sampled with a **nearest** sampler, so a sample must be reconstructed at the center of
-  the texel its depth came from and not at the position the step asked for. And the per sector
-  weight carries the `|sin t|` Jacobian of the slice parametrization, not the sector's share of the
-  arc. Neither error is visible as noise; both are steady biases that read as the effect working.
+- Four details are load-bearing and every one of them was wrong before it was measured. Two are in
+  the march: the depth pyramid is sampled with a **nearest** sampler, so a sample must be
+  reconstructed at the center of the texel its depth came from and not at the position the step
+  asked for; and the per sector weight carries the `|sin t|` Jacobian of the slice parametrization,
+  not the sector's share of the arc. Neither is visible as noise, both are steady biases that read
+  as the effect working.
+- The third is the **strength curve**, and it is the one that looks like an estimator failure and is
+  not. Scaling occlusion by subtracting a multiple of the distance from white has a hard floor: at
+  an intensity of two, everything at or below a visibility of 0.63 lands on exactly zero. An
+  ordinary concave corner IS about 0.63, so in an interior a third of the tonal range collapses onto
+  one flat black value inside the gather, before any filter sees it. Use a ratio instead. The test
+  that identifies this in one step is to put a **flawless ray-traced occlusion** through the curve:
+  if the artifact survives, the estimator was never the problem.
+- The fourth is the **half resolution stride**. `gather_size_for` rounds up and integer division
+  rounds down, so recovering the stride in the shader as `full_size.x / gather_size.x` gives 2 at
+  every even width and 1 at every odd one, and at an odd width the gather then answers only for the
+  top left quadrant. Pass the stride in the push constant. Its signature is a brighter, smoother,
+  left/right asymmetric image, which is not what a dark splotchy failure looks like -- do not let it
+  be misattributed, and do not "fix" it by rounding the gather size down instead, which drops the
+  last column at widths like 1281.
+- One quantity is a function of viewport shape and must be anchored deliberately. Under
+  `scale_radius_with_distance` the world reach comes from `uv_to_view_mul`, which on the x axis is
+  `2 * tan(fovy/2) * aspect`; a camera holds the VERTICAL field fixed, so anchoring a screen-space
+  fraction to width makes the effect reach 1.8x further on a 16:9 viewport than on a square one.
+  Anchor to height. The fixed-world-radius branch is already aspect invariant and must be left
+  alone.
 
 ---
 

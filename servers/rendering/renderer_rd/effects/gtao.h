@@ -139,6 +139,13 @@ private:
 		float screen_radius;
 		uint32_t orthogonal;
 		uint32_t use_bitmask;
+
+		// Full resolution pixels per gather texel, per axis. Passed rather than
+		// recovered in the shader: gather_size_for rounds UP and an integer
+		// division rounds DOWN, so at an odd width the two disagree.
+		int32_t gather_stride[2];
+		uint32_t pad0;
+		uint32_t pad1;
 	};
 
 	struct FilterPushConstant {

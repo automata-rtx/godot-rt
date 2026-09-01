@@ -1525,13 +1525,17 @@ void RenderForwardClustered::_process_gtao(Ref<RenderSceneBuffersRD> p_render_bu
 		return;
 	}
 
-	// Radius, intensity, power and the fade come from the same Environment
-	// properties the legacy effect reads, so a scene authored against one is
-	// authored against the other. Detail, horizon and sharpness describe the
-	// other estimator and have no counterpart here.
+	// Radius, power and the fade come from the same Environment properties the
+	// legacy effect reads, so a scene authored against one is authored against
+	// the other. Detail, horizon and sharpness describe the other estimator and
+	// have no counterpart here. Intensity is the exception: its 2.0 default
+	// compensates for how little the legacy estimator's obscurance measures, so
+	// it is scaled down before reaching an estimator that measures the deficit
+	// directly.
 	RendererRD::GTAO::Settings settings;
 	settings.radius = environment_get_ssao_radius(p_environment);
-	settings.intensity = environment_get_ssao_intensity(p_environment);
+	settings.intensity = environment_get_ssao_intensity(p_environment) *
+			GLOBAL_GET_CACHED(float, "rendering/environment/ssao/ground_truth/intensity_scale");
 	settings.power = environment_get_ssao_power(p_environment);
 	settings.fade_from = GLOBAL_GET_CACHED(float, "rendering/environment/ssao/fadeout_from");
 	settings.fade_to = GLOBAL_GET_CACHED(float, "rendering/environment/ssao/fadeout_to");

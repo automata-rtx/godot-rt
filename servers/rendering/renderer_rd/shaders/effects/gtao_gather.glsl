@@ -67,11 +67,20 @@ layout(push_constant, std430) uniform Params {
 	// When set, the radius is chosen so the march covers a fixed fraction of
 	// the screen at every depth rather than a fixed distance in the world.
 	bool scale_radius_with_distance;
-	// Fraction of screen width the march covers when it does.
+	// Fraction of screen HEIGHT the march covers when it does.
 	float screen_radius;
 
 	bool orthogonal;
 	bool use_bitmask;
+
+	// Full resolution pixels per gather texel, per axis. Passed rather than
+	// recovered here, because the gather size is rounded UP and an integer
+	// division rounds DOWN: at any odd width the two disagree, the recovered
+	// stride collapses from two to one, and the gather then answers only for
+	// the top left quadrant of the screen while the rest is magnified over it.
+	ivec2 gather_stride;
+	uint pad0;
+	uint pad1;
 }
 params;
 
@@ -114,7 +123,7 @@ void main() {
 	// keeps the near field identical between the two resolutions: only how many
 	// pixels get their own answer changes, not how far the march reaches or how
 	// close its first step lands.
-	ivec2 full_pos = pos * (params.full_size.x / max(params.gather_size.x, 1));
+	ivec2 full_pos = pos * params.gather_stride;
 	full_pos = min(full_pos, params.full_size - ivec2(1));
 
 	float center_depth = texelFetch(source_depth, full_pos, 0).r;
@@ -140,13 +149,22 @@ void main() {
 	float world_radius = params.radius;
 	float screen_radius_px;
 	if (params.scale_radius_with_distance) {
-		screen_radius_px = params.screen_radius * float(params.full_size.x);
+		// Anchored to the VERTICAL axis. A camera holds its vertical field of
+		// view fixed and widening the window adds horizontal field, so a
+		// fraction of screen WIDTH is a fraction of a quantity that grows with
+		// the aspect ratio -- and the same setting would reach almost twice as
+		// far on a sixteen by nine viewport as on the square one it was tuned
+		// on. Height is the axis that does not move.
+		screen_radius_px = params.screen_radius * float(params.full_size.y);
 		// The radius property becomes a multiplier here rather than a distance,
 		// because the on-screen span is what is being held fixed.
-		world_radius = params.radius * params.screen_radius * abs(params.uv_to_view_mul.x) * center_depth;
+		world_radius = params.radius * params.screen_radius * abs(params.uv_to_view_mul.y) * center_depth;
 	} else {
 		// The whole screen spans uv_to_view_mul.x * depth in view space, so a
-		// world radius is that fraction of it.
+		// world radius is that fraction of it. This one needs no aspect
+		// correction and must not be given one: a pixel is the same world
+		// length on either axis, so width over the horizontal extent and height
+		// over the vertical extent are the same number.
 		float view_extent = params.orthogonal ? 1.0 : max(center_depth, 0.0001);
 		screen_radius_px = (world_radius / max(abs(params.uv_to_view_mul.x) * view_extent, 0.0001)) * float(params.full_size.x);
 	}
@@ -378,8 +396,27 @@ void main() {
 
 	float visibility = total_sum > 0.000001 ? open_sum / total_sum : 1.0;
 	visibility = clamp(visibility, 0.0, 1.0);
-	visibility = pow(visibility, params.power);
-	visibility = clamp(1.0 - (1.0 - visibility) * params.intensity, 0.0, 1.0);
+
+	// Shape first, strength second -- but strength as a RATIO rather than as a
+	// subtraction. What the line above produces is a normalized cosine weighted
+	// visibility, so scaling its distance from white by the intensity subtracts
+	// a fixed multiple of a quantity that is already the right size, and that
+	// form has a hard floor: at an intensity of two, every visibility at or
+	// below 0.63 -- roughly what an ordinary concave corner IS -- lands on
+	// exactly zero. A third of the tonal range collapses onto one flat black
+	// value here, inside the gather, before the filter downstream ever sees it,
+	// and no filter can recover a value that was never stored. Running a
+	// FLAWLESS traced occlusion through the old line put seven percent of an
+	// interior frame on black and produced the same hard wedges the estimator
+	// was blamed for.
+	//
+	// The ratio below has the same slope at the white end, so a lightly
+	// occluded surface looks the way it always did and an artist's tuning still
+	// means what it meant. It approaches zero without arriving, so a corner
+	// stays a gradient. At an intensity of one it is the identity, which is
+	// what the validation harness measures.
+	float open = pow(visibility, params.power);
+	visibility = open / max(open + (1.0 - open) * params.intensity, 0.0001);
 	visibility = mix(1.0, visibility, fade);
 
 	imageStore(dest_ao, pos, vec4(visibility, center_depth, 0.0, 0.0));

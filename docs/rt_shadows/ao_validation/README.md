@@ -26,10 +26,25 @@ direct light. A shaded pixel is then exactly `ambient * albedo * occlusion`, so 
 by the same render with occlusion disabled recovers the occlusion term itself rather than something
 the shading has already mixed. `ao_compare.py` does that division, undoing the sRGB transfer first.
 
-`AO_SCENE=thin` swaps in a second scene of thin geometry -- a louvre of slats, a standing fin, a
-table on thin legs. It exists because the default scene is entirely solid and convex, which makes
-"everything behind the first occluder is also occluded" accidentally TRUE; a horizon march scores
-well there for the wrong reason, and the visibility bitmask has nothing to win.
+`AO_SCENE` picks the scene. Each exists because the ones before it missed something.
+
+- default: solid convex boxes on a large floor, viewed from above and outside.
+- `thin`: a louvre of slats, a standing fin, a table on thin legs. The default scene is entirely
+  solid and convex, which makes "everything behind the first occluder is also occluded"
+  accidentally TRUE; a horizon march scores well there for the wrong reason and the visibility
+  bitmask has nothing to win.
+- `room`: a closed interior with the camera inside it, at 1280x720. Both of the others are open
+  scenes viewed from above with a mean occlusion under one percent, so a *correct* occlusion barely
+  enters the range the output transfer operates on -- 0.3 to 0.7 percent of those frames against 7
+  percent of a room. That is how a transfer that clipped a third of the tonal range to black passed
+  validation twice. It is also the only scene that is not square, so it is the only one that can
+  catch a defect that depends on the aspect ratio.
+
+**Score the estimator AND what ships.** `main.gd` defaults to the identity transfer so
+`ao_compare.py` can recover raw visibility by division, which measures the estimator. Run it again
+with `AO_INTENSITY` and `AO_POWER` set to the values a project actually uses to measure what a
+player sees. `ao_compare.py` prints the fraction of the frame below one 8-bit code alongside the
+error columns, because a clipping transfer looks fine on every average and terrible on screen.
 
 ## Running it
 

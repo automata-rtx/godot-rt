@@ -437,6 +437,7 @@ ray trace of the real geometry (mean absolute error / correlation, lower and hig
 | --- | --- | --- | --- |
 | thin geometry — a louvre, a standing fin, a table on thin legs | **0.0134 / 0.947** | 0.0346 / 0.875 | 0.0433 / 0.845 |
 | solid boxes | 0.0307 / 0.796 | **0.0235 / 0.859** | 0.0515 / 0.693 |
+| an interior room, camera inside it | **0.0112 / 0.927** | — | — |
 
 The mask wins decisively wherever geometry is thin and loses slightly where it is thick, because on
 solid convex shapes "everything behind the first occluder is also occluded" happens to be true. Both
@@ -463,10 +464,11 @@ Under `rendering/environment/ssao/ground_truth/`.
 | Setting | Default | What it is for |
 | --- | --- | --- |
 | `scale_radius_with_distance` | `true` | Hold the march to a fixed share of the screen rather than a fixed distance in the world. Without it the on-screen span shrinks as a surface recedes until the steps land on the same texel and the occlusion disappears. This is what buys coverage at distance, and it is why it is on. |
-| `screen_radius` | `0.05` | The share of screen width that span covers. `Environment.ssao_radius` multiplies it. |
+| `screen_radius` | `0.05` | The share of screen **height** that span covers. `Environment.ssao_radius` multiplies it. Height, not width, because a camera holds its vertical field of view fixed — anchoring to width would make the same setting reach almost twice as far on a 16:9 viewport as on a square one. |
 | `thickness` | `0.3` | How far behind a sample its back face sits, as a fraction of the effect radius. The one genuine tradeoff: raise it toward `1.0` for scenes of thick solid shapes, lower it for foliage, railings and slats. `0.3` is the joint optimum measured across both test scenes. |
 | `visibility_bitmask` | `true` | Off falls back to horizon behavior. Worth a look on a scene that is all solid geometry; not worth it otherwise. |
 | `slices` / `steps_per_slice` | `4` / `8` | The whole sample budget, and cost is linear in both. Raising `steps_per_slice` mostly buys the far half of the march. |
+| `intensity_scale` | `0.5` | What `Environment.ssao_intensity` is multiplied by before this estimator sees it. That property defaults to `2.0`, and the `2.0` belongs to the legacy estimator: its obscurance is a proximity average rather than a visibility integral and measures a fraction of the real deficit, so it needs multiplying up. This one reports the deficit directly. Leave it alone unless you want the whole effect uniformly stronger or weaker. |
 
 ### 9.4 Things to know before you are surprised
 
@@ -484,6 +486,14 @@ Under `rendering/environment/ssao/ground_truth/`.
 - **Contact on thick solid geometry reads about 0.03 too bright**, and roughly a third of that is
   inherent to screen space rather than to this implementation — a reference that only sees what the
   camera sees misses the same occlusion. `thickness` is the knob.
+- **The strength curve approaches black without reaching it, deliberately.** `ssao_intensity` scales
+  the occlusion as a ratio rather than by subtracting a multiple of the distance from white. The
+  subtractive form the effect first shipped with has a hard floor — at the stock intensity every
+  visibility at or below 0.63, which is roughly what an ordinary concave corner *is*, lands on
+  exactly zero. In an interior that put three percent of the frame on one flat black value, which
+  reads as harsh wedges with speckled edges and cannot be filtered back out because the information
+  was never stored. Putting a *flawless* ray-traced occlusion through that curve produced the same
+  artifact, which is how it was identified.
 - **Switching an environment back to the legacy estimator releases the depth pyramid**, which is a
   full resolution float target with mips. Switching between them per frame would thrash it.
 

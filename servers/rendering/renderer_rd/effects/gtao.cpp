@@ -219,6 +219,8 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 		push.screen_radius = CLAMP(p_settings.screen_radius, 0.001f, 0.5f);
 		push.orthogonal = orthogonal ? 1 : 0;
 		push.use_bitmask = p_settings.use_bitmask ? 1 : 0;
+		push.gather_stride[0] = p_settings.half_resolution ? 2 : 1;
+		push.gather_stride[1] = p_settings.half_resolution ? 2 : 1;
 
 		RD::ComputeListID list = RD::get_singleton()->compute_list_begin();
 		RD::get_singleton()->compute_list_bind_compute_pipeline(list, gather_pipeline);

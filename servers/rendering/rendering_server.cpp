@@ -3764,6 +3764,15 @@ void RenderingServer::init() {
 	GLOBAL_DEF("rendering/environment/ssao/ground_truth/visibility_bitmask", true);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/slices", PROPERTY_HINT_RANGE, "1,8,1"), 4);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/steps_per_slice", PROPERTY_HINT_RANGE, "1,16,1"), 8);
+	// Environment.ssao_intensity defaults to 2.0, and that 2.0 is a calibration
+	// constant belonging to the legacy estimator: its obscurance is a distance
+	// weighted proximity average over a screen disk rather than a visibility
+	// integral, and on the same geometry it measures a fraction of the real
+	// deficit, so it needs multiplying up. This estimator reports the deficit
+	// directly, so handing it the same number doubles a figure that is already
+	// right. Scale it here rather than moving the Environment default, which
+	// the legacy estimator still needs. Set it to 1.0 for the old behavior.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/ground_truth/intensity_scale", PROPERTY_HINT_RANGE, "0.05,2,0.01"), 0.5);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/quality", PROPERTY_HINT_ENUM, "Very Low (Fast),Low (Fast),Medium (Average),High (Slow),Ultra (Custom)"), 2);
 	GLOBAL_DEF("rendering/environment/ssil/half_size", true);

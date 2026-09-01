@@ -13,9 +13,9 @@ import sys
 import numpy as np
 from scenes import active
 
-BOXES, LO, HI, CAM_POS, CAM_TARGET = active()
+BOXES, LO, HI, CAM_POS, CAM_TARGET, W, H = active()
 
-FOV, W, H, STRIDE, SAMPLES, STEPS, EPS = 75.0, 720, 720, 4, 96, 24, 1e-3
+FOV, STRIDE, SAMPLES, STEPS, EPS = 75.0, 4, 96, 24, 1e-3
 
 
 def basis():
@@ -27,7 +27,10 @@ def basis():
 
 
 F, R, U = basis()
+# Vertical half-field, which is what a camera holds fixed; horizontal follows
+# the aspect ratio.
 TAN = math.tan(math.radians(FOV) * 0.5)
+TAN_X = TAN * (W / H)
 
 
 def intersect(o, d, tmax):
@@ -71,7 +74,7 @@ def to_screen(p):
     x = rel @ R
     y = rel @ U
     safe = np.maximum(z, 1e-6)
-    px = ((x / (safe * TAN)) * 0.5 + 0.5) * W
+    px = ((x / (safe * TAN_X)) * 0.5 + 0.5) * W
     py = (0.5 - (y / (safe * TAN)) * 0.5) * H
     return px, py, z
 
@@ -81,7 +84,7 @@ def main(radius, thickness, out_path):
     gx, gy = np.meshgrid(np.arange(W), np.arange(H))
     ndc_x = (gx.ravel() + 0.5) / W * 2 - 1
     ndc_y = 1 - (gy.ravel() + 0.5) / H * 2
-    d = R * (ndc_x * TAN)[:, None] + U * (ndc_y * TAN)[:, None] + F
+    d = R * (ndc_x * TAN_X)[:, None] + U * (ndc_y * TAN)[:, None] + F
     d /= np.linalg.norm(d, axis=1, keepdims=True)
     t, bi = intersect(CAM_POS, d, 1e9)
     P_all = CAM_POS + d * t[:, None]

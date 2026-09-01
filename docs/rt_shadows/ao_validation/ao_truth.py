@@ -10,11 +10,10 @@ import sys
 import numpy as np
 from scenes import active
 
-BOXES, LO, HI, CAM_POS, CAM_TARGET = active()
+BOXES, LO, HI, CAM_POS, CAM_TARGET, W, H = active()
 
 
 FOV = 75.0
-W = H = 720
 STRIDE = 4
 SAMPLES = 256
 EPS = 1e-3
@@ -66,7 +65,10 @@ def onb(n):
 
 def main(radius, out_path):
     f, r, u = basis()
+    # FOV is the VERTICAL field, which is what a camera holds fixed; the
+    # horizontal one follows the aspect ratio.
     tan_half = math.tan(math.radians(FOV) * 0.5)
+    tan_x = tan_half * (W / H)
 
     xs = np.arange(0, W, STRIDE)
     ys = np.arange(0, H, STRIDE)
@@ -76,7 +78,7 @@ def main(radius, out_path):
 
     ndc_x = (px + 0.5) / W * 2.0 - 1.0
     ndc_y = 1.0 - (py + 0.5) / H * 2.0
-    d = r * (ndc_x * tan_half)[:, None] + u * (ndc_y * tan_half)[:, None] + f
+    d = r * (ndc_x * tan_x)[:, None] + u * (ndc_y * tan_half)[:, None] + f
     d /= np.linalg.norm(d, axis=1, keepdims=True)
 
     t, bi = intersect(CAM_POS, d, 1e9)
@@ -108,7 +110,8 @@ def main(radius, out_path):
         dirs = dirs.reshape(-1, 3)
         rad = radius
         if os.environ.get("AO_DIST_RADIUS"):
-            # world_radius = screen_radius * (2 * tan_half_fov) * view_depth,
+            # world_radius = screen_radius * (2 * tan(fovy/2)) * view_depth,
+            # anchored to the VERTICAL axis exactly as the gather anchors it,
             # the same quantity the gather derives when it holds the march to a
             # fixed share of the screen instead of a fixed distance.
             zc = (P[sel] - CAM_POS) @ f

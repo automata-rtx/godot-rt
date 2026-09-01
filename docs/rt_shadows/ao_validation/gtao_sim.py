@@ -9,9 +9,9 @@ import math
 import numpy as np
 from scenes import active
 
-BOXES, LO, HI, CAM_POS, CAM_TARGET = active()
+BOXES, LO, HI, CAM_POS, CAM_TARGET, W, H = active()
 
-FOV, W, H, STRIDE, EPS = 75.0, 720, 720, 4, 1e-3
+FOV, STRIDE, EPS = 75.0, 4, 1e-3
 
 SECTORS = 32
 PI = math.pi
@@ -30,8 +30,9 @@ def basis():
 
 F, R, U = basis()
 TAN = math.tan(math.radians(FOV) * 0.5)
-MUL = np.array([TAN * 2.0, TAN * -2.0])
-ADD = np.array([-TAN, TAN])
+TAN_X = TAN * (W / H)
+MUL = np.array([TAN_X * 2.0, TAN * -2.0])
+ADD = np.array([-TAN_X, TAN])
 
 
 def intersect(o, d, tmax):
@@ -65,7 +66,7 @@ def gbuffer():
     gx, gy = np.meshgrid(np.arange(W), np.arange(H))
     ndc_x = (gx.ravel() + 0.5) / W * 2 - 1
     ndc_y = 1 - (gy.ravel() + 0.5) / H * 2
-    d = R * (ndc_x * TAN)[:, None] + U * (ndc_y * TAN)[:, None] + F
+    d = R * (ndc_x * TAN_X)[:, None] + U * (ndc_y * TAN)[:, None] + F
     d /= np.linalg.norm(d, axis=1, keepdims=True)
     t, bi = intersect(CAM_POS, d, 1e9)
     P = CAM_POS + d * t[:, None]
@@ -153,6 +154,8 @@ def gather(
     spacing=1.0,
     thick_mode="const",
     join_tol=None,
+    scale_radius_with_distance=True,
+    screen_radius=0.05,
 ):
     if mips is None:
         mips = build_mips(z, radius)
@@ -169,9 +172,18 @@ def gather(
     vdir = -cpos / np.linalg.norm(cpos, axis=1, keepdims=True)
     nrm = nv[iy, ix]
 
-    world_radius = radius
-    view_extent = np.maximum(cz, 1e-4)
-    srad = np.clip((world_radius / np.maximum(abs(MUL[0]) * view_extent, 1e-4)) * W, 2.0, float(W))
+    if scale_radius_with_distance:
+        # The shipped default, and for a long time the branch this model did not
+        # have. Anchored to the vertical axis, as the gather is: screen_radius is
+        # a fraction of screen HEIGHT, because a camera holds its vertical field
+        # of view fixed and a fraction of WIDTH would grow with the aspect ratio.
+        srad = np.full(len(px), screen_radius * H)
+        world_radius = radius * screen_radius * abs(MUL[1]) * cz
+    else:
+        world_radius = np.full(len(px), float(radius))
+        view_extent = np.maximum(cz, 1e-4)
+        srad = (world_radius / np.maximum(abs(MUL[0]) * view_extent, 1e-4)) * W
+    srad = np.clip(srad, 2.0, float(W))
     thick = thickness * world_radius
 
     nz_a, nz_b = spatial_noise(px, py)
@@ -261,3 +273,21 @@ def gather(
 
     vis = np.where(total_sum > 1e-6, open_sum / np.maximum(total_sum, 1e-9), 1.0)
     return np.clip(vis, 0, 1).reshape(len(ys), len(xs))
+
+
+def apply_transfer(visibility, power=1.0, intensity=1.0):
+    """The gather's output transfer, so the model can score what SHIPS and not
+    only the raw estimator.
+
+    The harness has always measured at power 1 and intensity 1, where this is the
+    identity - which is exactly how a transfer that clipped a third of the tonal
+    range to black passed validation twice. Score both.
+    """
+    open_ = np.power(np.clip(visibility, 0.0, 1.0), power)
+    return open_ / np.maximum(open_ + (1.0 - open_) * intensity, 1e-4)
+
+
+def legacy_transfer(visibility, power=1.0, intensity=1.0, shadow_clamp=0.98):
+    """What the shader did before, kept so the regression is measurable."""
+    v = np.power(np.clip(visibility, 0.0, 1.0), power)
+    return np.clip(1.0 - (1.0 - v) * intensity, 0.0, 1.0)

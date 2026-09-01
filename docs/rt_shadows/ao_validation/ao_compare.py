@@ -17,8 +17,8 @@ ref = np.load(sys.argv[1])
 truth, hit, stride = ref["ao"], ref["hit"], int(ref["stride"])
 noao = to_linear(np.asarray(Image.open(sys.argv[2]).convert("L"), dtype=np.float64))
 
-print("%-26s %7s %7s %7s %7s  %s" % ("variant", "MAE", "RMSE", "bias", "maxerr", "corr"))
-print("-" * 74)
+print("%-26s %7s %7s %7s %7s  %6s  %s" % ("variant", "MAE", "RMSE", "bias", "maxerr", "corr", "black"))
+print("-" * 82)
 for label, path in [a.split("=", 1) for a in sys.argv[3:]]:
     img = to_linear(np.asarray(Image.open(path).convert("L"), dtype=np.float64))
     ao = np.divide(img, noao, out=np.full_like(img, np.nan), where=noao > 1e-4)
@@ -26,9 +26,14 @@ for label, path in [a.split("=", 1) for a in sys.argv[3:]]:
     m = hit & np.isfinite(ao) & np.isfinite(truth)
     e = ao[m] - truth[m]
     corr = np.corrcoef(ao[m], truth[m])[0, 1]
+    # The fraction of the frame the pipeline sent below one 8-bit code. A
+    # transfer that clips reports fine on every average while turning a third of
+    # the tonal range into one flat black value, which is what a mean absolute
+    # error cannot see and an eye sees immediately.
+    black = (ao[m] <= 1.0 / 255.0).mean()
     print(
-        "%-26s %7.4f %7.4f %+7.4f %7.4f  %.4f"
-        % (label, np.abs(e).mean(), np.sqrt((e**2).mean()), e.mean(), np.abs(e).max(), corr)
+        "%-26s %7.4f %7.4f %+7.4f %7.4f  %.4f  %5.2f%%"
+        % (label, np.abs(e).mean(), np.sqrt((e**2).mean()), e.mean(), np.abs(e).max(), corr, 100 * black)
     )
 
 # Where the error lives: bucket by how occluded the reference says the pixel is.
