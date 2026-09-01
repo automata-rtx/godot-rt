@@ -437,11 +437,13 @@ ray trace of the real geometry (mean absolute error / correlation, lower and hig
 | --- | --- | --- | --- |
 | thin geometry — a louvre, a standing fin, a table on thin legs | **0.0134 / 0.947** | 0.0346 / 0.875 | 0.0433 / 0.845 |
 | solid boxes | 0.0307 / 0.796 | **0.0235 / 0.859** | 0.0515 / 0.693 |
-| an interior room, camera inside it | **0.0112 / 0.927** | — | — |
+| an interior room, camera inside it | **0.0104 / 0.936** | — | 0.0367 / 0.653 |
 
 The mask wins decisively wherever geometry is thin and loses slightly where it is thick, because on
 solid convex shapes "everything behind the first occluder is also occluded" happens to be true. Both
-beat the legacy estimator everywhere. The harness that produced those numbers is in
+beat the legacy estimator everywhere, and in the interior — the case a game actually spends its time
+in — it is not close. Those figures are the estimator measured at unity; at the shipped intensity
+and power the interior scores 0.0152 and 0.940, with no part of the frame driven to black. The harness that produced those numbers is in
 `docs/rt_shadows/ao_validation/`, and re-running it is the way to check a change rather than
 arguing about a screenshot.
 
