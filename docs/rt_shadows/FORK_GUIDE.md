@@ -543,7 +543,13 @@ Under `rendering/environment/ssao/ground_truth/`.
   at full resolution, and five dispatches with barriers between them. Anyone trying to make this
   cheaper on weaker hardware should measure per pass -- the block is labeled `Process GTAO` for
   the GPU profiler -- rather than reaching for the resolution setting, which can only ever address
-  the smaller half. Nothing has been measured on an iGPU.
+  the smaller half.
+- **TODO: profile on the Radeon 780M.** Nothing has been measured on an iGPU, which is the machine
+  where any of this actually decides anything. Take it per pass rather than per mode -- the block is
+  labeled `Process GTAO` for the GPU profiler -- so the fixed cost and the gather cost come out
+  separately instead of by subtraction from three whole-frame figures. Until that exists, the
+  checkerboard tier above is a quality argument with no cost argument attached, and the case for
+  running full resolution rests on one desktop GPU.
 - **`AreaLight3D`, reflection probes and the Mobile and Compatibility renderers** never see this
   estimator; they use whatever the legacy path gives them.
 
