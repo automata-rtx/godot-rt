@@ -3756,11 +3756,13 @@ void RenderingServer::init() {
 	// is fixed and the world radius follows the depth, which is what keeps
 	// occlusion visible far from the camera.
 	GLOBAL_DEF("rendering/environment/ssao/ground_truth/scale_radius_with_distance", true);
-	// The range reaches far past what a small scene needs because a real
-	// interior wants much more than a synthetic test scene does -- the first one
-	// this was pointed at wanted five times the old default and ran out of
-	// slider. The denoise widens itself to match, so a large value costs
-	// coverage and taps rather than grain.
+	// A fraction of screen HEIGHT, which is the axis a camera holds its field of
+	// view on, so the same value reaches the same distance whatever the window's
+	// aspect ratio. The range reaches far past what a small scene needs because a
+	// real interior wants much more than a synthetic test scene does -- the first
+	// one this was pointed at wanted 0.25 and ran out of slider at half that. The
+	// denoise widens itself to match, so a large value costs taps and sample
+	// coverage rather than grain.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/ground_truth/screen_radius", PROPERTY_HINT_RANGE, "0.005,0.5,0.001"), 0.1);
 	// How far behind a sample its back face is assumed to sit, as a fraction of
 	// the radius. This is what lets light pass behind a thin surface instead of

@@ -54,6 +54,9 @@ layout(push_constant, std430) uniform Params {
 	// Occlusion is raised to this power on the way out, matching the knob the
 	// existing screen space occlusion exposes.
 	float power;
+	// Strength, applied as a ratio rather than as a subtraction at the bottom of
+	// this shader. Already scaled on the CPU, because the Environment default it
+	// comes from was calibrated for the other estimator.
 	float intensity;
 
 	// Distance past which occlusion fades out, and the reciprocal of the width
@@ -193,18 +196,15 @@ void main() {
 		float phi = (float(slice) + slice_bias) * PI * slice_norm;
 		vec2 slice_dir = vec2(cos(phi), sin(phi));
 
-		// The slice plane is spanned by the view direction and the slice
-		// direction lifted into view space. Project the normal into it; the
-		// signed angle between that projection and the view direction is where
-		// the arc's center sits.
-		// An ORTHONORMAL basis for the slice plane. Stepping along the slice at
-		// constant depth gives a direction that lies in the plane but is not
-		// perpendicular to the view direction under perspective, and measuring
-		// angles against a skewed axis puts every sample at the wrong elevation.
-		// Probed along the line the march walks, in PIXELS. A UV sized step
-		// would point somewhere else entirely on a viewport that is not
-		// square, and every elevation in the slice would be measured against
-		// an axis the samples do not lie on.
+		// An orthonormal basis for the slice plane, which is spanned by the view
+		// direction and the slice direction lifted into view space. Two details
+		// are load bearing. The basis has to be orthonormalized, because stepping
+		// along the slice at constant depth gives a direction that lies in the
+		// plane but is not perpendicular to the view direction under perspective,
+		// and measuring elevations against a skewed axis puts every sample at the
+		// wrong one. And the probe steps in PIXELS, because that is what the march
+		// walks in -- a UV sized step points somewhere else entirely on a viewport
+		// that is not square.
 		vec2 probe_uv = uv + slice_dir * 8.0 / vec2(params.full_size);
 		vec3 in_plane = uv_to_view(probe_uv, center_depth) - center_pos;
 		vec3 slice_bitangent = normalize(cross(in_plane, view_dir));
@@ -410,11 +410,12 @@ void main() {
 	// interior frame on black and produced the same hard wedges the estimator
 	// was blamed for.
 	//
-	// The ratio below has the same slope at the white end, so a lightly
-	// occluded surface looks the way it always did and an artist's tuning still
-	// means what it meant. It approaches zero without arriving, so a corner
-	// stays a gradient. At an intensity of one it is the identity, which is
-	// what the validation harness measures.
+	// The ratio below has the same slope at the white end, so the curve's shape
+	// asks nothing new of an artist's tuning -- though the number itself now
+	// arrives scaled, because the Environment default was calibrated for the
+	// other estimator. It approaches zero without arriving, so a corner stays a
+	// gradient. At an intensity of one it is the identity, which is what the
+	// validation harness measures.
 	float open = pow(visibility, params.power);
 	visibility = open / max(open + (1.0 - open) * params.intensity, 0.0001);
 	visibility = mix(1.0, visibility, fade);

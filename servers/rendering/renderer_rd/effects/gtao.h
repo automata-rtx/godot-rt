@@ -46,11 +46,13 @@ namespace RendererRD {
 // near field bounce approximation applied on top of it, light affect, specular
 // occlusion -- keeps working without knowing which method produced the value.
 //
-// Three passes. A depth prefilter builds a linear view depth pyramid; the
-// gather marches slices against it and resolves each one from a 32 sector
-// occupancy mask; a filter pass denoises and, when the gather ran at reduced
-// resolution, weights the result back up to full resolution against the depth
-// each texel was computed on.
+// Three shaders, five dispatches. A depth prefilter builds a linear view depth
+// pyramid; the gather marches slices against it and resolves each one from a 32
+// sector occupancy mask; a separable edge-aware blur runs across and then down at
+// the gather's own resolution; and a final weighted pass fills the buffer the
+// forward shader samples, judging each candidate gather texel against the full
+// resolution depth and normal of the pixel it is filling. At matching resolutions
+// that last pass degenerates to a copy.
 //
 // The gather resolution changes how many pixels get their own answer and
 // nothing else: the march reach, its first step and the fade are all derived
@@ -58,9 +60,11 @@ namespace RendererRD {
 // far field rather than pulling the near field apart.
 class GTAO {
 public:
-	// Levels in the linear depth pyramid. A march only reaches a coarser level
-	// once its step is far enough out that the full resolution texels it skips
-	// could not have mattered, so five covers the widest radius worth marching.
+	// Levels in the linear depth pyramid. A march reaches a coarser level once its
+	// step is far enough out that the full resolution texels it skips could not
+	// have mattered. Five stops short of what the largest radius would ask for,
+	// which costs filtering rather than correctness: the march then reads a finer
+	// level than ideal, which is the safe direction to be wrong in.
 	static constexpr uint32_t DEPTH_MIP_COUNT = 5;
 
 	struct Settings {
@@ -170,11 +174,11 @@ private:
 	//
 	// The gather's variance rises with how far the march reaches and falls with
 	// how many slices it splits the hemisphere into, so those are the two things
-	// the width follows. A fixed width cannot serve a radius setting that spans
-	// fifty to one: three by three is right where the effect is small, and at the
-	// top of the range it absorbs about a third of the noise it is handed, while
-	// a wide filter applied at the bottom of the range removes contact detail
-	// that was never noise.
+	// the width follows. A fixed width cannot serve a radius setting that spans a
+	// hundred to one: three by three is right at the bottom of the range, where
+	// there is little noise to remove and extra width only costs contact detail,
+	// while at the top of the range a filter that narrow absorbs about a third of
+	// what it is handed.
 	static int filter_radius_for(const Settings &p_settings);
 
 	enum FilterMode {

@@ -265,8 +265,8 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 			push.uv_to_view_mul[1] = tan_half_fov_y * -2.0f;
 			push.uv_to_view_add[0] = tan_half_fov_x * -1.0f;
 			push.uv_to_view_add[1] = tan_half_fov_y;
-			// A neighbor two percent of its own depth off this pixel's plane is
-			// taken to be another surface. Measured against a plane rather than
+			// A neighbor two percent of THIS pixel's depth off its plane is taken
+			// to be another surface. Measured against a plane rather than
 			// against raw depth, so a surface seen at a glancing angle keeps its
 			// own neighbors and a shallow silhouette still separates.
 			push.plane_tolerance = 0.02f;
@@ -303,10 +303,13 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 			push.source_size[1] = p_buffers.gather_size.y;
 			push.dest_size[0] = pass.size.x;
 			push.dest_size[1] = pass.size.y;
-			// The blur runs entirely inside the gather's own grid, so a gather
-			// texel is one step; only the upsample crosses resolutions.
-			push.gather_stride[0] = pass.mode == FILTER_MODE_UPSAMPLE ? pass.stride : 1;
-			push.gather_stride[1] = pass.mode == FILTER_MODE_UPSAMPLE ? pass.stride : 1;
+			// Every pass needs the real stride. It is not the tap step -- taps
+			// walk the gather's own grid -- it is how a gather texel finds the
+			// full resolution pixel it answers for, which is where its normal
+			// and its view position come from. Handing the blur a stride of one
+			// pointed it at an unrelated pixel's normal at half resolution.
+			push.gather_stride[0] = pass.stride;
+			push.gather_stride[1] = pass.stride;
 			fill_common(push);
 			push.direction[0] = pass.dir_x;
 			push.direction[1] = pass.dir_y;
