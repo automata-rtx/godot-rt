@@ -246,6 +246,8 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 		push.dest_size[1] = p_buffers.gather_size.y;
 		push.depth_tolerance = 0.02f;
 		push.weight_floor = 0.0f;
+		push.gather_stride[0] = 1;
+		push.gather_stride[1] = 1;
 
 		RD::ComputeListID list = RD::get_singleton()->compute_list_begin();
 		RD::get_singleton()->compute_list_bind_compute_pipeline(list, filter_pipeline[FILTER_MODE_DENOISE]);
@@ -276,6 +278,8 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 		// that one matching nothing relaxes toward its neighbors rather than
 		// dividing by almost zero.
 		push.weight_floor = 0.01f;
+		push.gather_stride[0] = p_settings.half_resolution ? 2 : 1;
+		push.gather_stride[1] = p_settings.half_resolution ? 2 : 1;
 
 		RD::ComputeListID list = RD::get_singleton()->compute_list_begin();
 		RD::get_singleton()->compute_list_bind_compute_pipeline(list, filter_pipeline[FILTER_MODE_UPSAMPLE]);

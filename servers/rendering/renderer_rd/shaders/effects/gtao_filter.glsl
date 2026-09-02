@@ -30,8 +30,12 @@ layout(push_constant, std430) uniform Params {
 	// Keeps a pixel that matches nothing from dividing by almost zero; it
 	// relaxes toward the unfiltered value instead.
 	float weight_floor;
-	uint pad0;
-	uint pad1;
+	// Full resolution pixels per gather texel, per axis. The gather samples the
+	// FIRST full resolution pixel of each block, not the block's center, so the
+	// mapping back has to know the stride rather than infer it from the two
+	// sizes -- which is also the only form that stays right when the gather size
+	// was rounded up at an odd width.
+	ivec2 gather_stride;
 }
 params;
 
@@ -83,8 +87,15 @@ void main() {
 #else // MODE_UPSAMPLE
 
 	// Where this full resolution pixel lands in the gather, in texel space.
-	vec2 scale = vec2(params.source_size) / vec2(params.dest_size);
-	vec2 source_pos = (vec2(pos) + 0.5) * scale - 0.5;
+	//
+	// Gather texel k answers for full resolution PIXEL k * stride, whose center
+	// sits at continuous coordinate k * stride + 0.5. Inverting that gives
+	// pos / stride. The obvious form, (pos + 0.5) * source_size / dest_size - 0.5,
+	// assumes instead that texel k represents the CENTER of its block, and is
+	// therefore wrong by half a full resolution pixel on each axis: cross
+	// correlating a half resolution render against a full resolution one put
+	// their best alignment at exactly (-0.5, -0.5), which is this.
+	vec2 source_pos = vec2(pos) / vec2(params.gather_stride);
 	ivec2 base = ivec2(floor(source_pos));
 	vec2 frac_pos = source_pos - vec2(base);
 	ivec2 max_pos = params.source_size - ivec2(1);

@@ -154,8 +154,9 @@ private:
 
 		float depth_tolerance;
 		float weight_floor;
-		uint32_t pad0;
-		uint32_t pad1;
+		// Full resolution pixels per gather texel, per axis; the upsample needs it
+		// to invert the gather's sampling position without half a pixel of error.
+		int32_t gather_stride[2];
 	};
 
 	enum FilterMode {
