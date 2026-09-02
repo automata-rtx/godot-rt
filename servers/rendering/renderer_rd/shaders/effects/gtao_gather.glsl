@@ -239,9 +239,7 @@ void main() {
 				// stands in for everything behind it. A mask cannot: an occluder
 				// that falls between two steps is not approximated, it is simply
 				// absent, and the far half of a quadratic march is where the gaps
-				// get wide enough for a whole box to fall through one. Measured
-				// against a traced reference, spreading the same eight steps
-				// evenly cuts the error roughly in half.
+				// get wide enough for a whole box to fall through one.
 				float t = (float(step) + step_bias) / float(params.steps_per_slice);
 				float offset_px = max(t * screen_radius_px, 1.0);
 
@@ -263,9 +261,7 @@ void main() {
 				// slope, in a direction that depends only on where the step
 				// happened to fall. On a plane seen at a glancing angle half of
 				// those land above the shaded point, and the floor quietly
-				// occludes itself: a flat three percent of the light everywhere,
-				// steady enough to read as the effect working rather than as a
-				// bug.
+				// occludes itself.
 				ivec2 mip_size = max(params.full_size >> int(mip), ivec2(1));
 				vec2 mip_texel = floor((sample_px + 0.5) * (vec2(mip_size) / vec2(params.full_size)));
 				mip_texel = clamp(mip_texel, vec2(0.0), vec2(mip_size - ivec2(1)));
@@ -410,10 +406,7 @@ void main() {
 	// below 0.63 -- roughly what an ordinary concave corner IS -- lands on
 	// exactly zero. A third of the tonal range collapses onto one flat black
 	// value here, inside the gather, before the filter downstream ever sees it,
-	// and no filter can recover a value that was never stored. Running a
-	// FLAWLESS traced occlusion through the old line put seven percent of an
-	// interior frame on black and produced the same hard wedges the estimator
-	// was blamed for.
+	// and no filter can recover a value that was never stored.
 	//
 	// The ratio below has the same slope at the white end, so the curve's shape
 	// asks nothing new of an artist's tuning -- though the number itself now

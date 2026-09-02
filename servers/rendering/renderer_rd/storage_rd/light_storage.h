@@ -123,7 +123,9 @@ private:
 		float linear_att = 0.0;
 
 		// Set once per frame by the culler: true when this light takes its shadow
-		// from the raytraced mask, in which case no shadow map is rendered for it.
+		// from the raytraced mask. No shadow map is rendered for it unless it was
+		// asked for one through Light3D::shadow_map_enabled, which is what the
+		// effects that cannot read the mask need.
 		bool raytraced_shadow = false;
 
 		// Index into the raytraced shadow mask's light buffer, held for as long
@@ -177,7 +179,7 @@ private:
 		float specular_amount;
 		float shadow_opacity;
 
-		float rt_slot; // Raytraced shadow mask channel, or RT_SLOT_NONE.
+		float rt_slot; // Index in the raytraced light buffer, or RT_SLOT_NONE.
 		// Shadow strength for the effects that sample the shadow map instead of
 		// the mask, and zero when this light owns no shadow map.
 		float shadow_map_opacity;
@@ -258,14 +260,15 @@ private:
 		float shadow_opacity;
 		float fade_from;
 		float fade_to;
-		// Which channel of the raytraced shadow mask carries this light, or
-		// RT_SLOT_NONE. A float because that is how the shader compares it.
+		// This light's index in the raytraced light buffer, or RT_SLOT_NONE. Which
+		// channel of the mask carries it is decided per pixel and recorded in the
+		// index texture. A float because that is how the shader compares it.
 		float rt_slot;
 		// Shadow strength for the consumers that sample the cascade maps rather
 		// than the mask: volumetric fog, subsurface transmittance, and anything
-		// rendered outside the depth pre-pass. A raytraced sun keeps its cascades,
-		// so this stays set even when shadow_opacity has stopped driving surface
-		// shading.
+		// rendered outside the depth pre-pass. Zero when no map was rendered, which
+		// for a raytraced sun means unless it was asked for one through
+		// Light3D::shadow_map_enabled.
 		float shadow_map_opacity;
 		uint32_t bake_mode;
 		float volumetric_fog_energy;
@@ -504,8 +507,9 @@ private:
 		RID fb; //when renderign direct
 
 		int light_count = 0;
-		// What is actually allocated. May be smaller than requested_size when a
-		// raytraced sun has demoted its map.
+		// What is actually allocated. May be smaller than requested_size once
+		// raytraced directional shadows are available, because the atlas is then
+		// capped for every directional light.
 		int size = 0;
 		// What the project, or directional_shadow_atlas_set_size, asked for. Kept
 		// so the full size comes back if raytraced directional shadows are off.
@@ -533,10 +537,11 @@ private:
 	bool shadow_cubemaps_used = false;
 	bool shadow_dual_paraboloid_used = false;
 
-	// Whether this light's shadow comes from the raytraced mask. Deliberately a
-	// pure function of the light and of whether there is anything to trace
-	// against, so that the culler and the light buffer agree without having to
-	// visit lights in the same order.
+	// Whether this light's shadow comes from the raytraced mask. The candidate test
+	// asks only about the light; _light_uses_raytraced_shadows() adds whether there
+	// is anything to trace against. Neither depends on anything that changes during
+	// a pass, so the culler and the light buffer agree without having to visit
+	// lights in the same order.
 	bool _light_is_raytraced_shadow_candidate(const Light *p_light) const;
 	bool _light_uses_raytraced_shadows(const Light *p_light) const;
 	RSE::LightDirectionalShadowMode _light_directional_effective_shadow_mode(const Light *p_light) const;

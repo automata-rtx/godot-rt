@@ -17,9 +17,9 @@
 // Visibility is stored as its square root and squared on read. Eight bits spread
 // evenly over [0,1] put the same absolute step everywhere, but a shadow's detail
 // is all at the dark end, where that step is a large RELATIVE error and shows as
-// banding across a wide penumbra. Storing the root spends about five times more
-// of the range below a quarter visibility, where the eye is, and gives up
-// precision near fully lit, where nothing is happening.
+// banding across a wide penumbra. Storing the root spends half of the code
+// range below a quarter visibility, where the eye is, instead of a quarter of
+// it, and gives up precision near fully lit, where nothing is happening.
 //
 // Filtering still happens in linear visibility. Averaging roots and squaring the
 // result, which is what NVIDIA's SIGMA does, would darken every penumbra by
@@ -32,7 +32,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D source_visibility;
 layout(set = 0, binding = 1) uniform sampler2D source_depth;
-// Previous frame's filtered visibility.
+// Previous frame's accumulated visibility, before any spatial filtering.
 layout(set = 0, binding = 3) uniform sampler2D history_visibility;
 // Previous frame's (view depth, history length).
 layout(set = 0, binding = 4) uniform sampler2D history_meta;
@@ -196,7 +196,8 @@ void main() {
 	//
 	// So measure what this frame actually sees nearby, and clamp the history
 	// into that range. Where the neighborhood agrees -- open floor, deep umbra --
-	// the spread is nil and the history is pinned to the truth immediately.
+	// the window is only as wide as the binomial floor below allows, and the
+	// history is pulled back to what this frame sees within a frame or two.
 	// Inside a penumbra, where one ray per pixel makes neighbors genuinely
 	// disagree, the spread is wide and accumulation proceeds untouched. The test
 	// costs nothing where it is not needed and everything where it is.
@@ -229,8 +230,7 @@ void main() {
 			// frames in three -- and the measured spread is then exactly zero.
 			// Clamping to a window of no width pins the accumulated value to that
 			// binary answer, and doing it over and over erases the tails of every
-			// penumbra: measured against the geometry it was removing a third of
-			// the shadow's soft edge.
+			// penumbra.
 			//
 			// So floor the spread with the standard error those ray counts
 			// actually carry. The two pseudo counts are the usual continuity
@@ -281,9 +281,8 @@ void main() {
 	// is not symmetric: in the lit end of a penumbra at one ray per light, the
 	// occasional blocked ray is a step down large enough to land while the many
 	// lit rays each ask for a step up too small to, so the value ratchets darker
-	// and the shadow's soft edge creeps outward. Against the geometry that was
-	// making a stock penumbra about 15% wider than it should be, which is
-	// exactly the softening the traced answer exists to avoid.
+	// and the shadow's soft edge creeps outward, which is exactly the softening
+	// the traced answer exists to avoid.
 	//
 	// Offsetting by a per pixel, per frame fraction of a step before the store
 	// makes the rounding error zero mean, so the accumulation converges on the

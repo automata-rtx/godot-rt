@@ -3666,9 +3666,8 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		// It is worth the test because this is the common case and not a corner
 		// one. A raytraced sun's volume is the camera frustum swept towards the
 		// light, and in an interior, a street or a town square that swallows every
-		// lamp in the scene. Measured with sixteen lamps inside one such volume,
-		// their queries were making three fifths of the index visits and finding
-		// nothing the sun had not already found.
+		// lamp in the scene; those lamps' queries then account for most of the
+		// index visits and find nothing the sun had not already found.
 		//
 		// The enclosed volumes are moved to the back rather than dropped, because
 		// the per-element multimesh test below asks a DIFFERENT question of this

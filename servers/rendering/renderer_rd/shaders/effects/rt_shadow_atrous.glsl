@@ -21,9 +21,9 @@
 // Visibility is stored as its square root and squared on read. Eight bits spread
 // evenly over [0,1] put the same absolute step everywhere, but a shadow's detail
 // is all at the dark end, where that step is a large RELATIVE error and shows as
-// banding across a wide penumbra. Storing the root spends about five times more
-// of the range below a quarter visibility, where the eye is, and gives up
-// precision near fully lit, where nothing is happening.
+// banding across a wide penumbra. Storing the root spends half of the code
+// range below a quarter visibility, where the eye is, instead of a quarter of
+// it, and gives up precision near fully lit, where nothing is happening.
 //
 // Filtering still happens in linear visibility. Averaging roots and squaring the
 // result, which is what NVIDIA's SIGMA does, would darken every penumbra by
@@ -51,7 +51,8 @@ layout(set = 0, binding = 3) uniform sampler2D source_normal_roughness;
 layout(set = 0, binding = 4) uniform sampler2D source_history_length;
 
 layout(rgba8, set = 0, binding = 5) uniform restrict writeonly image2D dest_visibility;
-// Only written on the first iteration, which is what next frame reprojects.
+// Written only on the first iteration. This is the buffer next frame reprojects,
+// and it holds that iteration's input, not its result.
 layout(rgba8, set = 0, binding = 6) uniform restrict writeonly image2D dest_history_visibility;
 layout(rg16f, set = 0, binding = 7) uniform restrict writeonly image2D dest_history_meta;
 
@@ -120,8 +121,9 @@ void main() {
 	// filtered that narrowly; filtering it across the eight pixels the last
 	// iteration reaches is exactly what destroys contact hardening.
 	//
-	// A pixel with little accumulated history is still noisy whatever its
-	// penumbra, so it keeps the wide filter until the history fills in.
+	// A pixel with little accumulated history is still noisy, so it is filtered
+	// wider than its penumbra alone would ask for until the history fills in --
+	// but only in proportion to that penumbra, so a contact edge is left alone.
 	vec4 penumbra_pixels = clamp(hit_distance, vec4(0.0), vec4(1.0));
 
 	// The center pixel's own penumbra is not enough to size the filter. With one
@@ -155,23 +157,16 @@ void main() {
 	vec4 has_penumbra = step(vec4(0.0001), penumbra_pixels);
 
 	// A pixel whose history has just been thrown away has only this frame's one
-	// ray to go on, so it is widened while the history refills. That is worth
-	// doing -- without it a disocclusion is a burst of single-sample noise -- but
-	// it was not bounded by what the geometry allows: the old code widened to
-	// MAX_PENUMBRA_PIXELS outright, so a contact shadow whose true penumbra is a
-	// fifth of a pixel was smeared over thirty-one of them, which is the exact
-	// mistake the penumbra estimate exists to prevent, made one line after it was
-	// computed.
+	// ray to go on, so it is widened while the history refills; without that a
+	// disocclusion is a burst of single-sample noise. The widening is bounded by a
+	// multiple of the measured penumbra as well as by MAX_PENUMBRA_PIXELS, so a
+	// wide penumbra still reaches the full width while a contact shadow, whose
+	// rays all agree and whose raw answer is already exact, is not smeared across
+	// thirty-one pixels it never covered.
 	//
-	// Capping the widening by a multiple of the measured penumbra leaves it
-	// untouched wherever it was doing real work -- a wide penumbra still reaches
-	// the full width -- and removes it where there was never anything to hide,
-	// because a contact shadow's rays all agree and its raw answer is exact.
-	//
-	// The decay is deliberately still spread over the whole accumulation window
-	// rather than a few frames. Shortening it was tried and made freshly
-	// disoccluded pixels visibly grainy: the noise this hides outlives the first
-	// handful of frames at one sample per light.
+	// The decay is spread over the whole accumulation window rather than a few
+	// frames, because at one sample per light the noise it hides outlives the
+	// first handful of frames.
 	float history_boost = 1.0 - clamp(history_length, 0.0, 1.0);
 	vec4 fill_pixels = history_boost * min(vec4(MAX_PENUMBRA_PIXELS), penumbra_pixels * HISTORY_FILL_SCALE);
 	vec4 floor_pixels = max(vec4(params.min_filter_pixels), fill_pixels);
@@ -221,9 +216,10 @@ void main() {
 			vec4 tap_visibility = VIS_DECODE(texelFetch(source_visibility, tap, 0));
 
 			// Per-light reach, measured against where this tap actually lands on
-			// screen. The kernel's step doubles every iteration, so the same tap
-			// offset means one pixel on the first pass and eight on the last; a
-			// tight penumbra simply stops contributing once the step outruns it.
+			// screen. The kernel's step doubles every iteration, so at the default
+			// three passes an immediate neighbor sits one pixel away on the first
+			// pass and four on the last; a tight penumbra simply stops contributing
+			// once the step outruns it.
 			float tap_pixels = length(vec2(x, y)) * float(params.step_size);
 			vec4 reach = clamp(vec4(1.0) - vec4(tap_pixels) / reach_pixels, vec4(0.0), vec4(1.0));
 			vec4 weight = vec4(geometric) * reach;
@@ -248,9 +244,10 @@ void main() {
 		imageStore(dest_history_visibility, pos, VIS_ENCODE(center));
 		imageStore(dest_history_index, pos, center_index);
 
-		// Stored raw rather than normalized: the temporal pass compares it against
-		// the w of a reprojected clip position, which is the same quantity in the
-		// same units.
+		// The depth is stored raw, as a view distance: the w of a reprojected clip
+		// position is the RATIO of the previous view depth to the current one, not a
+		// distance, so the temporal pass scales it by this pixel's own view depth
+		// before the two can be compared.
 		imageStore(dest_history_meta, pos,
 				vec4(linear_view_depth(center_depth), history_length, 0.0, 0.0));
 	}

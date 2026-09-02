@@ -92,8 +92,8 @@ GTAO::~GTAO() {
 int GTAO::filter_radius_for(const Settings &p_settings) {
 	// The march's on-screen reach relative to the slice count, normalized so that
 	// the smallest useful radius comes out at one -- a three by three, which is
-	// what measured best where there is little noise to remove and a wider filter
-	// only costs contact detail. The shipped radius asks for two and the top of
+	// right where there is little noise to remove and a wider filter only costs
+	// contact detail. The shipped radius asks for two and the top of
 	// the range for three, which is where the variance actually needs it.
 	const float reach = p_settings.scale_radius_with_distance
 			? p_settings.screen_radius * MAX(p_settings.radius, 0.0f)
@@ -184,8 +184,10 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 		push.screen_size[1] = p_full_size.y;
 		push.linearize_mul = linearize_mul;
 		push.linearize_add = linearize_add;
-		// A sample more than the effect radius behind the farthest of its four
-		// belongs to a surface the march could never have reached anyway.
+		// A sample more than the effect radius in front of the farthest of its
+		// four belongs to a surface too far from it to be a neighbor at all. This
+		// is a depth continuity threshold and not the march's reach, which under
+		// distance scaling follows the depth instead.
 		const float falloff_range = MAX(p_settings.radius, 0.0001f);
 		push.falloff_mul = -1.0f / falloff_range;
 		push.falloff_add = 1.0f;
@@ -246,10 +248,9 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 	}
 
 	// Passes 3 and 4: a separable edge-aware blur, across then down, at the
-	// gather's own resolution. One pass of nine taps was the whole noise
-	// reduction budget and could not absorb what a large effect radius hands it;
-	// two passes of at most seven taps each cost four more taps and remove
-	// roughly twice as much, because the width now follows the noise.
+	// gather's own resolution. Separable so the width can follow the noise: up
+	// to seven taps per pass at the top of the radius range, where a fixed 3x3
+	// absorbs only a fraction of what the gather hands it.
 	//
 	// Pass 5 weights the result up into the buffer the forward shader samples.
 	// At matching resolutions every weight collapses onto the pixel's own texel,

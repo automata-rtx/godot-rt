@@ -73,7 +73,7 @@ All under `rendering/lights_and_shadows/raytraced_shadows/`.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `enabled` | `false` | Master switch. `OmniLight3D` and `SpotLight3D` take their shadows from the raytraced mask. |
-| `samples_per_light` | `1` | Shadow rays per pixel per light per frame. Rays past the second are only traced where the first two disagree, so 1 → 2 is the step that costs. |
+| `samples_per_light` | `1` | Shadow rays per pixel per light per frame. Every one is traced, so cost is linear in it. |
 | `max_ray_distance` | `0.0` | Extra clamp on ray length. `0.0` = no additional limit. |
 | `accurate_occluder_distance` | `true` | Find the *closest* occluder rather than the first one hit. Changes no shadow's shape, only how wide the denoiser is allowed to filter. |
 | `denoiser/enabled` | `true` | The denoiser keeps its own temporal history and does not need TAA — it works with SMAA, FXAA or nothing. |
@@ -241,8 +241,9 @@ project, raytraced or not, because the directional shadow atlas is shared:
 - `directional_shadow_mode` set on the node is overridden to 2 splits.
 - The atlas is capped at 1024 regardless of `rendering/lights_and_shadows/directional_shadow/size`.
 
-Both are deliberate — what still reads that map does not need cascade density — and both are
-configurable via `directional/demoted_shadow_*`. Set the mode to `Keep Authored` and the size to
+Both are deliberate — the atlas is shared, and what still renders into it once the mask drives the
+sun's opaque shading does not need cascade density — and both are configurable via
+`directional/demoted_shadow_*`. Set the mode to `Keep Authored` and the size to
 `0` to disable the demotion.
 
 ---
@@ -379,15 +380,18 @@ anything else.
 
 ## 8. Known gaps
 
-- **Subsurface transmittance** still reads the cascade map (task deferred). The fix is the same
+- **Subsurface transmittance** still measures thickness from a shadow map rather than from a ray
+  (task deferred), so it is unshadowed under a raytraced light unless `shadow_map_enabled` buys the
+  map back. The fix is the same
   shape as the fog one: trace toward the light instead of range-finding in the cascade, with the
   acceleration structure declared inside `#ifdef LIGHT_TRANSMITTANCE_USED` so non-SSS shader
   variants never carry the ray-query capability.
 - **A setting changed mid-frame is seen mid-frame.** The live settings are re-read the moment
   `ProjectSettings` changes, so a change that lands between the culler's decision and the light
-  buffer's can leave them disagreeing for one frame. Only `demoted_shadow_mode` has a visible
-  failure mode (cascades briefly in the wrong atlas rects); the rest degrade to a one-frame stale
-  value. Snapshotting the whole set once per frame would remove even that.
+  buffer's can leave them disagreeing for one frame. The three that decide a sun's cascade count and
+  the size of the atlas holding it are snapshotted once per frame for exactly that reason, so what
+  is left degrades to a one-frame stale value rather than to anything visible. Snapshotting the
+  whole set would remove even that.
 - **A light that loses the four-channel per-pixel competition is unshadowed at that pixel**, with no
   shadow map fallback.
 - **The per-instance directional caster cull runs before the raytraced decision**, so reordering it

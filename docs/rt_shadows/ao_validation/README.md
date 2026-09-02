@@ -50,7 +50,7 @@ error columns, because a clipping transfer looks fine on every average and terri
 
 ```
 python3 ao_truth.py 1.0 truth.npz                 # reference A, real geometry
-python3 ao_screen_truth.py 1.0 0.25 screen.npz    # reference B, radius and thickness
+python3 ao_screen_truth.py 1.0 0.3 screen.npz     # reference B, radius and thickness
 python3 ao_compare.py truth.npz noao.png gtao=with_ao.png
 ```
 

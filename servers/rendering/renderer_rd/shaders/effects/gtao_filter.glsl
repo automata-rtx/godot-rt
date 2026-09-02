@@ -7,31 +7,19 @@
 // The passes that turn the gather's output into the buffer the forward shader
 // samples: a separable edge-aware blur run twice, then a weighted upsample.
 //
-// Two things here were measured rather than assumed, and both went against the
-// obvious answer.
+// The width follows the noise rather than being fixed. The gather's variance
+// rises with how far the march reaches and falls with how many slices it splits
+// the hemisphere into, so at a large effect radius it is several times what a
+// 3x3 can absorb, while at a small radius there is little noise to remove and
+// extra width only destroys contact detail. The radius is therefore derived on
+// the CPU from the effect radius and the slice count.
 //
-// The width has to follow the noise. A single 3x3 was the whole noise reduction
-// budget, and at a large effect radius the gather's variance is several times
-// what nine taps can absorb -- the result reads as grain wherever ambient light
-// is the whole signal, which is to say everywhere in shadow. But a wider filter
-// is not free: at a SMALL radius there is little noise to remove and the extra
-// width only destroys contact detail, measurably raising the error against a ray
-// traced reference. So the radius is derived on the CPU from the effect radius
-// and the slice count, the two things the variance actually depends on.
-//
-// The weight has to know the surface, not just its distance. Rejecting a
-// neighbor on relative depth difference has no notion of orientation, so on a
-// plane seen at a glancing angle it throws away neighbors lying on that very
-// plane, and it keeps neighbors across a shallow step that is a real silhouette.
-// Weighting on a neighbor's distance from the shaded point's own plane -- its
-// depth AND its normal -- fixes both, and about half the improvement measured
-// here came from that change rather than from the extra width.
-//
-// The upsample's guide is deliberately the FULL resolution depth and normal. It
-// used to take its reference surface from the nearest gather texel, which at
-// half resolution quantized every silhouette to the coarse grid; that, not the
-// reduced sample count, is most of why half resolution read as low resolution
-// rather than merely soft.
+// The weight knows the surface, not just its distance. Rejecting a neighbor on
+// relative depth difference has no notion of orientation, so on a plane seen at
+// a glancing angle it throws away neighbors lying on that very plane, and it
+// keeps neighbors across a shallow step that is a real silhouette. Weighting on
+// a neighbor's distance from the shaded point's own plane -- its depth AND its
+// normal -- fixes both.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -128,9 +116,9 @@ void main() {
 
 #else // MODE_UPSAMPLE
 
-	// The reference surface is this pixel's own, at full resolution. Taking it
-	// from the nearest gather texel instead is what quantized silhouettes to the
-	// coarse grid and made half resolution look like half resolution.
+	// The reference surface is this pixel's own, at full resolution, rather than
+	// the nearest gather texel's: at half resolution that would quantize every
+	// silhouette to the coarse grid.
 	float center_depth = texelFetch(source_depth, pos, 0).r;
 	vec3 center_pos = view_pos(pos, center_depth);
 	vec3 center_normal = load_view_normal(pos);
@@ -139,9 +127,7 @@ void main() {
 	// sits at continuous coordinate k * stride + 0.5. Inverting that gives
 	// pos / stride. The obvious form, (pos + 0.5) * source_size / dest_size - 0.5,
 	// assumes instead that texel k represents the CENTER of its block, and is
-	// wrong by half a full resolution pixel on each axis: cross correlating a
-	// half resolution render against a full resolution one put their best
-	// alignment at exactly (-0.5, -0.5), which is this.
+	// wrong by half a full resolution pixel on each axis.
 	vec2 source_pos = vec2(pos) / vec2(params.gather_stride);
 	ivec2 base = ivec2(floor(source_pos));
 	vec2 frac_pos = source_pos - vec2(base);

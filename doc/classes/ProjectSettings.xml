@@ -3237,7 +3237,7 @@
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels" type="float" setter="" getter="" default="1.0">
 			How narrowly the spatial filter may work where the trace measured a penumbra, in pixels.
-			At or below one pixel the filter switches off completely at a hard edge, so a shadow touching the surface that casts it stays crisp. Raising it trades that crispness for smoother wide penumbrae.
+			At or below one pixel the floor lets no neighbor contribute, because the nearest tap already sits a pixel away, so a shadow touching the surface that casts it stays crisp. Raising it trades that crispness for smoother wide penumbrae.
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes" type="int" setter="" getter="" default="3">
 			Number of edge-stopping wavelet passes run over the shadow mask. Each pass doubles its reach, so every additional pass widens the filter considerably at a roughly constant cost. Higher values suppress more noise but can soften wide penumbrae.
@@ -3252,7 +3252,7 @@
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode" type="int" setter="" getter="" default="2">
 			What a [DirectionalLight3D]'s [member DirectionalLight3D.directional_shadow_mode] is replaced with once the raytraced mask drives its shading, overriding the value set on the node.
-			What still reads the map at that point is volumetric fog for [OmniLight3D] and [SpotLight3D] lights, subsurface transmittance, alpha-blended surfaces and reflection probes. None of those inspect it closely, so it does not need cascade density. [code]Keep Authored[/code] leaves the node's own setting alone.
+			What still reads the map at that point is subsurface transmittance, alpha-blended surfaces and reflection probes, and only where a map was rendered at all — for a raytraced sun that means [member Light3D.shadow_map_enabled] asked for one. Volumetric fog is not among them: a froxel under a raytraced [DirectionalLight3D] traces its own ray instead of sampling a cascade. None of those inspect the map closely, so it does not need cascade density. [code]Keep Authored[/code] leaves the node's own setting alone.
 			[b]Note:[/b] This applies whenever raytraced directional shadows are available, so it also changes the atlas layout for [DirectionalLight3D] nodes that are not themselves raytraced.
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size" type="int" setter="" getter="" default="1024">
@@ -3264,7 +3264,7 @@
 			A directional light has no range to bound its shadow casters, so this also turns on the separate caster gathering described by [member rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale] and [member rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters].
 			Requires [member rendering/lights_and_shadows/raytraced_shadows/enabled].
 			Unlike that setting, this one takes effect on the next frame and does not need a restart.
-			[b]Note:[/b] The sun still renders a much reduced shadow map for the effects that cannot read the mask; see [member rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode].
+			[b]Note:[/b] A raytraced sun renders no shadow map of its own unless [member Light3D.shadow_map_enabled] asks for one. The demotion still applies, because the directional shadow atlas is shared with every [DirectionalLight3D] that is not raytraced; see [member rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode].
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters" type="int" setter="" getter="" default="1">
 			Whether [MultiMesh] and [GridMap] geometry casts raytraced shadows from a [DirectionalLight3D], and how far.
@@ -3288,7 +3288,7 @@
 		<member name="rendering/lights_and_shadows/raytraced_shadows/samples_per_light" type="int" setter="" getter="" default="1">
 			Number of shadow rays traced per pixel per raytraced light, per frame.
 			The denoiser accumulates over many frames, so one ray per frame is enough to resolve the soft shadow of an ordinary light: at the default [member Light3D.light_size] the result is indistinguishable from four rays a frame while costing substantially less. Raise it only for a light with a large [member Light3D.light_size], whose penumbra is wide enough that one ray per frame leaves its center washed out.
-			Rays past the second are only traced where the first two disagree, so the step from one to two is the one that costs; beyond that the setting is close to free.
+			Every ray asked for is traced, so cost is linear in this setting: two rays per light cost twice what one does.
 			Lights with a [member Light3D.light_size] of [code]0.0[/code] cast hard shadows and ignore this setting.
 		</member>
 		<member name="rendering/lights_and_shadows/tighter_shadow_caster_culling" type="bool" setter="" getter="" default="true">

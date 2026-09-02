@@ -1922,8 +1922,10 @@ void RendererSceneRenderRD::init() {
 	copy_effects = memnew(RendererRD::CopyEffects(raster_effects));
 	debug_effects = memnew(RendererRD::DebugEffects);
 
-	// Raytraced shadows. Both objects are cheap to construct when the feature is
-	// off or unsupported; they simply stay inert.
+	// Raytraced shadows. The scene object is always constructed and stays inert
+	// when the feature is off or the device cannot trace. The shadow effect is
+	// built only where it can actually run, because its constructor compiles the
+	// ray query shaders and creates their pipelines.
 	raytracing_scene = memnew(RendererRD::RaytracingScene);
 	if (raytracing_scene->is_available()) {
 		rt_shadows = memnew(RendererRD::RTShadows);

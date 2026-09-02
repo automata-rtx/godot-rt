@@ -34,9 +34,9 @@
 // Visibility is stored as its square root and squared on read. Eight bits spread
 // evenly over [0,1] put the same absolute step everywhere, but a shadow's detail
 // is all at the dark end, where that step is a large RELATIVE error and shows as
-// banding across a wide penumbra. Storing the root spends about five times more
-// of the range below a quarter visibility, where the eye is, and gives up
-// precision near fully lit, where nothing is happening.
+// banding across a wide penumbra. Storing the root spends half of the code
+// range below a quarter visibility, where the eye is, instead of a quarter of
+// it, and gives up precision near fully lit, where nothing is happening.
 //
 // Filtering still happens in linear visibility. Averaging roots and squaring the
 // result, which is what NVIDIA's SIGMA does, would darken every penumbra by
@@ -64,10 +64,10 @@ layout(rgba8, set = 0, binding = 2) uniform restrict writeonly image2D dest_visi
 // light buffer. SLOT_NONE marks an unused channel.
 layout(rgba8ui, set = 0, binding = 3) uniform restrict writeonly uimage2D dest_index;
 
-// Mean distance to the occluders that were hit, normalized by the light's
-// range. The denoiser needs this to size its filter: penumbra width grows with
-// the distance between receiver and blocker, which is what makes a raytraced
-// shadow harden at contact.
+// How wide this pixel's penumbra should be, in pixels, divided by
+// MAX_PENUMBRA_PIXELS so that it fits eight bits. The denoiser sizes its filter
+// from it: penumbra width grows with the distance between receiver and blocker,
+// which is what makes a raytraced shadow harden at contact.
 layout(rgba8, set = 0, binding = 4) uniform restrict writeonly image2D dest_hit_distance;
 
 // A directional light shares this record, and the same per pixel competition for
@@ -132,7 +132,7 @@ layout(push_constant, std430) uniform Params {
 
 	// Pixels a one meter object covers one meter from the camera, so a penumbra
 	// measured in world units can be reported in the units the denoiser filters
-	// in. The bias pair that used to sit here is now per light.
+	// in.
 	float focal_pixels;
 	// Traversal flags for every shadow ray this dispatch casts.
 	uint ray_flags;
@@ -161,19 +161,15 @@ float order_preserving_float(uint bits) {
 	return uintBitsToFloat((bits & 0x80000000u) != 0u ? (bits & 0x7fffffffu) : ~bits);
 }
 
-// Interleaved gradient noise. Cheap, and its spatial distribution is far better
-// behaved than a plain hash, which matters because the spatial filter runs over
-// whatever pattern this leaves behind.
 // A 32x32 blue noise mask, four values to a word. Generated once by void and
 // cluster (Ulichney) and baked in, so there is no texture to bind and no cost to
 // produce it.
 //
 // Blue noise means the pattern's energy sits at high spatial frequencies and
-// almost none at low ones. Measured on this mask, high frequency power exceeds
-// low by a factor of 2179; for the interleaved gradient noise this replaces the
-// figure is 16.6. That is the whole point: the spatial filter downstream removes
-// high frequency error well and low frequency error hardly at all, so pushing
-// the error up the spectrum is what makes one ray per pixel resolve.
+// almost none at low ones. That is the whole point: the spatial filter
+// downstream removes high frequency error well and low frequency error hardly
+// at all, so pushing the error up the spectrum is what makes one ray per pixel
+// resolve.
 const uint BLUE_NOISE[256] = uint[](
 		0x28b41e55u, 0x2c981365u, 0xbcff6720u, 0x6fde33a8u, 0xe67a2d53u, 0x15a2903du, 0x5de145b0u, 0xbc3e1734u,
 		0xeece7ddbu, 0xd2f73dabu, 0x41149eb1u, 0x198ff223u, 0x049ad7a5u, 0xd550ca21u, 0x82c56cefu, 0x89af77f7u,
@@ -236,15 +232,14 @@ vec2 shadow_sample_offsets(ivec2 pos, uint frame) {
 // Vogel disk, with the radius jittered inside each sample's stratum rather than
 // pinned to its center.
 //
-// The center is what a fixed 0.5 gives, and at one sample per frame -- the
-// default -- that is sqrt(0.5), so the single ray landed at 70.7% of the
-// emitter's radius on every frame of its life. Only the angle moved, so what
-// the temporal average converged to was the shadow of a RING at 0.707r rather
-// than of the disk. The width that costs is small, since a ring at 0.707r
-// spans nearly the same 10-90 as the disk that contains it, but the shape
-// across the penumbra is wrong: a ring's projection piles up at its two
-// extremes where a disk's bulges in the middle, so the falloff is S-shaped
-// where it should be smooth.
+// Pinning it matters most at the shipped default of one sample per light: a
+// fixed 0.5 would put that single ray at sqrt(0.5) of the emitter's radius on
+// every frame, and with only the angle moving the temporal average would be the
+// shadow of a RING at 0.707r rather than of the disk. The width that costs is
+// small, since a ring at 0.707r spans nearly the same 10-90 as the disk that
+// contains it, but the shape across the penumbra is wrong: a ring's projection
+// piles up at its two extremes where a disk's bulges in the middle, so the
+// falloff comes out S-shaped where it should be smooth.
 //
 // Jittering the radius over frames makes that same one ray sweep the whole
 // emitter with the correct area weighting. At higher counts it is ordinary
@@ -577,25 +572,15 @@ void main() {
 
 		uint sample_count = light.size > 0.0 ? max(requested_samples, 1u) : 1u;
 
-		// Every sample is traced. An earlier version probed the emitter with two
-		// rays first and stopped there when they agreed, which is a large saving
-		// -- most of any frame is wholly lit or wholly shadowed -- but no pair of
-		// rays can answer for a disk. Two points on the rim, opposite each other,
-		// still both read lit over the whole outer half of a penumbra: where a
-		// fifth of the emitter is covered they agree a third of the time, and the
-		// binary answer they then hand back pulls that pixel to fully lit. The
-		// same happens to the umbra side, so the shadow's soft edge is squeezed
-		// from both ends. Measured against the geometry it was returning 72% of
-		// the true penumbra width at sixteen samples per light -- a shadow that
-		// hardens as the sample count RISES, which is the opposite of what the
-		// setting is for.
-		//
-		// The default of one sample never reached the early out, so this costs
-		// nothing at stock settings; it costs exactly the rays that were asked
-		// for at any higher count. Skipping work that is genuinely settled is
-		// still worth having, but it needs to know the penumbra is not here
-		// before it stops, and that has to come from somewhere other than the two
-		// rays it is trying to avoid tracing.
+		// Every sample is traced; there is no early out on a pair of probe rays
+		// that agree. No pair can answer for a disk: two points on the rim,
+		// opposite each other, still both read lit over the whole outer half of a
+		// penumbra, and the binary answer they hand back pulls those pixels to
+		// fully lit. The same happens on the umbra side, so the soft edge is
+		// squeezed from both ends and the shadow hardens as the sample count
+		// RISES, which is the opposite of what the setting is for. A cheaper path
+		// has to know the penumbra is not here before it stops, and that cannot
+		// come from the rays it is trying to avoid tracing.
 		float occluded = 0.0;
 		float blocker_distance_sum = 0.0;
 		uint traced = 0u;
@@ -652,18 +637,16 @@ void main() {
 		if (occluded > 0.0) {
 			float mean_blocker = blocker_distance_sum / occluded;
 
-			// How wide this shadow's penumbra actually is, by similar triangles:
-			// the emitter's own width scaled by how much closer the blocker sits
-			// to the receiver than to the light. A blocker resting on the surface
-			// gives nearly zero; one right up against the light gives an enormous
-			// smear. This is what makes a raytraced shadow harden at contact, and
-			// the denoiser can only preserve it if it is told how wide to filter.
-			// For a lamp, similar triangles: the emitter's own radius scaled by how
-			// much closer the blocker sits to the receiver than to the light. For
-			// the sun there is no "to the light" — the source subtends a fixed
-			// angle, so its penumbra is just how far that angle has spread over the
-			// gap. That is the same formula in the limit, with light.size already
-			// holding the tangent instead of a radius.
+			// How wide this shadow's penumbra actually is. For a lamp, by similar
+			// triangles: the emitter's own radius scaled by how much closer the
+			// blocker sits to the receiver than to the light. A blocker resting on
+			// the surface gives nearly zero; one right up against the light gives an
+			// enormous smear. This is what makes a raytraced shadow harden at
+			// contact, and the denoiser can only preserve it if it is told how wide
+			// to filter. For the sun there is no "to the light" — the source
+			// subtends a fixed angle, so its penumbra is just how far that angle has
+			// spread over the gap. That is the same formula in the limit, with
+			// light.size already holding the tangent instead of a radius.
 			float penumbra_world;
 			if (is_directional) {
 				penumbra_world = mean_blocker * light.size;

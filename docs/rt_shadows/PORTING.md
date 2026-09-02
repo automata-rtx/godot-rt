@@ -63,7 +63,7 @@ report true from the new validity query.
 
 ## The rebuild order
 
-The 41 commits in this branch are in the order the work was *discovered*, which includes false
+The commits in this branch are in the order the work was *discovered*, which includes false
 starts and later corrections. Do not follow that order; follow this one. Each stage ends somewhere
 you can check before continuing.
 

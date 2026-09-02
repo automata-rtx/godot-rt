@@ -62,8 +62,8 @@ void RaytracingScene::register_settings() {
 	settings_registered = true;
 
 	// The settings themselves are registered in ProjectSettings so that they
-	// exist before the rendering device is created; here we only latch the two
-	// that cannot change without a restart.
+	// exist before the rendering device is created; here we only take the first
+	// copy of the two flags that are not read live at every use.
 	//
 	// `enabled` decides, in MeshStorage::mesh_add_surface, whether a vertex
 	// buffer is created with acceleration structure usage. That happens at
@@ -453,13 +453,10 @@ RaytracingScene::BlasEntry *RaytracingScene::_get_or_create_blas(RID p_mesh, RID
 			// entry -- correctly, since the loop above will not ask for that
 			// surface again either.
 			//
-			// Asking RenderingDevice to confirm the structure instead is the
-			// obvious thing to do and was what this did. It is also a
-			// _THREAD_SAFE_METHOD_, so it took the device lock once per surface
-			// per frame -- twice, in fact, because the caller checked again --
-			// and in a scene of a couple of thousand casters that was three
-			// quarters of the time this loop spent and a quarter of the whole
-			// raytraced path's CPU cost.
+			// Asking RenderingDevice whether the structure is still alive is the
+			// obvious alternative, but it is a _THREAD_SAFE_METHOD_ and so takes
+			// the device lock once per surface per frame, which costs far more
+			// than this comparison in a scene with many casters.
 			if (_get_surface_source_buffer(p_mesh, p_mesh_instance, p_surface) != existing->source_buffer) {
 				_release_blas(*existing);
 				blas_cache.erase(key);

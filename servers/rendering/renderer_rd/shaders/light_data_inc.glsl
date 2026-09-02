@@ -23,7 +23,7 @@ struct LightData { //this structure needs to be as packed as possible
 
 	float specular_amount;
 	float shadow_opacity;
-	float rt_slot; // raytraced shadow mask channel, or RT_SLOT_NONE
+	float rt_slot; // index in the raytraced light buffer, or RT_SLOT_NONE
 	// Shadow strength for the effects that sample the shadow map rather than the
 	// mask - volumetric fog, subsurface transmittance - and zero when this light
 	// owns no shadow map. A raytraced light owns one only when asked to.
@@ -79,7 +79,7 @@ struct DirectionalLightData {
 	float shadow_opacity;
 	float fade_from;
 	float fade_to;
-	float rt_slot; // raytraced shadow mask channel, or RT_SLOT_NONE
+	float rt_slot; // index in the raytraced light buffer, or RT_SLOT_NONE
 	float shadow_map_opacity; // for the consumers that sample the cascades, not the mask
 	uint bake_mode;
 	float volumetric_fog_energy;

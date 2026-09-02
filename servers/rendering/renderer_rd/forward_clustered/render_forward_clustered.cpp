@@ -1525,9 +1525,9 @@ void RenderForwardClustered::_process_gtao(Ref<RenderSceneBuffersRD> p_render_bu
 		return;
 	}
 
-	// Radius, power and the fade come from the same Environment properties the
-	// legacy effect reads, so a scene authored against one is authored against
-	// the other. Detail, horizon and sharpness describe the other estimator and
+	// Radius and power come from the same Environment properties the legacy
+	// effect reads, and the fade distances from the same project settings, so a
+	// scene authored against one is authored against the other. Detail, horizon and sharpness describe the other estimator and
 	// have no counterpart here. Intensity is the exception: its 2.0 default
 	// compensates for how little the legacy estimator's obscurance measures, so
 	// it is scaled down before reaching an estimator that measures the deficit
@@ -1700,8 +1700,10 @@ bool RenderForwardClustered::_ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD>
 		// Which light each history channel belongs to. A history sample is only
 		// usable where this still matches, so it has to be kept alongside.
 		r_buffers.history_index = ensure(RB_TEX_RT_HISTORY_INDEX, RD::DATA_FORMAT_R8G8B8A8_UINT);
-		// Normalized view distance and history length. Half float is enough for a
-		// relative surface comparison and halves the cost of a full float target.
+		// Linear view depth and the history length, the latter normalized against
+		// the accumulation window. Half float is enough for the relative surface
+		// comparison the reprojection makes and halves the cost of a full float
+		// target.
 		r_buffers.history_meta = ensure(RB_TEX_RT_HISTORY_META, RD::DATA_FORMAT_R16G16_SFLOAT);
 		r_buffers.history_length = ensure(RB_TEX_RT_HISTORY_LENGTH, RD::DATA_FORMAT_R8_UNORM);
 	}

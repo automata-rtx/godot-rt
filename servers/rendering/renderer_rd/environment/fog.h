@@ -353,7 +353,8 @@ public:
 		RID sky_uniform_set;
 
 		// Set 2 of the raytraced density variants, holding nothing but the
-		// acceleration structure. Rebuilt when the structure is rebuilt.
+		// acceleration structure. Rebuilt when that structure is recreated, which
+		// happens when it has to grow, not each frame it is rebuilt in place.
 		RID tlas_uniform_set;
 		RID tlas_uniform_set_source;
 

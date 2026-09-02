@@ -3759,8 +3759,7 @@ void RenderingServer::init() {
 	// A fraction of screen HEIGHT, which is the axis a camera holds its field of
 	// view on, so the same value reaches the same distance whatever the window's
 	// aspect ratio. The range reaches far past what a small scene needs because a
-	// real interior wants much more than a synthetic test scene does -- the first
-	// one this was pointed at wanted 0.25 and ran out of slider at half that. The
+	// real interior wants much more than a synthetic test scene does. The
 	// denoise widens itself to match, so a large value costs taps and sample
 	// coverage rather than grain.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/ground_truth/screen_radius", PROPERTY_HINT_RANGE, "0.005,0.5,0.001"), 0.1);

@@ -38,7 +38,8 @@ layout(push_constant, std430) uniform Params {
 	float linearize_add;
 
 	// Weighting for the coarse levels, derived from the effect radius on the
-	// CPU. A sample far behind the farthest of its four contributes nothing.
+	// CPU. A sample far in front of the farthest of its four contributes
+	// nothing.
 	float falloff_mul;
 	float falloff_add;
 

@@ -252,3 +252,76 @@ argument for auditing comments against the code rather than tidying them.
 The pre-implementation design document is `PLAN.md`. It is historical: several of its decisions
 were not taken, and `FORK_GUIDE.md` plus `PORTING.md` supersede it. It is kept because it
 records the reasoning behind the shape of the system, not because it describes the system.
+
+### Three things the closed-form reference refused
+
+The reference is geometric rather than another render — a lamp of known radius over a post of known
+size, scored on the 10–90 penumbra width. None of these three would have been caught by an RMSE
+against a rendered reference, because a rendered reference has them too.
+
+**Two probe rays cannot decide whether a pixel is inside a penumbra.** The trace used to fire two
+rays at opposite points on the emitter's rim and stop there when they agreed, which is a large
+saving because most of any frame is wholly lit or wholly shadowed. But no pair of points answers for
+a disk: where a fifth of the emitter is covered the two rim probes still agree about a third of the
+time, and the binary answer they hand back pulls that pixel to fully lit. The same happens on the
+umbra side. Measured against the geometry it returned **72% of the true penumbra width at sixteen
+samples per light** — a shadow that hardens as the sample count *rises*. It was removed rather than
+tuned. Removing it cost nothing at the shipped default of one sample per light, which never reached
+the early out, and costs exactly the rays asked for at any higher count. A cheaper path has to know
+the penumbra is not there before it stops, and that cannot come from the rays it is trying to avoid.
+
+**A Vogel sample pinned to the center of its radial stratum draws a ring, not a disk.** With a fixed
+0.5, the single ray of the shipped default sits at √0.5 of the emitter's radius on every frame and
+only the angle moves, so the temporal average converges on the shadow of a ring at 0.707r. The width
+barely suffers — a ring at 0.707r spans nearly the same 10–90 as the disk containing it — but the
+falloff comes out S-shaped, because a ring's projection piles up at its two extremes where a disk's
+bulges in the middle. Jittering the radius inside the stratum fixes it, and is the better estimator
+at higher counts too.
+
+**Two quantization defects, each worth about as much as the estimator's own error.** An unfloored
+variance clamp removed a third of every penumbra: with a handful of rays the 3×3 neighborhood agrees
+outright in a penumbra's shallow ends, so the measured spread is exactly zero and clamping to a
+window of no width pins the accumulation to that binary answer. And an 8-bit accumulator that
+re-reads its own rounded output made the stock penumbra about 15% too wide, because the step it
+stalls on is not symmetric.
+
+### Blue noise for the emitter offsets, measured
+
+The baked 32×32 void-and-cluster mask replaced interleaved gradient noise for the emitter sampling
+offsets. Measured on the mask, high frequency power exceeds low by a factor of **2179**; for the
+interleaved gradient noise it replaced the figure is **16.6**. The spatial filter downstream removes
+high frequency error well and low frequency error hardly at all, so that ratio is the whole reason
+one ray per pixel resolves.
+
+### Two more the denoiser refused
+
+**Widening a freshly disoccluded pixel to the maximum penumbra.** A pixel whose history was just
+thrown away has one ray to go on and does need widening, but widening it to `MAX_PENUMBRA_PIXELS`
+outright smeared a contact shadow whose true penumbra is a fifth of a pixel across thirty-one of
+them — the exact mistake the penumbra estimate exists to prevent, made one line after it was
+computed. The widening is now bounded by a multiple of the measured penumbra as well, which leaves
+it at full reach wherever it was doing real work and folds it away at a contact edge.
+
+**Shortening the history-fill decay.** Spreading it over a few frames rather than the whole
+accumulation window made freshly disoccluded pixels visibly grainy: at one sample per light the
+noise it hides outlives the first handful of frames.
+
+### The BLAS cache, and the device lock
+
+The per-surface cache used to confirm a cached BLAS by calling
+`RenderingDevice::acceleration_structure_is_valid()`. That is a `_THREAD_SAFE_METHOD_`, so it took
+the device lock once per surface per frame — twice in practice, because the caller checked again —
+and in a scene of a couple of thousand casters that was three quarters of the time the caster loop
+spent and about a quarter of the whole raytraced path's CPU cost. Comparing the surface's current
+source vertex buffer RID against the one the structure was built from replaced it outright:
+`RID_Owner` bumps a generation counter when it reuses a slot, so an RID that still compares equal is
+the same buffer and the structure depending on it is therefore still alive.
+
+### Lamps enclosed by the sun's caster volume are the common case, not a corner one
+
+Under a raytraced `DirectionalLight3D` the caster volume is the camera frustum swept towards the
+light, and in an interior, a street or a town square it swallows every lamp in the scene. In one
+interior with sixteen such lamps, their own index queries were making three fifths of the geometry
+index visits during the gather and reached no caster the sun's query had not already reached.
+Skipping a query whose bounds are enclosed by one that is about to run changes the gathered set not
+at all.

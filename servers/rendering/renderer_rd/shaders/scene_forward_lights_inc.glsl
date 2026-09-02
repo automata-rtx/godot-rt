@@ -16,14 +16,6 @@
 #endif
 
 #ifndef USING_MOBILE_RENDERER
-// Raytraced shadow visibility for one light, read from the screen-space mask
-// written before the opaque pass. Returns 1.0 (fully lit) when the light was
-// not granted a slot in the mask.
-//
-// This lives here rather than next to the rt_shadow_mask declaration because it
-// reads gl_FragCoord: scene_forward_clustered_inc.glsl is included by the
-// vertex stage too, where that builtin does not exist, and defining it there
-// fails to compile every Forward+ vertex variant.
 // Whether the raytraced shadow mask answers for THIS fragment.
 //
 // The mask is traced from the depth pre-pass, so it only describes fragments
@@ -41,6 +33,14 @@
 #define RT_MASK_ANSWERS_HERE (!bool(scene_data_block.data.flags & SCENE_DATA_FLAGS_IN_ALPHA_PASS))
 #endif
 
+// Raytraced shadow visibility for one light, read from the screen-space mask
+// written before the opaque pass. Returns 1.0 (fully lit) when the light was
+// not granted a slot in the mask.
+//
+// This lives here rather than next to the rt_shadow_mask declaration because it
+// reads gl_FragCoord: scene_forward_clustered_inc.glsl is included by the
+// vertex stage too, where that builtin does not exist, and defining it there
+// fails to compile every Forward+ vertex variant.
 float rt_shadow_lookup(float p_slot) {
 	if (p_slot >= RT_SLOT_NONE) {
 		return 1.0;
