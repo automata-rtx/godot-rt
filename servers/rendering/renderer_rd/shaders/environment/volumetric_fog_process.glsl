@@ -456,9 +456,13 @@ void main() {
 
 					ray_dir = normalize(ray_dir);
 
-					// The same distance the screen space trace uses, taken from the same
-					// field, so the fog stops finding occluders exactly where the culler
-					// stopped gathering them.
+					// How far the ray may reach: the distance at which the sun's shadow has
+					// faded out entirely, negated from the same fade_to the cascade path
+					// computed, so a froxel stops being shadowed where the surfaces around it
+					// do. The screen space trace multiplies that same distance by one plus the
+					// caster distance scale before tracing, so the two ray lengths are not the
+					// same; a froxel gives up occluders sitting beyond the shadow distance in
+					// exchange for a shorter traversal.
 					float ray_length = max(-directional_lights.data[i].fade_to, 0.001);
 
 					rayQueryEXT ray_query;
@@ -478,9 +482,11 @@ void main() {
 				}
 #endif
 
-				// shadow_map_opacity, not shadow_opacity: a froxel that is not
-				// raytraced has to keep sampling the cascade map, and a sun that keeps
-				// a map for the fog to read is exactly why that map still exists.
+				// shadow_map_opacity, not shadow_opacity: this is the cascade path, and
+				// it is reached only by a sun the ray could not answer for -- one that
+				// is not raytraced, or that got no mask slot this frame. Those are the
+				// suns whose map is still rendered, and the map opacity is zero for any
+				// that is not.
 				if (!answered_by_ray && directional_lights.data[i].shadow_map_opacity > 0.001) {
 					float depth_z = -view_pos.z;
 

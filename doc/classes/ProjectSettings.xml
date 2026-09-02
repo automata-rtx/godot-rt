@@ -2954,8 +2954,34 @@
 		<member name="rendering/environment/ssao/fadeout_to" type="float" setter="" getter="" default="300.0">
 			Distance at which the screen-space ambient occlusion is fully faded out. Use this hide ambient occlusion from far away.
 		</member>
+		<member name="rendering/environment/ssao/ground_truth/intensity_scale" type="float" setter="" getter="" default="0.5">
+			What [member Environment.ssao_intensity] is multiplied by before the ground truth estimator uses it. That property defaults to [code]2.0[/code], and the [code]2.0[/code] belongs to the legacy estimator: its obscurance is a distance weighted proximity average over a screen disk rather than a visibility integral, so on the same geometry it measures a fraction of the real deficit and needs multiplying up. The ground truth estimator reports the deficit directly, so handing it the same number doubles a figure that is already right. Set this to [code]1.0[/code] to disable the rescale. Has no effect when [member rendering/environment/ssao/method] is [code]Screen Space (Legacy)[/code].
+		</member>
+		<member name="rendering/environment/ssao/ground_truth/scale_radius_with_distance" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], the ground truth occlusion holds its march to a fixed share of the screen at every depth instead of to a fixed distance in the world, using [member rendering/environment/ssao/ground_truth/screen_radius] as that share and [member Environment.ssao_radius] as a multiplier on it. Without this the on-screen span of the effect shrinks as a surface recedes, until the samples land on the same texel and the occlusion quietly disappears; with it, distant geometry keeps its occlusion. Has no effect when [member rendering/environment/ssao/method] is [code]Screen Space (Legacy)[/code].
+		</member>
+		<member name="rendering/environment/ssao/ground_truth/screen_radius" type="float" setter="" getter="" default="0.1">
+			Fraction of the screen height the ground truth occlusion march covers when [member rendering/environment/ssao/ground_truth/scale_radius_with_distance] is enabled. Larger values reach further and cost more; the same number of samples is spread over the wider span, so very large values thin out.
+		</member>
+		<member name="rendering/environment/ssao/ground_truth/slices" type="int" setter="" getter="" default="4">
+			Number of hemisphere slices the ground truth occlusion marches per pixel. Cost is linear in this. Together with [member rendering/environment/ssao/ground_truth/steps_per_slice] this is the whole sample budget: a slice is a direction across the screen, a step is a sample along it.
+		</member>
+		<member name="rendering/environment/ssao/ground_truth/steps_per_slice" type="int" setter="" getter="" default="8">
+			Number of samples the ground truth occlusion takes along each side of each slice. Cost is linear in this. Raising it mostly buys coverage of the far half of the march, where an occluder that falls between two steps is missed outright rather than approximated.
+		</member>
+		<member name="rendering/environment/ssao/ground_truth/thickness" type="float" setter="" getter="" default="0.3">
+			How far behind a sample the ground truth occlusion assumes that sample's back face sits, as a fraction of the effect radius. Everything between the two faces is treated as solid and everything past the back face as open again, which is what lets light through behind thin geometry. Raise it toward [code]1.0[/code] for scenes built from thick solid shapes, where a shallow shell lets light leak through the back of an object the camera cannot see behind; lower it for foliage, railings and slats, where a deep shell closes gaps that are really open.
+		</member>
+		<member name="rendering/environment/ssao/ground_truth/visibility_bitmask" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], each slice of the ground truth occlusion keeps a 32 sector occupancy mask over its half turn, so two occluders with sky between them stay two occluders and a thin surface stops occluding once the march passes behind it. If [code]false[/code], the slice keeps a single horizon angle instead and everything past the first occluder is taken to be solid, which is the classic behavior: more accurate on thick solid geometry, and markedly darker than it should be under anything thin.
+		</member>
 		<member name="rendering/environment/ssao/half_size" type="bool" setter="" getter="" default="true" keywords="resolution">
 			If [code]true[/code], screen-space ambient occlusion will be rendered at half size and then upscaled before being added to the scene. This is significantly faster but may miss small details. If [code]false[/code], screen-space ambient occlusion will be rendered at full size.
+		</member>
+		<member name="rendering/environment/ssao/method" type="int" setter="" getter="" default="0">
+			Which estimator fills the screen-space ambient occlusion buffer.
+			[code]Screen Space (Legacy)[/code] is the point obscurance estimator the engine has always shipped. [code]Ground Truth[/code] is a slice-based horizon march with a visibility bitmask, which is closer to a traced reference and is configured by the [code]ground_truth/[/code] settings alongside the shared [member Environment.ssao_radius], [member Environment.ssao_intensity] and [member Environment.ssao_power]. [member rendering/environment/ssao/quality], [member rendering/environment/ssao/adaptive_target], [member Environment.ssao_detail], [member Environment.ssao_horizon] and [member Environment.ssao_sharpness] describe the legacy estimator and do nothing on the other one; [member rendering/environment/ssao/half_size] applies to both.
+			[b]Note:[/b] Ground truth occlusion is Forward+ and single view only. A stereo or XR viewport falls back to the legacy estimator.
 		</member>
 		<member name="rendering/environment/ssao/quality" type="int" setter="" getter="" default="2">
 			Sets the quality of the screen-space ambient occlusion effect. Higher values take more samples and so will result in better quality, at the cost of performance. Setting to [code]Ultra[/code] will use the [member rendering/environment/ssao/adaptive_target] setting.
@@ -3211,7 +3237,7 @@
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels" type="float" setter="" getter="" default="1.0">
 			How narrowly the spatial filter may work where the trace measured a penumbra, in pixels.
-			At or below one pixel the filter switches off completely at a hard edge, so a shadow touching the surface that casts it stays crisp. Raising it trades that crispness for smoother wide penumbrae.
+			At or below one pixel the floor lets no neighbor contribute, because the nearest tap already sits a pixel away, so a shadow touching the surface that casts it stays crisp. Raising it trades that crispness for smoother wide penumbrae.
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes" type="int" setter="" getter="" default="3">
 			Number of edge-stopping wavelet passes run over the shadow mask. Each pass doubles its reach, so every additional pass widens the filter considerably at a roughly constant cost. Higher values suppress more noise but can soften wide penumbrae.
@@ -3226,7 +3252,7 @@
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode" type="int" setter="" getter="" default="2">
 			What a [DirectionalLight3D]'s [member DirectionalLight3D.directional_shadow_mode] is replaced with once the raytraced mask drives its shading, overriding the value set on the node.
-			What still reads the map at that point is volumetric fog for [OmniLight3D] and [SpotLight3D] lights, subsurface transmittance, alpha-blended surfaces and reflection probes. None of those inspect it closely, so it does not need cascade density. [code]Keep Authored[/code] leaves the node's own setting alone.
+			What still reads the map at that point is subsurface transmittance, alpha-blended surfaces and reflection probes, and only where a map was rendered at all — for a raytraced sun that means [member Light3D.shadow_map_enabled] asked for one. Volumetric fog is not among them: a froxel under a raytraced [DirectionalLight3D] traces its own ray instead of sampling a cascade. None of those inspect the map closely, so it does not need cascade density. [code]Keep Authored[/code] leaves the node's own setting alone.
 			[b]Note:[/b] This applies whenever raytraced directional shadows are available, so it also changes the atlas layout for [DirectionalLight3D] nodes that are not themselves raytraced.
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size" type="int" setter="" getter="" default="1024">
@@ -3237,7 +3263,8 @@
 			If [code]true[/code], [DirectionalLight3D] nodes take their shadow from the raytraced mask instead of cascaded shadow maps, competing for the same four per-pixel mask channels as every [OmniLight3D] and [SpotLight3D].
 			A directional light has no range to bound its shadow casters, so this also turns on the separate caster gathering described by [member rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale] and [member rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters].
 			Requires [member rendering/lights_and_shadows/raytraced_shadows/enabled].
-			[b]Note:[/b] The sun still renders a much reduced shadow map for the effects that cannot read the mask; see [member rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode].
+			Unlike that setting, this one takes effect on the next frame and does not need a restart.
+			[b]Note:[/b] A raytraced sun renders no shadow map of its own unless [member Light3D.shadow_map_enabled] asks for one. The demotion still applies, because the directional shadow atlas is shared with every [DirectionalLight3D] that is not raytraced; see [member rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode].
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters" type="int" setter="" getter="" default="1">
 			Whether [MultiMesh] and [GridMap] geometry casts raytraced shadows from a [DirectionalLight3D], and how far.
@@ -3261,7 +3288,7 @@
 		<member name="rendering/lights_and_shadows/raytraced_shadows/samples_per_light" type="int" setter="" getter="" default="1">
 			Number of shadow rays traced per pixel per raytraced light, per frame.
 			The denoiser accumulates over many frames, so one ray per frame is enough to resolve the soft shadow of an ordinary light: at the default [member Light3D.light_size] the result is indistinguishable from four rays a frame while costing substantially less. Raise it only for a light with a large [member Light3D.light_size], whose penumbra is wide enough that one ray per frame leaves its center washed out.
-			Rays past the second are only traced where the first two disagree, so the step from one to two is the one that costs; beyond that the setting is close to free.
+			Every ray asked for is traced, so cost is linear in this setting: two rays per light cost twice what one does.
 			Lights with a [member Light3D.light_size] of [code]0.0[/code] cast hard shadows and ignore this setting.
 		</member>
 		<member name="rendering/lights_and_shadows/tighter_shadow_caster_culling" type="bool" setter="" getter="" default="true">

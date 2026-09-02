@@ -51,20 +51,9 @@ bool RaytracingScene::debug_enabled() {
 
 bool RaytracingScene::settings_registered = false;
 bool RaytracingScene::setting_enabled = false;
-int RaytracingScene::setting_samples = 4;
-float RaytracingScene::setting_max_distance = 0.0f;
-bool RaytracingScene::setting_denoise = true;
-int RaytracingScene::setting_denoise_passes = 3;
-int RaytracingScene::setting_denoise_frames = 32;
-float RaytracingScene::setting_denoise_min_filter = 1.0f;
-float RaytracingScene::setting_denoise_clamp_sigma = 2.0f;
-bool RaytracingScene::setting_accurate_occluder_distance = true;
 bool RaytracingScene::setting_directional_enabled = false;
-float RaytracingScene::setting_directional_caster_scale = 2.0f;
-int RaytracingScene::setting_directional_scatter = RaytracingScene::DIRECTIONAL_SCATTER_NEAR_CAMERA;
-float RaytracingScene::setting_directional_scatter_distance = 25.0f;
-int RaytracingScene::setting_directional_demoted_mode = 2;
-int RaytracingScene::setting_directional_demoted_size = 1024;
+int RaytracingScene::frame_demoted_mode = 2;
+int RaytracingScene::frame_demoted_size = 1024;
 
 void RaytracingScene::register_settings() {
 	if (settings_registered) {
@@ -72,23 +61,45 @@ void RaytracingScene::register_settings() {
 	}
 	settings_registered = true;
 
-	// The settings themselves are registered in ProjectSettings so that they exist
-	// before the rendering device is created; here we only resolve them once.
+	// The settings themselves are registered in ProjectSettings so that they
+	// exist before the rendering device is created; here we only take the first
+	// copy of the two flags that are not read live at every use.
+	//
+	// `enabled` decides, in MeshStorage::mesh_add_surface, whether a vertex
+	// buffer is created with acceleration structure usage. That happens at
+	// upload time, before this object exists, so a mesh loaded while the setting
+	// was off has nothing an acceleration structure could be built from. Reading
+	// a later value would only produce build failures against buffers that can
+	// never satisfy it.
+	//
+	// `directional/enabled` has no such constraint -- it only picks which of two
+	// shadowing paths a sun takes, and both are rebuilt every frame -- so it is
+	// live too, but refreshed once per frame by update_frame_settings() rather
+	// than read wherever it is wanted. See there for why.
+	//
+	// Everything else is read live below.
 	setting_enabled = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/enabled");
-	setting_samples = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/samples_per_light");
-	setting_max_distance = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/max_ray_distance");
-	setting_denoise = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled");
-	setting_denoise_passes = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes");
-	setting_denoise_frames = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames");
-	setting_denoise_min_filter = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels");
-	setting_denoise_clamp_sigma = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma");
-	setting_accurate_occluder_distance = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/accurate_occluder_distance");
 	setting_directional_enabled = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/enabled");
-	setting_directional_caster_scale = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale");
-	setting_directional_scatter = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters");
-	setting_directional_scatter_distance = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance");
-	setting_directional_demoted_mode = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode");
-	setting_directional_demoted_size = GLOBAL_GET("rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size");
+}
+
+// Refreshed from the frame's own start, before any viewport draws.
+//
+// The other live settings are tuning knobs: a frame that read one of them twice
+// and got two answers would look very slightly wrong for one frame and no more.
+// This one is not like that. Whether a sun is raytraced decides how many
+// cascades it gets, and that has to be the same answer for the culler, for the
+// shadow atlas layout and for the light buffer, which run at three different
+// points in a frame. A value that changed between them would put cascades in
+// the wrong atlas rects. Snapshotting it here, where Godot snapshots its own
+// per-frame rendering settings, is what makes it safe to change while running.
+void RaytracingScene::update_frame_settings() {
+	register_settings();
+	setting_directional_enabled = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/raytraced_shadows/directional/enabled");
+	// The two demotion settings answer the same question from the other side --
+	// how many cascades the sun's leftover map gets, and how large the atlas
+	// holding it is -- so they are fixed for the frame for the same reason.
+	frame_demoted_mode = CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode"), 0, 2);
+	frame_demoted_size = MAX(0, GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size"));
 }
 
 bool RaytracingScene::is_enabled() {
@@ -96,75 +107,72 @@ bool RaytracingScene::is_enabled() {
 	return setting_enabled;
 }
 
-int RaytracingScene::get_sample_count() {
-	register_settings();
-	return MAX(1, setting_samples);
-}
-
 bool RaytracingScene::is_directional_enabled() {
 	register_settings();
 	return setting_directional_enabled;
 }
 
-int RaytracingScene::get_directional_demoted_mode() {
-	register_settings();
-	return setting_directional_demoted_mode;
+// The remaining settings are tuning knobs, and tuning them by restarting the
+// editor is miserable. GLOBAL_GET_CACHED keeps a typed copy and only re-reads it
+// when ProjectSettings bumps its version, so the steady state costs an integer
+// compare rather than a string lookup, and a change in the inspector reaches the
+// renderer on the next frame that asks.
+//
+// Each is clamped here rather than trusted, because a live value arrives
+// straight from the inspector with no validation beyond the property hint, and
+// the hints allow `or_greater` in places.
+
+int RaytracingScene::get_sample_count() {
+	return MAX(1, GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/samples_per_light"));
 }
 
-int RaytracingScene::get_directional_demoted_size() {
-	register_settings();
-	return setting_directional_demoted_size;
+float RaytracingScene::get_max_distance() {
+	return MAX(0.0f, GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/raytraced_shadows/max_ray_distance"));
+}
+
+bool RaytracingScene::is_accurate_occluder_distance() {
+	return GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/raytraced_shadows/accurate_occluder_distance");
+}
+
+bool RaytracingScene::is_denoiser_enabled() {
+	return GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled");
+}
+
+int RaytracingScene::get_denoiser_iterations() {
+	return CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes"), 1, 5);
+}
+
+float RaytracingScene::get_denoiser_max_history() {
+	return float(CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames"), 1, 64));
+}
+
+float RaytracingScene::get_denoiser_min_filter_pixels() {
+	return CLAMP(GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels"), 0.0f, 8.0f);
+}
+
+float RaytracingScene::get_denoiser_history_clamp_sigma() {
+	return CLAMP(GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma"), 0.0f, 8.0f);
 }
 
 float RaytracingScene::get_directional_caster_scale() {
-	register_settings();
-	return MAX(0.0f, setting_directional_caster_scale);
+	return MAX(0.0f, GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale"));
 }
 
 RaytracingScene::DirectionalScatterMode RaytracingScene::get_directional_scatter_mode() {
-	register_settings();
-	return (DirectionalScatterMode)CLAMP(setting_directional_scatter,
+	return (DirectionalScatterMode)CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters"),
 			(int)DIRECTIONAL_SCATTER_DISABLED, (int)DIRECTIONAL_SCATTER_FULL_DISTANCE);
 }
 
 float RaytracingScene::get_directional_scatter_distance() {
-	register_settings();
-	return MAX(0.0f, setting_directional_scatter_distance);
+	return MAX(0.0f, GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance"));
 }
 
-float RaytracingScene::get_max_distance() {
-	register_settings();
-	return setting_max_distance;
+int RaytracingScene::get_directional_demoted_mode() {
+	return frame_demoted_mode;
 }
 
-bool RaytracingScene::is_denoiser_enabled() {
-	register_settings();
-	return setting_denoise;
-}
-
-int RaytracingScene::get_denoiser_iterations() {
-	register_settings();
-	return CLAMP(setting_denoise_passes, 1, 5);
-}
-
-float RaytracingScene::get_denoiser_max_history() {
-	register_settings();
-	return float(CLAMP(setting_denoise_frames, 1, 64));
-}
-
-float RaytracingScene::get_denoiser_min_filter_pixels() {
-	register_settings();
-	return CLAMP(setting_denoise_min_filter, 0.0f, 8.0f);
-}
-
-float RaytracingScene::get_denoiser_history_clamp_sigma() {
-	register_settings();
-	return CLAMP(setting_denoise_clamp_sigma, 0.0f, 8.0f);
-}
-
-bool RaytracingScene::is_accurate_occluder_distance() {
-	register_settings();
-	return setting_accurate_occluder_distance;
+int RaytracingScene::get_directional_demoted_size() {
+	return frame_demoted_size;
 }
 
 RaytracingScene::RaytracingScene() {
@@ -428,13 +436,28 @@ RaytracingScene::BlasEntry *RaytracingScene::_get_or_create_blas(RID p_mesh, RID
 			// A mesh can have its surfaces cleared and re-added on the same RID:
 			// every PrimitiveMesh does exactly that when one of its properties
 			// changes, and so does ArrayMesh.clear_surfaces(). That frees the
-			// vertex buffer, and the structure built from it goes with it. Left
+			// vertex buffer, and blas_create() registered this structure as a
+			// dependency of that buffer, so the structure goes with it. Left
 			// alone, the dead structure would be handed to every later TLAS build
 			// and take the whole build down with it, so the entry is dropped and
 			// rebuilt from whatever the surface holds now.
-			const RID current_source = _get_surface_source_buffer(p_mesh, p_mesh_instance, p_surface);
-			const bool source_changed = current_source.is_valid() && current_source != existing->source_buffer;
-			if (source_changed || !RD::get_singleton()->acceleration_structure_is_valid(existing->blas)) {
+			//
+			// Asking whether the buffer is still the one this was built from is
+			// the whole test, and it is worth being precise about why. Being
+			// freed along with that buffer is the only way one of these
+			// structures goes away without this cache doing it, and RID_Owner
+			// bumps a generation counter when it reuses a slot, so a buffer RID
+			// that still compares equal is the same buffer and its dependents are
+			// therefore still alive. A surface that has gone away entirely gives
+			// back a null RID, which also fails the comparison and drops the
+			// entry -- correctly, since the loop above will not ask for that
+			// surface again either.
+			//
+			// Asking RenderingDevice whether the structure is still alive is the
+			// obvious alternative, but it is a _THREAD_SAFE_METHOD_ and so takes
+			// the device lock once per surface per frame, which costs far more
+			// than this comparison in a scene with many casters.
+			if (_get_surface_source_buffer(p_mesh, p_mesh_instance, p_surface) != existing->source_buffer) {
 				_release_blas(*existing);
 				blas_cache.erase(key);
 				existing = nullptr;
@@ -519,6 +542,15 @@ void RaytracingScene::_evict_stale_blas() {
 	// that ever existed would keep one alive. Static entries are cheap to keep
 	// but follow the same rule for simplicity.
 	constexpr uint64_t FRAMES_UNTIL_EVICTION = 60;
+	// Sweeping the whole cache is the only way to find entries nothing asked for
+	// this frame, and in a scene with many distinct meshes that walk is longer
+	// than the work it saves. Since an entry is not eligible for sixty frames
+	// anyway, doing the sweep every eighth costs it at most seven more.
+	constexpr uint64_t FRAMES_BETWEEN_SWEEPS = 8;
+
+	if (frame % FRAMES_BETWEEN_SWEEPS != 0) {
+		return;
+	}
 
 	LocalVector<SurfaceKey> to_remove;
 	for (const KeyValue<SurfaceKey, BlasEntry> &E : blas_cache) {
@@ -598,11 +630,6 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 				continue;
 			}
 			BlasEntry *entry = _get_or_create_blas(instance.mesh, instance.mesh_instance, surface);
-			if (entry && entry->state == BLAS_READY && !RD::get_singleton()->acceleration_structure_is_valid(entry->blas)) {
-				// Defense in depth for anything that frees a structure behind our
-				// back: skip this caster rather than aborting the whole build.
-				continue;
-			}
 			if (!entry || entry->state != BLAS_READY) {
 				continue;
 			}

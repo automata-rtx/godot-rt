@@ -1844,8 +1844,9 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes", PROPERTY_HINT_RANGE, "1,5,1"), 3);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames", PROPERTY_HINT_RANGE, "1,64,1"), 32);
 	// How narrowly the spatial filter may work where a penumbra was measured. At
-	// or below one pixel it switches off completely at a hard edge, so contact
-	// shadows stay crisp; raising it trades that crispness for smoother penumbrae.
+	// or below one pixel the floor lets no neighbor in, because the nearest tap
+	// already sits a pixel away, so contact shadows stay crisp; raising it trades
+	// that crispness for smoother penumbrae.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels", PROPERTY_HINT_RANGE, "0,8,0.1"), 1.0);
 	// How far a reprojected history sample may sit outside what this frame sees
 	// around it, in standard deviations, before it is pulled back in. This is
@@ -1859,15 +1860,21 @@ ProjectSettings::ProjectSettings() {
 	// it off is the standard shadow-ray optimization and may be worth real time
 	// on some hardware.
 	GLOBAL_DEF("rendering/lights_and_shadows/raytraced_shadows/accurate_occluder_distance", true);
-	GLOBAL_DEF_RST_BASIC("rendering/lights_and_shadows/raytraced_shadows/directional/enabled", false);
+	// Live, unlike the master switch above: nothing about a vertex buffer's
+	// creation depends on it, only which of two shadowing paths a sun takes, and
+	// both are built every frame. It is read once per frame rather than on
+	// demand, because a sun's cascade count has to be the same answer for the
+	// culler, the shadow atlas layout and the light buffer.
+	GLOBAL_DEF_BASIC("rendering/lights_and_shadows/raytraced_shadows/directional/enabled", false);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale", PROPERTY_HINT_RANGE, "0.5,8,0.1,or_greater"), 2.0);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters", PROPERTY_HINT_ENUM, "Disabled,Near Camera,Full Distance"), 1);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance", PROPERTY_HINT_RANGE, "0,500,1,or_greater"), 25.0);
 	// What the sun's shadow map is demoted to once the mask drives its opaque
-	// shading. What is left of it answers volumetric fog, subsurface
-	// transmittance, alpha-blended surfaces and reflection probes, none of which
-	// need cascade density, so it can be far smaller and far coarser than a map
-	// that had to hold up under direct inspection.
+	// shading. What is left of it answers subsurface transmittance, alpha-blended
+	// surfaces and reflection probes, none of which need cascade density, so it
+	// can be far smaller and far coarser than a map that had to hold up under
+	// direct inspection. Volumetric fog is not on that list: a froxel under a
+	// raytraced sun traces its own ray instead of sampling a cascade.
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode", PROPERTY_HINT_ENUM, "Keep Authored,Orthogonal,2 Splits"), 2);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size", PROPERTY_HINT_RANGE, "0,4096"), 1024);
 

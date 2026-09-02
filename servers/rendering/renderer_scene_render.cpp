@@ -597,6 +597,14 @@ void RendererSceneRender::environment_set_ssao(RID p_env, bool p_enable, float p
 	environment_storage.environment_set_ssao(p_env, p_enable, p_radius, p_intensity, p_power, p_detail, p_horizon, p_sharpness, p_light_affect, p_ao_channel_affect);
 }
 
+void RendererSceneRender::environment_set_ssao_method(RID p_env, RSE::EnvironmentSSAOMethod p_method) {
+	environment_storage.environment_set_ssao_method(p_env, p_method);
+}
+
+RSE::EnvironmentSSAOMethod RendererSceneRender::environment_get_ssao_method(RID p_env) const {
+	return environment_storage.environment_get_ssao_method(p_env);
+}
+
 bool RendererSceneRender::environment_get_ssao_enabled(RID p_env) const {
 	return environment_storage.environment_get_ssao_enabled(p_env);
 }

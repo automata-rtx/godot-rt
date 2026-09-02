@@ -284,6 +284,8 @@ void RTShadows::_temporal(RID p_depth_texture, const Buffers &p_buffers, const S
 	push_constant.depth_tolerance = 0.02f;
 	push_constant.max_history = MAX(1.0f, p_settings.max_history);
 	push_constant.clamp_sigma = MAX(0.0f, p_settings.history_clamp_sigma);
+	push_constant.sample_count = float(CLAMP(p_settings.sample_count, 1u, 255u));
+	push_constant.frame_index = frame_index;
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, temporal_pipeline);
@@ -350,8 +352,10 @@ void RTShadows::_atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_nor
 	push_constant.write_history = p_write_history ? 1u : 0u;
 	push_constant.depth_sigma = 0.02f;
 	push_constant.normal_sigma = 64.0f;
-	// At or below one pixel this switches the filter off entirely wherever the
-	// trace measured no penumbra, which is what keeps a contact shadow crisp.
+	// The narrowest the filter may reach wherever a penumbra WAS measured; where
+	// none was, the filter is off regardless of this value. At or below one pixel
+	// the floor lets no neighbor in at all, because the nearest tap already sits a
+	// pixel away, which is what keeps a contact shadow crisp.
 	push_constant.min_filter_pixels = p_min_filter_pixels;
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
@@ -418,9 +422,10 @@ void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 
 	_temporal(p_depth_texture, p_buffers, p_screen_size, reprojection, inv_projection, p_settings);
 
-	// A-trous iterations with a doubling step. The first iteration's output is
-	// what next frame reprojects: feeding back the once-filtered signal rather
-	// than the raw accumulation is what keeps the history from locking in noise.
+	// A-trous iterations with a doubling step. The first iteration is the one
+	// that writes the history, and what it stores is its own INPUT -- the
+	// temporal accumulation, before any spatial filtering -- so that filtering
+	// never compounds inside the loop.
 	const uint32_t iterations = CLAMP(p_settings.atrous_iterations, 1u, 5u);
 	RID source = p_buffers.denoise_a;
 

@@ -744,11 +744,13 @@ bool LightStorage::_light_is_raytraced_shadow_candidate(const Light *p_light) co
 }
 
 RSE::LightDirectionalShadowMode LightStorage::_light_directional_effective_shadow_mode(const Light *p_light) const {
-	// A sun whose opaque shading comes from the raytraced mask still renders a
-	// shadow map, but nothing looks at it directly any more: what is left reading
-	// it is volumetric fog, subsurface transmittance, alpha-blended surfaces and
-	// reflection probes. None of those need cascade density, so the map is cut
-	// down to what they do need.
+	// A sun whose opaque shading comes from the raytraced mask has nothing
+	// looking closely at its cascades any more: what is left reading them is
+	// subsurface transmittance, alpha-blended surfaces and reflection probes, and
+	// only when the light was asked for a shadow map at all. Volumetric fog is
+	// not among them: a froxel under a raytraced sun traces its own ray rather
+	// than sampling a cascade. None of what remains needs cascade density, so the
+	// cascade count is cut down to what they do need.
 	//
 	// Keyed on whether the light COULD be raytraced rather than on whether it was
 	// this pass, because the cascade count has to be the same answer for the
@@ -3176,10 +3178,15 @@ uint32_t LightStorage::get_shadow_atlas_depth_usage_bits() {
 void LightStorage::_apply_directional_shadow_size() {
 	int size = directional_shadow.requested_size;
 
-	// A sun that takes its opaque shading from the raytraced mask leaves behind a
-	// map that only volumetric fog, subsurface transmittance, alpha-blended
-	// surfaces and reflection probes read. None of them inspect it closely, so it
-	// does not need to be the size a directly visible shadow would.
+	// Once raytraced directional shadows are available, a sun that gets a mask
+	// slot has nothing looking closely at its cascades any more: what is left
+	// reading them is subsurface transmittance, alpha-blended surfaces and
+	// reflection probes, and only where a map was rendered at all -- for a
+	// raytraced sun that means Light3D::shadow_map_enabled asked for one.
+	// Volumetric fog is not among them: a froxel under a raytraced sun traces its
+	// own ray rather than sampling a cascade. None of what remains needs the size
+	// a directly visible shadow would. The atlas is shared, so this caps it for
+	// every directional light, raytraced or not.
 	const int demoted = RendererRD::RaytracingScene::get_directional_demoted_size();
 	if (demoted > 0) {
 		const RendererSceneRenderRD *scene_render = RendererSceneRenderRD::get_singleton();

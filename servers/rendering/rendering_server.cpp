@@ -3084,6 +3084,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("environment_set_adjustment", "env", "enable", "brightness", "contrast", "saturation", "use_1d_color_correction", "color_correction"), &RenderingServer::environment_set_adjustment);
 	ClassDB::bind_method(D_METHOD("environment_set_ssr", "env", "enable", "max_steps", "fade_in", "fade_out", "depth_tolerance"), &RenderingServer::environment_set_ssr);
 	ClassDB::bind_method(D_METHOD("environment_set_ssao", "env", "enable", "radius", "intensity", "power", "detail", "horizon", "sharpness", "light_affect", "ao_channel_affect"), &RenderingServer::environment_set_ssao);
+	ClassDB::bind_method(D_METHOD("environment_set_ssao_method", "env", "method"), &RenderingServer::environment_set_ssao_method);
 	ClassDB::bind_method(D_METHOD("environment_set_fog", "env", "enable", "light_color", "light_energy", "sun_scatter", "density", "height", "height_density", "aerial_perspective", "sky_affect", "fog_mode"), &RenderingServer::environment_set_fog, DEFVAL(RSE::ENV_FOG_MODE_EXPONENTIAL));
 	ClassDB::bind_method(D_METHOD("environment_set_fog_depth", "env", "curve", "begin", "end"), &RenderingServer::environment_set_fog_depth);
 	ClassDB::bind_method(D_METHOD("environment_set_sdfgi", "env", "enable", "cascades", "min_cell_size", "y_scale", "use_occlusion", "bounce_feedback", "read_sky", "energy", "normal_bias", "probe_bias"), &RenderingServer::environment_set_sdfgi);
@@ -3148,6 +3149,10 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::ENV_SSAO_QUALITY_MEDIUM);
 	BIND_ENUM_CONSTANT(RSE::ENV_SSAO_QUALITY_HIGH);
 	BIND_ENUM_CONSTANT(RSE::ENV_SSAO_QUALITY_ULTRA);
+
+	BIND_ENUM_CONSTANT(RSE::ENV_SSAO_METHOD_DEFAULT);
+	BIND_ENUM_CONSTANT(RSE::ENV_SSAO_METHOD_SCREEN_SPACE);
+	BIND_ENUM_CONSTANT(RSE::ENV_SSAO_METHOD_GROUND_TRUTH);
 
 	BIND_ENUM_CONSTANT(RSE::ENV_SSIL_QUALITY_VERY_LOW);
 	BIND_ENUM_CONSTANT(RSE::ENV_SSIL_QUALITY_LOW);
@@ -3739,6 +3744,41 @@ void RenderingServer::init() {
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/blur_passes", PROPERTY_HINT_RANGE, "0,6"), 2);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/fadeout_from", PROPERTY_HINT_RANGE, "0.0,512,0.1,or_greater"), 50.0);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/fadeout_to", PROPERTY_HINT_RANGE, "64,65536,0.1,or_greater"), 300.0);
+
+	// Ground truth ambient occlusion, as an alternative to the Intel screen
+	// space occlusion above. It reads the same Environment radius, intensity,
+	// power and fadeout, and writes the same buffer, so nothing downstream
+	// needs to know which one produced the value. Detail, horizon and sharpness
+	// describe the other estimator and are ignored by this one.
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/method", PROPERTY_HINT_ENUM, "Screen Space (Legacy),Ground Truth"), 0);
+	// Off, the march covers a fixed distance in the world and its on-screen span
+	// shrinks with distance until the steps land on the same texel. On, the span
+	// is fixed and the world radius follows the depth, which is what keeps
+	// occlusion visible far from the camera.
+	GLOBAL_DEF("rendering/environment/ssao/ground_truth/scale_radius_with_distance", true);
+	// A fraction of screen HEIGHT, which is the axis a camera holds its field of
+	// view on, so the same value reaches the same distance whatever the window's
+	// aspect ratio. The range reaches far past what a small scene needs because a
+	// real interior wants much more than a synthetic test scene does. The
+	// denoise widens itself to match, so a large value costs taps and sample
+	// coverage rather than grain.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/ground_truth/screen_radius", PROPERTY_HINT_RANGE, "0.005,0.5,0.001"), 0.1);
+	// How far behind a sample its back face is assumed to sit, as a fraction of
+	// the radius. This is what lets light pass behind a thin surface instead of
+	// treating every occluder as infinitely deep.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/ground_truth/thickness", PROPERTY_HINT_RANGE, "0.01,2,0.01"), 0.3);
+	GLOBAL_DEF("rendering/environment/ssao/ground_truth/visibility_bitmask", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/slices", PROPERTY_HINT_RANGE, "1,8,1"), 4);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/steps_per_slice", PROPERTY_HINT_RANGE, "1,16,1"), 8);
+	// Environment.ssao_intensity defaults to 2.0, and that 2.0 is a calibration
+	// constant belonging to the legacy estimator: its obscurance is a distance
+	// weighted proximity average over a screen disk rather than a visibility
+	// integral, and on the same geometry it measures a fraction of the real
+	// deficit, so it needs multiplying up. This estimator reports the deficit
+	// directly, so handing it the same number doubles a figure that is already
+	// right. Scale it here rather than moving the Environment default, which
+	// the legacy estimator still needs. Set it to 1.0 for the old behavior.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/ground_truth/intensity_scale", PROPERTY_HINT_RANGE, "0.05,2,0.01"), 0.5);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/quality", PROPERTY_HINT_ENUM, "Very Low (Fast),Low (Fast),Medium (Average),High (Slow),Ultra (Custom)"), 2);
 	GLOBAL_DEF("rendering/environment/ssil/half_size", true);

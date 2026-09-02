@@ -45,9 +45,40 @@
 #endif
 
 //#define DEBUG_CULL_TIME
-#ifdef DEBUG_CULL_TIME
 #include "core/os/os.h"
-#endif
+
+// What the raytraced shadow path costs the CPU, averaged so that one slow frame
+// does not read as the steady state and one fast one does not hide it.
+//
+// The two halves answer different questions. Gathering scales with how much of
+// the world is within reach of a light, and is the half that grows with world
+// size; building scales with how many surfaces reach the structure and whether
+// any of them moved, and is the half that grows with instance count. Reporting
+// them apart is what makes it possible to tell which one a slow scene is paying
+// for. Peaks alongside the averages because a build spike lands on one frame and
+// is felt as a hitch rather than as a lower average.
+static void _rt_report_cpu_cost(uint64_t p_gather_usec, uint64_t p_build_usec) {
+	constexpr uint32_t REPORT_EVERY = 120;
+	static uint32_t frames = 0;
+	static uint64_t gather_total = 0, build_total = 0, gather_peak = 0, build_peak = 0;
+
+	frames++;
+	gather_total += p_gather_usec;
+	build_total += p_build_usec;
+	gather_peak = MAX(gather_peak, p_gather_usec);
+	build_peak = MAX(build_peak, p_build_usec);
+
+	if (frames < REPORT_EVERY) {
+		return;
+	}
+	print_line(vformat("RT_DEBUG cpu over %d frames: gather avg %.3f ms peak %.3f | build avg %.3f ms peak %.3f | total avg %.3f ms",
+			(int)frames,
+			double(gather_total) / double(frames) / 1000.0, double(gather_peak) / 1000.0,
+			double(build_total) / double(frames) / 1000.0, double(build_peak) / 1000.0,
+			double(gather_total + build_total) / double(frames) / 1000.0));
+	frames = 0;
+	gather_total = build_total = gather_peak = build_peak = 0;
+}
 
 /* HALTON SEQUENCE */
 
@@ -3490,6 +3521,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	if (scene_render->is_raytracing_scene_available() && !p_reflection_probe.is_valid()) {
 		RENDER_TIMESTAMP("Update RT Acceleration Structures");
 
+		const bool rt_time = scene_render->is_raytracing_debug_enabled();
+		const uint64_t rt_started = rt_time ? OS::get_singleton()->get_ticks_usec() : 0;
+
 		// A multimesh contributes one entry per element, so a single GridMap
 		// octant can be worth hundreds. Bounded so that a pathological scene
 		// degrades instead of stalling.
@@ -3621,14 +3655,51 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			}
 		};
 
+		// A light whose bounds already sit inside a volume that is about to be
+		// queried anyway contributes nothing but a second descent through the same
+		// part of the index: every instance it would reach is reached by the
+		// enclosing volume, and the pass counter throws the duplicate away at the
+		// leaf. Not querying it changes which casters are gathered not at all.
+		//
+		// It is worth the test because this is the common case and not a corner
+		// one. A raytraced sun's volume is the camera frustum swept towards the
+		// light, and in an interior, a street or a town square that swallows every
+		// lamp in the scene; those lamps' queries then account for most of the
+		// index visits and find nothing the sun had not already found.
+		//
+		// The enclosed volumes are moved to the back rather than dropped, because
+		// the per-element multimesh test below asks a DIFFERENT question of this
+		// same list: whether one element of a multimesh is reached, and it only
+		// consults the directional volumes when scatter_casters allows it to. A
+		// list with the enclosed lamps missing would lose elements those lamps
+		// were the only reason to include.
+		uint32_t rt_light_query_count = rt_light_bounds_scratch.size();
+		if (!rt_directional_bounds_scratch.is_empty()) {
+			uint32_t front = 0;
+			for (uint32_t i = 0; i < rt_light_bounds_scratch.size(); i++) {
+				bool enclosed = false;
+				for (const AABB &directional_bounds : rt_directional_bounds_scratch) {
+					if (directional_bounds.encloses(rt_light_bounds_scratch[i])) {
+						enclosed = true;
+						break;
+					}
+				}
+				if (!enclosed) {
+					SWAP(rt_light_bounds_scratch[front], rt_light_bounds_scratch[i]);
+					front++;
+				}
+			}
+			rt_light_query_count = front;
+		}
+
 		CullRTCasters cull_casters;
 		cull_casters.result = &rt_caster_scratch;
 		cull_casters.pass = rt_caster_pass_counter;
 		cull_casters.visited = &dbg_visited;
 		cull_casters.rejected = &dbg_noncaster;
 
-		for (const AABB &light_bounds : rt_light_bounds_scratch) {
-			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(light_bounds, cull_casters);
+		for (uint32_t i = 0; i < rt_light_query_count; i++) {
+			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(rt_light_bounds_scratch[i], cull_casters);
 		}
 		for (const AABB &light_bounds : rt_directional_bounds_scratch) {
 			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(light_bounds, cull_casters);
@@ -3754,7 +3825,11 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				print_line(cur);
 			}
 		}
+		const uint64_t rt_gathered = rt_time ? OS::get_singleton()->get_ticks_usec() : 0;
 		scene_render->update_raytracing_scene(rt_instance_scratch);
+		if (rt_time) {
+			_rt_report_cpu_cost(rt_gathered - rt_started, OS::get_singleton()->get_ticks_usec() - rt_gathered);
+		}
 	}
 
 	/* RAYTRACED SHADOWS: DECIDE WHICH LIGHTS GIVE UP THEIR SHADOW MAP */

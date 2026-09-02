@@ -41,9 +41,11 @@
 namespace RendererRD {
 
 // Manages the hardware acceleration structures (BLAS/TLAS) used by raytraced
-// shadows. This is a first-draft implementation: static geometry only, one BLAS
-// per mesh surface shared by every instance of that mesh, and a full TLAS
-// rebuild each frame.
+// shadows. Static geometry shares one BLAS per mesh surface across every
+// instance of that mesh; skinned geometry gets one per skinned vertex buffer
+// and is rebuilt whenever the skeleton pass has moved it. The TLAS is rebuilt
+// only when the set of instances, their transforms or their structures have
+// changed, and new structures are built under a per-frame budget.
 //
 // The TLAS is built from a caller-supplied instance list which is NOT frustum
 // culled, so geometry behind the camera still casts shadows.
@@ -54,23 +56,19 @@ public:
 private:
 	static RaytracingScene *singleton;
 
-	// Project settings, resolved once at startup.
+	// The master `enabled` flag is latched at first read and never re-read: a
+	// mesh uploaded while it was off has no buffers an acceleration structure
+	// could be built from. `directional/enabled` is live, but it is refreshed
+	// once per frame rather than read wherever it is wanted, so that a frame sees
+	// one answer for it, as do the two demotion values copied just below. Every
+	// other setting is read live through GLOBAL_GET_CACHED in its accessor below.
+	// See register_settings().
 	static bool settings_registered;
 	static bool setting_enabled;
-	static int setting_samples;
-	static float setting_max_distance;
-	static bool setting_denoise;
-	static int setting_denoise_passes;
-	static int setting_denoise_frames;
-	static float setting_denoise_min_filter;
-	static float setting_denoise_clamp_sigma;
-	static bool setting_accurate_occluder_distance;
 	static bool setting_directional_enabled;
-	static float setting_directional_caster_scale;
-	static int setting_directional_scatter;
-	static float setting_directional_scatter_distance;
-	static int setting_directional_demoted_mode;
-	static int setting_directional_demoted_size;
+	// This frame's copies of the settings a frame has to see one value of.
+	static int frame_demoted_mode;
+	static int frame_demoted_size;
 
 	enum BlasState {
 		BLAS_UNBUILT,
@@ -188,15 +186,20 @@ public:
 
 	// Registers the project settings. Safe to call more than once.
 	static void register_settings();
-	// True when GODOT_RT_DEBUG is set in the environment. Cached on first use.
-	// How far past a directional light's shadow distance geometry is still
-	// gathered as a caster, as a multiple of that distance. A sun has no range
-	// to cull against, so this is what bounds its acceleration structure.
+	// True when the directional setting is on. Like is_enabled() it does not imply
+	// hardware support or a structure to trace against. This is the frame's
+	// snapshot of the setting, taken by update_frame_settings(), not a live read.
 	static bool is_directional_enabled();
+	// Takes this frame's copy of the settings that have to stay fixed across it.
+	static void update_frame_settings();
 	// 0 keeps whatever the light was authored with, 1 Orthogonal, 2 two splits.
 	static int get_directional_demoted_mode();
 	// Zero keeps the project's own directional shadow atlas size.
 	static int get_directional_demoted_size();
+	// How far the camera's shadow-distance volume is swept towards a directional
+	// light when gathering casters, as a multiple of that shadow distance. A sun
+	// has no range to cull against, so this is what bounds its acceleration
+	// structure.
 	static float get_directional_caster_scale();
 	// Disabled / Near Camera / Full Distance. A MultiMesh contributes one entry
 	// per element, so a scattered field can flood the structure under a light
@@ -209,6 +212,7 @@ public:
 	static DirectionalScatterMode get_directional_scatter_mode();
 	static float get_directional_scatter_distance();
 
+	// True when GODOT_RT_DEBUG is set in the environment. Cached on first use.
 	static bool debug_enabled();
 	// True when the project setting is on. Does not imply hardware support.
 	static bool is_enabled();

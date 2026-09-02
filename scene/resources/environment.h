@@ -70,6 +70,16 @@ public:
 		TONE_MAPPER_AGX,
 	};
 
+	// Which estimator fills the occlusion buffer. DEFAULT defers to
+	// rendering/environment/ssao/method, so a scene saved before this existed
+	// keeps whatever the project picked, and two Environments in one project can
+	// still be set against each other.
+	enum SSAOMethod {
+		SSAO_METHOD_DEFAULT,
+		SSAO_METHOD_SCREEN_SPACE,
+		SSAO_METHOD_GROUND_TRUTH,
+	};
+
 	enum SDFGIYScale {
 		SDFGI_Y_SCALE_50_PERCENT,
 		SDFGI_Y_SCALE_75_PERCENT,
@@ -138,6 +148,7 @@ private:
 	float ssao_sharpness = 0.98;
 	float ssao_direct_light_affect = 0.0;
 	float ssao_ao_channel_affect = 0.0;
+	SSAOMethod ssao_method = SSAO_METHOD_DEFAULT;
 	void _update_ssao();
 
 	// SSIL
@@ -310,6 +321,8 @@ public:
 	float get_ssao_direct_light_affect() const;
 	void set_ssao_ao_channel_affect(float p_ao_channel_affect);
 	float get_ssao_ao_channel_affect() const;
+	void set_ssao_method(SSAOMethod p_method);
+	SSAOMethod get_ssao_method() const;
 
 	// SSIL
 	void set_ssil_enabled(bool p_enabled);
@@ -457,6 +470,7 @@ VARIANT_ENUM_CAST(Environment::BGMode)
 VARIANT_ENUM_CAST(Environment::AmbientSource)
 VARIANT_ENUM_CAST(Environment::ReflectionSource)
 VARIANT_ENUM_CAST(Environment::ToneMapper)
+VARIANT_ENUM_CAST(Environment::SSAOMethod)
 VARIANT_ENUM_CAST(Environment::SDFGIYScale)
 VARIANT_ENUM_CAST(Environment::GlowBlendMode)
 VARIANT_ENUM_CAST(Environment::FogMode)

@@ -1,12 +1,19 @@
 # The godot-rt fork: what it changes and how to use it
 
-This engine is Godot 4.8-dev with hardware ray-traced shadows added to the Forward+ renderer.
-Everything else about Godot is unchanged, so ordinary Godot knowledge applies — except in the
-places listed here, where it will actively mislead you.
+This engine is Godot 4.8-dev with two additions to the Forward+ renderer: hardware ray-traced
+shadows, and a second ambient occlusion estimator. Everything else about Godot is unchanged, so
+ordinary Godot knowledge applies — except in the places listed here, where it will actively
+mislead you.
 
-This document is self-contained. If you are working in a **game project** that uses this engine
-rather than in the engine repository, copy this file (or the parts you need) into that project so
-your assistant has it.
+Sections 1 to 8 are the shadows. Section 9 is the occlusion; the two are independent and either
+can be used without the other.
+
+This document is self-contained and describes what the fork IS. If you are working in a **game
+project** that uses this engine rather than in the engine repository, copy this file (or the parts
+you need) into that project so your assistant has it.
+
+`FINDINGS.md` beside it records how it got there — what was measured, and which plausible ideas the
+numbers refused. Nothing there is needed to use the engine; read it before re-treading a decision.
 
 Upstream base: `b56a91878e7c94977e4af978968e41d0670c0a8b`. Everything after it is fork work.
 
@@ -54,6 +61,8 @@ Set the size back to `0.0` for the hard, uniform, cheaper behavior stock Godot g
 | --- | --- |
 | `Light3D.shadow_map_enabled` (bool, default `false`) | Render a shadow map for this light *even though* it takes its shadow from the raytraced mask. Buys back volumetric fog shafts and subsurface transmittance for that light, at the cost of an atlas quadrant and a shadow map render. |
 | `RenderingServer.light_set_shadow_map_enabled(light, enabled)` | The server-level equivalent. |
+| `Environment.ssao_method` (enum, default `SSAO_METHOD_DEFAULT`) | Which estimator fills the occlusion buffer for this environment. See section 9. |
+| `RenderingServer.environment_set_ssao_method(env, method)` | The server-level equivalent. |
 
 Nothing was removed or renamed.
 
@@ -64,7 +73,7 @@ All under `rendering/lights_and_shadows/raytraced_shadows/`.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `enabled` | `false` | Master switch. `OmniLight3D` and `SpotLight3D` take their shadows from the raytraced mask. |
-| `samples_per_light` | `1` | Shadow rays per pixel per light per frame. Rays past the second are only traced where the first two disagree, so 1 → 2 is the step that costs. |
+| `samples_per_light` | `1` | Shadow rays per pixel per light per frame. Every one is traced, so cost is linear in it. |
 | `max_ray_distance` | `0.0` | Extra clamp on ray length. `0.0` = no additional limit. |
 | `accurate_occluder_distance` | `true` | Find the *closest* occluder rather than the first one hit. Changes no shadow's shape, only how wide the denoiser is allowed to filter. |
 | `denoiser/enabled` | `true` | The denoiser keeps its own temporal history and does not need TAA — it works with SMAA, FXAA or nothing. |
@@ -79,15 +88,32 @@ All under `rendering/lights_and_shadows/raytraced_shadows/`.
 | `directional/demoted_shadow_mode` | `2 Splits` | What a raytraced sun's `directional_shadow_mode` is replaced with. |
 | `directional/demoted_shadow_size` | `1024` | Upper bound on the directional shadow atlas once raytraced directional shadows are available. |
 
-**Every one of these is read once at startup and cached for the process lifetime**
-(`RaytracingScene::register_settings`, guarded by a `settings_registered` flag). Changing one at
-runtime does nothing until restart, including the thirteen the editor does not label
-restart-required.
+**All of these are live except the master `enabled` flag.** Change one in the inspector, or from a
+script with `ProjectSettings.set_setting()`, and the renderer picks it up on the next frame — no
+restart. Most are read through `GLOBAL_GET_CACHED`, which keeps a typed copy and re-reads only when
+`ProjectSettings` bumps its version, so the steady state costs an integer compare rather than a
+string lookup.
 
-For `enabled` there is a deeper reason than the cache: `MeshStorage::mesh_add_surface` decides a
-vertex buffer's creation bits at upload time, before the rendering device or the renderer exist. A
-mesh uploaded while the setting was off has no buffer an acceleration structure can be built from,
-so turning the setting on mid-session could not work even if the value were re-read.
+Each is clamped on read, because a live value arrives straight from the inspector and several
+property hints allow `or_greater`.
+
+Three of them are instead snapshotted once per frame, in `RaytracingScene::update_frame_settings()`,
+called from `RendererSceneRenderRD::update()` before any viewport draws — the same place Godot
+snapshots its own per-frame rendering settings:
+
+- `directional/enabled`
+- `directional/demoted_shadow_mode`
+- `directional/demoted_shadow_size`
+
+All three decide how many cascades a sun gets and how big the atlas holding them is, and that has to
+be the same answer for the culler, the atlas layout and the light buffer, which run at three
+different points in a frame. Read on demand they could disagree within one frame and put cascades in
+the wrong atlas rects. Snapshotting costs them up to one frame of latency and nothing else.
+
+**`enabled` is the one that cannot ever be live.** `MeshStorage::mesh_add_surface` decides a vertex
+buffer's creation bits at upload time, before the rendering device or the renderer exist, so a mesh
+uploaded while the setting was off has no buffer an acceleration structure could be built from.
+Re-reading the value would only produce build failures against buffers that can never satisfy it.
 
 Requires Forward+, the Vulkan driver, and a GPU with ray query support. Without ray query it prints
 a warning and every light falls back to shadow maps, so a project stays playable.
@@ -167,7 +193,7 @@ that tunes a shadow *map* is inert, because no map is rendered:
 | You reach for | It does | Reach for instead |
 | --- | --- | --- |
 | `Light3D.shadow_blur` | nothing | `light_size` / `light_angular_distance` |
-| `positional_shadow/atlas_size` and its quadrant subdivisions | nothing | — (no atlas quadrant is claimed) |
+| `positional_shadow/atlas_size` and its quadrant subdivisions | nothing, unless `shadow_map_enabled` puts the light back in the atlas | — (no atlas quadrant is claimed) |
 | `positional_shadow/soft_shadow_filter_quality` | nothing | `denoiser/spatial_passes`, `denoiser/min_filter_pixels` |
 | `directional_shadow/size` | capped to 1024 | `directional/demoted_shadow_size` |
 | `directional_shadow/soft_shadow_filter_quality` | nothing | `samples_per_light` |
@@ -215,8 +241,9 @@ project, raytraced or not, because the directional shadow atlas is shared:
 - `directional_shadow_mode` set on the node is overridden to 2 splits.
 - The atlas is capped at 1024 regardless of `rendering/lights_and_shadows/directional_shadow/size`.
 
-Both are deliberate — what still reads that map does not need cascade density — and both are
-configurable via `directional/demoted_shadow_*`. Set the mode to `Keep Authored` and the size to
+Both are deliberate — the atlas is shared, and what still renders into it once the mask drives the
+sun's opaque shading does not need cascade density — and both are configurable via
+`directional/demoted_shadow_*`. Set the mode to `Keep Authored` and the size to
 `0` to disable the demotion.
 
 ---
@@ -234,19 +261,23 @@ configurable via `directional/demoted_shadow_*`. Set the mode to `Keep Authored`
 3. **Depth pre-pass with normal/roughness.** Forced on whenever raytracing is available — the trace
    needs both. This is the main unconditional cost of turning the feature on.
 4. **Trace.** One compute dispatch. Per 8×8 tile, cull the lights that reach it; per pixel, keep the
-   four contributing the most light; trace `samples_per_light` rays each. Writes an RGBA8 visibility
+   four contributing the most light; trace `samples_per_light` rays each — all of them, with the
+   emitter sampled as a Vogel disk whose radius is jittered per frame. Writes an RGBA8 visibility
    mask, an RGBA8 hit-distance (penumbra width in pixels), and an RGBA8UI index saying which light
    each channel belongs to.
-5. **Denoise.** Temporal reprojection with variance clamping, then N edge-stopping à-trous passes
-   whose reach is driven by the measured penumbra width.
+5. **Denoise.** Temporal reprojection with variance clamping — floored by the standard error the
+   ray counts carry, so it cannot pin a penumbra's shallow ends to a binary answer, and shortening
+   the accumulation window in proportion to how far it had to correct the history — then N
+   edge-stopping à-trous passes whose reach is driven by the measured penumbra width. The
+   accumulator's 8-bit store is dithered, because it re-reads its own rounded output every frame.
 6. **Volumetric fog**, which traces its own ray per froxel for a raytraced sun.
 7. **Forward pass** samples the mask instead of the shadow atlas.
 
 **Cost model.** It scales with how many raytraced lights *overlap a pixel*, not how many the scene
 contains — where more than four overlap, the four brightest at that pixel are shadowed and the rest
-are unshadowed there. Up to 255 raytraced lights may exist in a frame. Shadow maps are not rendered
-for raytraced lights at all, so a scene can hold far more shadow-casting lights than the atlas has
-room for.
+are unshadowed there. Up to 255 raytraced lights may exist in a frame. No shadow map is rendered for
+a raytraced light unless `shadow_map_enabled` asks for one, so a scene can hold far more
+shadow-casting lights than the atlas has room for.
 
 Visibility is stored as its square root and squared on read, spending more of the 8-bit range on the
 dark end where a shadow's detail is.
@@ -270,18 +301,28 @@ dark end where a shadow's detail is.
 
 Start with the defaults. In order of what actually moves the picture:
 
-- **Shadow softness** is `light_size` (lamps, in meters) and `light_angular_distance` (the sun, in
-  degrees). A real sun is about `0.5°`; the default `0.25°` is half that. Both are live-editable.
+At the defaults the shadow's width is the width the geometry calls for. Measured against a
+closed-form ground truth — a lamp of known radius over a post of known size, in a scene where the
+50% crossing of the shadow edge lands within a pixel of the analytic answer at every distance — the
+10-90 penumbra comes out at 17/28/38/47/55/51/52 pixels where the geometry asks for
+16.3/26.2/36.0/45.9/51.5/51.5/51.5, and at sixteen samples per light it reproduces it exactly. So
+softness is a property of the light, not of the denoiser, and these are the knobs in order of what
+actually moves the picture:
+
+- **Shadow softness** is `light_size` (lamps, in meters, a radius) and `light_angular_distance` (the
+  sun, in degrees). Godot treats the latter as the disk's angular radius, so the default `0.25°`
+  gives about 94% of the real sun's penumbra despite the class reference quoting `0.5` for the sun.
 - **Too soft at contact?** Lower `denoiser/min_filter_pixels`. At or below `1.0` the filter switches
-  off entirely at a hard edge.
+  off entirely at a hard edge, so `1.0` and `0.0` render identically.
 - **Shadow trails behind a moving object?** Lower `denoiser/history_clamp_sigma`. `2.0` cuts
-  ghosting by roughly 85% against no clamp; lower reacts faster and accumulates less.
-- **Grainy in wide penumbrae?** Raise `samples_per_light` to `2`, or `denoiser/spatial_passes`.
-  Raising samples above 2 is close to free but rarely changes much.
+  ghosting to nothing; what is left after a blocker moves is its new shadow still filling in, not
+  its old one lingering.
+- **Grainy in wide penumbrae?** Raise `samples_per_light`, or `denoiser/spatial_passes`. Samples now
+  cost what they say: every one is traced. They converge on the same shadow, only with less noise.
 - **Slow in an open outdoor scene?** Lower `directional/caster_distance_scale`, or set
   `directional/scatter_casters` to `Disabled`.
 
-Remember these all need an engine restart to take effect.
+All of these take effect on the next frame.
 
 ---
 
@@ -294,21 +335,65 @@ RT_DEBUG cull:       how many instances were visited and how many became casters
 RT_DEBUG update:     TLAS instance count, BLAS cache size, skipped and deferred surfaces
 RT_DEBUG shadows:    how many lights are raytraced, and how many shadow maps still rendered
 RT_DEBUG pre_opaque: whether the mask ran, how many lights took slots, whether a TLAS exists
+RT_DEBUG cpu:        what this path costs the CPU, averaged over 120 frames
 ```
 
 `shadow_maps_rendered=0` with `raytraced=N` is what a fully raytraced scene looks like.
 `skipped_surfaces>0` means geometry was rejected as un-raytraceable.
 
+The `cpu` line is the one to read when the frame is CPU-bound rather than GPU-bound, which is what
+this path is most likely to cost you in a large scene. It separates two halves that scale with
+different things:
+
+- **gather** — finding which of the scene's instances are within reach of a raytraced light. Grows
+  with how much world is inside those volumes, so it is the half that grows with level size and with
+  the sun's shadow distance.
+- **build** — turning those casters into acceleration structures. Grows with the caster count, and
+  spikes on the frame that first builds them (the peak figure, not the average, is what you feel).
+
+### Making it cheaper
+
+Measured in a deliberately hostile scene — three thousand props over a 200 m field, sixteen lamps of
+25 m range, a raytraced sun and a spotlight on the camera — on a slow CPU:
+
+| Change | RT CPU per frame |
+| --- | --- |
+| As described above | 1.28 ms |
+| `DirectionalLight3D.directional_shadow_max_distance` 100 → 50 | 0.99 ms |
+| ...→ 25 | 0.54 ms |
+| Raytraced sun off entirely | 0.45 ms |
+| `directional/caster_distance_scale` 2.0 → 0.5 | 1.12 ms |
+
+Lamps whose bounds already sit inside the sun's caster volume are not queried separately, so in a
+scene where the sun reaches everything the lamps are close to free to gather. That is automatic;
+there is nothing to set.
+
+**The raytraced sun is two thirds of the cost, and the sun's shadow distance is the lever, not
+`caster_distance_scale`.** A lamp bounds its own casters with its range; a sun has no range, so the
+volume swept for it is the camera frustum out to the shadow distance, pushed back toward the light.
+Shortening the shadow distance shrinks that volume in every direction at once, which is why halving
+it does far more than quartering the sweep. If a raytraced sun is costing more than you want, set
+`directional_shadow_max_distance` to the distance you actually need shadows at, before reaching for
+anything else.
+
 ---
 
 ## 8. Known gaps
 
-- **Subsurface transmittance** still reads the cascade map (task deferred). The fix is the same
+- **Subsurface transmittance** still measures thickness from a shadow map rather than from a ray
+  (task deferred). Under a raytraced light with no map, it falls back to the material's own
+  `transmittance_depth`, so the surface still transmits -- it just stops responding to what is
+  actually in front of the light. `shadow_map_enabled` buys the real depth back. The fix is the
+  same
   shape as the fog one: trace toward the light instead of range-finding in the cascade, with the
   acceleration structure declared inside `#ifdef LIGHT_TRANSMITTANCE_USED` so non-SSS shader
   variants never carry the ray-query capability.
-- **Raytraced settings are all restart-required**, but only `enabled` and `directional/enabled` are
-  registered `GLOBAL_DEF_RST`, so the editor does not say so for the other thirteen.
+- **A setting changed mid-frame is seen mid-frame.** The live settings are re-read the moment
+  `ProjectSettings` changes, so a change that lands between the culler's decision and the light
+  buffer's can leave them disagreeing for one frame. The three that decide a sun's cascade count and
+  the size of the atlas holding it are snapshotted once per frame for exactly that reason, so what
+  is left degrades to a one-frame stale value rather than to anything visible. Snapshotting the
+  whole set would remove even that.
 - **A light that loses the four-channel per-pixel competition is unshadowed at that pixel**, with no
   shadow map fallback.
 - **The per-instance directional caster cull runs before the raytraced decision**, so reordering it
@@ -332,3 +417,167 @@ RT_DEBUG pre_opaque: whether the mask ran, how many lights took slots, whether a
   check, the GDExtension API compatibility check, and the export/converter tests. Unit tests are
   not among them — the Windows job runs `--test` itself.
   If you change a bound property, run `godot --headless --doctool .` yourself and commit the result.
+
+---
+
+## 9. Ambient occlusion
+
+The fork adds a second estimator behind Godot's existing occlusion buffer. It writes the same
+texture the stock one does, so everything downstream — the occlusion the forward shader multiplies
+ambient light by, light affect, specular occlusion — keeps working without knowing which one ran.
+
+It is **off by default**: `rendering/environment/ssao/method` ships as `Screen Space (Legacy)`, and
+an `Environment` with `ssao_method` left at `Project Default` follows it. A project that has never
+heard of any of this behaves exactly as it did.
+
+### 9.1 What it is
+
+Slice-based horizon marching (Jimenez et al., GTAO, 2016) with a **visibility bitmask** (Therrien,
+Levesque and Gilet, 2023). The difference from a horizon march is what a slice remembers. A horizon
+march keeps one angle per side and treats everything past the first occluder as solid; this keeps a
+32 sector occupancy mask over the slice's half turn, and each sample marks the range of sectors
+between its front face and a back face pushed a fixed distance behind it. Two occluders with sky
+between them stay two occluders, and a thin surface stops occluding once the march passes behind it.
+
+That distinction is the whole point, and it is worth knowing when it pays. Measured against a CPU
+ray trace of the real geometry (mean absolute error / correlation, lower and higher being better):
+
+| scene | bitmask | bitmask off | legacy |
+| --- | --- | --- | --- |
+| thin geometry — a louvre, a standing fin, a table on thin legs | **0.0134 / 0.947** | 0.0346 / 0.875 | 0.0433 / 0.845 |
+| solid boxes | 0.0307 / 0.796 | **0.0235 / 0.859** | 0.0515 / 0.693 |
+| an interior room, camera inside it | **0.0104 / 0.936** | — | 0.0367 / 0.653 |
+
+The mask wins decisively wherever geometry is thin and loses slightly where it is thick, because on
+solid convex shapes "everything behind the first occluder is also occluded" happens to be true. Both
+beat the legacy estimator everywhere, and in the interior it is not close.
+
+Those are the estimator measured at unity; at the shipped intensity and power the interior scores
+0.0152 and 0.940. `docs/rt_shadows/ao_validation/` is the harness that produced them, and re-running
+it is how to check a change rather than arguing about a screenshot.
+
+### 9.2 Turning it on
+
+Either globally, with `rendering/environment/ssao/method = Ground Truth`, or per environment, with
+`Environment.ssao_method`. The per-environment setting exists so two environments in one project can
+be compared directly; `Project Default` on an environment means "follow the project setting", which
+is why old scenes are unaffected.
+
+`Environment.ssao_enabled` and `ssao_power` mean the same thing to both estimators. Two do not.
+`ssao_radius` is a world distance to the legacy one; to this one under the default
+`scale_radius_with_distance` it is a multiplier on `screen_radius`, so it scales a share of the
+screen rather than a distance. And `ssao_intensity` is multiplied by `intensity_scale` before this
+estimator sees it, for the reason in the table below. `ssao_detail`, `ssao_horizon` and `ssao_sharpness` describe the legacy one only and
+the inspector hides them once the other is selected. `rendering/environment/ssao/half_size` and the
+fade distances apply to both; `quality` and `adaptive_target` do not.
+
+### 9.3 The settings that are actually worth touching
+
+Under `rendering/environment/ssao/ground_truth/`.
+
+| Setting | Default | What it is for |
+| --- | --- | --- |
+| `scale_radius_with_distance` | `true` | Hold the march to a fixed share of the screen rather than a fixed distance in the world. Without it the on-screen span shrinks as a surface recedes until the steps land on the same texel and the occlusion disappears. This is what buys coverage at distance, and it is why it is on. |
+| `screen_radius` | `0.1` | The share of screen **height** that span covers. `Environment.ssao_radius` multiplies it. Height, not width, because a camera holds its vertical field of view fixed — anchoring to width would make the same setting reach almost twice as far on a 16:9 viewport as on a square one. |
+| `thickness` | `0.3` | How far behind a sample its back face sits, as a fraction of the effect radius. The one genuine tradeoff: raise it toward `1.0` for scenes of thick solid shapes, lower it for foliage, railings and slats. `0.3` is the joint optimum measured across both test scenes. |
+| `visibility_bitmask` | `true` | Off falls back to horizon behavior. Worth a look on a scene that is all solid geometry; not worth it otherwise. |
+| `slices` / `steps_per_slice` | `4` / `8` | The whole sample budget, and cost is linear in both. They are not interchangeable: steps buy accuracy, slices buy smoothness. Raise whichever you are short of; rebalancing one into the other trades a real quantity for another. |
+| `intensity_scale` | `0.5` | What `Environment.ssao_intensity` is multiplied by before this estimator sees it. That property defaults to `2.0`, and the `2.0` belongs to the legacy estimator: its obscurance is a proximity average rather than a visibility integral and measures a fraction of the real deficit, so it needs multiplying up. This one reports the deficit directly. Leave it alone unless you want the whole effect uniformly stronger or weaker. |
+
+### 9.4 Things to know before you are surprised
+
+- **Forward+ and single view only.** A stereo or XR viewport silently falls back to the legacy
+  estimator, because the occlusion buffer is a layer per eye and the gather has no notion of a
+  second one.
+- **Do not use it under an orthographic camera.** It does not fall back and it does not warn; it
+  simply produces the wrong answer, and increasingly so with distance. Three places assume a
+  perspective projection: the distance-scaled world radius still grows with depth when an
+  orthographic view's extent does not, which inflates both the sample cutoff and the back-face
+  thickness; the view direction is built with the opposite sign to the perspective branch, which
+  reverses the term that lets thin surfaces pass light; and the filter reconstructs view positions
+  with no orthographic case at all, so its plane-distance weights measure against a warped plane.
+  Use the legacy estimator on an orthographic viewport until this is fixed.
+- **Half resolution costs less than it sounds like.** Every world space quantity the gather uses is
+  derived from the full resolution pixel footprint, so halving the resolution changes how many
+  pixels get their own answer and nothing else — the march reaches exactly as far and its first
+  step lands exactly as close. The reconstruction is a 2x2 bilateral guided by the full resolution
+  depth and normal. Measured on an interior, half and full differ by 0.26 of 255 on average and
+  score the same against a ray trace; the visible difference is sharpness at silhouettes, not
+  coverage or noise.
+- **The denoise sizes itself.** Its width follows the effect radius and the slice count, because
+  those are what the gather's variance depends on: five taps per axis at the shipped radius,
+  three at the smallest and seven at the largest. That is on the `scale_radius_with_distance`
+  branch, which is the default; with distance scaling off the march's on-screen reach depends on
+  the depth rather than on a setting, so the width is fixed at five taps instead. It is separable, so it runs twice. Neighbors are weighted by
+  their distance from the shaded point's *plane* rather than by depth difference, which is what
+  lets a surface seen at a glancing angle keep its own neighbors.
+- **`screen_radius` is the knob to reach for first, and the default is conservative.** A real
+  interior generally wants more than a small test scene does. The denoise widens itself to match,
+  so a large value costs coverage and taps rather than grain.
+- **The step spacing is even, not quadratic.** A horizon march can crowd its steps near the shaded
+  point because one early hit stands in for everything behind it; a mask cannot, so an occluder
+  falling between two steps is absent rather than approximated. This is why `steps_per_slice`
+  matters more here than the same number would in a stock GTAO.
+- **The strength curve approaches black without reaching it.** `ssao_intensity` scales occlusion as
+  a ratio rather than by subtracting a multiple of its distance from white, so a corner stays a
+  gradient instead of clipping to a flat black plateau. At an intensity of one it is the identity.
+- **Contact on thick solid geometry reads about 0.03 too bright**, and roughly a third of that is
+  inherent to screen space rather than to this implementation — a reference that only sees what the
+  camera sees misses the same occlusion. `thickness` is the knob.
+- **Switching an environment back to the legacy estimator releases the depth pyramid**, which is a
+  full resolution float target with mips. Switching between them per frame would thrash it.
+
+### 9.5 Known gaps
+
+- **The denoiser is good enough, not finished.** It is a spatial filter with no temporal component,
+  which is deliberate — this fork has no temporal antialiasing to resolve a changing dither
+  against. Some grain survives at a large radius, and the residue is largely deterministic
+  estimator structure rather than sampling noise, so a wider filter will not remove it and neither
+  will more steps. Raising `slices` does help and costs taps without costing accuracy, but that is
+  paying for the symptom. **Revisit this.** The candidates, none yet measured to a conclusion: the
+  mip level transitions in the march, which are discontinuous because the pyramid is
+  farthest-biased; the hard accept/reject at the elevation bias, where a sample near the threshold
+  flips between marking several sectors and marking none; and the sector quantisation, which snaps
+  every occluder to a 5.6 degree grid. Attacking those is what would let the sample budget come
+  *down* rather than up.
+- **Half resolution reconstruction is a 2x2 bilateral, and widening it is not the fix.** Silhouettes
+  still show some stair stepping: a silhouette pixel is about sixteen times more likely to be badly
+  wrong than an average one, and the disagreement with a full resolution render is seven times the
+  frame average there. Widening the reconstruction barely touches it -- measured, a 7x7 gains three
+  percent at silhouettes for five times the taps -- because the problem is not too few candidates.
+  It is that half resolution never evaluated a pixel near the edge, and no filter can invent a
+  sample that was not taken. What does fix it is shading a CHECKERBOARD at full resolution instead
+  of a grid at quarter resolution: every unshaded pixel then has all four of its immediate
+  neighbors shaded, which measures 33% better at silhouettes and 29% better overall. It costs twice
+  the gather, since a quarter of the pixels becomes half of them, and it wants the checkerboard
+  packed into a half width buffer rather than full width threads that half exit immediately. Worth
+  doing as a third quality rung; not yet done.
+- **Cost is known roughly on one desktop GPU and not at all elsewhere.** From framerates on an
+  RTX 5090: full resolution costs about 0.3 ms more per frame than quarter resolution, which at a
+  120 fps budget is three percent of the frame. On that class of hardware there is no reason not to
+  run at full resolution. The interesting part is the shape rather than the total -- quarter
+  resolution shades a quarter of the pixels but costs roughly two thirds of what full resolution
+  costs, so somewhere between forty and sixty five percent of the effect is a FIXED cost that the
+  resolution knob does not touch: the full resolution depth pyramid, the upsample that always runs
+  at full resolution, and five dispatches with barriers between them. Anyone trying to make this
+  cheaper on weaker hardware should measure per pass -- the block is labeled `Process GTAO` for
+  the GPU profiler -- rather than reaching for the resolution setting, which can only ever address
+  the smaller half.
+- **TODO: profile on the Radeon 780M.** Nothing has been measured on an iGPU, which is the machine
+  where any of this actually decides anything. Take it per pass rather than per mode -- the block is
+  labeled `Process GTAO` for the GPU profiler -- so the fixed cost and the gather cost come out
+  separately instead of by subtraction from three whole-frame figures. Until that exists, the
+  checkerboard tier above is a quality argument with no cost argument attached, and the case for
+  running full resolution rests on one desktop GPU.
+- **`AreaLight3D`, reflection probes and the Mobile and Compatibility renderers** never see this
+  estimator; they use whatever the legacy path gives them.
+
+### 9.6 Where the code lives
+
+| File | What it does |
+| --- | --- |
+| `servers/rendering/renderer_rd/effects/gtao.{h,cpp}` | The pass driver: buffer sizing, push constants, the five dispatches, and the derived denoise width. |
+| `shaders/effects/gtao_prefilter.glsl` | Linear view depth pyramid, five mips, biased toward the *farthest* of each quad. Deliberately not the pyramid the other screen space effects build, which is deinterleaved, half resolution based, and biased the other way. |
+| `shaders/effects/gtao_gather.glsl` | The march and the bitmask resolve. |
+| `shaders/effects/gtao_filter.glsl` | A separable plane-aware denoise, run across then down at gather resolution, then a bilateral upsample into the shared occlusion buffer. |
+| `render_forward_clustered.cpp` | `_use_gtao`, `_ensure_gtao_buffers`, `_process_gtao`, and the branch that skips the legacy depth downsample when this is the only screen space effect running. |

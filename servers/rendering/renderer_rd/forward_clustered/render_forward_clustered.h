@@ -34,6 +34,7 @@
 #include "servers/rendering/multi_uma_buffer.h"
 #include "servers/rendering/renderer_rd/cluster_builder_rd.h"
 #include "servers/rendering/renderer_rd/effects/fsr2.h"
+#include "servers/rendering/renderer_rd/effects/gtao.h"
 #include "servers/rendering/renderer_rd/effects/motion_vectors_store.h"
 #include "servers/rendering/renderer_rd/effects/ss_effects.h"
 #include "servers/rendering/renderer_rd/effects/taa.h"
@@ -64,6 +65,15 @@
 #define RB_TEX_NORMAL_ROUGHNESS_MSAA SNAME("normal_roughness_msaa")
 #define RB_TEX_VOXEL_GI SNAME("voxel_gi")
 #define RB_TEX_VOXEL_GI_MSAA SNAME("voxel_gi_msaa")
+
+// Ground truth occlusion keeps its own linear depth pyramid and gather targets.
+// The pyramid the other screen space effects build is deinterleaved, based at
+// half resolution and biased toward the nearest of each group of four, none of
+// which suits a march that walks a straight line.
+#define RB_SCOPE_GTAO SNAME("rb_gtao")
+#define RB_TEX_GTAO_DEPTH SNAME("depth_pyramid")
+#define RB_TEX_GTAO_AO_A SNAME("ao_a")
+#define RB_TEX_GTAO_AO_B SNAME("ao_b")
 
 namespace RendererSceneRenderImplementation {
 
@@ -764,6 +774,7 @@ private:
 	RendererRD::TAA *taa = nullptr;
 	RendererRD::FSR2Effect *fsr2_effect = nullptr;
 	RendererRD::SSEffects *ss_effects = nullptr;
+	RendererRD::GTAO *gtao = nullptr;
 
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	RendererRD::MFXTemporalEffect *mfx_temporal_effect = nullptr;
@@ -793,6 +804,11 @@ private:
 
 	/* Render Scene */
 	void _process_ssao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections);
+	void _process_gtao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections);
+	bool _ensure_gtao_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_half_resolution, RendererRD::GTAO::Buffers &r_buffers);
+	// Whether ground truth occlusion is the method in use and can run here. It
+	// is single view, so a stereo pair keeps the legacy effect.
+	bool _use_gtao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment) const;
 	void _process_ssil(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform);
 	void _process_ssr(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_slices, const Projection *p_projections, const Vector3 *p_eye_offsets, const Transform3D &p_transform);
 	void _copy_framebuffer_to_ss_effects(Ref<RenderSceneBuffersRD> p_render_buffers, bool p_use_ssil, bool p_use_ssr);

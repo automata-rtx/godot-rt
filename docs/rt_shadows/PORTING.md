@@ -63,7 +63,7 @@ report true from the new validity query.
 
 ## The rebuild order
 
-The 41 commits in this branch are in the order the work was *discovered*, which includes false
+The commits in this branch are in the order the work was *discovered*, which includes false
 starts and later corrections. Do not follow that order; follow this one. Each stage ends somewhere
 you can check before continuing.
 
@@ -82,6 +82,15 @@ with the setting on a mesh's vertex buffer is created with `DEVICE_ADDRESS` and 
 - The settings must be registered in `ProjectSettings`' own constructor, not near their consumer.
   `mesh_add_surface` decides buffer creation bits at upload time, **before the RenderingDevice and
   the renderer exist** — which is also exactly why the master setting is restart-required.
+- **Latch only the settings that genuinely cannot change; read the rest through
+  `GLOBAL_GET_CACHED`.** The fork's first version resolved all fifteen once behind a
+  `settings_registered` flag, which quietly made every tuning knob restart-required while the editor
+  advertised only two of them as such — so turning the denoiser off in the inspector did nothing at
+  all, with no feedback. `GLOBAL_GET_CACHED` keeps a typed copy keyed on `ProjectSettings`' version
+  counter, so a live read costs an integer compare and the value reaches the renderer on the next
+  frame. Only `enabled` truly has to be latched, for the buffer-bits reason above. Clamp on read
+  rather than on registration: a live value arrives with no validation beyond the property hint, and
+  several hints allow `or_greater`.
 - Gate the buffer bits on `SUPPORTS_RAY_QUERY` as well as `SUPPORTS_BUFFER_DEVICE_ADDRESS`. Testing
   only the setting and device address gave every mesh buffer AS usage nothing could consume on
   D3D12, whose `has_feature()` has no `SUPPORTS_RAY_QUERY` case and returns false.
@@ -229,11 +238,41 @@ static converged render.
 ### 6. Denoiser quality
 
 Make one ray per light per frame match a sixteen-sample reference: penumbra-driven filter width,
-blue-noise rotation, sqrt-encoded mask, temporal variance clamp, two-probe early-out, closest-occluder
-distance.
+blue-noise rotation with a jittered radius, sqrt-encoded mask, temporal variance clamp with a
+binomial floor, dithered accumulator stores, closest-occluder distance.
 
-**Done when:** RMSE against a sixteen-sample denoiser-off reference stops improving. The fork's
-figures: sun contact 2.85 → 2.73, sun soft 6.79 → 6.33, lamps 1.47 → 1.22.
+**Done when:** the 10-90 penumbra width matches a closed-form ground truth across a contact
+hardening curve, not merely when an RMSE stops improving. Build the reference from the geometry
+rather than from another render: a lamp of known radius over a post of known size, with a
+perspective camera, and confirm the model first by checking that the 50% crossing of the shadow
+edge lands within a pixel of the analytic edge at every distance. RMSE against a rendered reference
+will not catch any of the three defects below, because all three are present in the reference too.
+
+Recover the shadow term before measuring. Divide the render by an occluder-free render of the same
+scene: that cancels the falloff, the lambert term and the sRGB transfer and leaves visibility, which
+is the quantity the geometry predicts. A 10-90 measured on pixel values instead is a 10-90 of a
+tonemapped product and does not correspond to anything.
+
+Three defects each squeeze or stretch the penumbra, and each is invisible without that ground truth:
+
+- **No pair of rays can early out for a disk.** Probing the emitter with two rays and stopping when
+  they agree is a large saving, but two points on the rim, opposite each other, still both read lit
+  over the whole outer half of a penumbra — where a fifth of the emitter is covered they agree a
+  third of the time — and the binary answer pulls that pixel to fully lit. The umbra side goes the
+  same way. It cost 28% of the penumbra's width at sixteen samples per light and less at lower
+  counts, so the shadow got *sharper* as the sample count rose. Trace every sample. Skipping settled
+  work is still worth having, but it has to learn the penumbra is absent from somewhere other than
+  the rays it is trying to avoid.
+- **A variance clamp needs a floor.** With a handful of rays per pixel the 3x3 neighborhood used for
+  the clamp agrees outright in the shallow ends of a penumbra — at one ray per light and a true
+  visibility of 0.95, about two frames in three — so the measured spread is exactly zero and the
+  history is pinned to that binary answer. It removed a third of every penumbra. Floor the spread
+  with the standard error the ray counts carry, with two pseudo-counts so the floor cannot collapse
+  with the spread.
+- **An 8-bit accumulator that re-reads its own output must round stochastically.** Once the step the
+  accumulator wants is under half a quantization level it stops moving, and not symmetrically: rare
+  large steps land and frequent small ones do not, so the value ratchets. It made the stock penumbra
+  15% too wide. Dither the store by a per-pixel, per-frame fraction of a step.
 
 - **Decode out of sqrt space everywhere it is read.** Averaging roots and squaring darkens every
   penumbra by Jensen's inequality; one missed decode lightens every umbra almost invisibly unless
@@ -501,11 +540,69 @@ Small, but three separate CI rounds were burned on it the first time.
   list prepends C-style banners to XML files, and the resulting mess looks exactly like a second and
   third CI failure. `file` reporting a `.xml` as "C source" is the giveaway.
 
+### 18. Ground truth ambient occlusion
+
+Independent of everything above — it touches no raytracing and can be ported on its own, or left
+out. Four new files plus about a dozen small hooks.
+
+**Done when:** `docs/rt_shadows/ao_validation/` scores a render inside the numbers in section 9 of
+the fork guide, and flipping `Environment.ssao_method` between the two estimators changes what the
+frame looks like without changing anything else.
+
+- `effects/gtao.{h,cpp}` and three `shaders/effects/gtao_*.glsl` are new files. `SCsub` globs both
+  `*.glsl` and `*.cpp`, so no build file changes; the generated class name follows the file name
+  (`gtao_gather.glsl` -> `GtaoGatherShaderRD`).
+- The **only** shared state is `RB_SCOPE_SSAO` / `RB_FINAL`, an `R8_UNORM` full resolution texture.
+  Create it with exactly the format and usage the legacy path creates it with, and create it only
+  if absent. Everything else lives under a private `RB_SCOPE_GTAO`.
+- The pass runs from the same site the legacy one does in `_pre_opaque_render`, and must **skip**
+  `ss_effects->downsample_depth` when it is the only screen space effect active — that pyramid is
+  built for the other estimator and nothing reads it here.
+- `environment_set_ssao_method` is a **separate** `RenderingServer` entry point rather than another
+  parameter on `environment_set_ssao`, which keeps the existing binding hash intact. The chain is
+  the usual five links: `RenderingServer` (pure virtual) -> `RenderingServerDefault` (`FUNC2`) ->
+  `RenderingMethod` (pure virtual) -> `RendererSceneCull` (`PASS2`) -> `RendererSceneRender`
+  (non-virtual, forwards to `RendererEnvironmentStorage`). Miss the `rendering_method.h` link and
+  the error is a pure-virtual instantiation failure far from the change.
+- The enum lives in `rendering_server_enums.h` and needs a `VARIANT_ENUM_CAST_EXT` line and a
+  `BIND_ENUM_CONSTANT` alongside the existing SSAO quality ones.
+- `Environment::_validate_property` hides `ssao_detail`, `ssao_horizon` and `ssao_sharpness` when
+  the ground truth estimator will run; the existing `!= "forward_plus"` branch is the natural place
+  and its `else` was previously empty.
+- Five details are load-bearing, and every one was wrong before it was measured. Each is a steady
+  bias that reads as the effect working rather than as a bug, so none will be caught by looking.
+  `FINDINGS.md` has the measurements; what a port needs is the list.
+  1. The depth pyramid is sampled with a **nearest** sampler, so a sample must be reconstructed at
+     the center of the texel its depth came from, not at the position the step asked for.
+  2. The per sector weight carries the `|sin t|` Jacobian of the slice parametrization, not the
+     sector's share of the arc.
+  3. The strength curve scales occlusion as a **ratio**. Subtracting a multiple of the distance
+     from white has a hard floor and clips a third of the tonal range to black inside the gather,
+     where no filter can recover it. The one-step test: put a flawless traced occlusion through the
+     curve and see whether the artifact survives.
+  4. The half resolution stride is **passed** in a push constant. `gather_size_for` rounds up and
+     integer division rounds down, so recovering it in the shader gives 2 at every even width and 1
+     at every odd one, and at an odd width the gather then answers only for the top left quadrant.
+     Do not "fix" it by rounding the gather size down instead; that drops the last column at widths
+     like 1281.
+  5. The upsample inverts the gather's sampling position as `pos / stride`. The obvious
+     `(pos + 0.5) * scale - 0.5` assumes the gather texel represents the center of its block and is
+     wrong by half a full resolution pixel on each axis.
+- One quantity is a function of viewport shape and must be anchored deliberately. Under
+  `scale_radius_with_distance` the world reach comes from `uv_to_view_mul`, which on the x axis is
+  `2 * tan(fovy/2) * aspect`; a camera holds the VERTICAL field fixed, so anchoring a screen space
+  fraction to width makes the effect reach 1.8x further on a 16:9 viewport than on a square one.
+  Anchor to height. The fixed-world-radius branch is already aspect invariant and must be left
+  alone.
+- The denoise is separable and its width is derived on the CPU from the effect radius and the slice
+  count, and its weights are plane distances rather than depth differences, so the filter pass needs
+  the view space normal and the projection terms bound to it as well as the AO buffer.
+
 ---
 
 ## Quick reference: the seams that break
 
-Sixteen of the 155 mapped integration points were rated fragile — they depend on a data layout, an
+Eighteen of the mapped integration points were rated fragile — they depend on a data layout, an
 ordering, or a format Godot revises between versions. Check these first.
 
 | Seam | What to verify on the new engine |
@@ -522,6 +619,8 @@ ordering, or a format Godot revises between versions. Check these first.
 | Fog `Params` UBO / `ParamsUBO` | `cam_position` at the identical offset on both sides. |
 | Fog `ShaderGroup` enum | The four device-capability groups still contiguous and first; `+ SHADER_GROUP_BASE_RAYTRACED` silently maps wrong if a fifth is inserted. |
 | `_get_fog_process_variant` | Still `device_group * VOLUMETRIC_FOG_PROCESS_SHADER_MAX + idx`, and the push order matches the enum position-for-position. |
+| `RB_SCOPE_SSAO` / `RB_FINAL` format and usage | Still `R8_UNORM` with sampling and storage, and still what the forward shader samples for occlusion. Both estimators write it; if upstream changes it, change both. |
+| `Environment::_validate_property` forward_plus branch | The `else` this fork added is still reachable, i.e. upstream has not put its own `return` in front of it. |
 | `re-spirv` `SpvIsSupported()` | Still excludes ray-query opcodes so those modules bail out rather than being miscompiled. Watch stderr for the "not supported yet" line. |
 
 ---

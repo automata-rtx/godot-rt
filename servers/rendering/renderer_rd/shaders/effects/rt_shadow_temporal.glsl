@@ -17,9 +17,9 @@
 // Visibility is stored as its square root and squared on read. Eight bits spread
 // evenly over [0,1] put the same absolute step everywhere, but a shadow's detail
 // is all at the dark end, where that step is a large RELATIVE error and shows as
-// banding across a wide penumbra. Storing the root spends about five times more
-// of the range below a quarter visibility, where the eye is, and gives up
-// precision near fully lit, where nothing is happening.
+// banding across a wide penumbra. Storing the root spends half of the code
+// range below a quarter visibility, where the eye is, instead of a quarter of
+// it, and gives up precision near fully lit, where nothing is happening.
 //
 // Filtering still happens in linear visibility. Averaging roots and squaring the
 // result, which is what NVIDIA's SIGMA does, would darken every penumbra by
@@ -32,7 +32,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D source_visibility;
 layout(set = 0, binding = 1) uniform sampler2D source_depth;
-// Previous frame's filtered visibility.
+// Previous frame's accumulated visibility, before any spatial filtering.
 layout(set = 0, binding = 3) uniform sampler2D history_visibility;
 // Previous frame's (view depth, history length).
 layout(set = 0, binding = 4) uniform sampler2D history_meta;
@@ -69,9 +69,23 @@ layout(push_constant, std430) uniform Params {
 	// How far outside the current frame's local spread the history is allowed to
 	// sit, in standard deviations. Zero disables the test.
 	float clamp_sigma;
-	float pad[3];
+	// Rays per light this frame, so the clamp can tell a neighborhood that
+	// genuinely agrees from one that has too few samples to disagree yet.
+	float sample_count;
+	uint frame_index;
+	float pad;
 }
 params;
+
+// Where in a quantization step this pixel rounds this frame.
+//
+// Interleaved gradient noise for the spatial part, advanced by the conjugate of
+// the golden ratio for the temporal one, so a single pixel's own sequence
+// spreads evenly over the step rather than repeating a handful of positions.
+float dither_offset(ivec2 pos, uint frame) {
+	float spatial = fract(52.9829189 * fract(dot(vec2(pos), vec2(0.06711056, 0.00583715))));
+	return fract(spatial + float(frame) * 0.61803399);
+}
 
 float linear_view_depth(float depth) {
 	return -(params.depth_unproject.x * depth + params.depth_unproject.y) /
@@ -182,7 +196,8 @@ void main() {
 	//
 	// So measure what this frame actually sees nearby, and clamp the history
 	// into that range. Where the neighborhood agrees -- open floor, deep umbra --
-	// the spread is nil and the history is pinned to the truth immediately.
+	// the window is only as wide as the binomial floor below allows, and the
+	// history is pulled back to what this frame sees within a frame or two.
 	// Inside a penumbra, where one ray per pixel makes neighbors genuinely
 	// disagree, the spread is wide and accumulation proceeds untouched. The test
 	// costs nothing where it is not needed and everything where it is.
@@ -207,9 +222,47 @@ void main() {
 			moment1 /= taps;
 			moment2 /= taps;
 			vec4 sigma = sqrt(max(moment2 - moment1 * moment1, vec4(0.0)));
-			history = clamp(history,
+
+			// The spread of the neighborhood is not all of the uncertainty in it.
+			// Each of those values is a count of blocked rays out of a handful,
+			// so in the shallow ends of a penumbra the nine of them agree often
+			// -- at one ray per light and a true visibility of 0.95, about two
+			// frames in three -- and the measured spread is then exactly zero.
+			// Clamping to a window of no width pins the accumulated value to that
+			// binary answer, and doing it over and over erases the tails of every
+			// penumbra.
+			//
+			// So floor the spread with the standard error those ray counts
+			// actually carry. The two pseudo counts are the usual continuity
+			// correction, and they are what stops the floor collapsing along with
+			// the spread when the samples happen to be unanimous. It tightens on
+			// its own as the sample count rises, because then unanimity really
+			// does mean the answer is 0 or 1.
+			float trials = max(taps * params.sample_count, 1.0);
+			vec4 corrected = (moment1 * trials + 2.0) / (trials + 4.0);
+			sigma = max(sigma, sqrt(corrected * (1.0 - corrected) / (trials + 4.0)));
+
+			vec4 clamped = clamp(history,
 					moment1 - sigma * params.clamp_sigma,
 					moment1 + sigma * params.clamp_sigma);
+
+			// How far the clamp had to move the history is a measure of how wrong
+			// it was, and a history that wrong has no business keeping the weight
+			// of a long one. Shortening the window in proportion lets the pixel
+			// re-converge over the next few frames instead of over the whole
+			// window: without it a blocker that moves leaves no stale shadow
+			// behind -- the clamp saw to that -- but its new one fades in over
+			// half a second rather than arriving with it.
+			//
+			// A history sitting inside the window is not moved at all, which is
+			// every pixel in the steady state, so this costs nothing where nothing
+			// is wrong. Taking the worst of the four channels is deliberate: they
+			// share one window, and being late is worse than being brief.
+			vec4 moved = abs(clamped - history);
+			float lag = max(max(moved.x, moved.y), max(moved.z, moved.w));
+			history_length *= 1.0 - clamp(lag, 0.0, 1.0);
+
+			history = clamped;
 		}
 	}
 
@@ -222,6 +275,19 @@ void main() {
 
 	vec4 accumulated = mix(history, current, alpha);
 
-	imageStore(dest_visibility, pos, VIS_ENCODE(accumulated));
+	// Rounding to eight bits is not a detail here, because this accumulator
+	// re-reads its own rounded output every frame. Once the step it wants to take
+	// is smaller than half a quantization level the value stops moving, and that
+	// is not symmetric: in the lit end of a penumbra at one ray per light, the
+	// occasional blocked ray is a step down large enough to land while the many
+	// lit rays each ask for a step up too small to, so the value ratchets darker
+	// and the shadow's soft edge creeps outward, which is exactly the softening
+	// the traced answer exists to avoid.
+	//
+	// Offsetting by a per pixel, per frame fraction of a step before the store
+	// makes the rounding error zero mean, so the accumulation converges on the
+	// value it actually computed. It costs one hash and no memory.
+	float dither = dither_offset(pos, params.frame_index) - 0.5;
+	imageStore(dest_visibility, pos, VIS_ENCODE(accumulated) + vec4(dither / 255.0));
 	imageStore(dest_history_length, pos, vec4(history_length / max(params.max_history, 1.0)));
 }

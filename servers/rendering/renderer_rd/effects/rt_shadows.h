@@ -127,6 +127,8 @@ public:
 		// channels carries.
 		RID output_mask;
 		RID output_index;
+		// Per light penumbra width in pixels, divided by MAX_PENUMBRA_PIXELS so it
+		// fits eight bits. Named for the mean blocker distance it is derived from.
 		RID raw_hit_distance;
 		RID denoise_a;
 		RID denoise_b;
@@ -137,14 +139,18 @@ public:
 	};
 
 	struct Settings {
-		uint32_t sample_count = 4;
+		// Every field here is overwritten from the project settings before a
+		// frame uses it. The values are the shipped defaults, so that a reader
+		// and the inspector agree.
+		uint32_t sample_count = 1;
 		float max_ray_distance = 0.0f;
 		bool denoise = true;
 		uint32_t atrous_iterations = 3;
 		float max_history = 32.0f;
 		// Narrowest the spatial filter is allowed to reach where a penumbra was
-		// measured, in pixels. At or below one pixel the filter switches itself
-		// off entirely at a hard edge, which is what keeps contact shadows crisp.
+		// measured, in pixels. At or below one pixel the floor lets no neighbor
+		// contribute, because the nearest tap already sits a pixel away, which is
+		// what keeps a contact shadow crisp.
 		float min_filter_pixels = 1.0f;
 		// How far outside the current frame's local spread a reprojected history
 		// sample may sit before it is pulled back in, in standard deviations.
@@ -194,7 +200,9 @@ private:
 		float max_history;
 
 		float clamp_sigma;
-		float pad[3];
+		float sample_count;
+		uint32_t frame_index;
+		float pad;
 	};
 
 	struct AtrousPushConstant {

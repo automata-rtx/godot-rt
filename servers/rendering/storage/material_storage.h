@@ -90,12 +90,14 @@ public:
 
 	virtual bool material_is_animated(RID p_material) = 0;
 	virtual bool material_casts_shadows(RID p_material) = 0;
-	// True when the material's shader cannot write a shadow at all, as an alpha
-	// blended surface or one whose render mode disables shadows cannot. This is
-	// deliberately not the negation of material_casts_shadows(), which answers
-	// yes wherever it is unsure so that the instance stays in the shadow render
-	// list and each draw decides for itself; a raytraced caster is decided once,
-	// when it enters the acceleration structure, and needs the exact answer.
+	// True when the material's shader cannot write a shadow at all: it blends
+	// rather than writing depth, or it reads the screen, depth or normal texture,
+	// none of which a shadow pass has. An alpha scissor still casts, through the
+	// depth prepass. This is deliberately not the negation of
+	// material_casts_shadows(), which answers yes wherever it is unsure so that
+	// the instance stays in the shadow render list and each draw decides for
+	// itself; a raytraced caster is decided once, when it enters the acceleration
+	// structure, and needs the exact answer.
 	virtual bool material_shadow_casting_disabled(RID p_material) const = 0;
 	virtual RSE::CullMode material_get_cull_mode(RID p_material) const = 0;
 

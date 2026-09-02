@@ -398,6 +398,17 @@ float Environment::get_ssao_ao_channel_affect() const {
 	return ssao_ao_channel_affect;
 }
 
+void Environment::set_ssao_method(SSAOMethod p_method) {
+	ERR_FAIL_INDEX(p_method, 3);
+	ssao_method = p_method;
+	RS::get_singleton()->environment_set_ssao_method(environment, RSE::EnvironmentSSAOMethod(ssao_method));
+	notify_property_list_changed();
+}
+
+Environment::SSAOMethod Environment::get_ssao_method() const {
+	return ssao_method;
+}
+
 void Environment::_update_ssao() {
 	RS::get_singleton()->environment_set_ssao(
 			environment,
@@ -1192,6 +1203,17 @@ void Environment::_validate_property(PropertyInfo &p_property) const {
 			}
 			return;
 		}
+	} else if (p_property.name == "ssao_detail" || p_property.name == "ssao_horizon" || p_property.name == "ssao_sharpness") {
+		// These three tune the legacy estimator and mean nothing to the other
+		// one, so hide them once it is the one that will run. Following the
+		// project setting when this Environment defers to it keeps the inspector
+		// honest about what is actually reachable.
+		const bool ground_truth = ssao_method == SSAO_METHOD_GROUND_TRUTH ||
+				(ssao_method == SSAO_METHOD_DEFAULT && int(GLOBAL_GET("rendering/environment/ssao/method")) == 1);
+		if (ground_truth) {
+			p_property.usage = PROPERTY_USAGE_NO_EDITOR;
+		}
+		return;
 	}
 
 	if (p_property.name == "background_color") {
@@ -1356,9 +1378,12 @@ void Environment::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_ssao_direct_light_affect"), &Environment::get_ssao_direct_light_affect);
 	ClassDB::bind_method(D_METHOD("set_ssao_ao_channel_affect", "amount"), &Environment::set_ssao_ao_channel_affect);
 	ClassDB::bind_method(D_METHOD("get_ssao_ao_channel_affect"), &Environment::get_ssao_ao_channel_affect);
+	ClassDB::bind_method(D_METHOD("set_ssao_method", "method"), &Environment::set_ssao_method);
+	ClassDB::bind_method(D_METHOD("get_ssao_method"), &Environment::get_ssao_method);
 
 	ADD_GROUP("SSAO", "ssao_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ssao_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_ssao_enabled", "is_ssao_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "ssao_method", PROPERTY_HINT_ENUM, "Project Default,Screen Space (Legacy),Ground Truth"), "set_ssao_method", "get_ssao_method");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_radius", PROPERTY_HINT_RANGE, "0.01,16,0.01,or_greater"), "set_ssao_radius", "get_ssao_radius");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_intensity", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_ssao_intensity", "get_ssao_intensity");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ssao_power", PROPERTY_HINT_EXP_EASING, "positive_only"), "set_ssao_power", "get_ssao_power");
@@ -1619,6 +1644,10 @@ void Environment::_bind_methods() {
 	BIND_ENUM_CONSTANT(TONE_MAPPER_FILMIC);
 	BIND_ENUM_CONSTANT(TONE_MAPPER_ACES);
 	BIND_ENUM_CONSTANT(TONE_MAPPER_AGX);
+
+	BIND_ENUM_CONSTANT(SSAO_METHOD_DEFAULT);
+	BIND_ENUM_CONSTANT(SSAO_METHOD_SCREEN_SPACE);
+	BIND_ENUM_CONSTANT(SSAO_METHOD_GROUND_TRUTH);
 
 	BIND_ENUM_CONSTANT(GLOW_BLEND_MODE_ADDITIVE);
 	BIND_ENUM_CONSTANT(GLOW_BLEND_MODE_SCREEN);

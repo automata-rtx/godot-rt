@@ -53,8 +53,10 @@ Not covered, and silently falling back or losing shadowing:
   A raytraced `DirectionalLight3D` traces its own ray per froxel, so sun shafts do work.
 - **XR / multiview, reflection probes, the Mobile and Compatibility renderers** — shadow maps.
 
-`Light3D.shadow_map_enabled` buys a light back its shadow map for the effects above, at the cost of
-an atlas quadrant and a shadow map render.
+`Light3D.shadow_map_enabled` buys a light back its shadow map, at the cost of an atlas quadrant and
+a shadow map render. That helps the two entries above that read a map and find none -- subsurface
+transmittance, and volumetric fog under a lamp. The rest of the list never consults the mask in the
+first place, so the flag does nothing for them.
 
 ## Traps when authoring for raytraced shadows
 
@@ -74,15 +76,49 @@ an atlas quadrant and a shadow map render.
 
 ## Two behaviors that surprise people
 
-- **All fifteen `raytraced_shadows/*` settings are read once at startup** and cached for the process
-  lifetime (`RaytracingScene::register_settings`). Changing one at runtime does nothing until
-  restart, including the thirteen the editor does not mark restart-required. `enabled` could not work
-  live in any case: `MeshStorage::mesh_add_surface` fixes a vertex buffer's creation bits at upload
-  time, so a mesh loaded while it was off has nothing to build a structure from.
+- **`raytraced_shadows/*` settings are live** — change one in the inspector or via
+  `ProjectSettings.set_setting()` and it takes effect next frame. The one exception is the master
+  `enabled` flag, which is restart-required and marked so, and could not work live in any case:
+  `MeshStorage::mesh_add_surface` fixes a vertex buffer's creation bits at upload time, so a mesh
+  loaded while it was off has nothing to build a structure from. The three `directional/enabled` and
+  `directional/demoted_shadow_*` settings are live but snapshotted once per frame, because a sun's
+  cascade count has to be one answer for the whole frame.
 - With raytraced directional shadows available, a `DirectionalLight3D`'s
   `directional_shadow_mode` is overridden to 2 splits and the shared directional shadow atlas is
   capped at 1024 — for every directional light, not only raytraced ones. Both are configurable
   under `raytraced_shadows/directional/demoted_shadow_*`.
+
+## Ambient occlusion is two estimators now
+
+`Environment.ssao_method` and `rendering/environment/ssao/method` choose between the Intel point
+obscurance estimator Godot has always shipped and a slice-based horizon march with a **visibility
+bitmask** (GTAO + Therrien 2023). Both write the same occlusion buffer, so nothing downstream knows
+which ran. Ships **off**: the project setting defaults to legacy and an `Environment` defaults to
+`SSAO_METHOD_DEFAULT`, which follows it.
+
+- `ssao_enabled`, `ssao_radius`, `ssao_intensity`, `ssao_power`, `half_size` and the fade distances
+  apply to both. `ssao_detail`, `ssao_horizon`, `ssao_sharpness`, `quality` and `adaptive_target`
+  are legacy-only and inert on the new one.
+- Tuning lives under `rendering/environment/ssao/ground_truth/`. `thickness` (0.3) is the one real
+  tradeoff: higher suits thick solid shapes, lower suits foliage and slats. `screen_radius` (0.1)
+  is a fraction of screen **height** and is the knob to reach for first — a real interior wants more
+  than a test scene does. `intensity_scale` (0.5) divides down the `ssao_intensity` default of 2.0,
+  which is a legacy-estimator calibration constant.
+- **The denoise sizes itself from the radius and the slice count** (on the distance-scaled branch,
+  which is the default; fixed otherwise) and weights neighbors by distance from the shaded point's
+  plane, not by depth difference. Three things here have already
+  been tried and measured to fail: widening the filter unconditionally, replacing the dither, and
+  rebalancing `slices` against `steps_per_slice`. See `docs/rt_shadows/FINDINGS.md` before
+  re-attempting any of them.
+- **The strength curve is a ratio, not a subtraction**, so occlusion approaches black without ever
+  reaching it. If occlusion ever looks crushed and speckled, suspect the transfer before the
+  estimator: put a traced reference through the same curve and see whether the artifact survives.
+- **Forward+, single view only.** Stereo/XR falls back to legacy without saying so.
+- Half resolution changes how many pixels get their own answer and nothing else — the march reach
+  is derived from the full resolution footprint either way. It scores the same against a ray trace;
+  what it costs is sharpness at silhouettes.
+- Do not tune it by screenshot. `docs/rt_shadows/ao_validation/` traces the scene on the CPU two
+  ways and scores a render against both; section 9 of the fork guide has the numbers to beat.
 
 ## Working in this repo
 
@@ -90,8 +126,10 @@ an atlas quadrant and a shadow map render.
   into a game project that uses this engine.
 - `docs/rt_shadows/PORTING.md` — every seam where this fork hooks into the engine, and the ordered
   recipe for re-applying it to a newer Godot.
+- `docs/rt_shadows/FINDINGS.md` — what was measured and what the numbers refused. Read it before
+  re-trying an idea that looks obvious; several already were, and failed. Keep it out of the guide.
 - `docs/rt_shadows/PLAN.md` — the pre-implementation design document. **Historical. Superseded by
-  the two documents above; several of its decisions were not taken.** Do not treat it as current.
+  the guide and the porting document; several of its decisions were not taken.** Not current.
 
 Set `GODOT_RT_DEBUG=1` to print per-frame acceleration structure and shadow mask diagnostics.
 
