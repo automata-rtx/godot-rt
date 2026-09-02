@@ -133,6 +133,33 @@ width — a relative-depth test has no notion of orientation, so on a surface se
 angle it discards neighbors lying on that very surface while keeping neighbors across a
 shallow step that is a real silhouette.
 
+### Shading a checkerboard beats shading a coarser grid
+
+`half_size` halves each dimension, so it evaluates a QUARTER of the pixels, not half. Shading a
+checkerboard at full resolution instead evaluates half of them, and the difference is not only the
+count: a reconstructed pixel's neighbors are one pixel away rather than two, and both it and they
+have their own full resolution depth and normal.
+
+Reconstruction error against a fully shaded frame, interior scene, at the radius a real scene wants:
+
+| scheme | shaded | overall | at silhouettes |
+| --- | --- | --- | --- |
+| quarter resolution grid, 2x2 reconstruction (what ships) | 25% | 0.01745 | 0.04095 |
+| quarter resolution grid, 7x7 reconstruction | 25% | 0.01488 | 0.03984 |
+| checkerboard at full resolution, 4 neighbors | 50% | 0.01238 | 0.02724 |
+| checkerboard at full resolution, 12 neighbors | 50% | 0.01238 | 0.02724 |
+
+Two results worth keeping. Widening the reconstruction at quarter resolution gains three percent at
+silhouettes for five times the taps, which refutes the plausible idea that the 2x2 is simply too
+narrow -- the problem is that no sample was ever taken near the edge, and a filter cannot invent
+one. And a checkerboard's reconstruction is COMPLETE at four taps: going to twelve changes nothing
+to five decimal places, because every unshaded pixel already has all four immediate neighbors
+shaded. There is no tuning surface there to get wrong.
+
+The cost is real: twice the gather of the quarter resolution mode. It also wants the checkerboard
+packed into a half width buffer, because dispatching full resolution threads and exiting half of
+them wastes the saving on wave divergence.
+
 ### Half resolution was misregistered by half a pixel
 
 The gather evaluates full-resolution pixel `k·stride`; the upsample computed

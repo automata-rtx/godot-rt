@@ -521,9 +521,18 @@ Under `rendering/environment/ssao/ground_truth/`.
   flips between marking several sectors and marking none; and the sector quantisation, which snaps
   every occluder to a 5.6 degree grid. Attacking those is what would let the sample budget come
   *down* rather than up.
-- **Half resolution reconstruction is a 2x2 bilateral.** Silhouettes still show some stair
-  stepping. A wider joint-bilateral reconstruction, or an edge mask written by the gather for the
-  upsample to read, is the obvious next step and has not been tried.
+- **Half resolution reconstruction is a 2x2 bilateral, and widening it is not the fix.** Silhouettes
+  still show some stair stepping: a silhouette pixel is about sixteen times more likely to be badly
+  wrong than an average one, and the disagreement with a full resolution render is seven times the
+  frame average there. Widening the reconstruction barely touches it -- measured, a 7x7 gains three
+  percent at silhouettes for five times the taps -- because the problem is not too few candidates.
+  It is that half resolution never evaluated a pixel near the edge, and no filter can invent a
+  sample that was not taken. What does fix it is shading a CHECKERBOARD at full resolution instead
+  of a grid at quarter resolution: every unshaded pixel then has all four of its immediate
+  neighbors shaded, which measures 33% better at silhouettes and 29% better overall. It costs twice
+  the gather, since a quarter of the pixels becomes half of them, and it wants the checkerboard
+  packed into a half width buffer rather than full width threads that half exit immediately. Worth
+  doing as a third quality rung; not yet done.
 - **No GPU cost measurement exists.** Everything here was validated on a software rasterizer, where
   timings are meaningless. The gather is 64 taps per pixel at the shipped budget plus a five mip
   depth pyramid; the filter is at most 14 taps across two passes. Nobody has measured what that
