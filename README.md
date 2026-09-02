@@ -1,14 +1,19 @@
 # Godot Engine — godot-rt fork
 
-> **This is a fork of Godot 4.8-dev with hardware ray-traced shadows added to the Forward+
-> renderer.** It is not stock Godot: some `Light3D` node defaults differ, and several renderer
-> behaviors around lights, shadows and volumetric fog differ with them.
+> **This is a fork of Godot 4.8-dev.** It adds two things to the Forward+ renderer, independent of
+> each other: hardware ray-traced shadows for `OmniLight3D`, `SpotLight3D` and `DirectionalLight3D`,
+> and a second ambient occlusion estimator (ground truth ambient occlusion with a visibility
+> bitmask) alongside the one Godot already ships. It is not stock Godot: some `Light3D` node
+> defaults differ, and several renderer behaviors around lights, shadows and volumetric fog differ
+> with them.
 >
 > - **[`docs/rt_shadows/FORK_GUIDE.md`](docs/rt_shadows/FORK_GUIDE.md)** — everything that differs
 >   from vanilla Godot, what casts a raytraced shadow, and what is not covered. Start here. It is
 >   self-contained, so it can be copied into a game project built on this engine.
 > - **[`docs/rt_shadows/PORTING.md`](docs/rt_shadows/PORTING.md)** — how the system attaches to the
 >   engine, and the staged recipe for re-applying it to a newer Godot.
+> - **[`docs/rt_shadows/FINDINGS.md`](docs/rt_shadows/FINDINGS.md)** — what was measured on the way
+>   here, and which plausible ideas the numbers refused. Read before re-trying one of them.
 > - **[`CLAUDE.md`](CLAUDE.md)** — the short version, loaded automatically by AI coding assistants
 >   working in this repository.
 >

@@ -155,7 +155,7 @@ def gather(
     thick_mode="const",
     join_tol=None,
     scale_radius_with_distance=True,
-    screen_radius=0.05,
+    screen_radius=0.1,
 ):
     if mips is None:
         mips = build_mips(z, radius)
