@@ -177,7 +177,7 @@ def gather(
         # have. Anchored to the vertical axis, as the gather is: screen_radius is
         # a fraction of screen HEIGHT, because a camera holds its vertical field
         # of view fixed and a fraction of WIDTH would grow with the aspect ratio.
-        srad = np.full(len(px), screen_radius * H)
+        srad = np.full(len(px), radius * screen_radius * H)
         world_radius = radius * screen_radius * abs(MUL[1]) * cz
     else:
         world_radius = np.full(len(px), float(radius))

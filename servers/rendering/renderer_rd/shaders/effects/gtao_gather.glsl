@@ -156,11 +156,16 @@ void main() {
 		// view fixed and widening the window adds horizontal field, so a
 		// fraction of screen WIDTH is a fraction of a quantity that grows with
 		// the aspect ratio -- and the same setting would reach almost twice as
-		// far on a sixteen by nine viewport as on the square one it was tuned
-		// on. Height is the axis that does not move.
-		screen_radius_px = params.screen_radius * float(params.full_size.y);
-		// The radius property becomes a multiplier here rather than a distance,
-		// because the on-screen span is what is being held fixed.
+		// far on a sixteen by nine viewport as on a square one. Height is the
+		// axis that does not move.
+		// The radius property is a multiplier on that span rather than a distance,
+		// because the span is what is being held fixed. It has to scale the span
+		// itself and not only the world reach derived from it: those two describe
+		// the same march, so if only one of them moved, raising the radius would
+		// widen a cutoff the steps never walk far enough to reach and lowering it
+		// would truncate the march while still spreading its steps over the full
+		// span.
+		screen_radius_px = params.radius * params.screen_radius * float(params.full_size.y);
 		world_radius = params.radius * params.screen_radius * abs(params.uv_to_view_mul.y) * center_depth;
 	} else {
 		// The whole screen spans uv_to_view_mul.x * depth in view space, so a

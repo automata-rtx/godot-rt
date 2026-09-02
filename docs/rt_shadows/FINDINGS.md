@@ -213,6 +213,38 @@ at the shipped intensity and power, which measures what a player sees. `ao_compa
 the fraction of the frame below one 8-bit code, because a clipping transfer looks fine on every
 average and terrible on screen.
 
+The first real interior the effect was pointed at wanted a `screen_radius` around 0.25 and ran out
+of slider before it. That is why the default moved to 0.1 and the range now reaches 0.5.
+
+### `ssao_radius` was scaling half of the march
+
+Under `scale_radius_with_distance` the gather derives two quantities from `screen_radius`: how many
+pixels the march walks, and the world distance that walk corresponds to, which is what the sample
+cutoff and the back-face thickness are measured against. `Environment.ssao_radius` multiplied only
+the second, so the march walked the same span on screen whatever the radius was set to.
+
+Above 1.0 the cutoff moved somewhere the steps never reached, leaving thickness as the only thing
+that changed. Below it the cutoff truncated the march while the steps stayed spread over the full
+span, spending the budget outside the volume being measured. Both read as the setting working,
+because thickness alone does move the picture.
+
+Measured on the interior scene, mean occlusion against `ssao_radius`:
+
+| `ssao_radius` | before | after |
+| --- | --- | --- |
+| 0.5 | 0.0236 | 0.0317 |
+| 1.0 | 0.0604 | 0.0604 |
+| 2.0 | 0.0770 | 0.1152 |
+
+Doubling the radius used to buy 28% more occlusion, all of it thickness; it now buys 91%, which is
+what doubling the reach should give. The default is 1.0, so the two agree exactly there and no
+existing scene changes.
+
+What caught it was three descriptions of one setting: the guide, the class reference and
+`filter_radius_for()` all said the radius multiplies the on-screen reach, and only the shader
+disagreed. A comment audit found a code defect rather than a documentation defect, which is the
+argument for auditing comments against the code rather than tidying them.
+
 ---
 
 ## Raytraced shadows
