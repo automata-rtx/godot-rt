@@ -598,6 +598,13 @@ Under `rendering/environment/ssao/ground_truth/`.
   the occlusion estimator is roughly an eighth of the frame and the third largest of four passes. If
   an iGPU frame is too slow, this is not where to start.
 
+  Read those two figures as a ratio and not as a budget. They were captured with the game running
+  embedded in the editor, so the render size was a fraction of the panel it would ship at, and the
+  editor was drawing its own interface on the same integrated GPU and the same memory. Every pass
+  in that frame scales with the internal buffer size -- `internal_size` is the viewport size times
+  `rendering/scaling_3d/scale` -- so a shipping frame at native resolution is several times this
+  one. What transfers is the shape: occlusion is a small share, the shadow stage is the large one.
+
   What that does not settle is the shape: one reading at one setting is one equation in two
   unknowns, so the fixed and gather costs on this part are still separate unknowns. Two captures
   close it, with no code change and no restart. Read `Process GTAO` with
