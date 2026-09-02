@@ -283,6 +283,7 @@
 		</member>
 		<member name="ssao_radius" type="float" setter="set_ssao_radius" getter="get_ssao_radius" default="1.0">
 			The distance at which objects can occlude each other when calculating screen-space ambient occlusion. Higher values will result in occlusion over a greater distance at the cost of performance and quality.
+			[b]Note:[/b] That is its meaning for [constant SSAO_METHOD_SCREEN_SPACE]. For [constant SSAO_METHOD_GROUND_TRUTH] with [member ProjectSettings.rendering/environment/ssao/ground_truth/scale_radius_with_distance] enabled, which is the default, this is instead a multiplier on [member ProjectSettings.rendering/environment/ssao/ground_truth/screen_radius]: it scales a share of the screen rather than a distance in the world, so the occlusion reaches as far at the back of a room as at the front. It is a world distance again with that setting disabled.
 		</member>
 		<member name="ssao_sharpness" type="float" setter="set_ssao_sharpness" getter="get_ssao_sharpness" default="0.98">
 			The amount that the screen-space ambient occlusion effect is allowed to blur over the edges of objects. Setting too high will result in aliasing around the edges of objects. Setting too low will make object edges appear blurry.

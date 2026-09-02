@@ -53,8 +53,10 @@ Not covered, and silently falling back or losing shadowing:
   A raytraced `DirectionalLight3D` traces its own ray per froxel, so sun shafts do work.
 - **XR / multiview, reflection probes, the Mobile and Compatibility renderers** — shadow maps.
 
-`Light3D.shadow_map_enabled` buys a light back its shadow map for the effects above, at the cost of
-an atlas quadrant and a shadow map render.
+`Light3D.shadow_map_enabled` buys a light back its shadow map, at the cost of an atlas quadrant and
+a shadow map render. That helps the two entries above that read a map and find none -- subsurface
+transmittance, and volumetric fog under a lamp. The rest of the list never consults the mask in the
+first place, so the flag does nothing for them.
 
 ## Traps when authoring for raytraced shadows
 
@@ -102,8 +104,9 @@ which ran. Ships **off**: the project setting defaults to legacy and an `Environ
   is a fraction of screen **height** and is the knob to reach for first — a real interior wants more
   than a test scene does. `intensity_scale` (0.5) divides down the `ssao_intensity` default of 2.0,
   which is a legacy-estimator calibration constant.
-- **The denoise sizes itself from the radius and the slice count** and weights neighbors by
-  distance from the shaded point's plane, not by depth difference. Three things here have already
+- **The denoise sizes itself from the radius and the slice count** (on the distance-scaled branch,
+  which is the default; fixed otherwise) and weights neighbors by distance from the shaded point's
+  plane, not by depth difference. Three things here have already
   been tried and measured to fail: widening the filter unconditionally, replacing the dither, and
   rebalancing `slices` against `steps_per_slice`. See `docs/rt_shadows/FINDINGS.md` before
   re-attempting any of them.

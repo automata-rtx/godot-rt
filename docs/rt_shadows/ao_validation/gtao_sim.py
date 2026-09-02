@@ -193,7 +193,10 @@ def gather(
     for sl in range(slices):
         phi = (sl + nz_a) * PI / slices
         sdir = np.stack([np.cos(phi), np.sin(phi)], axis=1)
-        ip_uv = uv + sdir * 0.01
+        # The probe steps in PIXELS, as the shader's does: a UV sized step points
+        # somewhere else entirely on a viewport that is not square, and the room
+        # scene is 1280x720.
+        ip_uv = uv + sdir * 8.0 / np.array([W, H], dtype=np.float64)
         in_plane = np.concatenate([(ip_uv * MUL + ADD) * cz[:, None], cz[:, None]], axis=1) - cpos
         bt = np.cross(in_plane, vdir)
         bt /= np.maximum(np.linalg.norm(bt, axis=1, keepdims=True), 1e-12)

@@ -47,7 +47,6 @@
 //#define DEBUG_CULL_TIME
 #include "core/os/os.h"
 
-#ifndef _3D_DISABLED
 // What the raytraced shadow path costs the CPU, averaged so that one slow frame
 // does not read as the steady state and one fast one does not hide it.
 //
@@ -80,7 +79,6 @@ static void _rt_report_cpu_cost(uint64_t p_gather_usec, uint64_t p_build_usec) {
 	frames = 0;
 	gather_total = build_total = gather_peak = build_peak = 0;
 }
-#endif // _3D_DISABLED
 
 /* HALTON SEQUENCE */
 

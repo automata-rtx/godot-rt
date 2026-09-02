@@ -232,9 +232,9 @@ Measured on the interior scene, mean occlusion against `ssao_radius`:
 
 | `ssao_radius` | before | after |
 | --- | --- | --- |
-| 0.5 | 0.0236 | 0.0317 |
-| 1.0 | 0.0604 | 0.0604 |
-| 2.0 | 0.0770 | 0.1152 |
+| 0.5 | 0.0236 | 0.0318 |
+| 1.0 | 0.0605 | 0.0605 |
+| 2.0 | 0.0771 | 0.1151 |
 
 Doubling the radius used to buy 28% more occlusion, all of it thickness; it now buys 91%, which is
 what doubling the reach should give. The default is 1.0, so the two agree exactly there and no
@@ -244,6 +244,22 @@ What caught it was three descriptions of one setting: the guide, the class refer
 `filter_radius_for()` all said the radius multiplies the on-screen reach, and only the shader
 disagreed. A comment audit found a code defect rather than a documentation defect, which is the
 argument for auditing comments against the code rather than tidying them.
+
+### The CPU model was measuring a differently oriented estimator on any non-square scene
+
+The model probes the slice basis by stepping off the shaded point and reading where that lands in
+view space. The shader steps eight PIXELS; the model stepped a fixed 0.01 of UV. On the two square
+720x720 scenes those are the same direction and the model was exact. On the 1280x720 interior they
+are not: at a slice azimuth of 45 degrees the two bases differ by about 15 degrees, so every room
+scene number the model produced was scoring an estimator rotated slightly away from the one that
+ships.
+
+It moved the numbers by less than 0.0002, which is why nothing caught it: the estimator is close to
+isotropic, so re-orienting its slices barely changes the mean. The table above is the corrected
+model. The lesson is the one the harness exists for -- a model that agrees with the engine to three
+decimal places can still be wrong in a way that would matter on a scene that was not nearly
+isotropic, and the only defense is checking it clause by clause against the shader rather than by
+how well the totals agree.
 
 ---
 

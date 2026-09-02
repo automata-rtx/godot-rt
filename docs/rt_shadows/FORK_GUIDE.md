@@ -193,7 +193,7 @@ that tunes a shadow *map* is inert, because no map is rendered:
 | You reach for | It does | Reach for instead |
 | --- | --- | --- |
 | `Light3D.shadow_blur` | nothing | `light_size` / `light_angular_distance` |
-| `positional_shadow/atlas_size` and its quadrant subdivisions | nothing | — (no atlas quadrant is claimed) |
+| `positional_shadow/atlas_size` and its quadrant subdivisions | nothing, unless `shadow_map_enabled` puts the light back in the atlas | — (no atlas quadrant is claimed) |
 | `positional_shadow/soft_shadow_filter_quality` | nothing | `denoiser/spatial_passes`, `denoiser/min_filter_pixels` |
 | `directional_shadow/size` | capped to 1024 | `directional/demoted_shadow_size` |
 | `directional_shadow/soft_shadow_filter_quality` | nothing | `samples_per_light` |
@@ -275,9 +275,9 @@ sun's opaque shading does not need cascade density — and both are configurable
 
 **Cost model.** It scales with how many raytraced lights *overlap a pixel*, not how many the scene
 contains — where more than four overlap, the four brightest at that pixel are shadowed and the rest
-are unshadowed there. Up to 255 raytraced lights may exist in a frame. Shadow maps are not rendered
-for raytraced lights at all, so a scene can hold far more shadow-casting lights than the atlas has
-room for.
+are unshadowed there. Up to 255 raytraced lights may exist in a frame. No shadow map is rendered for
+a raytraced light unless `shadow_map_enabled` asks for one, so a scene can hold far more
+shadow-casting lights than the atlas has room for.
 
 Visibility is stored as its square root and squared on read, spending more of the 8-bit range on the
 dark end where a shadow's detail is.
@@ -381,8 +381,10 @@ anything else.
 ## 8. Known gaps
 
 - **Subsurface transmittance** still measures thickness from a shadow map rather than from a ray
-  (task deferred), so it is unshadowed under a raytraced light unless `shadow_map_enabled` buys the
-  map back. The fix is the same
+  (task deferred). Under a raytraced light with no map, it falls back to the material's own
+  `transmittance_depth`, so the surface still transmits -- it just stops responding to what is
+  actually in front of the light. `shadow_map_enabled` buys the real depth back. The fix is the
+  same
   shape as the fog one: trace toward the light instead of range-finding in the cascade, with the
   acceleration structure declared inside `#ifdef LIGHT_TRANSMITTANCE_USED` so non-SSS shader
   variants never carry the ray-query capability.
@@ -461,8 +463,11 @@ Either globally, with `rendering/environment/ssao/method = Ground Truth`, or per
 be compared directly; `Project Default` on an environment means "follow the project setting", which
 is why old scenes are unaffected.
 
-`Environment.ssao_enabled`, `ssao_radius`, `ssao_intensity` and `ssao_power` mean the same thing to
-both estimators. `ssao_detail`, `ssao_horizon` and `ssao_sharpness` describe the legacy one only and
+`Environment.ssao_enabled` and `ssao_power` mean the same thing to both estimators. Two do not.
+`ssao_radius` is a world distance to the legacy one; to this one under the default
+`scale_radius_with_distance` it is a multiplier on `screen_radius`, so it scales a share of the
+screen rather than a distance. And `ssao_intensity` is multiplied by `intensity_scale` before this
+estimator sees it, for the reason in the table below. `ssao_detail`, `ssao_horizon` and `ssao_sharpness` describe the legacy one only and
 the inspector hides them once the other is selected. `rendering/environment/ssao/half_size` and the
 fade distances apply to both; `quality` and `adaptive_target` do not.
 
@@ -484,6 +489,14 @@ Under `rendering/environment/ssao/ground_truth/`.
 - **Forward+ and single view only.** A stereo or XR viewport silently falls back to the legacy
   estimator, because the occlusion buffer is a layer per eye and the gather has no notion of a
   second one.
+- **Do not use it under an orthographic camera.** It does not fall back and it does not warn; it
+  simply produces the wrong answer, and increasingly so with distance. Three places assume a
+  perspective projection: the distance-scaled world radius still grows with depth when an
+  orthographic view's extent does not, which inflates both the sample cutoff and the back-face
+  thickness; the view direction is built with the opposite sign to the perspective branch, which
+  reverses the term that lets thin surfaces pass light; and the filter reconstructs view positions
+  with no orthographic case at all, so its plane-distance weights measure against a warped plane.
+  Use the legacy estimator on an orthographic viewport until this is fixed.
 - **Half resolution costs less than it sounds like.** Every world space quantity the gather uses is
   derived from the full resolution pixel footprint, so halving the resolution changes how many
   pixels get their own answer and nothing else — the march reaches exactly as far and its first
@@ -493,7 +506,9 @@ Under `rendering/environment/ssao/ground_truth/`.
   coverage or noise.
 - **The denoise sizes itself.** Its width follows the effect radius and the slice count, because
   those are what the gather's variance depends on: five taps per axis at the shipped radius,
-  three at the smallest and seven at the largest. It is separable, so it runs twice. Neighbors are weighted by
+  three at the smallest and seven at the largest. That is on the `scale_radius_with_distance`
+  branch, which is the default; with distance scaling off the march's on-screen reach depends on
+  the depth rather than on a setting, so the width is fixed at five taps instead. It is separable, so it runs twice. Neighbors are weighted by
   their distance from the shaded point's *plane* rather than by depth difference, which is what
   lets a surface seen at a glancing angle keep its own neighbors.
 - **`screen_radius` is the knob to reach for first, and the default is conservative.** A real
