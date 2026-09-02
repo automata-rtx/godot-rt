@@ -533,10 +533,17 @@ Under `rendering/environment/ssao/ground_truth/`.
   the gather, since a quarter of the pixels becomes half of them, and it wants the checkerboard
   packed into a half width buffer rather than full width threads that half exit immediately. Worth
   doing as a third quality rung; not yet done.
-- **No GPU cost measurement exists.** Everything here was validated on a software rasterizer, where
-  timings are meaningless. The gather is 64 taps per pixel at the shipped budget plus a five mip
-  depth pyramid; the filter is at most 14 taps across two passes. Nobody has measured what that
-  costs on real hardware, and in particular whether it is viable at full resolution on an iGPU.
+- **Cost is known roughly on one desktop GPU and not at all elsewhere.** From framerates on an
+  RTX 5090: full resolution costs about 0.3 ms more per frame than quarter resolution, which at a
+  120 fps budget is three percent of the frame. On that class of hardware there is no reason not to
+  run at full resolution. The interesting part is the shape rather than the total -- quarter
+  resolution shades a quarter of the pixels but costs roughly two thirds of what full resolution
+  costs, so somewhere between forty and sixty five percent of the effect is a FIXED cost that the
+  resolution knob does not touch: the full resolution depth pyramid, the upsample that always runs
+  at full resolution, and five dispatches with barriers between them. Anyone trying to make this
+  cheaper on weaker hardware should measure per pass -- the block is labeled `Process GTAO` for
+  the GPU profiler -- rather than reaching for the resolution setting, which can only ever address
+  the smaller half. Nothing has been measured on an iGPU.
 - **`AreaLight3D`, reflection probes and the Mobile and Compatibility renderers** never see this
   estimator; they use whatever the legacy path gives them.
 

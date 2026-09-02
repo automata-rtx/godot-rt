@@ -133,6 +133,26 @@ width — a relative-depth test has no notion of orientation, so on a surface se
 angle it discards neighbors lying on that very surface while keeping neighbors across a
 shallow step that is a real silhouette.
 
+### What the effect actually costs, as far as anyone knows
+
+From framerates in one shot on an RTX 5090: quarter resolution around 620 fps, full resolution in
+the mid-to-low 500s, and (less confidently) over 1000 with the effect off.
+
+The robust figure is the one that does not involve the uncertain number: full resolution costs
+**+0.27 to +0.33 ms** over quarter resolution.
+
+Solving `quarter = F + G/4` and `full = F + G` for a fixed cost F and a full-resolution gather cost
+G gives G around 0.37 ms and F somewhere between 0.4 and 0.7 ms depending on what the off figure
+really is. F is the larger or comparable term across every plausible value, which is the useful
+conclusion: **more than half the cost does not scale with gather resolution.** It is the full
+resolution depth pyramid, the upsample that always runs at full resolution, and the barriers
+between five dispatches.
+
+Two consequences. On desktop hardware full resolution is simply affordable and the quality question
+answers itself. And on weaker hardware, reaching for the resolution setting can only ever address
+the smaller half of the cost -- the fixed part has to be measured per pass before it can be
+attacked.
+
 ### Shading a checkerboard beats shading a coarser grid
 
 `half_size` halves each dimension, so it evaluates a QUARTER of the pixels, not half. Shading a
