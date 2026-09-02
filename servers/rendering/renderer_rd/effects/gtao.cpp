@@ -90,11 +90,11 @@ GTAO::~GTAO() {
 }
 
 int GTAO::filter_radius_for(const Settings &p_settings) {
-	// The march's on-screen reach relative to the slice count, normalized so the
-	// shipped four slices at the shipped screen radius come out at one -- a three
-	// by three, which is what measured best there. At the top of the radius range
-	// the same expression asks for three, a seven tap pass on each axis, which is
-	// where the noise actually needs it.
+	// The march's on-screen reach relative to the slice count, normalized so that
+	// the smallest useful radius comes out at one -- a three by three, which is
+	// what measured best where there is little noise to remove and a wider filter
+	// only costs contact detail. The shipped radius asks for two and the top of
+	// the range for three, which is where the variance actually needs it.
 	const float reach = p_settings.scale_radius_with_distance
 			? p_settings.screen_radius * MAX(p_settings.radius, 0.0f)
 			: 0.05f;

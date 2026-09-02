@@ -8,9 +8,12 @@ mislead you.
 Sections 1 to 8 are the shadows. Section 9 is the occlusion; the two are independent and either
 can be used without the other.
 
-This document is self-contained. If you are working in a **game project** that uses this engine
-rather than in the engine repository, copy this file (or the parts you need) into that project so
-your assistant has it.
+This document is self-contained and describes what the fork IS. If you are working in a **game
+project** that uses this engine rather than in the engine repository, copy this file (or the parts
+you need) into that project so your assistant has it.
+
+`FINDINGS.md` beside it records how it got there — what was measured, and which plausible ideas the
+numbers refused. Nothing there is needed to use the engine; read it before re-treading a decision.
 
 Upstream base: `b56a91878e7c94977e4af978968e41d0670c0a8b`. Everything after it is fork work.
 
@@ -441,11 +444,11 @@ ray trace of the real geometry (mean absolute error / correlation, lower and hig
 
 The mask wins decisively wherever geometry is thin and loses slightly where it is thick, because on
 solid convex shapes "everything behind the first occluder is also occluded" happens to be true. Both
-beat the legacy estimator everywhere, and in the interior — the case a game actually spends its time
-in — it is not close. Those figures are the estimator measured at unity; at the shipped intensity
-and power the interior scores 0.0152 and 0.940, with no part of the frame driven to black. The harness that produced those numbers is in
-`docs/rt_shadows/ao_validation/`, and re-running it is the way to check a change rather than
-arguing about a screenshot.
+beat the legacy estimator everywhere, and in the interior it is not close.
+
+Those are the estimator measured at unity; at the shipped intensity and power the interior scores
+0.0152 and 0.940. `docs/rt_shadows/ao_validation/` is the harness that produced them, and re-running
+it is how to check a change rather than arguing about a screenshot.
 
 ### 9.2 Turning it on
 
@@ -469,7 +472,7 @@ Under `rendering/environment/ssao/ground_truth/`.
 | `screen_radius` | `0.1` | The share of screen **height** that span covers. `Environment.ssao_radius` multiplies it. Height, not width, because a camera holds its vertical field of view fixed — anchoring to width would make the same setting reach almost twice as far on a 16:9 viewport as on a square one. |
 | `thickness` | `0.3` | How far behind a sample its back face sits, as a fraction of the effect radius. The one genuine tradeoff: raise it toward `1.0` for scenes of thick solid shapes, lower it for foliage, railings and slats. `0.3` is the joint optimum measured across both test scenes. |
 | `visibility_bitmask` | `true` | Off falls back to horizon behavior. Worth a look on a scene that is all solid geometry; not worth it otherwise. |
-| `slices` / `steps_per_slice` | `4` / `8` | The whole sample budget, and cost is linear in both. Raising `steps_per_slice` mostly buys the far half of the march. |
+| `slices` / `steps_per_slice` | `4` / `8` | The whole sample budget, and cost is linear in both. They are not interchangeable: steps buy accuracy, slices buy smoothness. Raise whichever you are short of; rebalancing one into the other trades a real quantity for another. |
 | `intensity_scale` | `0.5` | What `Environment.ssao_intensity` is multiplied by before this estimator sees it. That property defaults to `2.0`, and the `2.0` belongs to the legacy estimator: its obscurance is a proximity average rather than a visibility integral and measures a fraction of the real deficit, so it needs multiplying up. This one reports the deficit directly. Leave it alone unless you want the whole effect uniformly stronger or weaker. |
 
 ### 9.4 Things to know before you are surprised
@@ -477,53 +480,63 @@ Under `rendering/environment/ssao/ground_truth/`.
 - **Forward+ and single view only.** A stereo or XR viewport silently falls back to the legacy
   estimator, because the occlusion buffer is a layer per eye and the gather has no notion of a
   second one.
-- **The half resolution setting is genuinely free of consequence here.** Every world space quantity
-  the gather uses is derived from the full resolution pixel footprint, so halving the resolution
-  changes how many pixels get their own answer and nothing else. Measured, half and full differ by
-  0.06 of 255 on average, with under a tenth of a percent of pixels differing by more than 10.
-- **The denoise widens itself with the radius.** Its width follows the effect radius and the
-  slice count, because those are what the gather's variance depends on. A single 3x3 was right at a
-  small radius and absorbed about a third of what it was handed at a large one, which read as grain
-  everywhere ambient light was the whole signal -- which is to say everywhere in shadow, since a lit
-  surface hides it. Widening it unconditionally is not the answer either: at a small radius the
-  extra width removes contact detail that was never noise, and the error against a traced reference
-  goes up. Neighbors are weighted by their distance from the shaded point's own *plane* rather than
-  by raw depth difference, so a surface seen at a glancing angle keeps its own neighbors; about
-  half the measured improvement came from that rather than from the extra width.
-- **A better dither is not the lever, and measurement says so twice.** The slice offset is already
-  interleaved gradient noise, which is optimal over a 3x3 by construction, and the residual is
-  already blue. Every alternative tried -- tiled, stratified, blue-noise pairs -- moved the result
-  by a few percent at best, and a tiled pattern with a filter narrower than its tile is *worse*
-  than what ships, because a repeating pattern reads as structure where noise reads as film grain.
-- **Steps buy accuracy, slices buy smoothness, and the split is not obvious.** At a large radius,
-  doubling `steps_per_slice` changes the grain by nothing measurable while doubling `slices` cuts
-  it noticeably -- but rebalancing the same budget from steps to slices costs 35% accuracy against
-  a traced reference. The shipped 4 x 8 is a deliberate balance; change it in the direction of
-  whichever you are short of.
+- **Half resolution costs less than it sounds like.** Every world space quantity the gather uses is
+  derived from the full resolution pixel footprint, so halving the resolution changes how many
+  pixels get their own answer and nothing else — the march reaches exactly as far and its first
+  step lands exactly as close. The reconstruction is a 2x2 bilateral guided by the full resolution
+  depth and normal. Measured on an interior, half and full differ by 0.26 of 255 on average and
+  score the same against a ray trace; the visible difference is sharpness at silhouettes, not
+  coverage or noise.
+- **The denoise sizes itself.** Its width follows the effect radius and the slice count, because
+  those are what the gather's variance depends on: five taps per axis at the shipped radius,
+  three at the smallest and seven at the largest. It is separable, so it runs twice. Neighbors are weighted by
+  their distance from the shaded point's *plane* rather than by depth difference, which is what
+  lets a surface seen at a glancing angle keep its own neighbors.
+- **`screen_radius` is the knob to reach for first, and the default is conservative.** A real
+  interior generally wants more than a small test scene does. The denoise widens itself to match,
+  so a large value costs coverage and taps rather than grain.
 - **The step spacing is even, not quadratic.** A horizon march can crowd its steps near the shaded
   point because one early hit stands in for everything behind it; a mask cannot, so an occluder
   falling between two steps is absent rather than approximated. This is why `steps_per_slice`
   matters more here than the same number would in a stock GTAO.
+- **The strength curve approaches black without reaching it.** `ssao_intensity` scales occlusion as
+  a ratio rather than by subtracting a multiple of its distance from white, so a corner stays a
+  gradient instead of clipping to a flat black plateau. At an intensity of one it is the identity.
 - **Contact on thick solid geometry reads about 0.03 too bright**, and roughly a third of that is
   inherent to screen space rather than to this implementation — a reference that only sees what the
   camera sees misses the same occlusion. `thickness` is the knob.
-- **The strength curve approaches black without reaching it, deliberately.** `ssao_intensity` scales
-  the occlusion as a ratio rather than by subtracting a multiple of the distance from white. The
-  subtractive form the effect first shipped with has a hard floor — at the stock intensity every
-  visibility at or below 0.63, which is roughly what an ordinary concave corner *is*, lands on
-  exactly zero. In an interior that put three percent of the frame on one flat black value, which
-  reads as harsh wedges with speckled edges and cannot be filtered back out because the information
-  was never stored. Putting a *flawless* ray-traced occlusion through that curve produced the same
-  artifact, which is how it was identified.
 - **Switching an environment back to the legacy estimator releases the depth pyramid**, which is a
   full resolution float target with mips. Switching between them per frame would thrash it.
 
-### 9.5 Where the code lives
+### 9.5 Known gaps
+
+- **The denoiser is good enough, not finished.** It is a spatial filter with no temporal component,
+  which is deliberate — this fork has no temporal antialiasing to resolve a changing dither
+  against. Some grain survives at a large radius, and the residue is largely deterministic
+  estimator structure rather than sampling noise, so a wider filter will not remove it and neither
+  will more steps. Raising `slices` does help and costs taps without costing accuracy, but that is
+  paying for the symptom. **Revisit this.** The candidates, none yet measured to a conclusion: the
+  mip level transitions in the march, which are discontinuous because the pyramid is
+  farthest-biased; the hard accept/reject at the elevation bias, where a sample near the threshold
+  flips between marking several sectors and marking none; and the sector quantisation, which snaps
+  every occluder to a 5.6 degree grid. Attacking those is what would let the sample budget come
+  *down* rather than up.
+- **Half resolution reconstruction is a 2x2 bilateral.** Silhouettes still show some stair
+  stepping. A wider joint-bilateral reconstruction, or an edge mask written by the gather for the
+  upsample to read, is the obvious next step and has not been tried.
+- **No GPU cost measurement exists.** Everything here was validated on a software rasterizer, where
+  timings are meaningless. The gather is 64 taps per pixel at the shipped budget plus a five mip
+  depth pyramid; the filter is at most 14 taps across two passes. Nobody has measured what that
+  costs on real hardware, and in particular whether it is viable at full resolution on an iGPU.
+- **`AreaLight3D`, reflection probes and the Mobile and Compatibility renderers** never see this
+  estimator; they use whatever the legacy path gives them.
+
+### 9.6 Where the code lives
 
 | File | What it does |
 | --- | --- |
-| `servers/rendering/renderer_rd/effects/gtao.{h,cpp}` | The pass driver: buffer sizing, push constants, the four dispatches. |
+| `servers/rendering/renderer_rd/effects/gtao.{h,cpp}` | The pass driver: buffer sizing, push constants, the five dispatches, and the derived denoise width. |
 | `shaders/effects/gtao_prefilter.glsl` | Linear view depth pyramid, five mips, biased toward the *farthest* of each quad. Deliberately not the pyramid the other screen space effects build, which is deinterleaved, half resolution based, and biased the other way. |
 | `shaders/effects/gtao_gather.glsl` | The march and the bitmask resolve. |
-| `shaders/effects/gtao_filter.glsl` | A 3x3 edge-aware denoise at gather resolution, then a depth-guided upsample into the shared occlusion buffer. |
+| `shaders/effects/gtao_filter.glsl` | A separable plane-aware denoise, run across then down at gather resolution, then a bilateral upsample into the shared occlusion buffer. |
 | `render_forward_clustered.cpp` | `_use_gtao`, `_ensure_gtao_buffers`, `_process_gtao`, and the branch that skips the legacy depth downsample when this is the only screen space effect running. |

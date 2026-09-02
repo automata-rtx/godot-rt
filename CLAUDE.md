@@ -98,22 +98,22 @@ which ran. Ships **off**: the project setting defaults to legacy and an `Environ
   apply to both. `ssao_detail`, `ssao_horizon`, `ssao_sharpness`, `quality` and `adaptive_target`
   are legacy-only and inert on the new one.
 - Tuning lives under `rendering/environment/ssao/ground_truth/`. `thickness` (0.3) is the one real
-  tradeoff: higher suits thick solid shapes, lower suits foliage and slats. `screen_radius` (0.05)
-  is a fraction of screen **height**, and `intensity_scale` (0.5) divides down the `ssao_intensity`
-  default of 2.0, which is a legacy-estimator calibration constant.
+  tradeoff: higher suits thick solid shapes, lower suits foliage and slats. `screen_radius` (0.1)
+  is a fraction of screen **height** and is the knob to reach for first — a real interior wants more
+  than a test scene does. `intensity_scale` (0.5) divides down the `ssao_intensity` default of 2.0,
+  which is a legacy-estimator calibration constant.
 - **The denoise sizes itself from the radius and the slice count** and weights neighbors by
-  distance from the shaded point's plane, not by depth difference. Do not widen it unconditionally
-  (that removes contact detail at a small radius) and do not reach for a better dither — the slice
-  offset is already interleaved gradient noise and every alternative measured within a few percent.
-  Steps buy accuracy, slices buy smoothness; rebalancing 4x8 toward slices costs 35% accuracy.
-- **The strength curve is a ratio, not a subtraction**, so occlusion approaches black without
-  reaching it. The subtractive form clips: at intensity 2.0 every visibility below 0.63 lands on
-  exactly zero, which put 3% of an interior frame on one flat black value and read as harsh wedges.
-  A *flawless* traced occlusion through that curve reproduced the artifact — if occlusion ever looks
-  crushed and speckled, suspect the transfer before the estimator.
+  distance from the shaded point's plane, not by depth difference. Three things here have already
+  been tried and measured to fail: widening the filter unconditionally, replacing the dither, and
+  rebalancing `slices` against `steps_per_slice`. See `docs/rt_shadows/FINDINGS.md` before
+  re-attempting any of them.
+- **The strength curve is a ratio, not a subtraction**, so occlusion approaches black without ever
+  reaching it. If occlusion ever looks crushed and speckled, suspect the transfer before the
+  estimator: put a traced reference through the same curve and see whether the artifact survives.
 - **Forward+, single view only.** Stereo/XR falls back to legacy without saying so.
-- Half resolution is close to free of consequence here — the march reach is derived from the full
-  resolution footprint, so half and full differ by 0.06/255 on average.
+- Half resolution changes how many pixels get their own answer and nothing else — the march reach
+  is derived from the full resolution footprint either way. It scores the same against a ray trace;
+  what it costs is sharpness at silhouettes.
 - Do not tune it by screenshot. `docs/rt_shadows/ao_validation/` traces the scene on the CPU two
   ways and scores a render against both; section 9 of the fork guide has the numbers to beat.
 
@@ -123,8 +123,10 @@ which ran. Ships **off**: the project setting defaults to legacy and an `Environ
   into a game project that uses this engine.
 - `docs/rt_shadows/PORTING.md` — every seam where this fork hooks into the engine, and the ordered
   recipe for re-applying it to a newer Godot.
+- `docs/rt_shadows/FINDINGS.md` — what was measured and what the numbers refused. Read it before
+  re-trying an idea that looks obvious; several already were, and failed. Keep it out of the guide.
 - `docs/rt_shadows/PLAN.md` — the pre-implementation design document. **Historical. Superseded by
-  the two documents above; several of its decisions were not taken.** Do not treat it as current.
+  the guide and the porting document; several of its decisions were not taken.** Not current.
 
 Set `GODOT_RT_DEBUG=1` to print per-frame acceleration structure and shadow mask diagnostics.
 

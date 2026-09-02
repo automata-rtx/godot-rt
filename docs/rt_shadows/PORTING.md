@@ -569,32 +569,34 @@ frame looks like without changing anything else.
 - `Environment::_validate_property` hides `ssao_detail`, `ssao_horizon` and `ssao_sharpness` when
   the ground truth estimator will run; the existing `!= "forward_plus"` branch is the natural place
   and its `else` was previously empty.
-- Four details are load-bearing and every one of them was wrong before it was measured. Two are in
-  the march: the depth pyramid is sampled with a **nearest** sampler, so a sample must be
-  reconstructed at the center of the texel its depth came from and not at the position the step
-  asked for; and the per sector weight carries the `|sin t|` Jacobian of the slice parametrization,
-  not the sector's share of the arc. Neither is visible as noise, both are steady biases that read
-  as the effect working.
-- The third is the **strength curve**, and it is the one that looks like an estimator failure and is
-  not. Scaling occlusion by subtracting a multiple of the distance from white has a hard floor: at
-  an intensity of two, everything at or below a visibility of 0.63 lands on exactly zero. An
-  ordinary concave corner IS about 0.63, so in an interior a third of the tonal range collapses onto
-  one flat black value inside the gather, before any filter sees it. Use a ratio instead. The test
-  that identifies this in one step is to put a **flawless ray-traced occlusion** through the curve:
-  if the artifact survives, the estimator was never the problem.
-- The fourth is the **half resolution stride**. `gather_size_for` rounds up and integer division
-  rounds down, so recovering the stride in the shader as `full_size.x / gather_size.x` gives 2 at
-  every even width and 1 at every odd one, and at an odd width the gather then answers only for the
-  top left quadrant. Pass the stride in the push constant. Its signature is a brighter, smoother,
-  left/right asymmetric image, which is not what a dark splotchy failure looks like -- do not let it
-  be misattributed, and do not "fix" it by rounding the gather size down instead, which drops the
-  last column at widths like 1281.
+- Five details are load-bearing, and every one was wrong before it was measured. Each is a steady
+  bias that reads as the effect working rather than as a bug, so none will be caught by looking.
+  `FINDINGS.md` has the measurements; what a port needs is the list.
+  1. The depth pyramid is sampled with a **nearest** sampler, so a sample must be reconstructed at
+     the center of the texel its depth came from, not at the position the step asked for.
+  2. The per sector weight carries the `|sin t|` Jacobian of the slice parametrization, not the
+     sector's share of the arc.
+  3. The strength curve scales occlusion as a **ratio**. Subtracting a multiple of the distance
+     from white has a hard floor and clips a third of the tonal range to black inside the gather,
+     where no filter can recover it. The one-step test: put a flawless traced occlusion through the
+     curve and see whether the artifact survives.
+  4. The half resolution stride is **passed** in a push constant. `gather_size_for` rounds up and
+     integer division rounds down, so recovering it in the shader gives 2 at every even width and 1
+     at every odd one, and at an odd width the gather then answers only for the top left quadrant.
+     Do not "fix" it by rounding the gather size down instead; that drops the last column at widths
+     like 1281.
+  5. The upsample inverts the gather's sampling position as `pos / stride`. The obvious
+     `(pos + 0.5) * scale - 0.5` assumes the gather texel represents the center of its block and is
+     wrong by half a full resolution pixel on each axis.
 - One quantity is a function of viewport shape and must be anchored deliberately. Under
   `scale_radius_with_distance` the world reach comes from `uv_to_view_mul`, which on the x axis is
-  `2 * tan(fovy/2) * aspect`; a camera holds the VERTICAL field fixed, so anchoring a screen-space
+  `2 * tan(fovy/2) * aspect`; a camera holds the VERTICAL field fixed, so anchoring a screen space
   fraction to width makes the effect reach 1.8x further on a 16:9 viewport than on a square one.
   Anchor to height. The fixed-world-radius branch is already aspect invariant and must be left
   alone.
+- The denoise is separable and its width is derived on the CPU from the effect radius and the slice
+  count, and its weights are plane distances rather than depth differences, so the filter pass needs
+  the view space normal and the projection terms bound to it as well as the AO buffer.
 
 ---
 

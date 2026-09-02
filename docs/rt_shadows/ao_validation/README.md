@@ -36,9 +36,9 @@ the shading has already mixed. `ao_compare.py` does that division, undoing the s
 - `room`: a closed interior with the camera inside it, at 1280x720. Both of the others are open
   scenes viewed from above with a mean occlusion under one percent, so a *correct* occlusion barely
   enters the range the output transfer operates on -- 0.3 to 0.7 percent of those frames against 7
-  percent of a room. That is how a transfer that clipped a third of the tonal range to black passed
-  validation twice. It is also the only scene that is not square, so it is the only one that can
-  catch a defect that depends on the aspect ratio.
+  percent of a room, which is why defects in that transfer went unseen for as long as they did. It
+  is also the only scene that is not square, so it is the only one that can catch a defect that
+  depends on the aspect ratio.
 
 **Score the estimator AND what ships.** `main.gd` defaults to the identity transfer so
 `ao_compare.py` can recover raw visibility by division, which measures the estimator. Run it again
@@ -55,15 +55,20 @@ python3 ao_compare.py truth.npz noao.png gtao=with_ao.png
 ```
 
 Renders come from a project holding `main.gd` and `main.tscn`, with `RT_TEST_OUT` set to the output
-path and `AO_OFF=1` for the divisor. `AO_RADIUS`, `AO_INTENSITY` and `AO_SCENE` are the other knobs.
+path and `AO_OFF=1` for the divisor. `AO_SCENE`, `AO_RADIUS`, `AO_INTENSITY` and `AO_POWER` are the
+other knobs. The viewport size belongs to the scene, so `main.gd` sets it.
 Set `AO_DIST_RADIUS` on either tracer to give every shading point the depth-scaled radius the
 shipped default uses instead of a fixed world radius.
 
 ## gtao_sim.py
 
-A faithful CPU model of the gather -- same projection terms, same sample pattern, same sampler
-behavior, same bitmask. It exists because the loop of "edit shader, rebuild, software render,
-score" takes minutes and this takes seconds, and because a disagreement between the two localizes a
-fault: if the model and the shader disagree the shader has a plumbing bug, and if they agree but
-both miss the reference the estimator itself is wrong. Both of the defects fixed here were found
-that way.
+A faithful CPU model of the gather -- same projection terms, same sample pattern, same nearest
+sampler behavior, same bitmask and sector weights, both radius branches, and `apply_transfer` for
+the output curve. It exists because the loop of "edit shader, rebuild, software render, score"
+takes minutes and this takes seconds, and because a disagreement between the two localizes a fault:
+if the model and the shader disagree the shader has a plumbing bug, and if they agree but both miss
+the reference the estimator itself is wrong. Every defect fixed so far was found that way, and it
+has reproduced the engine to within 0.001 mean absolute error every time it has been checked.
+
+`../FINDINGS.md` records what those measurements found, including the ideas that looked obvious and
+did not survive being measured.
