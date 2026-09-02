@@ -78,7 +78,7 @@ public:
 		// shrinks with distance until the steps land on the same texel and the
 		// occlusion quietly disappears.
 		bool scale_radius_with_distance = true;
-		float screen_radius = 0.05f;
+		float screen_radius = 0.1f;
 		bool use_bitmask = true;
 		bool half_resolution = true;
 	};
@@ -152,12 +152,30 @@ private:
 		int32_t source_size[2];
 		int32_t dest_size[2];
 
-		float depth_tolerance;
-		float weight_floor;
-		// Full resolution pixels per gather texel, per axis; the upsample needs it
-		// to invert the gather's sampling position without half a pixel of error.
+		int32_t full_size[2];
+		// Full resolution pixels per gather texel, per axis. The upsample needs it
+		// to invert the gather's sampling position without half a pixel of error,
+		// and both passes need it to find the surface a gather texel describes.
 		int32_t gather_stride[2];
+
+		float uv_to_view_mul[2];
+		float uv_to_view_add[2];
+
+		float plane_tolerance;
+		int32_t filter_radius;
+		int32_t direction[2];
 	};
+
+	// How wide the denoise has to be, in gather texels either side.
+	//
+	// The gather's variance rises with how far the march reaches and falls with
+	// how many slices it splits the hemisphere into, so those are the two things
+	// the width follows. A fixed width cannot serve a radius setting that spans
+	// fifty to one: three by three is right where the effect is small, and at the
+	// top of the range it absorbs about a third of the noise it is handed, while
+	// a wide filter applied at the bottom of the range removes contact detail
+	// that was never noise.
+	static int filter_radius_for(const Settings &p_settings);
 
 	enum FilterMode {
 		FILTER_MODE_DENOISE,

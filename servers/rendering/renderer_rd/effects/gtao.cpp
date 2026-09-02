@@ -89,6 +89,19 @@ GTAO::~GTAO() {
 	}
 }
 
+int GTAO::filter_radius_for(const Settings &p_settings) {
+	// The march's on-screen reach relative to the slice count, normalized so the
+	// shipped four slices at the shipped screen radius come out at one -- a three
+	// by three, which is what measured best there. At the top of the radius range
+	// the same expression asks for three, a seven tap pass on each axis, which is
+	// where the noise actually needs it.
+	const float reach = p_settings.scale_radius_with_distance
+			? p_settings.screen_radius * MAX(p_settings.radius, 0.0f)
+			: 0.05f;
+	const float noise = reach * 4.0f / float(MAX(p_settings.slice_count, 1));
+	return CLAMP(int(Math::round(noise / 0.06f)), 1, 3);
+}
+
 Size2i GTAO::gather_size_for(const Size2i &p_full_size, bool p_half_resolution) {
 	if (!p_half_resolution) {
 		return p_full_size;
@@ -136,6 +149,13 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 	if (linearize_mul * linearize_add < 0) {
 		linearize_add = -linearize_add;
 	}
+
+	// Turns a screen UV into a view space ray. Derived from the raw projection,
+	// not the depth corrected one, and expressed for a UV in zero to one --
+	// exactly the form the other screen space effects use. Both the gather and
+	// the filter reconstruct view positions with it, so it lives out here.
+	const float tan_half_fov_x = 1.0f / p_projection.columns[0][0];
+	const float tan_half_fov_y = 1.0f / p_projection.columns[1][1];
 
 	const bool orthogonal = p_projection.is_orthogonal();
 	if (orthogonal) {
@@ -197,11 +217,6 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 		push.full_size[0] = p_full_size.x;
 		push.full_size[1] = p_full_size.y;
 
-		// Turns a screen UV into a view space ray. Derived from the raw
-		// projection, not the depth corrected one, and expressed for a UV in
-		// zero to one -- exactly the form the other screen space effects use.
-		const float tan_half_fov_x = 1.0f / p_projection.columns[0][0];
-		const float tan_half_fov_y = 1.0f / p_projection.columns[1][1];
 		push.uv_to_view_mul[0] = tan_half_fov_x * 2.0f;
 		push.uv_to_view_mul[1] = tan_half_fov_y * -2.0f;
 		push.uv_to_view_add[0] = tan_half_fov_x * -1.0f;
@@ -230,63 +245,79 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 		RD::get_singleton()->compute_list_end();
 	}
 
-	// Pass 3: denoise at the gather's own resolution.
+	// Passes 3 and 4: a separable edge-aware blur, across then down, at the
+	// gather's own resolution. One pass of nine taps was the whole noise
+	// reduction budget and could not absorb what a large effect radius hands it;
+	// two passes of at most seven taps each cost four more taps and remove
+	// roughly twice as much, because the width now follows the noise.
+	//
+	// Pass 5 weights the result up into the buffer the forward shader samples.
+	// At matching resolutions every weight collapses onto the pixel's own texel,
+	// so it is a straight copy rather than a filter.
 	{
-		LocalVector<RD::Uniform> uniforms;
-		uniforms.push_back(make_texture(0, nearest, p_buffers.ao_a));
-		uniforms.push_back(make_image(1, p_buffers.ao_b));
+		const int filter_radius = filter_radius_for(p_settings);
+		const int32_t stride = p_settings.half_resolution ? 2 : 1;
 
-		RID compiled = filter_shader.version_get_shader(filter_shader_version, FILTER_MODE_DENOISE);
-		RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(compiled, 0, uniforms);
+		auto fill_common = [&](FilterPushConstant &push) {
+			push.full_size[0] = p_full_size.x;
+			push.full_size[1] = p_full_size.y;
+			push.uv_to_view_mul[0] = tan_half_fov_x * 2.0f;
+			push.uv_to_view_mul[1] = tan_half_fov_y * -2.0f;
+			push.uv_to_view_add[0] = tan_half_fov_x * -1.0f;
+			push.uv_to_view_add[1] = tan_half_fov_y;
+			// A neighbor two percent of its own depth off this pixel's plane is
+			// taken to be another surface. Measured against a plane rather than
+			// against raw depth, so a surface seen at a glancing angle keeps its
+			// own neighbors and a shallow silhouette still separates.
+			push.plane_tolerance = 0.02f;
+			push.filter_radius = filter_radius;
+		};
 
-		FilterPushConstant push = {};
-		push.source_size[0] = p_buffers.gather_size.x;
-		push.source_size[1] = p_buffers.gather_size.y;
-		push.dest_size[0] = p_buffers.gather_size.x;
-		push.dest_size[1] = p_buffers.gather_size.y;
-		push.depth_tolerance = 0.02f;
-		push.weight_floor = 0.0f;
-		push.gather_stride[0] = 1;
-		push.gather_stride[1] = 1;
+		struct Pass {
+			FilterMode mode;
+			RID source;
+			RID dest;
+			Size2i size;
+			int32_t stride;
+			int32_t dir_x;
+			int32_t dir_y;
+		};
+		const Pass passes[3] = {
+			{ FILTER_MODE_DENOISE, p_buffers.ao_a, p_buffers.ao_b, p_buffers.gather_size, stride, 1, 0 },
+			{ FILTER_MODE_DENOISE, p_buffers.ao_b, p_buffers.ao_a, p_buffers.gather_size, stride, 0, 1 },
+			{ FILTER_MODE_UPSAMPLE, p_buffers.ao_a, p_dest_ao, p_full_size, stride, 0, 0 },
+		};
 
-		RD::ComputeListID list = RD::get_singleton()->compute_list_begin();
-		RD::get_singleton()->compute_list_bind_compute_pipeline(list, filter_pipeline[FILTER_MODE_DENOISE]);
-		RD::get_singleton()->compute_list_bind_uniform_set(list, uniform_set, 0);
-		RD::get_singleton()->compute_list_set_push_constant(list, &push, sizeof(FilterPushConstant));
-		RD::get_singleton()->compute_list_dispatch_threads(list, p_buffers.gather_size.x, p_buffers.gather_size.y, 1);
-		RD::get_singleton()->compute_list_end();
-	}
+		for (const Pass &pass : passes) {
+			LocalVector<RD::Uniform> uniforms;
+			uniforms.push_back(make_texture(0, nearest, pass.source));
+			uniforms.push_back(make_texture(1, nearest_mips, p_buffers.depth_pyramid));
+			uniforms.push_back(make_image(2, p_normal_roughness));
+			uniforms.push_back(make_image(3, pass.dest));
 
-	// Pass 4: weight the result up into the buffer the forward shader samples.
-	// At matching resolutions every weight collapses to the nearest texel, so
-	// this is a straight copy rather than a filter.
-	{
-		LocalVector<RD::Uniform> uniforms;
-		uniforms.push_back(make_texture(0, nearest, p_buffers.ao_b));
-		uniforms.push_back(make_image(1, p_dest_ao));
+			RID compiled = filter_shader.version_get_shader(filter_shader_version, pass.mode);
+			RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(compiled, 0, uniforms);
 
-		RID compiled = filter_shader.version_get_shader(filter_shader_version, FILTER_MODE_UPSAMPLE);
-		RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(compiled, 0, uniforms);
+			FilterPushConstant push = {};
+			push.source_size[0] = p_buffers.gather_size.x;
+			push.source_size[1] = p_buffers.gather_size.y;
+			push.dest_size[0] = pass.size.x;
+			push.dest_size[1] = pass.size.y;
+			// The blur runs entirely inside the gather's own grid, so a gather
+			// texel is one step; only the upsample crosses resolutions.
+			push.gather_stride[0] = pass.mode == FILTER_MODE_UPSAMPLE ? pass.stride : 1;
+			push.gather_stride[1] = pass.mode == FILTER_MODE_UPSAMPLE ? pass.stride : 1;
+			fill_common(push);
+			push.direction[0] = pass.dir_x;
+			push.direction[1] = pass.dir_y;
 
-		FilterPushConstant push = {};
-		push.source_size[0] = p_buffers.gather_size.x;
-		push.source_size[1] = p_buffers.gather_size.y;
-		push.dest_size[0] = p_full_size.x;
-		push.dest_size[1] = p_full_size.y;
-		push.depth_tolerance = 0.02f;
-		// Small enough not to disturb a pixel with a good match, large enough
-		// that one matching nothing relaxes toward its neighbors rather than
-		// dividing by almost zero.
-		push.weight_floor = 0.01f;
-		push.gather_stride[0] = p_settings.half_resolution ? 2 : 1;
-		push.gather_stride[1] = p_settings.half_resolution ? 2 : 1;
-
-		RD::ComputeListID list = RD::get_singleton()->compute_list_begin();
-		RD::get_singleton()->compute_list_bind_compute_pipeline(list, filter_pipeline[FILTER_MODE_UPSAMPLE]);
-		RD::get_singleton()->compute_list_bind_uniform_set(list, uniform_set, 0);
-		RD::get_singleton()->compute_list_set_push_constant(list, &push, sizeof(FilterPushConstant));
-		RD::get_singleton()->compute_list_dispatch_threads(list, p_full_size.x, p_full_size.y, 1);
-		RD::get_singleton()->compute_list_end();
+			RD::ComputeListID list = RD::get_singleton()->compute_list_begin();
+			RD::get_singleton()->compute_list_bind_compute_pipeline(list, filter_pipeline[pass.mode]);
+			RD::get_singleton()->compute_list_bind_uniform_set(list, uniform_set, 0);
+			RD::get_singleton()->compute_list_set_push_constant(list, &push, sizeof(FilterPushConstant));
+			RD::get_singleton()->compute_list_dispatch_threads(list, pass.size.x, pass.size.y, 1);
+			RD::get_singleton()->compute_list_end();
+		}
 	}
 
 	RD::get_singleton()->draw_command_end_label();

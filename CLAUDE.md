@@ -101,6 +101,11 @@ which ran. Ships **off**: the project setting defaults to legacy and an `Environ
   tradeoff: higher suits thick solid shapes, lower suits foliage and slats. `screen_radius` (0.05)
   is a fraction of screen **height**, and `intensity_scale` (0.5) divides down the `ssao_intensity`
   default of 2.0, which is a legacy-estimator calibration constant.
+- **The denoise sizes itself from the radius and the slice count** and weights neighbors by
+  distance from the shaded point's plane, not by depth difference. Do not widen it unconditionally
+  (that removes contact detail at a small radius) and do not reach for a better dither — the slice
+  offset is already interleaved gradient noise and every alternative measured within a few percent.
+  Steps buy accuracy, slices buy smoothness; rebalancing 4x8 toward slices costs 35% accuracy.
 - **The strength curve is a ratio, not a subtraction**, so occlusion approaches black without
   reaching it. The subtractive form clips: at intensity 2.0 every visibility below 0.63 lands on
   exactly zero, which put 3% of an interior frame on one flat black value and read as harsh wedges.

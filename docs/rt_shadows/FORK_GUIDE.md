@@ -466,7 +466,7 @@ Under `rendering/environment/ssao/ground_truth/`.
 | Setting | Default | What it is for |
 | --- | --- | --- |
 | `scale_radius_with_distance` | `true` | Hold the march to a fixed share of the screen rather than a fixed distance in the world. Without it the on-screen span shrinks as a surface recedes until the steps land on the same texel and the occlusion disappears. This is what buys coverage at distance, and it is why it is on. |
-| `screen_radius` | `0.05` | The share of screen **height** that span covers. `Environment.ssao_radius` multiplies it. Height, not width, because a camera holds its vertical field of view fixed — anchoring to width would make the same setting reach almost twice as far on a 16:9 viewport as on a square one. |
+| `screen_radius` | `0.1` | The share of screen **height** that span covers. `Environment.ssao_radius` multiplies it. Height, not width, because a camera holds its vertical field of view fixed — anchoring to width would make the same setting reach almost twice as far on a 16:9 viewport as on a square one. |
 | `thickness` | `0.3` | How far behind a sample its back face sits, as a fraction of the effect radius. The one genuine tradeoff: raise it toward `1.0` for scenes of thick solid shapes, lower it for foliage, railings and slats. `0.3` is the joint optimum measured across both test scenes. |
 | `visibility_bitmask` | `true` | Off falls back to horizon behavior. Worth a look on a scene that is all solid geometry; not worth it otherwise. |
 | `slices` / `steps_per_slice` | `4` / `8` | The whole sample budget, and cost is linear in both. Raising `steps_per_slice` mostly buys the far half of the march. |
@@ -481,6 +481,25 @@ Under `rendering/environment/ssao/ground_truth/`.
   the gather uses is derived from the full resolution pixel footprint, so halving the resolution
   changes how many pixels get their own answer and nothing else. Measured, half and full differ by
   0.06 of 255 on average, with under a tenth of a percent of pixels differing by more than 10.
+- **The denoise widens itself with the radius.** Its width follows the effect radius and the
+  slice count, because those are what the gather's variance depends on. A single 3x3 was right at a
+  small radius and absorbed about a third of what it was handed at a large one, which read as grain
+  everywhere ambient light was the whole signal -- which is to say everywhere in shadow, since a lit
+  surface hides it. Widening it unconditionally is not the answer either: at a small radius the
+  extra width removes contact detail that was never noise, and the error against a traced reference
+  goes up. Neighbors are weighted by their distance from the shaded point's own *plane* rather than
+  by raw depth difference, so a surface seen at a glancing angle keeps its own neighbors; about
+  half the measured improvement came from that rather than from the extra width.
+- **A better dither is not the lever, and measurement says so twice.** The slice offset is already
+  interleaved gradient noise, which is optimal over a 3x3 by construction, and the residual is
+  already blue. Every alternative tried -- tiled, stratified, blue-noise pairs -- moved the result
+  by a few percent at best, and a tiled pattern with a filter narrower than its tile is *worse*
+  than what ships, because a repeating pattern reads as structure where noise reads as film grain.
+- **Steps buy accuracy, slices buy smoothness, and the split is not obvious.** At a large radius,
+  doubling `steps_per_slice` changes the grain by nothing measurable while doubling `slices` cuts
+  it noticeably -- but rebalancing the same budget from steps to slices costs 35% accuracy against
+  a traced reference. The shipped 4 x 8 is a deliberate balance; change it in the direction of
+  whichever you are short of.
 - **The step spacing is even, not quadratic.** A horizon march can crowd its steps near the shaded
   point because one early hit stands in for everything behind it; a mask cannot, so an occluder
   falling between two steps is absent rather than approximated. This is why `steps_per_slice`

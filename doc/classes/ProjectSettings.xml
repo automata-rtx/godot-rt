@@ -2954,6 +2954,9 @@
 		<member name="rendering/environment/ssao/fadeout_to" type="float" setter="" getter="" default="300.0">
 			Distance at which the screen-space ambient occlusion is fully faded out. Use this hide ambient occlusion from far away.
 		</member>
+		<member name="rendering/environment/ssao/ground_truth/intensity_scale" type="float" setter="" getter="" default="0.5">
+			What [member Environment.ssao_intensity] is multiplied by before the ground truth estimator uses it. That property defaults to [code]2.0[/code], and the [code]2.0[/code] belongs to the legacy estimator: its obscurance is a distance weighted proximity average over a screen disk rather than a visibility integral, so on the same geometry it measures a fraction of the real deficit and needs multiplying up. The ground truth estimator reports the deficit directly, so handing it the same number doubles a figure that is already right. Set this to [code]1.0[/code] to disable the rescale. Has no effect when [member rendering/environment/ssao/method] is [code]Screen Space (Legacy)[/code].
+		</member>
 		<member name="rendering/environment/ssao/ground_truth/scale_radius_with_distance" type="bool" setter="" getter="" default="true">
 			If [code]true[/code], the ground truth occlusion holds its march to a fixed share of the screen at every depth instead of to a fixed distance in the world, using [member rendering/environment/ssao/ground_truth/screen_radius] as that share and [member Environment.ssao_radius] as a multiplier on it. Without this the on-screen span of the effect shrinks as a surface recedes, until the samples land on the same texel and the occlusion quietly disappears; with it, distant geometry keeps its occlusion. Has no effect when [member rendering/environment/ssao/method] is [code]Screen Space (Legacy)[/code].
 		</member>
