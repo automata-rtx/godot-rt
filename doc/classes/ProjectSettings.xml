@@ -2960,7 +2960,7 @@
 		<member name="rendering/environment/ssao/ground_truth/scale_radius_with_distance" type="bool" setter="" getter="" default="true">
 			If [code]true[/code], the ground truth occlusion holds its march to a fixed share of the screen at every depth instead of to a fixed distance in the world, using [member rendering/environment/ssao/ground_truth/screen_radius] as that share and [member Environment.ssao_radius] as a multiplier on it. Without this the on-screen span of the effect shrinks as a surface recedes, until the samples land on the same texel and the occlusion quietly disappears; with it, distant geometry keeps its occlusion. Has no effect when [member rendering/environment/ssao/method] is [code]Screen Space (Legacy)[/code].
 		</member>
-		<member name="rendering/environment/ssao/ground_truth/screen_radius" type="float" setter="" getter="" default="0.05">
+		<member name="rendering/environment/ssao/ground_truth/screen_radius" type="float" setter="" getter="" default="0.1">
 			Fraction of the screen width the ground truth occlusion march covers when [member rendering/environment/ssao/ground_truth/scale_radius_with_distance] is enabled. Larger values reach further and cost more; the same number of samples is spread over the wider span, so very large values thin out.
 		</member>
 		<member name="rendering/environment/ssao/ground_truth/slices" type="int" setter="" getter="" default="4">
