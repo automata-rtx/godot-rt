@@ -153,6 +153,22 @@ answers itself. And on weaker hardware, reaching for the resolution setting can 
 the smaller half of the cost -- the fixed part has to be measured per pass before it can be
 attacked.
 
+A second data point, from a Radeon 780M with `half_size` on and raytraced shadows running in the
+same frame: the whole `Process GTAO` block is **1.43 ms** of a GPU frame of about 11.2 ms, in which
+the raytraced shadow block alone is 4.49 ms. That is a whole-block figure and not a split, so it
+neither confirms nor refutes the forty to sixty five percent fixed share above. What it does do is
+warn against transplanting that share. If the fixed part really were dominated by full resolution
+bandwidth, a part with a small fraction of a 5090's bandwidth could not fit all five dispatches into
+1.43 ms at a comparable pixel count. Either the desktop solve over-estimated the fixed cost -- it
+leans on the "over 1000 fps with the effect off" figure this section already flags as the least
+certain of the three -- or the gather is a larger share on weak hardware than the desktop ratio
+implies.
+
+Two captures settle it on any part, with no code change and no restart: read the block with
+`half_size` on and again with it off, then `F = (4*t_half - t_full)/3` and
+`G_full = (4/3)*(t_full - t_half)`. Discard the first frame after the toggle, because `gather_size`
+changes with `half_size` and the buffers are reallocated inside the mark.
+
 ### Shading a checkerboard beats shading a coarser grid
 
 `half_size` halves each dimension, so it evaluates a QUARTER of the pixels, not half. Shading a

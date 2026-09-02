@@ -321,6 +321,14 @@ actually moves the picture:
   cost what they say: every one is traced. They converge on the same shadow, only with less noise.
 - **Slow in an open outdoor scene?** Lower `directional/caster_distance_scale`, or set
   `directional/scatter_casters` to `Disabled`.
+- **Slow everywhere?** The whole raytraced shadow stage -- the trace, the temporal accumulation and
+  every a-trous pass -- runs at the render buffer's *internal* size, so `rendering/scaling_3d/scale`
+  moves all of it quadratically, along with the depth pre-pass, the occlusion pass and the opaque
+  pass. There is no half resolution setting for the mask alone. Inside the stage the largest single
+  knob is `denoiser/spatial_passes`, because each pass is one more full resolution dispatch.
+- **Judge a denoiser change with the camera moving, not parked.** A converged static frame has no
+  disocclusions, so the wide spatial passes are doing the least work they ever will and every
+  reduction in filter width looks free.
 
 All of these take effect on the next frame.
 
@@ -351,10 +359,25 @@ different things:
 - **build** — turning those casters into acceleration structures. Grows with the caster count, and
   spikes on the frame that first builds them (the peak figure, not the average, is what you feel).
 
+Read that line rather than the editor profiler's `Update RT Acceleration Structures` row. Godot's
+visual profiler shows the time between one timestamp and the *next*, so every row is named for the
+work that follows it, and that row runs from the caster gather all the way to `Render 3D Scene` --
+in a fully raytraced scene it never passes a `> Render Light3D` mark at all, because a light with no
+shadow map to render is skipped before that mark exists. It is a strict superset of gather plus
+build. The same rule makes `Cull DirectionalLight3D, Split N` misleading for the LAST cascade only:
+its interval continues past the cascade loop and through the entire main scene cull, which is stock
+work and has nothing to do with the sun. The earlier splits report honestly, and the difference
+between them is the tell.
+
 ### Making it cheaper
 
 Measured in a deliberately hostile scene — three thousand props over a 200 m field, sixteen lamps of
-25 m range, a raytraced sun and a spotlight on the camera — on a slow CPU:
+25 m range, a raytraced sun and a spotlight on the camera — on a slow CPU. These are CPU
+milliseconds, and they are the shape of the curve rather than figures that transfer: shadow
+distance dominates, `caster_distance_scale` does not. Shortening the shadow distance also shortens
+the sun's rays on the GPU, because a sun's ray length is that distance times
+`1 + caster_distance_scale` -- so at the default scale every sun ray is three times your shadow
+distance, traced for the nearest hit.
 
 | Change | RT CPU per frame |
 | --- | --- |
@@ -552,23 +575,41 @@ Under `rendering/environment/ssao/ground_truth/`.
   the gather, since a quarter of the pixels becomes half of them, and it wants the checkerboard
   packed into a half width buffer rather than full width threads that half exit immediately. Worth
   doing as a third quality rung; not yet done.
-- **Cost is known roughly on one desktop GPU and not at all elsewhere.** From framerates on an
-  RTX 5090: full resolution costs about 0.3 ms more per frame than quarter resolution, which at a
-  120 fps budget is three percent of the frame. On that class of hardware there is no reason not to
-  run at full resolution. The interesting part is the shape rather than the total -- quarter
-  resolution shades a quarter of the pixels but costs roughly two thirds of what full resolution
-  costs, so somewhere between forty and sixty five percent of the effect is a FIXED cost that the
-  resolution knob does not touch: the full resolution depth pyramid, the upsample that always runs
-  at full resolution, and five dispatches with barriers between them. Anyone trying to make this
-  cheaper on weaker hardware should measure per pass -- the block is labeled `Process GTAO` for
-  the GPU profiler -- rather than reaching for the resolution setting, which can only ever address
-  the smaller half.
-- **TODO: profile on the Radeon 780M.** Nothing has been measured on an iGPU, which is the machine
-  where any of this actually decides anything. Take it per pass rather than per mode -- the block is
-  labeled `Process GTAO` for the GPU profiler -- so the fixed cost and the gather cost come out
-  separately instead of by subtraction from three whole-frame figures. Until that exists, the
-  checkerboard tier above is a quality argument with no cost argument attached, and the case for
-  running full resolution rests on one desktop GPU.
+- **Cost is known roughly on one desktop GPU, and as a whole-block figure on one iGPU.** From
+  framerates on an RTX 5090: full resolution costs about 0.3 ms more per frame than quarter
+  resolution, which at a 120 fps budget is three percent of the frame. On that class of hardware
+  there is no reason not to run at full resolution. The interesting part is the shape rather than
+  the total -- quarter resolution shades a quarter of the pixels but costs roughly two thirds of
+  what full resolution costs, so somewhere between forty and sixty five percent of the effect is a
+  FIXED cost that the resolution knob does not touch: the full resolution depth pyramid, the
+  upsample that always runs at full resolution, and five dispatches with barriers between them.
+  Anyone trying to make this cheaper on weaker hardware should measure per pass -- the block is
+  labeled `Process GTAO` for the GPU profiler -- rather than reaching for the resolution setting,
+  which can only ever address the smaller half.
+
+  That ratio is a property of the machine, not of the algorithm, and should not be carried across.
+  The fixed part is full resolution bandwidth plus per dispatch launch; the gather is dense
+  transcendental arithmetic. A part with a fraction of the bandwidth does not preserve the balance
+  between them, so solve the split on the hardware in question rather than transplanting this one.
+- **Measured once on a Radeon 780M, and it is not the pass to worry about there.** With `half_size`
+  on -- the shipped default, so the gather runs at a quarter of the pixels while the prefilter and
+  the upsample stay at full -- the whole `Process GTAO` block reads **1.43 ms**, against a GPU frame
+  of about 11.2 ms in which the raytraced shadow block alone is 4.49 ms. On this class of hardware
+  the occlusion estimator is roughly an eighth of the frame and the third largest of four passes. If
+  an iGPU frame is too slow, this is not where to start.
+
+  What that does not settle is the shape: one reading at one setting is one equation in two
+  unknowns, so the fixed and gather costs on this part are still separate unknowns. Two captures
+  close it, with no code change and no restart. Read `Process GTAO` with
+  `rendering/environment/ssao/half_size` on and again with it off, then `F = (4*t_half - t_full)/3`
+  and `G_full = (4/3)*(t_full - t_half)`. Discard the first frame after the toggle: `gather_size`
+  changes with `half_size`, so the pyramid and both AO buffers are reallocated inside the mark.
+  Per-dispatch numbers need a profiler that reads debug labels, and the five dispatches are already
+  wrapped in a `GTAO` label, so nothing has to be added to get them.
+
+  Until that split exists on this part, the checkerboard tier above is a quality argument with a
+  whole-block cost figure but no per-rung one, and the case for running full resolution still rests
+  on one desktop GPU.
 - **`AreaLight3D`, reflection probes and the Mobile and Compatibility renderers** never see this
   estimator; they use whatever the legacy path gives them.
 
