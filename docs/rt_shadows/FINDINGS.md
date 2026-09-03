@@ -226,6 +226,32 @@ The cost is real: twice the gather of the quarter resolution mode. It also wants
 packed into a half width buffer, because dispatching full resolution threads and exiting half of
 them wastes the saving on wave divergence.
 
+### Scored again against the shipped implementation, not the prototype
+
+The table above was measured on a prototype. Re-scored against the mapping and reconstruction the
+shaders actually run -- packed texel `(u, y)` holds pixel `(2u + (y & 1), y)`, shaded pixels copied
+through untouched, the rest averaged from four neighbors with the same plane weights -- on the
+interior scene at the shipped defaults, against a fully shaded frame:
+
+| scheme | overall | at silhouettes |
+| --- | --- | --- |
+| quarter resolution grid, 2x2 reconstruction | 0.00713 | 0.02472 |
+| checkerboard, 4 neighbors | 0.00502 | 0.01180 |
+
+Overall, 29.6% better, against the 29% the prototype measured -- close enough to say the shipped
+arithmetic is the arithmetic that was scored. The silhouette figure comes out further ahead than
+the prototype's 33%, but that one is not comparable: the mask here is "any pixel whose 3x3
+neighbourhood spans more than five percent of its own depth", which is this harness's definition
+and not the prototype's, and it selects 1.0% of the frame. Trust the overall column for
+cross-checking the two, and the silhouette column only for comparing the two schemes within this
+run.
+
+The mapping itself was checked exhaustively rather than by sampling: for every width to 129 and
+height to 69, the packed texels and the shaded pixels are in bijection, every unshaded pixel's
+on-screen neighbors are shaded and map into range, and exactly half the pixels are shaded. The
+only waste is one texel per odd row of an odd width buffer, which the gather clamps and nothing
+reads.
+
 ### Half resolution was misregistered by half a pixel
 
 The gather evaluates full-resolution pixel `k·stride`; the upsample computed

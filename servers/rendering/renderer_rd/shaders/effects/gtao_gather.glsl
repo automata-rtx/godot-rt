@@ -85,7 +85,7 @@ layout(push_constant, std430) uniform Params {
 	// When set, the gather shades a CHECKERBOARD packed two full resolution
 	// pixels to a texel along x and one row to a row, rather than a coarser grid.
 	// Half the pixels get their own answer instead of a quarter, and every pixel
-	// that does not has all four of its immediate neighbours shaded, one pixel
+	// that does not has all four of its immediate neighbors shaded, one pixel
 	// away rather than two. The stride above does not describe that mapping and
 	// is ignored on this path.
 	bool checkerboard;

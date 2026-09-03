@@ -3783,7 +3783,7 @@ void RenderingServer::init() {
 	// asks for one. A quarter resolution grid gives a quarter of the pixels their
 	// own answer and reconstructs the rest from samples two pixels away; a
 	// checkerboard gives half of them their own answer and reconstructs the rest
-	// from four neighbours one pixel away, which is twice the gather for a
+	// from four neighbors one pixel away, which is twice the gather for a
 	// reconstruction that has no further information to gather.
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/shading_rate", PROPERTY_HINT_ENUM, "Quarter Resolution,Checkerboard"), 0);
 
