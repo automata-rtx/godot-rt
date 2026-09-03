@@ -575,7 +575,13 @@ Under `rendering/environment/ssao/ground_truth/`.
   the gather, since a quarter of the pixels becomes half of them, and it wants the checkerboard
   packed into a half width buffer rather than full width threads that half exit immediately. Worth
   doing as a third quality rung; not yet done.
-- **Cost is known roughly on one desktop GPU, and as a whole-block figure on one iGPU.** From
+- **Measured directly on an RTX 5090 at 3440x1440 full screen, 4.95 Mpx, occlusion at full
+  resolution, in a scene with dozens of raytraced lights.** The whole GPU frame is 3.41 ms, of which
+  `Process GTAO` is **1.12 ms** and the raytraced shadow block is also 1.12 ms -- the two matching is
+  coincidence. The comparison worth carrying is that the shadow block with the denoiser off is
+  0.34 ms, so on hardware with ray accelerators this occlusion estimator costs **more than three
+  times what tracing the shadows costs**. At full resolution it is a third of the GPU frame.
+- **The older estimate, from framerates on the same GPU, and a whole-block figure on one iGPU.** From
   framerates on an RTX 5090: full resolution costs about 0.3 ms more per frame than quarter
   resolution, which at a 120 fps budget is three percent of the frame. On that class of hardware
   there is no reason not to run at full resolution. The interesting part is the shape rather than

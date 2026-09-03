@@ -169,6 +169,36 @@ Two captures settle it on any part, with no code change and no restart: read the
 `G_full = (4/3)*(t_full - t_half)`. Discard the first frame after the toggle, because `gather_size`
 changes with `half_size` and the buffers are reallocated inside the mark.
 
+### The direct desktop measurement, which supersedes the framerate derivation
+
+Later, from the same RTX 5090 but measured properly -- the visual profiler rather than three
+whole-frame framerates -- at 3440x1440 full screen with `scaling_3d/scale` at 1.0, so 4.95 Mpx, all
+settings default except the occlusion running at FULL resolution, in a scene with dozens of
+raytraced shadow-casting lights including the sun:
+
+| | GPU |
+| --- | --- |
+| whole frame | 3.41 ms |
+| `Process GTAO`, full resolution | 1.12 ms |
+| `Raytraced Shadows` | 1.12 ms |
+| `Render Opaque Pass` | 0.64 ms |
+
+The two headline entries landing on the same figure is a coincidence and nothing more. The
+comparison that is not a coincidence is this one: the same frame's shadow block with
+`denoiser/enabled` off reads **0.34 ms**, so tracing roughly one ray per pixel for dozens of lights
+across 4.95 Mpx costs a third of a millisecond, and **the screen space occlusion estimator costs
+3.3 times that**. On hardware with ray accelerators, the cheapest thing in this renderer is the ray
+tracing.
+
+That 0.34 ms also splits the shadow block for the first time: trace 0.34, denoiser **0.78** -- the
+denoiser is 70% of the block and 23% of the whole GPU frame, and it costs 2.3 times the signal it
+is cleaning. It is the single largest lever in the frame.
+
+The old framerate derivation above survives contact with this: it predicted quarter resolution at
+roughly two thirds of full, which for a 1.12 ms full-resolution block puts quarter near 0.75 and the
+gap near 0.37, against the 0.3 it claimed. Consistent, and now the derivation can be retired in
+favor of the direct numbers.
+
 ### Shading a checkerboard beats shading a coarser grid
 
 `half_size` halves each dimension, so it evaluates a QUARTER of the pixels, not half. Shading a
