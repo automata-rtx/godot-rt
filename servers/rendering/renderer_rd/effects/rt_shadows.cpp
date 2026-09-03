@@ -367,14 +367,21 @@ void RTShadows::_atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_nor
 	RD::get_singleton()->compute_list_end();
 }
 
-void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
+// Returns whether the mask was written. Every early exit here leaves it holding
+// whatever it held before -- which, on the frame it was created, is a clear of
+// zero, and a zero mask reads back as every raytraced light being fully
+// occluded at every pixel. So the caller has to know, and put a lit mask there
+// instead. Failing to shadow is a wrong picture; failing to light is a black
+// one.
+bool RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 		const Buffers &p_buffers, const Size2i &p_screen_size,
 		const Projection &p_camera_projection, const Transform3D &p_camera_transform,
 		const Projection &p_prev_camera_projection, const Transform3D &p_prev_camera_transform,
 		const LocalVector<LightParams> &p_lights, const Settings &p_settings) {
 	if (!valid || p_tlas.is_null() || p_lights.is_empty() ||
-			p_buffers.output_mask.is_null() || p_buffers.output_index.is_null()) {
-		return;
+			p_buffers.output_mask.is_null() || p_buffers.output_index.is_null() ||
+			p_buffers.raw_hit_distance.is_null()) {
+		return false;
 	}
 
 	frame_index++;
@@ -383,11 +390,9 @@ void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 
 	_ensure_light_buffer(light_count);
 	if (light_buffer.is_null()) {
-		return;
+		return false;
 	}
 	RD::get_singleton()->buffer_update(light_buffer, 0, sizeof(LightParams) * light_count, p_lights.ptr());
-
-	ERR_FAIL_COND(p_buffers.raw_hit_distance.is_null());
 
 	// The acceleration structure lives in world space, so rays are traced there.
 	const Projection view_projection = p_camera_projection * Projection(p_camera_transform.affine_inverse());
@@ -407,7 +412,9 @@ void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 			p_buffers.history_meta.is_valid() && p_buffers.history_length.is_valid();
 
 	if (!denoise) {
-		return;
+		// The trace wrote the mask itself, which is the whole answer without a
+		// denoiser.
+		return true;
 	}
 
 	// Straight from this frame's clip space to the previous frame's, which is
@@ -439,4 +446,6 @@ void RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 
 		source = dest;
 	}
+
+	return true;
 }

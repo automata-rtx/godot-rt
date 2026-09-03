@@ -276,7 +276,9 @@ public:
 	// The previous camera is what the denoiser reprojects its history with. Motion
 	// vectors would be the obvious source, but they are written by the opaque
 	// pass, which runs after the mask is needed.
-	void render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
+	// False when nothing was written to the mask, which obliges the caller to
+	// put a fully lit one there: an untouched mask is a fully occluded one.
+	bool render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 			const Buffers &p_buffers, const Size2i &p_screen_size,
 			const Projection &p_camera_projection, const Transform3D &p_camera_transform,
 			const Projection &p_prev_camera_projection, const Transform3D &p_prev_camera_transform,

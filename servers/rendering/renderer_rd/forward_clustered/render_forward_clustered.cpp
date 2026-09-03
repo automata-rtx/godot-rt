@@ -1713,7 +1713,17 @@ bool RenderForwardClustered::_ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD>
 		r_buffers.history_length = ensure(RB_TEX_RT_HISTORY_LENGTH, RD::DATA_FORMAT_R8_UNORM);
 	}
 
-	return r_buffers.output_mask.is_valid() && r_buffers.output_index.is_valid();
+	// All three the TRACE needs, not the two the forward pass samples. A device
+	// that runs out of memory partway through this list -- which a 4 GB card
+	// sharing itself with an editor can -- would otherwise report success here
+	// and have the trace decline to run against the incomplete set, leaving the
+	// mask at the zero it was cleared to and the scene fully shadowed.
+	//
+	// The denoiser's own textures are deliberately not required: render() checks
+	// them itself and falls back to handing the mask straight from the trace,
+	// which is a noisier picture rather than no picture.
+	return r_buffers.output_mask.is_valid() && r_buffers.output_index.is_valid() &&
+			r_buffers.raw_hit_distance.is_valid();
 }
 
 void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
@@ -1938,29 +1948,36 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			RendererRD::RTShadows::Buffers rt_buffers;
 			bool have_buffers = _ensure_rt_shadow_buffers(rb, internal_size, settings.denoise, rt_buffers);
 
-			if (have_buffers) {
-				if (tlas.is_valid()) {
-					RID normal_roughness = rb_data->has_normal_roughness() ? rb_data->get_normal_roughness() : RID();
+			// Whatever happens below, this frame must leave a mask the forward pass
+			// can read. It samples one per raytraced light unconditionally, and an
+			// unwritten mask is a mask full of the zero it was cleared to, which
+			// reads as every light fully occluded everywhere.
+			bool mask_written = false;
 
-					// The same correction the current projection gets, so the two
-					// clip spaces the denoiser maps between are built the same way.
-					Projection prev_correction;
-					prev_correction.set_depth_correction(true);
-					prev_correction.add_jitter_offset(p_render_data->scene_data->prev_taa_jitter);
-					const Projection prev_projection = prev_correction * p_render_data->scene_data->prev_cam_projection;
+			if (have_buffers && tlas.is_valid()) {
+				RID normal_roughness = rb_data->has_normal_roughness() ? rb_data->get_normal_roughness() : RID();
 
-					rt_shadows->render(tlas, rb->get_depth_texture(), normal_roughness,
-							rt_buffers, internal_size,
-							p_render_data->scene_data->get_cam_projection(), p_render_data->scene_data->get_cam_transform(),
-							prev_projection, p_render_data->scene_data->prev_cam_transform,
-							rt_lights, settings);
-				} else {
-					// Nothing to trace against (an empty scene, or every mesh was
-					// ineligible). A fully lit mask is the correct answer, and it makes
-					// the companion index irrelevant: whichever channel a light matches,
-					// it reads back as unshadowed.
-					RD::get_singleton()->texture_clear(rt_buffers.output_mask, Color(1, 1, 1, 1), 0, 1, 0, 1);
-				}
+				// The same correction the current projection gets, so the two
+				// clip spaces the denoiser maps between are built the same way.
+				Projection prev_correction;
+				prev_correction.set_depth_correction(true);
+				prev_correction.add_jitter_offset(p_render_data->scene_data->prev_taa_jitter);
+				const Projection prev_projection = prev_correction * p_render_data->scene_data->prev_cam_projection;
+
+				mask_written = rt_shadows->render(tlas, rb->get_depth_texture(), normal_roughness,
+						rt_buffers, internal_size,
+						p_render_data->scene_data->get_cam_projection(), p_render_data->scene_data->get_cam_transform(),
+						prev_projection, p_render_data->scene_data->prev_cam_transform,
+						rt_lights, settings);
+			}
+
+			if (!mask_written && rt_buffers.output_mask.is_valid()) {
+				// Nothing was traced: an empty structure, or a buffer that could not
+				// be built. A fully lit mask is the safe answer, and it makes the
+				// companion index irrelevant -- whichever channel a light matches, it
+				// reads back as unshadowed, so the scene loses its raytraced shadows
+				// rather than all of its light.
+				RD::get_singleton()->texture_clear(rt_buffers.output_mask, Color(1, 1, 1, 1), 0, 1, 0, 1);
 			}
 
 			RD::get_singleton()->draw_command_end_label();
