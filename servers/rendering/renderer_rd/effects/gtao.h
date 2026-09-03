@@ -85,6 +85,13 @@ public:
 		float screen_radius = 0.1f;
 		bool use_bitmask = true;
 		bool half_resolution = true;
+		// How the reduced rate is spent, when half_resolution asks for one. False
+		// shades a quarter resolution grid; true shades a checkerboard at full
+		// resolution, which is twice the gather for a reconstruction that is
+		// complete at four taps, because every unshaded pixel has all four of its
+		// immediate neighbors shaded and each of them carries its own full
+		// resolution depth and normal.
+		bool checkerboard = false;
 	};
 
 	struct Buffers {
@@ -102,7 +109,7 @@ public:
 
 	bool is_valid() const { return valid; }
 
-	static Size2i gather_size_for(const Size2i &p_full_size, bool p_half_resolution);
+	static Size2i gather_size_for(const Size2i &p_full_size, bool p_half_resolution, bool p_checkerboard);
 
 	void render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_roughness,
 			RID p_dest_ao, const Size2i &p_full_size, const Projection &p_projection,
@@ -146,10 +153,11 @@ private:
 
 		// Full resolution pixels per gather texel, per axis. Passed rather than
 		// recovered in the shader: gather_size_for rounds UP and an integer
-		// division rounds DOWN, so at an odd width the two disagree.
+		// division rounds DOWN, so at an odd width the two disagree. Ignored when
+		// checkerboard is set, which is not a uniform stride.
 		int32_t gather_stride[2];
+		uint32_t checkerboard;
 		uint32_t pad0;
-		uint32_t pad1;
 	};
 
 	struct FilterPushConstant {
@@ -168,6 +176,11 @@ private:
 		float plane_tolerance;
 		int32_t filter_radius;
 		int32_t direction[2];
+
+		uint32_t checkerboard;
+		uint32_t pad0;
+		uint32_t pad1;
+		uint32_t pad2;
 	};
 
 	// How wide the denoise has to be, in gather texels either side.

@@ -1461,13 +1461,13 @@ bool RenderForwardClustered::_use_gtao(Ref<RenderSceneBuffersRD> p_render_buffer
 	return int(GLOBAL_GET_CACHED(int, "rendering/environment/ssao/method")) == 1;
 }
 
-bool RenderForwardClustered::_ensure_gtao_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_half_resolution, RendererRD::GTAO::Buffers &r_buffers) {
+bool RenderForwardClustered::_ensure_gtao_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_half_resolution, bool p_checkerboard, RendererRD::GTAO::Buffers &r_buffers) {
 	if (p_render_buffers.is_null()) {
 		return false;
 	}
 
 	const uint32_t usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
-	const Size2i gather_size = RendererRD::GTAO::gather_size_for(p_size, p_half_resolution);
+	const Size2i gather_size = RendererRD::GTAO::gather_size_for(p_size, p_half_resolution, p_checkerboard);
 
 	// A resolution change, or a switch between the two gather resolutions,
 	// invalidates every one of these at once. They live in their own scope so
@@ -1519,9 +1519,13 @@ void RenderForwardClustered::_process_gtao(Ref<RenderSceneBuffersRD> p_render_bu
 
 	const Size2i full_size = p_render_buffers->get_internal_size();
 	const bool half_resolution = GLOBAL_GET_CACHED(bool, "rendering/environment/ssao/half_size");
+	// Only meaningful when a reduced rate was asked for at all: it chooses how
+	// that rate is spent, not whether there is one.
+	const bool checkerboard = half_resolution &&
+			GLOBAL_GET_CACHED(int, "rendering/environment/ssao/ground_truth/shading_rate") == 1;
 
 	RendererRD::GTAO::Buffers buffers;
-	if (!_ensure_gtao_buffers(p_render_buffers, full_size, half_resolution, buffers)) {
+	if (!_ensure_gtao_buffers(p_render_buffers, full_size, half_resolution, checkerboard, buffers)) {
 		return;
 	}
 
@@ -1546,6 +1550,7 @@ void RenderForwardClustered::_process_gtao(Ref<RenderSceneBuffersRD> p_render_bu
 	settings.slice_count = GLOBAL_GET_CACHED(int, "rendering/environment/ssao/ground_truth/slices");
 	settings.steps_per_slice = GLOBAL_GET_CACHED(int, "rendering/environment/ssao/ground_truth/steps_per_slice");
 	settings.half_resolution = half_resolution;
+	settings.checkerboard = checkerboard;
 
 	gtao->render(buffers, p_render_buffers->get_depth_texture(0), p_normal_buffers[0],
 			p_render_buffers->get_texture(RB_SCOPE_SSAO, RB_FINAL), full_size, p_projections[0], settings);

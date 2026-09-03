@@ -503,6 +503,7 @@ Under `rendering/environment/ssao/ground_truth/`.
 | `scale_radius_with_distance` | `true` | Hold the march to a fixed share of the screen rather than a fixed distance in the world. Without it the on-screen span shrinks as a surface recedes until the steps land on the same texel and the occlusion disappears. This is what buys coverage at distance, and it is why it is on. |
 | `screen_radius` | `0.1` | The share of screen **height** that span covers. `Environment.ssao_radius` multiplies it. Height, not width, because a camera holds its vertical field of view fixed — anchoring to width would make the same setting reach almost twice as far on a 16:9 viewport as on a square one. |
 | `thickness` | `0.3` | How far behind a sample its back face sits, as a fraction of the effect radius. The one genuine tradeoff: raise it toward `1.0` for scenes of thick solid shapes, lower it for foliage, railings and slats. `0.3` is the joint optimum measured across both test scenes. |
+| `shading_rate` | `Quarter Resolution` | Only read when `rendering/environment/ssao/half_size` is on: it chooses how the reduced rate is spent, not whether there is one. `Checkerboard` shades half the pixels instead of a quarter and reconstructs each of the rest from four neighbors one pixel away, which measures 33% better at silhouettes for twice the gather. The middle rung between a quarter resolution grid and shading every pixel. |
 | `visibility_bitmask` | `true` | Off falls back to horizon behavior. Worth a look on a scene that is all solid geometry; not worth it otherwise. |
 | `slices` / `steps_per_slice` | `4` / `8` | The whole sample budget, and cost is linear in both. They are not interchangeable: steps buy accuracy, slices buy smoothness. Raise whichever you are short of; rebalancing one into the other trades a real quantity for another. |
 | `intensity_scale` | `0.5` | What `Environment.ssao_intensity` is multiplied by before this estimator sees it. That property defaults to `2.0`, and the `2.0` belongs to the legacy estimator: its obscurance is a proximity average rather than a visibility integral and measures a fraction of the real deficit, so it needs multiplying up. This one reports the deficit directly. Leave it alone unless you want the whole effect uniformly stronger or weaker. |
@@ -523,10 +524,12 @@ Under `rendering/environment/ssao/ground_truth/`.
 - **Half resolution costs less than it sounds like.** Every world space quantity the gather uses is
   derived from the full resolution pixel footprint, so halving the resolution changes how many
   pixels get their own answer and nothing else — the march reaches exactly as far and its first
-  step lands exactly as close. The reconstruction is a 2x2 bilateral guided by the full resolution
-  depth and normal. Measured on an interior, half and full differ by 0.26 of 255 on average and
-  score the same against a ray trace; the visible difference is sharpness at silhouettes, not
-  coverage or noise.
+  step lands exactly as close. At a quarter resolution grid the reconstruction is a 2x2 bilateral
+  guided by the full resolution depth and normal; on the checkerboard it is not a filter at all for
+  half the pixels, which are copied through untouched, and an average of four exact neighbors for
+  the rest. Measured on an interior, quarter and full differ by 0.26 of 255 on average and score
+  the same against a ray trace; the visible difference is sharpness at silhouettes, not coverage or
+  noise, and that is the difference the checkerboard exists to close.
 - **The denoise sizes itself.** Its width follows the effect radius and the slice count, because
   those are what the gather's variance depends on: five taps per axis at the shipped radius,
   three at the smallest and seven at the largest. That is on the `scale_radius_with_distance`
@@ -569,12 +572,12 @@ Under `rendering/environment/ssao/ground_truth/`.
   frame average there. Widening the reconstruction barely touches it -- measured, a 7x7 gains three
   percent at silhouettes for five times the taps -- because the problem is not too few candidates.
   It is that half resolution never evaluated a pixel near the edge, and no filter can invent a
-  sample that was not taken. What does fix it is shading a CHECKERBOARD at full resolution instead
-  of a grid at quarter resolution: every unshaded pixel then has all four of its immediate
-  neighbors shaded, which measures 33% better at silhouettes and 29% better overall. It costs twice
-  the gather, since a quarter of the pixels becomes half of them, and it wants the checkerboard
-  packed into a half width buffer rather than full width threads that half exit immediately. Worth
-  doing as a third quality rung; not yet done.
+  sample that was not taken. Shading a CHECKERBOARD fixes it, and now ships as the third rung:
+  set `ground_truth/shading_rate` to `Checkerboard` while `half_size` is on. Every unshaded pixel
+  then has all four of its immediate neighbors shaded, one pixel away rather than two, which
+  measures 33% better at silhouettes and 29% better overall for twice the gather. What remains
+  unmeasured is what it costs on a real GPU: the saving it gives back is bounded by the fixed part
+  of the effect, which no shading rate touches.
 - **Measured directly on an RTX 5090 at 3440x1440 full screen, 4.95 Mpx, occlusion at full
   resolution, in a scene with dozens of raytraced lights.** The whole GPU frame is 3.41 ms, of which
   `Process GTAO` is **1.12 ms** and the raytraced shadow block is also 1.12 ms -- the two matching is
@@ -620,9 +623,10 @@ Under `rendering/environment/ssao/ground_truth/`.
   Per-dispatch numbers need a profiler that reads debug labels, and the five dispatches are already
   wrapped in a `GTAO` label, so nothing has to be added to get them.
 
-  Until that split exists on this part, the checkerboard tier above is a quality argument with a
-  whole-block cost figure but no per-rung one, and the case for running full resolution still rests
-  on one desktop GPU.
+  That split also decides what the checkerboard rung is worth. It shades half the pixels rather
+  than a quarter, so it moves the gather term and nothing else -- if the fixed part dominates on a
+  given GPU, the rung costs little and saves little, and the interesting comparison is against
+  shading every pixel rather than against a quarter resolution grid.
 - **`AreaLight3D`, reflection probes and the Mobile and Compatibility renderers** never see this
   estimator; they use whatever the legacy path gives them.
 

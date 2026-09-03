@@ -102,12 +102,21 @@ int GTAO::filter_radius_for(const Settings &p_settings) {
 	return CLAMP(int(Math::round(noise / 0.06f)), 1, 3);
 }
 
-Size2i GTAO::gather_size_for(const Size2i &p_full_size, bool p_half_resolution) {
+Size2i GTAO::gather_size_for(const Size2i &p_full_size, bool p_half_resolution, bool p_checkerboard) {
 	if (!p_half_resolution) {
 		return p_full_size;
 	}
 	// Rounded up so a resolution with an odd dimension still covers every pixel
 	// once the result is weighted back up.
+	if (p_checkerboard) {
+		// Half the width and the FULL height: the checkerboard is packed two
+		// full resolution pixels to a texel along x, one row to a row. Dispatching
+		// full resolution threads and exiting half of them instead would give the
+		// saving back to wave divergence. At an odd width the last texel of every
+		// odd row addresses a pixel past the right edge; the gather clamps it and
+		// nothing reads it, which costs one lane per odd row.
+		return Size2i(MAX((p_full_size.x + 1) / 2, 1), MAX(p_full_size.y, 1));
+	}
 	return Size2i(MAX((p_full_size.x + 1) / 2, 1), MAX((p_full_size.y + 1) / 2, 1));
 }
 
@@ -236,8 +245,10 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 		push.screen_radius = CLAMP(p_settings.screen_radius, 0.001f, 0.5f);
 		push.orthogonal = orthogonal ? 1 : 0;
 		push.use_bitmask = p_settings.use_bitmask ? 1 : 0;
+		const bool checkerboard = p_settings.half_resolution && p_settings.checkerboard;
 		push.gather_stride[0] = p_settings.half_resolution ? 2 : 1;
-		push.gather_stride[1] = p_settings.half_resolution ? 2 : 1;
+		push.gather_stride[1] = (p_settings.half_resolution && !checkerboard) ? 2 : 1;
+		push.checkerboard = checkerboard ? 1 : 0;
 
 		RD::ComputeListID list = RD::get_singleton()->compute_list_begin();
 		RD::get_singleton()->compute_list_bind_compute_pipeline(list, gather_pipeline);
@@ -257,6 +268,7 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 	// so it is a straight copy rather than a filter.
 	{
 		const int filter_radius = filter_radius_for(p_settings);
+		const bool checkerboard = p_settings.half_resolution && p_settings.checkerboard;
 		const int32_t stride = p_settings.half_resolution ? 2 : 1;
 
 		auto fill_common = [&](FilterPushConstant &push) {
@@ -310,7 +322,8 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 			// and its view position come from. Handing the blur a stride of one
 			// pointed it at an unrelated pixel's normal at half resolution.
 			push.gather_stride[0] = pass.stride;
-			push.gather_stride[1] = pass.stride;
+			push.gather_stride[1] = checkerboard ? 1 : pass.stride;
+			push.checkerboard = checkerboard ? 1 : 0;
 			fill_common(push);
 			push.direction[0] = pass.dir_x;
 			push.direction[1] = pass.dir_y;

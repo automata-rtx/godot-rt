@@ -3779,6 +3779,13 @@ void RenderingServer::init() {
 	// right. Scale it here rather than moving the Environment default, which
 	// the legacy estimator still needs. Set it to 1.0 for the old behavior.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/ground_truth/intensity_scale", PROPERTY_HINT_RANGE, "0.05,2,0.01"), 0.5);
+	// How a reduced shading rate is spent, when rendering/environment/ssao/half_size
+	// asks for one. A quarter resolution grid gives a quarter of the pixels their
+	// own answer and reconstructs the rest from samples two pixels away; a
+	// checkerboard gives half of them their own answer and reconstructs the rest
+	// from four neighbours one pixel away, which is twice the gather for a
+	// reconstruction that has no further information to gather.
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/shading_rate", PROPERTY_HINT_ENUM, "Quarter Resolution,Checkerboard"), 0);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/quality", PROPERTY_HINT_ENUM, "Very Low (Fast),Low (Fast),Medium (Average),High (Slow),Ultra (Custom)"), 2);
 	GLOBAL_DEF("rendering/environment/ssil/half_size", true);
