@@ -503,7 +503,7 @@ Under `rendering/environment/ssao/ground_truth/`.
 | `scale_radius_with_distance` | `true` | Hold the march to a fixed share of the screen rather than a fixed distance in the world. Without it the on-screen span shrinks as a surface recedes until the steps land on the same texel and the occlusion disappears. This is what buys coverage at distance, and it is why it is on. |
 | `screen_radius` | `0.1` | The share of screen **height** that span covers. `Environment.ssao_radius` multiplies it. Height, not width, because a camera holds its vertical field of view fixed — anchoring to width would make the same setting reach almost twice as far on a 16:9 viewport as on a square one. |
 | `thickness` | `0.3` | How far behind a sample its back face sits, as a fraction of the effect radius. The one genuine tradeoff: raise it toward `1.0` for scenes of thick solid shapes, lower it for foliage, railings and slats. `0.3` is the joint optimum measured across both test scenes. |
-| `shading_rate` | `Quarter Resolution` | Only read when `rendering/environment/ssao/half_size` is on: it chooses how the reduced rate is spent, not whether there is one. `Checkerboard` shades half the pixels instead of a quarter and reconstructs each of the rest from four neighbors one pixel away, which measures 33% better at silhouettes for twice the gather. The middle rung between a quarter resolution grid and shading every pixel. |
+| `shading_rate` | `Checkerboard` | Only read when `rendering/environment/ssao/half_size` is on: it chooses how the reduced rate is spent, not whether there is one. `Checkerboard` shades half the pixels and reconstructs each of the rest from four neighbors one pixel away; `Quarter Resolution` shades a quarter and reconstructs from two pixels away. Measured at 0.61 ms against 0.35 on a 5090 at 3440x1440, and against 1.11 for shading every pixel -- which was judged not visibly better than the checkerboard. Drop to `Quarter Resolution` on an integrated GPU, where the same model puts the checkerboard about a millisecond dearer. |
 | `visibility_bitmask` | `true` | Off falls back to horizon behavior. Worth a look on a scene that is all solid geometry; not worth it otherwise. |
 | `slices` / `steps_per_slice` | `4` / `8` | The whole sample budget, and cost is linear in both. They are not interchangeable: steps buy accuracy, slices buy smoothness. Raise whichever you are short of; rebalancing one into the other trades a real quantity for another. |
 | `intensity_scale` | `0.5` | What `Environment.ssao_intensity` is multiplied by before this estimator sees it. That property defaults to `2.0`, and the `2.0` belongs to the legacy estimator: its obscurance is a proximity average rather than a visibility integral and measures a fraction of the real deficit, so it needs multiplying up. This one reports the deficit directly. Leave it alone unless you want the whole effect uniformly stronger or weaker. |
@@ -584,22 +584,20 @@ Under `rendering/environment/ssao/ground_truth/`.
   coincidence. The comparison worth carrying is that the shadow block with the denoiser off is
   0.34 ms, so on hardware with ray accelerators this occlusion estimator costs **more than three
   times what tracing the shadows costs**. At full resolution it is a third of the GPU frame.
-- **The older estimate, from framerates on the same GPU, and a whole-block figure on one iGPU.** From
-  framerates on an RTX 5090: full resolution costs about 0.3 ms more per frame than quarter
-  resolution, which at a 120 fps budget is three percent of the frame. On that class of hardware
-  there is no reason not to run at full resolution. The interesting part is the shape rather than
-  the total -- quarter resolution shades a quarter of the pixels but costs roughly two thirds of
-  what full resolution costs, so somewhere between forty and sixty five percent of the effect is a
-  FIXED cost that the resolution knob does not touch: the full resolution depth pyramid, the
-  upsample that always runs at full resolution, and five dispatches with barriers between them.
-  Anyone trying to make this cheaper on weaker hardware should measure per pass -- the block is
-  labeled `Process GTAO` for the GPU profiler -- rather than reaching for the resolution setting,
-  which can only ever address the smaller half.
+- **Cost is very nearly linear in shading rate, and almost nothing is fixed.** All three rungs
+  measured on the same RTX 5090, same camera, at 3440x1440: quarter resolution 0.35 ms,
+  checkerboard 0.61 ms, every pixel 1.11 ms. Solving those for a fixed cost and a full resolution
+  gather cost gives three independent answers that agree to within four percent -- the gather is
+  about 1.02 ms and the fixed part about **0.10 ms, nine percent** of the effect. The code says
+  that is what should happen: the gather derives its reach and its sample count from the full
+  resolution footprint whatever the rate, so per shaded pixel work is rate independent, and both
+  denoise passes dispatch at the gather's own size. Only the depth pyramid and the upsample are
+  fixed, and they are streaming passes.
 
-  That ratio is a property of the machine, not of the algorithm, and should not be carried across.
-  The fixed part is full resolution bandwidth plus per dispatch launch; the gather is dense
-  transcendental arithmetic. A part with a fraction of the bandwidth does not preserve the balance
-  between them, so solve the split on the hardware in question rather than transplanting this one.
+  An earlier estimate here put the fixed part at forty to sixty five percent. It was derived by
+  subtracting three whole-frame framerates rather than reading the pass, it leaned on the least
+  certain of those three, and it was wrong. Nothing follows from it: there is no fixed overhead
+  worth attacking, and no ceiling on what a shading rate can save.
 - **Measured once on a Radeon 780M, and it is not the pass to worry about there.** With `half_size`
   on -- the shipped default, so the gather runs at a quarter of the pixels while the prefilter and
   the upsample stay at full -- the whole `Process GTAO` block reads **1.43 ms**, against a GPU frame

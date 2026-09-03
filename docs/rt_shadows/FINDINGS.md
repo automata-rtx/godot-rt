@@ -148,10 +148,14 @@ conclusion: **more than half the cost does not scale with gather resolution.** I
 resolution depth pyramid, the upsample that always runs at full resolution, and the barriers
 between five dispatches.
 
-Two consequences. On desktop hardware full resolution is simply affordable and the quality question
-answers itself. And on weaker hardware, reaching for the resolution setting can only ever address
-the smaller half of the cost -- the fixed part has to be measured per pass before it can be
-attacked.
+Two consequences were drawn from that: that full resolution is simply affordable on desktop, and
+that on weaker hardware the resolution knob can only ever address the smaller half of the cost.
+
+**Both are wrong, and so is the solve they came from.** See "The three rung solve" below. The fixed
+part is nine percent, not forty to sixty five, and the error is instructive: the derivation
+subtracted three whole-frame framerates, one of which this section already flagged as the least
+certain of the three, and a small error in a large subtrahend became a large error in a small
+difference. A pass that can be measured directly should never be inferred from frame totals.
 
 A second data point, from a Radeon 780M with `half_size` on and raytraced shadows running in the
 same frame: the whole `Process GTAO` block is **1.43 ms** of a GPU frame of about 11.2 ms, in which
@@ -169,7 +173,38 @@ Two captures settle it on any part, with no code change and no restart: read the
 `G_full = (4/3)*(t_full - t_half)`. Discard the first frame after the toggle, because `gather_size`
 changes with `half_size` and the buffers are reallocated inside the mark.
 
-### The direct desktop measurement, which supersedes the framerate derivation
+### The three rung solve, which refutes the framerate derivation outright
+
+Three shading rates, same RTX 5090, same camera, 3440x1440, occlusion the only variable:
+
+| rate | pixels shaded | `Process GTAO` |
+| --- | --- | --- |
+| quarter resolution grid | 25% | 0.35 ms |
+| checkerboard | 50% | 0.61 ms |
+| every pixel | 100% | 1.11 ms |
+
+Three points, two unknowns, so the model is over-determined and can be checked against itself.
+Solving each pair for a fixed cost F and a full resolution gather G:
+
+| pair | G | F | fixed share |
+| --- | --- | --- | --- |
+| quarter, checkerboard | 1.040 | 0.090 | 8% |
+| quarter, every pixel | 1.013 | 0.097 | 9% |
+| checkerboard, every pixel | 1.000 | 0.110 | 10% |
+
+They agree to within four percent, and the mean solve predicts all three measurements to within
+0.01 ms. **The fixed part is about nine percent of the effect and cost is essentially linear in
+shading rate.** The code agrees: the gather derives its reach and its sixty four samples from the
+full resolution footprint whatever the rate, so per shaded pixel work does not vary, and both
+denoise passes dispatch at the gather's own size. Only the depth pyramid and the upsample are
+fixed, and both are streaming passes moving on the order of ninety megabytes -- the right size for
+a tenth of a millisecond on that part, and nowhere near the half millisecond the old claim needed.
+
+The quality verdict alongside it: the checkerboard was judged indistinguishable from shading every
+pixel, and the quarter resolution grid noticeably worse but acceptable. So the top rung costs 0.50
+ms more than the middle one for nothing visible, and the default moved to the middle rung.
+
+### The direct desktop measurement, which superseded the framerate derivation
 
 Later, from the same RTX 5090 but measured properly -- the visual profiler rather than three
 whole-frame framerates -- at 3440x1440 full screen with `scaling_3d/scale` at 1.0, so 4.95 Mpx, all

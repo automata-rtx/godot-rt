@@ -156,6 +156,9 @@ public:
 		// sample may sit before it is pulled back in, in standard deviations.
 		// Zero disables the test and restores the old, freely trailing behavior.
 		float history_clamp_sigma = 2.0f;
+		// How much of the clamp's own correction sets the blend weight directly.
+		// Zero leaves only the window shortening, which is what shipped before.
+		float lag_response = 1.0f;
 		// Whether a shadow ray must find the CLOSEST occluder rather than stopping
 		// at the first one traversal reaches. Visibility is the same either way;
 		// the distance, which is what sizes the penumbra, is not.
@@ -200,9 +203,9 @@ private:
 		float max_history;
 
 		float clamp_sigma;
+		float lag_response;
 		float sample_count;
 		uint32_t frame_index;
-		float pad;
 	};
 
 	struct AtrousPushConstant {

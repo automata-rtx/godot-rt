@@ -284,6 +284,7 @@ void RTShadows::_temporal(RID p_depth_texture, const Buffers &p_buffers, const S
 	push_constant.depth_tolerance = 0.02f;
 	push_constant.max_history = MAX(1.0f, p_settings.max_history);
 	push_constant.clamp_sigma = MAX(0.0f, p_settings.history_clamp_sigma);
+	push_constant.lag_response = CLAMP(p_settings.lag_response, 0.0f, 1.0f);
 	push_constant.sample_count = float(CLAMP(p_settings.sample_count, 1u, 255u));
 	push_constant.frame_index = frame_index;
 

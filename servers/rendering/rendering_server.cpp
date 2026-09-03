@@ -3785,7 +3785,7 @@ void RenderingServer::init() {
 	// checkerboard gives half of them their own answer and reconstructs the rest
 	// from four neighbors one pixel away, which is twice the gather for a
 	// reconstruction that has no further information to gather.
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/shading_rate", PROPERTY_HINT_ENUM, "Quarter Resolution,Checkerboard"), 0);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/shading_rate", PROPERTY_HINT_ENUM, "Quarter Resolution,Checkerboard"), 1);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/quality", PROPERTY_HINT_ENUM, "Very Low (Fast),Low (Fast),Medium (Average),High (Slow),Ultra (Custom)"), 2);
 	GLOBAL_DEF("rendering/environment/ssil/half_size", true);

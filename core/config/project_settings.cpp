@@ -1853,6 +1853,13 @@ ProjectSettings::ProjectSettings() {
 	// what stops a moving shadow trailing across a surface. Lower reacts faster
 	// and accumulates less; zero disables it.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma", PROPERTY_HINT_RANGE, "0,8,0.1"), 2.0);
+	// How much of the clamp's own correction sets the blend weight directly, once
+	// it has decided the history was wrong. Shortening the accumulation window is
+	// not the same as discounting the value in it, and on its own it is far too
+	// gentle: a history the clamp has just moved four fifths of the way still
+	// keeps six sevenths of its weight, and the residue then decays hyperbolically
+	// over about fifty frames. Zero restores that behavior exactly.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/lag_response", PROPERTY_HINT_RANGE, "0,1,0.05"), 1.0);
 	// Whether a shadow ray keeps looking for the CLOSEST occluder instead of
 	// stopping at the first one it reaches. Visibility is identical either way,
 	// so this changes no shadow's shape; what it changes is the distance the

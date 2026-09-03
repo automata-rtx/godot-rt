@@ -223,6 +223,7 @@ public:
 	static float get_denoiser_max_history();
 	static float get_denoiser_min_filter_pixels();
 	static float get_denoiser_history_clamp_sigma();
+	static float get_denoiser_lag_response();
 	static bool is_accurate_occluder_distance();
 
 	// True when the setting is on AND the device can actually trace rays.
