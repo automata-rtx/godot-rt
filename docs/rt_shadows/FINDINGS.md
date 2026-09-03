@@ -448,3 +448,45 @@ interior with sixteen such lamps, their own index queries were making three fift
 index visits during the gather and reached no caster the sun's query had not already reached.
 Skipping a query whose bounds are enclosed by one that is about to run changes the gathered set not
 at all.
+
+### A push constant that mismatches by a trailing pad fails whole, not partly
+
+`lag_response` was added to the temporal pass by taking the C++ struct's trailing `pad` and
+renaming it, and adding a field to the shader block beside a `pad` that was left there. Every real
+field still landed on the same byte offset on both sides; the only difference was four bytes of
+padding at the end that nothing reads. That looks like the safest kind of mismatch, and it is the
+opposite.
+
+`RenderingDevice::compute_list_set_push_constant` compares the size it is given against the size the
+shader reflected and rejects the call outright when they differ, and the dispatch that follows then
+fails its own check for a push constant having been supplied. Both are under `DEBUG_ENABLED`, so
+this is every editor build and every debug template, and not an exported release one — where the
+smaller push simply lands in the larger range and the padding is never read. So the failure appears
+only where the work is done, is invisible in a shipped build, and takes out the entire pass rather
+than corrupting one field of it.
+
+What it looked like from the outside: an entirely dark scene with no shadow shapes anywhere and
+lamps that lit nothing, which turning the denoiser off cured. The temporal pass never ran, its
+target held the zero it was cleared to at creation, the spatial passes carried that zero to the
+mask, and a mask of zero is every raytraced light fully occluded at every pixel. Two frames of
+console errors said so, in a log nobody was reading.
+
+Two things follow. The reflected size is the block's exact end, not a size rounded up to sixteen:
+push constant blocks are parsed with the flag that suppresses that rounding, so a trailing `pad`
+changes the reflected size where in a uniform block it would not. And a C++-side assertion is worth
+having but cannot see the half that broke, so it has to carry the pairing and the way to check it —
+`glslangValidator -V <shader> -q` prints the block size.
+
+### The mask has to be written every frame, and lit is the safe default
+
+Four paths through the raytraced shadow pass could return without writing the mask, and the forward
+shader samples it unconditionally with nothing to tell it the value is stale. A texture is created
+cleared to zero and a zero mask reads as fully occluded, so every one of those paths turned a
+recoverable failure — no acceleration structure, an allocation that did not fit on a 4 GB card, a
+light list truncated to nothing — into the worst picture available rather than a degraded one.
+
+The asymmetry is the point and it is not obvious from inside the pass: failing to shadow costs some
+contact darkening, failing to light costs the whole image. So the pass reports whether it wrote the
+mask and the caller lights it when it did not, rather than each early return being individually
+careful. The denoiser's own buffers stay exempt, because losing those already degrades correctly to
+the trace's raw output — noise instead of nothing.
