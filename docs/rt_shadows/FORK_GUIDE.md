@@ -317,6 +317,21 @@ actually moves the picture:
 - **Shadow trails behind a moving object?** Lower `denoiser/history_clamp_sigma`. `2.0` cuts
   ghosting to nothing; what is left after a blocker moves is its new shadow still filling in, not
   its old one lingering.
+- **Shadow arrives late, or fades in behind a fast mover?** Three settings buy responsiveness and
+  only one of them is free. `denoiser/lag_response` acts only on frames where the clamp fired, so
+  it costs nothing in a settled image -- reach for it first, and leave it at `1.0` unless it
+  sparkles. `denoiser/temporal_frames` shortens the window everywhere, so it buys responsiveness
+  with steady state noise. `denoiser/history_clamp_sigma` buys it with penumbra accuracy.
+
+  Those last two are coupled and must move together. A tight clamp is only safe with a short
+  window. At one ray per light and a true visibility of 0.25, all nine neighbors miss about one
+  frame in thirteen; the measured spread is then zero, the window collapses to the binomial floor,
+  and a correct history is yanked toward it. Nothing pulls the other way at that end, so it biases
+  dark. Simulated at the shipped 32 frames, dropping sigma to `1.0` reads a true 0.25/0.50/0.75
+  penumbra as 0.15/0.49/0.85 -- contrast expansion that eats the soft tails the floor exists to
+  protect. At 12 frames the same sigma reads 0.19/0.50/0.82, because a short window lets the value
+  track the neighborhood instead of being pinned to it. **If you raise `temporal_frames` back up,
+  raise `history_clamp_sigma` with it.**
 - **Grainy in wide penumbrae?** Raise `samples_per_light`, or `denoiser/spatial_passes`. Samples now
   cost what they say: every one is traced. They converge on the same shadow, only with less noise.
 - **Slow in an open outdoor scene?** Lower `directional/caster_distance_scale`, or set
