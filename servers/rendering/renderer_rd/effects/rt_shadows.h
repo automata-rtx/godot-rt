@@ -221,6 +221,25 @@ private:
 		float pad;
 	};
 
+	// Each of these must be exactly the size its shader's push constant block
+	// reflects to, and a mismatch is not a partial one: RenderingDevice compares
+	// the pushed size against the reflected size and rejects the whole push
+	// constant when they differ (rendering_device.cpp, compute_list_set_push
+	// _constant), so the dispatch then runs with no parameters at all -- or, in a
+	// debug build, does not run. That failure is silent in the frame and shows up
+	// only as whatever the unwritten target already held.
+	//
+	// The assertions below catch a field added or removed on THIS side. Nothing
+	// can catch it on the shader side, so when a field is added there, add it
+	// here and update the size:
+	//   TracePushConstant    <-> shaders/effects/rt_shadow_trace.glsl
+	//   TemporalPushConstant <-> shaders/effects/rt_shadow_temporal.glsl
+	//   AtrousPushConstant   <-> shaders/effects/rt_shadow_atrous.glsl
+	// glslangValidator -V <shader> -q prints "Params: ... size N" for the block.
+	static_assert(sizeof(TracePushConstant) == 120, "TracePushConstant must match rt_shadow_trace.glsl");
+	static_assert(sizeof(TemporalPushConstant) == 112, "TemporalPushConstant must match rt_shadow_temporal.glsl");
+	static_assert(sizeof(AtrousPushConstant) == 48, "AtrousPushConstant must match rt_shadow_atrous.glsl");
+
 	RtShadowTraceShaderRD trace_shader;
 	RID trace_shader_version;
 	RID trace_pipeline;

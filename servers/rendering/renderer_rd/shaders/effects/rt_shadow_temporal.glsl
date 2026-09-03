@@ -77,7 +77,6 @@ layout(push_constant, std430) uniform Params {
 	// genuinely agrees from one that has too few samples to disagree yet.
 	float sample_count;
 	uint frame_index;
-	float pad;
 }
 params;
 
