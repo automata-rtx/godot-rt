@@ -351,7 +351,22 @@ All of these take effect on the next frame.
 
 ## 7. Diagnostics
 
-Set `GODOT_RT_DEBUG=1` in the environment. Each frame prints, when it changes:
+`GODOT_RT_DEBUG=1` is an environment variable, set before the editor launches -- not a project
+setting, and not something that can be flipped while running: it is read once and cached. Launching
+from a desktop shortcut or the project manager will not carry it; it has to be the shell that set it.
+
+```
+$env:GODOT_RT_DEBUG = "1"          # PowerShell, then launch the editor from that shell
+set GODOT_RT_DEBUG=1               # cmd
+GODOT_RT_DEBUG=1 ./godot ...       # Linux, macOS
+```
+
+Output goes through `print_line`, so it lands in the editor's Output panel and on stdout. A terminal
+is the better read of the two: the editor's own 3D viewport traces shadows as well, so its lines
+interleave with the running project's -- and with the project embedded in the viewport, both land in
+the same panel.
+
+It prints five lines:
 
 ```
 RT_DEBUG cull:       how many instances were visited and how many became casters
@@ -361,8 +376,16 @@ RT_DEBUG pre_opaque: whether the mask ran, how many lights took slots, whether a
 RT_DEBUG cpu:        what this path costs the CPU, averaged over 120 frames
 ```
 
-`shadow_maps_rendered=0` with `raytraced=N` is what a fully raytraced scene looks like.
-`skipped_surfaces>0` means geometry was rejected as un-raytraceable.
+All but `cpu` print only when their content changes, so a settled scene goes quiet; `cpu` reports
+unconditionally every 120 frames. `shadow_maps_rendered=0` with `raytraced=N` is what a fully
+raytraced scene looks like. `skipped_surfaces>0` means geometry was rejected as un-raytraceable.
+`pre_opaque`'s `rt_lights=N` is the count reaching the mask pass, which is the input to the
+per-pixel light selection -- watch it while walking into a lamp-dense area.
+
+None of it is GPU time. Every millisecond figure here is CPU. For what the passes cost the GPU, use
+the editor's Visual Profiler (Debugger panel, Visual Profiler tab, then click the graph to freeze a
+frame) and read the `Raytraced Shadows` and `Process GTAO` rows -- with the attribution caveat
+below.
 
 The `cpu` line is the one to read when the frame is CPU-bound rather than GPU-bound, which is what
 this path is most likely to cost you in a large scene. It separates two halves that scale with
