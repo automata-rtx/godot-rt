@@ -1840,6 +1840,23 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF_RST_BASIC("rendering/lights_and_shadows/raytraced_shadows/enabled", false);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/samples_per_light", PROPERTY_HINT_RANGE, "1,16,1"), 1);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/max_ray_distance", PROPERTY_HINT_RANGE, "0,4096,0.1,or_greater"), 0.0);
+	// Scales every raytraced light's emitter size, and the sun's angular radius,
+	// on the way into the trace. A quality dial for weak hardware: soft shadows
+	// cost more than hard ones for reasons that survive the sample count staying
+	// at one -- the rays of neighboring pixels aim at different points on the
+	// emitter and diverge through the structure, the penumbra the trace measures
+	// is what opens the denoiser's spatial filter, and a penumbra of zero closes
+	// it entirely.
+	//
+	// At zero every raytraced shadow is hard, and the trace stops asking for the
+	// closest occluder because the distance only ever sizes a penumbra.
+	//
+	// This reaches the trace ONLY. Each light keeps its authored size, so turning
+	// the dial back up restores exactly what was authored, and nothing else that
+	// reads the size changes: the sun stays the same disk in the sky, a lamp that
+	// fell back to a shadow map keeps its soft filter, and a lightmap bake is
+	// unaffected.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/softness_scale", PROPERTY_HINT_RANGE, "0,1,0.05"), 1.0);
 	GLOBAL_DEF("rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled", true);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes", PROPERTY_HINT_RANGE, "1,5,1"), 3);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames", PROPERTY_HINT_RANGE, "1,64,1"), 32);

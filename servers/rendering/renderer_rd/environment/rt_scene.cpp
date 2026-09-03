@@ -130,6 +130,10 @@ float RaytracingScene::get_max_distance() {
 	return MAX(0.0f, GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/raytraced_shadows/max_ray_distance"));
 }
 
+float RaytracingScene::get_softness_scale() {
+	return CLAMP(GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/raytraced_shadows/softness_scale"), 0.0f, 1.0f);
+}
+
 bool RaytracingScene::is_accurate_occluder_distance() {
 	return GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/raytraced_shadows/accurate_occluder_distance");
 }

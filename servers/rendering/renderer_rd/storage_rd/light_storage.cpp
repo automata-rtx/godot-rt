@@ -1136,7 +1136,10 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 					// the same number the cascade path turns into softshadow_angle, so
 					// the two agree and the inspector value is the one in use. Editing
 					// it takes effect on the next frame.
-					rt_light.size = Math::tan(Math::deg_to_rad((float)light->param[RSE::LIGHT_PARAM_SIZE]));
+					// Scaled on the way into the trace only. light_data.size, the sky's
+					// sun disk and any lightmap bake all keep the authored angle.
+					rt_light.size = Math::tan(Math::deg_to_rad((float)light->param[RSE::LIGHT_PARAM_SIZE])) *
+							RendererRD::RaytracingScene::get_softness_scale();
 
 					// How long a ray may be. A shadow ray only has to reach the far side
 					// of the volume the culler filled, which it swept from the camera
@@ -1406,7 +1409,10 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 			// not assigned until further below.
 			rt_light.cos_spot_angle = Math::cos(Math::deg_to_rad(light->param[RSE::LIGHT_PARAM_SPOT_ANGLE]));
 
-			rt_light.size = size;
+			// Scaled on the way into the trace only; light_data.size above keeps the
+			// authored radius, so a light that falls back to a shadow map is
+			// unaffected and turning the dial back up needs no per-light edit.
+			rt_light.size = size * RendererRD::RaytracingScene::get_softness_scale();
 			rt_light.light_type = (type == RSE::LIGHT_SPOT) ? RTShadows::LIGHT_TYPE_SPOT : RTShadows::LIGHT_TYPE_OMNI;
 			// Used to rank lights where more of them reach a pixel than the mask
 			// has channels, so that the ones that are dropped are the ones whose

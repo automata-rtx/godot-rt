@@ -75,12 +75,14 @@ All under `rendering/lights_and_shadows/raytraced_shadows/`.
 | `enabled` | `false` | Master switch. `OmniLight3D` and `SpotLight3D` take their shadows from the raytraced mask. |
 | `samples_per_light` | `1` | Shadow rays per pixel per light per frame. Every one is traced, so cost is linear in it. |
 | `max_ray_distance` | `0.0` | Extra clamp on ray length. `0.0` = no additional limit. |
-| `accurate_occluder_distance` | `true` | Find the *closest* occluder rather than the first one hit. Changes no shadow's shape, only how wide the denoiser is allowed to filter. |
+| `softness_scale` | `1.0` | Multiplies every raytraced light's size, and a raytraced sun's angular distance, on the way into the trace. `0.0` makes every raytraced shadow hard. Reaches the trace only: authored sizes, the sky's sun disk and a shadow-map fallback's own softness are all untouched, so raising it again restores exactly what was authored. |
+| `accurate_occluder_distance` | `true` | Find the *closest* occluder rather than the first one hit. Changes no shadow's shape, only how wide the denoiser is allowed to filter. Ignored for a light whose effective size is `0`, whose penumbra is zero however the distance was found. |
 | `denoiser/enabled` | `true` | The denoiser keeps its own temporal history and does not need TAA — it works with SMAA, FXAA or nothing. |
 | `denoiser/spatial_passes` | `3` | Edge-stopping wavelet passes. Each doubles the filter's reach at roughly constant cost. |
 | `denoiser/temporal_frames` | `32` | Frames blended over. History is discarded on disocclusion, so this does not cause trailing. |
 | `denoiser/min_filter_pixels` | `1.0` | Narrowest the spatial filter may work where a penumbra was measured. At ≤1 px it switches off at a hard edge, which is what keeps contact shadows crisp. |
 | `denoiser/history_clamp_sigma` | `2.0` | How far reprojected history may sit outside this frame's local spread before being pulled back. This is what stops a *moving* shadow trailing across a *stationary* surface. `0.0` disables. |
+| `denoiser/lag_response` | `1.0` | How much of the clamp's own correction sets the blend weight, once it has decided the history was wrong. Inert on any frame the clamp did not fire. `0.0` restores the behavior that shipped before it. |
 | `directional/enabled` | `false` | `DirectionalLight3D` also takes its shadow from the mask. Requires `enabled`. |
 | `directional/caster_distance_scale` | `2.0` | How far past the shadow distance geometry is still gathered as a sun caster. Raising it lets distant landmarks cast onto ground you walk on; it costs proportionally more geometry, which slows *every* ray in the frame. |
 | `directional/scatter_casters` | `Near Camera` | Whether MultiMesh/GridMap geometry casts sun shadows: `Disabled` / `Near Camera` / `Full Distance`. |
@@ -336,6 +338,17 @@ actually moves the picture:
   cost what they say: every one is traced. They converge on the same shadow, only with less noise.
 - **Slow in an open outdoor scene?** Lower `directional/caster_distance_scale`, or set
   `directional/scatter_casters` to `Disabled`.
+- **Need a quality tier for weak hardware?** `softness_scale` is the one dial that scales the whole
+  path at once, and `0.0` is worth more than the sample count suggests. At one ray per light -- the
+  default -- a hard shadow traces exactly as many rays as a soft one, so nothing obvious is being
+  saved. What it saves instead: neighboring pixels stop aiming their rays at different points on the
+  emitter and stay coherent through the structure; the traced penumbra is zero, so every pixel takes
+  the spatial filter's early-out and the three wavelet passes collapse to a copy; and the trace stops
+  hunting for the closest occluder, because a penumbra of zero discards that distance anyway.
+
+  It scales continuously, so it is a slider rather than a switch, and it costs nothing to leave at
+  `1.0`. Because it reaches only the trace, a player who turns it down keeps the sun in the sky and
+  keeps every light exactly as authored for when they turn it back up.
 - **Slow everywhere?** The whole raytraced shadow stage -- the trace, the temporal accumulation and
   every a-trous pass -- runs at the render buffer's *internal* size, so `rendering/scaling_3d/scale`
   moves all of it quadratically, along with the depth pre-pass, the occlusion pass and the opaque

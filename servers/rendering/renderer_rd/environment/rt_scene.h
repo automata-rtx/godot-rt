@@ -224,6 +224,10 @@ public:
 	static float get_denoiser_min_filter_pixels();
 	static float get_denoiser_history_clamp_sigma();
 	static float get_denoiser_lag_response();
+	// Multiplies every raytraced light's emitter size on the way into the trace,
+	// and nothing else that reads that size. Zero makes every raytraced shadow
+	// hard without touching what any light was authored with.
+	static float get_softness_scale();
 	static bool is_accurate_occluder_distance();
 
 	// True when the setting is on AND the device can actually trace rays.
