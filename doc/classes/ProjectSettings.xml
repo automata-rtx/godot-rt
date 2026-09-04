@@ -3301,7 +3301,7 @@
 			Lights with a [member Light3D.light_size] of [code]0.0[/code] cast hard shadows and ignore this setting.
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/softness_scale" type="float" setter="" getter="" default="1.0">
-			Multiplies every raytraced light's [member Light3D.light_size], and every raytraced [DirectionalLight3D]'s [member DirectionalLight3D.light_angular_distance], on the way into the trace. A quality dial: [code]1.0[/code] traces the sizes as authored, [code]0.0[/code] makes every raytraced shadow hard.
+			Multiplies every raytraced light's [member Light3D.light_size], and every raytraced [DirectionalLight3D]'s [member Light3D.light_angular_distance], on the way into the trace. A quality dial: [code]1.0[/code] traces the sizes as authored, [code]0.0[/code] makes every raytraced shadow hard.
 			A soft shadow costs more than a hard one even at one ray per light, because neighboring pixels aim their rays at different points on the emitter and diverge through the acceleration structure, and because the penumbra the trace measures is what opens the denoiser's spatial filter. At [code]0.0[/code] the filter closes entirely and the trace stops looking for the closest occluder, since that distance only ever sizes a penumbra.
 			This reaches the trace only. Every light keeps the size it was authored with, so raising this again restores exactly that, and nothing else that reads the size is affected: a [DirectionalLight3D] still draws the same sun disk in a [ProceduralSkyMaterial], a light that fell back to a shadow map keeps its own soft filtering, and [LightmapGI] bakes are unchanged.
 		</member>
