@@ -336,6 +336,18 @@ actually moves the picture:
   raise `history_clamp_sigma` with it.**
 - **Grainy in wide penumbrae?** Raise `samples_per_light`, or `denoiser/spatial_passes`. Samples now
   cost what they say: every one is traced. They converge on the same shadow, only with less noise.
+- **Slow in a large level generally?** Put `OccluderInstance3D` geometry in. Occlusion culling is
+  worth more here than it is in stock Godot, and the reason is indirect: a lamp that gets occlusion
+  culled leaves the visible light list, so its bounds never reach the caster gather, so every
+  occluder that was in the structure only for that lamp leaves with it. One occluded lamp can
+  therefore take a whole room's geometry out of the acceleration structure -- which pays again in
+  the build, in every ray traced anywhere in the frame, and in the per-pixel light selection. That
+  is on top of the draw calls it saves, which is the whole of what it buys stock Godot.
+
+  It does not reach a raytraced sun, whose caster volume comes from the camera frustum rather than
+  from a light in the visible set, and it never costs correctness: a caster hidden behind a wall is
+  in the structure because some light reaches it, not because the camera can see it, so its shadow
+  still falls into view.
 - **Slow in an open outdoor scene?** Lower `directional/caster_distance_scale`, or set
   `directional/scatter_casters` to `Disabled`.
 - **Need a quality tier for weak hardware?** `softness_scale` is the one dial that scales the whole

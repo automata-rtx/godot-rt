@@ -490,3 +490,28 @@ contact darkening, failing to light costs the whole image. So the pass reports w
 mask and the caller lights it when it did not, rather than each early return being individually
 careful. The denoiser's own buffers stay exempt, because losing those already degrades correctly to
 the trace's raw output — noise instead of nothing.
+
+### Occlusion culling compounds here, because a culled lamp takes its casters with it
+
+Reported from a laptop test scene on a Radeon 780M: an interior that had been running in the low
+thirties reached 80–110 fps at half render scale after `OccluderInstance3D` planes were added around
+the level. That is a larger effect than the saved draw calls explain, and the extra comes from a
+path that has nothing to do with rasterization.
+
+The raytraced caster gather queries the geometry index with the bounds of every raytraced light in
+`scene_cull_result.lights` (`renderer_scene_cull.cpp:3539-3545`, `:3701-3703`), and that list is
+built inside the occlusion test (`:2967-2970`). A lamp whose bounds are occluded is therefore
+absent from it, its query never runs, and every caster that was in the structure only on its account
+leaves too. The saving is then paid four times over: a smaller structure to build, fewer nodes for
+every ray in the frame to descend — including the sun's — fewer candidates in the per-pixel light
+selection loop, and one less light competing for the mask's four channels.
+
+Which also means occlusion culling attacks the lamp-density cost directly, and it is the cheapest
+thing to reach for before any of the raytracing settings.
+
+Two limits. It does not reach a raytraced `DirectionalLight3D`: the sun's caster volume is derived
+from the camera frustum and `scenario->directional_lights` is a scenario-level list that the
+per-frame occlusion test never sees. And it cannot cost a shadow, because a caster is in the
+structure on the strength of a light reaching it rather than the camera seeing it — the geometry
+behind a wall still casts into view. What can be lost is the lamp itself, which is stock Godot
+behavior for every light and not particular to this path.
