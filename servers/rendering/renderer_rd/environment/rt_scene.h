@@ -133,6 +133,8 @@ private:
 		float aabb_size[3];
 		uint32_t source_stride_in_words;
 	};
+	// See the explanation above RTShadows' assertions in effects/rt_shadows.h.
+	static_assert(sizeof(DequantizePushConstant) == 32, "DequantizePushConstant must match rt_dequantize.glsl");
 
 	RtDequantizeShaderRD dequantize_shader;
 	RID dequantize_shader_version;

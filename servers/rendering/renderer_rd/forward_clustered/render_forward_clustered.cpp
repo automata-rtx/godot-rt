@@ -1469,8 +1469,9 @@ bool RenderForwardClustered::_ensure_gtao_buffers(Ref<RenderSceneBuffersRD> p_re
 	const uint32_t usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
 	const Size2i gather_size = RendererRD::GTAO::gather_size_for(p_size, p_half_resolution, p_checkerboard);
 
-	// A resolution change, or a switch between the two gather resolutions,
-	// invalidates every one of these at once. They live in their own scope so
+	// A resolution change, or a switch between any of the three gather rates --
+	// full, the checkerboard's half width, or the quarter grid -- invalidates
+	// every one of these at once. They live in their own scope so
 	// dropping them disturbs nothing else the renderer keeps here.
 	if (p_render_buffers->has_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_AO_A)) {
 		const RD::TextureFormat existing = p_render_buffers->get_texture_format(RB_SCOPE_GTAO, RB_TEX_GTAO_AO_A);
@@ -1526,6 +1527,16 @@ void RenderForwardClustered::_process_gtao(Ref<RenderSceneBuffersRD> p_render_bu
 
 	RendererRD::GTAO::Buffers buffers;
 	if (!_ensure_gtao_buffers(p_render_buffers, full_size, half_resolution, checkerboard, buffers)) {
+		// The buffer the forward pass samples is created before the gather's own
+		// targets are, so it can exist while they do not -- an allocation that did
+		// not fit is the way there. It holds undefined contents until something
+		// writes it, and the forward pass multiplies ambient light by it without
+		// asking whether anything did. Unoccluded is the only safe answer: losing
+		// the occlusion costs some contact shading, and the alternative costs every
+		// ambient-lit surface on screen for as long as the viewport lives.
+		if (p_render_buffers->has_texture(RB_SCOPE_SSAO, RB_FINAL)) {
+			RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_SSAO, RB_FINAL), Color(1, 1, 1, 1), 0, 1, 0, 1);
+		}
 		return;
 	}
 

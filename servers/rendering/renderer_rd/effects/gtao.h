@@ -183,6 +183,15 @@ private:
 		uint32_t pad2;
 	};
 
+	// Each must be exactly the size its shader's block reflects to; see the
+	// explanation and the way to check it above RTShadows' own assertions in
+	// effects/rt_shadows.h. Two of these three grew a field for the checkerboard
+	// rate, which is the same edit that once took a push constant out of sync and
+	// blacked out the scene.
+	static_assert(sizeof(PrefilterPushConstant) == 32, "PrefilterPushConstant must match gtao_prefilter.glsl");
+	static_assert(sizeof(GatherPushConstant) == 96, "GatherPushConstant must match gtao_gather.glsl");
+	static_assert(sizeof(FilterPushConstant) == 80, "FilterPushConstant must match gtao_filter.glsl");
+
 	// How wide the denoise has to be, in gather texels either side.
 	//
 	// The gather's variance rises with how far the march reaches and falls with

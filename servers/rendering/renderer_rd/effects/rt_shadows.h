@@ -222,20 +222,40 @@ private:
 	};
 
 	// Each of these must be exactly the size its shader's push constant block
-	// reflects to, and a mismatch is not a partial one: RenderingDevice compares
-	// the pushed size against the reflected size and rejects the whole push
-	// constant when they differ (rendering_device.cpp, compute_list_set_push
-	// _constant), so the dispatch then runs with no parameters at all -- or, in a
-	// debug build, does not run. That failure is silent in the frame and shows up
-	// only as whatever the unwritten target already held.
+	// reflects to. A mismatch is not a partial one, and it is not the same in
+	// every build. Under DEBUG_ENABLED -- every editor build -- RenderingDevice
+	// compares the pushed size against the reflected size and rejects the whole
+	// push constant when they differ, then refuses the dispatch for having none
+	// supplied (rendering_device.cpp, compute_list_set_push_constant and
+	// compute_list_dispatch_threads). The pass silently stops running and shows
+	// up only as whatever its unwritten target already held. Without
+	// DEBUG_ENABLED neither check is compiled at all, so the pushed range and the
+	// reflected block simply differ in size and the difference is never read --
+	// which is why this can be invisible in a shipped game and fatal in the
+	// editor the game is built in.
+	//
+	// Note the reflected size is the block's exact end, NOT rounded up to
+	// sixteen: push constant blocks are parsed with the flag that suppresses that
+	// rounding, so a trailing pad on one side alone changes it.
 	//
 	// The assertions below catch a field added or removed on THIS side. Nothing
 	// can catch it on the shader side, so when a field is added there, add it
-	// here and update the size:
-	//   TracePushConstant    <-> shaders/effects/rt_shadow_trace.glsl
-	//   TemporalPushConstant <-> shaders/effects/rt_shadow_temporal.glsl
-	//   AtrousPushConstant   <-> shaders/effects/rt_shadow_atrous.glsl
-	// glslangValidator -V <shader> -q prints "Params: ... size N" for the block.
+	// here and update the size. Every pairing in the fork:
+	//   TracePushConstant     <-> shaders/effects/rt_shadow_trace.glsl      (120)
+	//   TemporalPushConstant  <-> shaders/effects/rt_shadow_temporal.glsl   (112)
+	//   AtrousPushConstant    <-> shaders/effects/rt_shadow_atrous.glsl      (48)
+	//   GTAO::PrefilterPushConstant <-> effects/gtao_prefilter.glsl          (32)
+	//   GTAO::GatherPushConstant    <-> effects/gtao_gather.glsl             (96)
+	//   GTAO::FilterPushConstant    <-> effects/gtao_filter.glsl             (80)
+	//   RaytracingScene::DequantizePushConstant <-> effects/rt_dequantize.glsl (32)
+	//
+	// To read a block's reflected size, strip Godot's own two preamble lines
+	// first -- glslang cannot infer a stage from .glsl and chokes on #[compute]:
+	//   sed -e 's/^#\[compute\]//' -e 's/^#VERSION_DEFINES//' <shader>.glsl > /tmp/x.comp
+	//   glslangValidator -V /tmp/x.comp -o /tmp/x.spv -q | grep '^Params: '
+	// Write that output to a scratch directory, never into the repository. A
+	// mode-gated shader reflects the same block size with no mode defined; the
+	// modes select different bindings, not different constants.
 	static_assert(sizeof(TracePushConstant) == 120, "TracePushConstant must match rt_shadow_trace.glsl");
 	static_assert(sizeof(TemporalPushConstant) == 112, "TemporalPushConstant must match rt_shadow_temporal.glsl");
 	static_assert(sizeof(AtrousPushConstant) == 48, "AtrousPushConstant must match rt_shadow_atrous.glsl");
