@@ -1134,10 +1134,13 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 					// field carries the tangent of the angular radius instead. Read
 					// straight off light_angular_distance, with no default of its own:
 					// the same number the cascade path turns into softshadow_angle, so
-					// the two agree and the inspector value is the one in use. Editing
-					// it takes effect on the next frame.
-					// Scaled on the way into the trace only. light_data.size, the sky's
-					// sun disk and any lightmap bake all keep the authored angle.
+					// at the default softness scale the two agree and the inspector
+					// value is the one in use. Editing it takes effect on the next
+					// frame.
+					//
+					// The scale below reaches the trace only. light_data.size, the sky's
+					// sun disk and any lightmap bake all keep the authored angle, which
+					// is what lets it be turned down and back up without an edit.
 					rt_light.size = Math::tan(Math::deg_to_rad((float)light->param[RSE::LIGHT_PARAM_SIZE])) *
 							RendererRD::RaytracingScene::get_softness_scale();
 

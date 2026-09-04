@@ -159,8 +159,9 @@ void main() {
 	// twelve neighbors was measured and changed nothing to five decimal places,
 	// because there is no further information to gather. The plane weights still
 	// run, so a neighbor across a silhouette is still rejected; where every
-	// neighbor is rejected the nearest surviving value is taken whole rather
-	// than blending surfaces this pixel is not on.
+	// neighbor is rejected -- nothing survived to blend -- the first one on
+	// screen is taken whole rather than blending surfaces this pixel is not on.
+	// Which of the four that is does not matter: all four are one pixel away.
 	if (params.checkerboard) {
 		if (is_shaded_checker(pos)) {
 			ivec2 tap = clamp(full_to_gather_checker(pos), ivec2(0), max_pos);

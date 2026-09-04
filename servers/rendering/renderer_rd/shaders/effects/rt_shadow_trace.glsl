@@ -134,7 +134,9 @@ layout(push_constant, std430) uniform Params {
 	// measured in world units can be reported in the units the denoiser filters
 	// in.
 	float focal_pixels;
-	// Traversal flags for every shadow ray this dispatch casts.
+	// Base traversal flags for this dispatch. A light whose effective size is
+	// zero ORs in terminate-on-first-hit for its own rays, below, because the
+	// closest occluder only ever sizes a penumbra and that light has none.
 	uint ray_flags;
 }
 params;

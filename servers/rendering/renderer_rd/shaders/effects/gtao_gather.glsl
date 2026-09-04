@@ -98,8 +98,10 @@ params;
 // On the checkerboard the parity alternates per row, so texel (u, y) holds pixel
 // (2u + (y & 1), y): row 0 shades the even columns, row 1 the odd ones. At an odd
 // width the last texel of an odd row lands one past the right edge; clamping it
-// costs one lane per odd row and nothing ever reads the result, because no
-// full resolution pixel maps back to it.
+// costs one lane per odd row, and no full resolution pixel maps back to it, so
+// the upsample never reads it. Do NOT skip it on that basis: the horizontal
+// denoise walks the gather's own grid and taps it as a neighbor, so leaving it
+// unwritten would put an uninitialized value into one column of the result.
 ivec2 gather_to_full(ivec2 gather_pos) {
 	ivec2 full_pos = params.checkerboard
 			? ivec2(gather_pos.x * 2 + (gather_pos.y & 1), gather_pos.y)

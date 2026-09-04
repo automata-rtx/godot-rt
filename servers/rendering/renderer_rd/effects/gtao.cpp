@@ -316,11 +316,16 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 			push.source_size[1] = p_buffers.gather_size.y;
 			push.dest_size[0] = pass.size.x;
 			push.dest_size[1] = pass.size.y;
-			// Every pass needs the real stride. It is not the tap step -- taps
-			// walk the gather's own grid -- it is how a gather texel finds the
-			// full resolution pixel it answers for, which is where its normal
-			// and its view position come from. Handing the blur a stride of one
-			// pointed it at an unrelated pixel's normal at half resolution.
+			// Every pass that reads it needs the real stride. It is not the tap
+			// step -- taps walk the gather's own grid -- it is how a gather texel
+			// finds the full resolution pixel it answers for, which is where its
+			// normal and its view position come from. Handing the blur a stride of
+			// one pointed it at an unrelated pixel's normal at half resolution.
+			//
+			// The upsample ignores it entirely under the checkerboard, which has no
+			// uniform stride. The value below is still the honest one for the
+			// denoise passes, which do read it: a checkerboard row is full width, so
+			// its vertical stride really is one.
 			push.gather_stride[0] = pass.stride;
 			push.gather_stride[1] = checkerboard ? 1 : pass.stride;
 			push.checkerboard = checkerboard ? 1 : 0;

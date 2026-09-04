@@ -168,6 +168,8 @@ private:
 		// Full resolution pixels per gather texel, per axis. The upsample needs it
 		// to invert the gather's sampling position without half a pixel of error,
 		// and both passes need it to find the surface a gather texel describes.
+		// Ignored when checkerboard is set, which is not a uniform stride: the
+		// upsample takes its own branch and returns before either reader.
 		int32_t gather_stride[2];
 
 		float uv_to_view_mul[2];
