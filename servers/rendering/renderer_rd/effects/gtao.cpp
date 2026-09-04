@@ -95,6 +95,11 @@ int GTAO::filter_radius_for(const Settings &p_settings) {
 	// right where there is little noise to remove and a wider filter only costs
 	// contact detail. The shipped radius asks for two and the top of
 	// the range for three, which is where the variance actually needs it.
+	//
+	// With distance scaling off there is no on-screen reach to read, so a constant
+	// stands in and the width follows the slice count alone. At the shipped four
+	// slices that comes out at one -- three by three -- so turning distance scaling
+	// off narrows the filter rather than holding it wherever it was.
 	const float reach = p_settings.scale_radius_with_distance
 			? p_settings.screen_radius * MAX(p_settings.radius, 0.0f)
 			: 0.05f;

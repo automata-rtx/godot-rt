@@ -245,7 +245,7 @@ Reconstruction error against a fully shaded frame, interior scene, at the radius
 
 | scheme | shaded | overall | at silhouettes |
 | --- | --- | --- | --- |
-| quarter resolution grid, 2x2 reconstruction (what ships) | 25% | 0.01745 | 0.04095 |
+| quarter resolution grid, 2x2 reconstruction (what shipped then) | 25% | 0.01745 | 0.04095 |
 | quarter resolution grid, 7x7 reconstruction | 25% | 0.01488 | 0.03984 |
 | checkerboard at full resolution, 4 neighbors | 50% | 0.01238 | 0.02724 |
 | checkerboard at full resolution, 12 neighbors | 50% | 0.01238 | 0.02724 |
@@ -515,3 +515,24 @@ per-frame occlusion test never sees. And it cannot cost a shadow, because a cast
 structure on the strength of a light reaching it rather than the camera seeing it — the geometry
 behind a wall still casts into view. What can be lost is the lamp itself, which is stock Godot
 behavior for every light and not particular to this path.
+
+### The denoiser's history can be stale, and heals itself
+
+The history textures are cleared on the frame they are created and never again. Any frame
+`RTShadows::render` returns early leaves them holding whatever they held before, to be reprojected
+as though they were last frame's. The reachable route is not a settings toggle: it is every
+raytraced light simply leaving the camera's visible set and returning, which happens by walking
+around a corner.
+
+It self-heals within a frame or two and is not worth code. The reprojection compares a stored view
+depth against an expected one and rejects a tap that disagrees by more than the tolerance, the
+variance clamp pulls what survives into the range this frame actually sees, and `lag_response` at
+its default of 1.0 collapses the accumulation window as soon as the clamp fires. So the artifact is
+brief and low contrast rather than a smear.
+
+Recorded because it is the one place where "stale history read as current" is genuinely reachable in
+ordinary play, and someone who sees it should know it is understood rather than go hunting. If it
+ever does need fixing, the minimal change is to clear **only** the history meta texture, and only on
+the transition back: zeroed meta alone makes the depth comparison fail for every tap, which rejects
+the stale history without touching anything else. Clearing the whole scope would also take out the
+mask, the index and the hit distance, which are needed every frame.

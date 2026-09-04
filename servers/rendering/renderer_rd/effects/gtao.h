@@ -203,6 +203,12 @@ private:
 	// there is little noise to remove and extra width only costs contact detail,
 	// while at the top of the range a filter that narrow absorbs about a third of
 	// what it is handed.
+	//
+	// With distance scaling off there is no on-screen reach to follow, so a
+	// constant stands in for it and the width then follows the slice count alone.
+	// At the shipped four slices that lands at the bottom of the range, three by
+	// three: turning distance scaling off NARROWS the filter rather than fixing
+	// it, which is the opposite of what the name suggests.
 	static int filter_radius_for(const Settings &p_settings);
 
 	enum FilterMode {

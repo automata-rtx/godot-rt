@@ -128,7 +128,11 @@ An object must pass all of these:
 
 1. **Visible.** `instance->visible`, and `cast_shadows != SHADOW_CASTING_SETTING_OFF`.
 2. **Mesh- or multimesh-backed.** `INSTANCE_MESH` or `INSTANCE_MULTIMESH` only. That includes
-   `MeshInstance3D`, `MultiMeshInstance3D`, `CSGShape3D`, `CPUParticles3D` and `GridMap`.
+   `MeshInstance3D`, `MultiMeshInstance3D`, `CSGShape3D`, `CPUParticles3D` and `GridMap`. Note that
+   `CPUParticles3D` republishes its whole transform buffer every frame, so it lands in the MultiMesh
+   readback cost described in section 8 — impact sparks and casings are emitted exactly where a
+   muzzle flash is, so they are always inside a raytraced light's range. `cast_shadow = OFF` on
+   particle effects whose shadows nobody looks at is the answer.
    **`GPUParticles3D` casts nothing.** (`Sprite3D` and `Label3D` are mesh-backed and so pass this
    test, but their default transparent material fails the next one.)
 3. **A material Godot already considers a caster.** The same test the shadow map path makes, so
@@ -181,6 +185,16 @@ that would separate layer 1 from layer 9 under shadow maps will not separate the
 A fold that comes out zero is promoted to `0xFF`. So a `shadow_caster_mask` of 0, which under shadow
 maps means "nothing casts", means **everything casts** here.
 
+Masking is applied **only on the GPU**. A caster a light's mask excludes is still gathered, still has
+its acceleration structure built and still sits in the structure, so excluding by mask saves ray
+tests and nothing else. `GeometryInstance3D.cast_shadow = OFF` removes it from the gather entirely,
+and is the reliable way to keep something out of a nearby light's shadow.
+
+That matters for one recipe in particular. A first-person view model is a child of the camera,
+sitting at the same world point as a muzzle flash, and the standard Godot approach — put it on a
+high layer and clear that bit in `shadow_caster_mask` — **silently does nothing**, because a high
+layer folds back onto a low one and the light still asks for that one. Use `cast_shadow = OFF`.
+
 `Light3D.shadow_reverse_cull_face` has no effect on a raytraced shadow: the mask is per-scenario
 while that setting is per-light, so triangle facing is never culled. For the same reason
 `GeometryInstance3D.cast_shadow = ON` and `DOUBLE_SIDED` behave identically.
@@ -220,7 +234,7 @@ denoiser. If a shadow looks wrong, that is the axis to move along.
 | Subsurface transmittance | **Known gap.** Falls back to the material's own transmittance depth for any raytraced light. `shadow_map_enabled` restores it. |
 | Volumetric fog, raytraced `OmniLight3D`/`SpotLight3D` | Lit, but casts no light shafts. `shadow_map_enabled` restores it. |
 | Volumetric fog, raytraced `DirectionalLight3D` | **Works.** The fog traces its own ray per froxel. Note that ray is culled by the light's `cull_mask`, not its `shadow_caster_mask` — an inconsistency with the surface path. |
-| Alpha-blended surfaces | **Receive no shadow at all** from a raytraced light. They cannot read the mask (it holds one answer per pixel, belonging to the opaque surface behind the glass) and there is no map to fall back to. |
+| Alpha-blended surfaces | **Receive no shadow** from a raytraced light by default. They cannot read the mask -- it holds one answer per pixel, belonging to the opaque surface behind the glass. `shadow_map_enabled` restores it, because the alpha pass then falls through to the map. Alpha-to-coverage and `depth_prepass_alpha` materials write pre-pass depth and are shadowed from the mask normally. |
 | Materials with `depth_draw_never` or `depth_test_disabled` | Cast a raytraced shadow where vanilla casts none, and never receive one. |
 | Light projectors | Unaffected. |
 | SDFGI, VoxelGI, LightmapGI, decals | Unaffected by the raytraced path itself — but see the note on lightmap bake times below. |
@@ -233,7 +247,31 @@ degraded — they are rendered **fully unshadowed at that pixel, with no shadow-
 practice this is only visible where five or more shadow-casting lights genuinely overlap on the same
 surface. Up to 255 raytraced lights may exist in a frame overall.
 
-A light faded out by `distance_fade` still holds its mask slot and still costs trace work.
+A light faded out by `distance_fade` still holds its mask slot and still costs trace work, and so
+does one whose `light_energy` was animated to zero. The per-pixel ranking floors energy at a tiny
+value so that a zero-energy light does not silently lose its shadow, which also means it can outrank
+a lamp down to the last percent of its falloff and take that lamp's channel. **Turn a light off with
+`visible = false`, or free it, rather than fading its energy to zero.**
+
+There is a second ceiling above the four. A tile of 8x8 pixels keeps at most 128 raytraced lights,
+and lights past that are dropped *before* the importance ranking runs, so which of them lose is
+arbitrary rather than the weakest. Directional lights claim their slots first, so it is always a
+lamp that loses and never the sun. Hard to reach, but it produces exactly one screenshot nobody can
+reproduce.
+
+**A light appearing or disappearing resets the denoiser's history for every light at that pixel.**
+The history is keyed on the whole set of light indices the pixel carries and compared for exact
+equality, so a set that changed is rejected outright: the pixel falls back to one frame of raw trace
+and re-accumulates, taking the sun's and every nearby lamp's already-converged shadow with it. It is
+the same path a disocclusion takes, so the spatial filter widens to cover it and the cost shows up
+as noise in the near field rather than as a new artifact.
+
+This is the one to understand before building **muzzle flashes**. A light that blinks several times
+a second never lets the region it lights accumulate far, and the flash's own shadow cannot converge
+past the number of frames the flash exists. The authoring answer is cheap rather than clever: give a
+flash `light_size = 0`. A hard shadow is one deterministic ray, the traced answer is already exact,
+the spatial filter switches itself off, and the reset then costs nothing visible. If it has to be
+soft, raise `samples_per_light` so that the few frames it lives are each worth more.
 
 ### Side effects of enabling directional raytracing
 
@@ -596,8 +634,10 @@ Under `rendering/environment/ssao/ground_truth/`.
 - **The denoise sizes itself.** Its width follows the effect radius and the slice count, because
   those are what the gather's variance depends on: five taps per axis at the shipped radius,
   three at the smallest and seven at the largest. That is on the `scale_radius_with_distance`
-  branch, which is the default; with distance scaling off the march's on-screen reach depends on
-  the depth rather than on a setting, so the width is fixed at five taps instead. It is separable, so it runs twice. Neighbors are weighted by
+  branch, which is the default; with distance scaling off the reach term becomes a constant, so the
+  width follows the slice count alone -- three taps at the shipped four slices, widening as slices
+  are reduced. Turning distance scaling off therefore NARROWS the filter at the default settings
+  rather than holding it. It is separable, so it runs twice. Neighbors are weighted by
   their distance from the shaded point's *plane* rather than by depth difference, which is what
   lets a surface seen at a glancing angle keep its own neighbors.
 - **`screen_radius` is the knob to reach for first, and the default is conservative.** A real
@@ -635,12 +675,11 @@ Under `rendering/environment/ssao/ground_truth/`.
   frame average there. Widening the reconstruction barely touches it -- measured, a 7x7 gains three
   percent at silhouettes for five times the taps -- because the problem is not too few candidates.
   It is that half resolution never evaluated a pixel near the edge, and no filter can invent a
-  sample that was not taken. Shading a CHECKERBOARD fixes it, and now ships as the third rung:
-  set `ground_truth/shading_rate` to `Checkerboard` while `half_size` is on. Every unshaded pixel
-  then has all four of its immediate neighbors shaded, one pixel away rather than two, which
-  measures 33% better at silhouettes and 29% better overall for twice the gather. What remains
-  unmeasured is what it costs on a real GPU: the saving it gives back is bounded by the fixed part
-  of the effect, which no shading rate touches.
+  sample that was not taken. Shading a CHECKERBOARD fixes it, and it is **the shipped default**
+  whenever `half_size` is on -- `ground_truth/shading_rate` has to be set to `Quarter Resolution`
+  to get the coarser grid back. Every unshaded pixel has all four of its immediate neighbors
+  shaded, one pixel away rather than two, which measures 33% better at silhouettes and 29% better
+  overall for twice the gather. What it costs on a real GPU is measured two bullets down.
 - **Measured directly on an RTX 5090 at 3440x1440 full screen, 4.95 Mpx, occlusion at full
   resolution, in a scene with dozens of raytraced lights.** The whole GPU frame is 3.41 ms, of which
   `Process GTAO` is **1.12 ms** and the raytraced shadow block is also 1.12 ms -- the two matching is
@@ -657,13 +696,11 @@ Under `rendering/environment/ssao/ground_truth/`.
   denoise passes dispatch at the gather's own size. Only the depth pyramid and the upsample are
   fixed, and they are streaming passes.
 
-  An earlier estimate here put the fixed part at forty to sixty five percent. It was derived by
-  subtracting three whole-frame framerates rather than reading the pass, it leaned on the least
-  certain of those three, and it was wrong. Nothing follows from it: there is no fixed overhead
-  worth attacking, and no ceiling on what a shading rate can save.
-- **Measured once on a Radeon 780M, and it is not the pass to worry about there.** With `half_size`
-  on -- the shipped default, so the gather runs at a quarter of the pixels while the prefilter and
-  the upsample stay at full -- the whole `Process GTAO` block reads **1.43 ms**, against a GPU frame
+- **Measured once on a Radeon 780M, and it is not the pass to worry about there.** Captured at the
+  quarter resolution rung, so the gather ran at a quarter of the pixels while the prefilter and the
+  upsample stayed at full. That is no longer the default -- a capture on stock settings shades a
+  checkerboard, at half the pixels, and will read higher. The whole `Process GTAO` block reads
+  **1.43 ms**, against a GPU frame
   of about 11.2 ms in which the raytraced shadow block alone is 4.49 ms. On this class of hardware
   the occlusion estimator is roughly an eighth of the frame and the third largest of four passes. If
   an iGPU frame is too slow, this is not where to start.
@@ -678,8 +715,15 @@ Under `rendering/environment/ssao/ground_truth/`.
   What that does not settle is the shape: one reading at one setting is one equation in two
   unknowns, so the fixed and gather costs on this part are still separate unknowns. Two captures
   close it, with no code change and no restart. Read `Process GTAO` with
-  `rendering/environment/ssao/half_size` on and again with it off, then `F = (4*t_half - t_full)/3`
-  and `G_full = (4/3)*(t_full - t_half)`. Discard the first frame after the toggle: `gather_size`
+  `rendering/environment/ssao/half_size` on and again with it off.
+
+  Which pair of formulas applies depends on the rung, because the toggle moves the gather between
+  different fractions. At the default checkerboard it moves between half and all the pixels:
+  `F = 2*t_half - t_full` and `G_full = 2*(t_full - t_half)`. Set `shading_rate` to
+  `Quarter Resolution` first and it moves between a quarter and all of them instead:
+  `F = (4*t_half - t_full)/3` and `G_full = (4/3)*(t_full - t_half)`. Using the second pair against
+  a checkerboard capture can return a negative fixed cost, which is the sign it was the wrong pair
+  rather than a bad reading. Discard the first frame after the toggle: `gather_size`
   changes with `half_size`, so the pyramid and both AO buffers are reallocated inside the mark.
   Per-dispatch numbers need a profiler that reads debug labels, and the five dispatches are already
   wrapped in a `GTAO` label, so nothing has to be added to get them.

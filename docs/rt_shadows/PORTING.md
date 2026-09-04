@@ -580,12 +580,22 @@ frame looks like without changing anything else.
      from white has a hard floor and clips a third of the tonal range to black inside the gather,
      where no filter can recover it. The one-step test: put a flawless traced occlusion through the
      curve and see whether the artifact survives.
-  4. The half resolution stride is **passed** in a push constant. `gather_size_for` rounds up and
+  4. **The checkerboard is the shipped shading rate whenever half resolution is on**, and items 4
+     and 6 below describe the quarter resolution grid, which is now the fallback rung. A port that
+     reproduces only the grid ships a renderer whose default occlusion path does not exist. The
+     checkerboard packs pixel `(2u + (y & 1), y)` into gather texel `(u, y)`, so the gather is half
+     width and full height rather than half of both; reconstruction copies the shaded half through
+     untouched and averages the four immediate neighbors of the rest, which is complete rather than
+     an approximation. One detail is load bearing: at an odd width the last texel of an odd row is
+     clamped and no full resolution pixel maps back to it, so the upsample never reads it -- but the
+     horizontal denoise walks the gather's own grid and does, so it must still be written.
+  5. The half resolution stride is **passed** in a push constant. `gather_size_for` rounds up and
      integer division rounds down, so recovering it in the shader gives 2 at every even width and 1
      at every odd one, and at an odd width the gather then answers only for the top left quadrant.
      Do not "fix" it by rounding the gather size down instead; that drops the last column at widths
      like 1281.
-  5. The upsample inverts the gather's sampling position as `pos / stride`. The obvious
+  6. The upsample inverts the gather's sampling position as `pos / stride`. Applies to the quarter
+     resolution grid only; the checkerboard takes its own branch and never reads the stride. The obvious
      `(pos + 0.5) * scale - 0.5` assumes the gather texel represents the center of its block and is
      wrong by half a full resolution pixel on each axis.
 - One quantity is a function of viewport shape and must be anchored deliberately. Under
@@ -602,8 +612,8 @@ frame looks like without changing anything else.
 
 ## Quick reference: the seams that break
 
-Eighteen of the mapped integration points were rated fragile — they depend on a data layout, an
-ordering, or a format Godot revises between versions. Check these first.
+These integration points were rated fragile — they depend on a data layout, an ordering, or a
+format Godot revises between versions. Check these first.
 
 | Seam | What to verify on the new engine |
 | --- | --- |
@@ -638,6 +648,8 @@ The technique that settled most questions was **RMSE against a high-sample, deno
 the same scene** — one sample plus denoiser versus sixteen-sample ground truth. Edge-width metrics
 were tried first and proved unreliable, because they were confounded by the two images having
 different noise levels.
+| C++ push constant struct vs its GLSL block | Sizes match **exactly**, trailing padding included. The reflected size is the block's exact end, not rounded up to sixteen, so a pad on one side alone breaks it. RenderingDevice then rejects the whole push and refuses the dispatch -- but only under `DEBUG_ENABLED`, so this is fatal in the editor and invisible in a shipped game. The pass silently stops running and the frame shows whatever its target already held; in this fork that was an entirely black scene. Seven pairings, with the way to check them, above the assertions in `effects/rt_shadows.h`. |
+| The shadow mask is written every frame | An untouched target reads as its clear, and a cleared mask is every raytraced light fully occluded at every pixel -- the worst answer rather than a degraded one. The trace must report whether it wrote, and the caller must clear the mask to white when it did not. The same asymmetry applies to the occlusion buffer, where the safe value is also white. The denoiser's own history buffers are deliberately exempt: losing those degrades to the raw trace, which is noise rather than nothing. |
 
 For "this change costs nothing when unused", the standard is **byte-identical output**: build with
 the change and render; stash the change, rebuild, render the same scene; compare checksums. That is
