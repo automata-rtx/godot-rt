@@ -357,6 +357,12 @@ uint64_t StreamlineVK::initialize() {
 	}
 	directory = directory.simplify_path();
 
+	// Everything from here on reports at normal severity rather than through print_verbose. The
+	// setting is off by default, so reaching this line means the user asked for Streamline: if it
+	// then fails to arrive, saying so is not noise, and needing a command-line flag to find out
+	// would make the failure undiagnosable from the editor.
+	print_line(vformat("Streamline: enabled, loading from '%s'.", directory));
+
 	StreamlineVK *instance = memnew(StreamlineVK);
 	instance->internal = memnew(Internal);
 	if (!instance->_load(directory)) {
@@ -384,7 +390,7 @@ bool StreamlineVK::_load(const String &p_directory) {
 	const String interposer = p_directory.path_join("sl.interposer.dll");
 
 	if (!FileAccess::exists(interposer)) {
-		print_verbose(vformat("Streamline: '%s' was not found, continuing without it.", interposer));
+		ERR_PRINT(vformat("Streamline: '%s' does not exist. Put sl.interposer.dll and the sl.*.dll plugins in that directory, or point rendering/streamline/binary_path at the one that holds them.", interposer));
 		return false;
 	}
 
@@ -465,7 +471,7 @@ bool StreamlineVK::_load(const String &p_directory) {
 		return false;
 	}
 
-	print_verbose(vformat("Streamline %d.%d.%d loaded from '%s'.", SL_VERSION_MAJOR, SL_VERSION_MINOR, SL_VERSION_PATCH, p_directory));
+	print_line(vformat("Streamline %d.%d.%d initialized. Feature availability is reported once the graphics device exists.", SL_VERSION_MAJOR, SL_VERSION_MINOR, SL_VERSION_PATCH));
 	return true;
 }
 
@@ -490,14 +496,21 @@ void StreamlineVK::set_physical_device(uint64_t p_physical_device) {
 	sl::AdapterInfo adapter;
 	adapter.vkPhysicalDevice = reinterpret_cast<void *>(uintptr_t(p_physical_device));
 
+	Vector<String> available;
 	for (uint32_t i = 0; i < FEATURE_MAX; i++) {
 		const Feature feature = Feature(i);
 		const sl::Result result = internal->is_feature_supported(to_sl_feature(feature), adapter);
 		internal->supported[i] = result == sl::Result::eOk;
-		if (!internal->supported[i]) {
-			print_verbose(vformat("Streamline: %s is unavailable (%s).", feature_name(feature), sl::getResultAsStr(result)));
+		if (internal->supported[i]) {
+			available.push_back(feature_name(feature));
+		} else {
+			// Named individually rather than summarized: the result code is the only thing that
+			// separates "this GPU cannot" from "the plugin DLL is missing", and they need
+			// different fixes.
+			WARN_PRINT(vformat("Streamline: %s is unavailable (%s).", feature_name(feature), sl::getResultAsStr(result)));
 		}
 	}
+	print_line(available.is_empty() ? String("Streamline: no features are available on this device.") : vformat("Streamline: available features are %s.", String(", ").join(available)));
 
 	internal->resolve_feature(internal->dlss_set_options, sl::kFeatureDLSS, "slDLSSSetOptions");
 	internal->resolve_feature(internal->dlssg_set_options, sl::kFeatureDLSS_G, "slDLSSGSetOptions");

@@ -23,8 +23,15 @@ unverified. Section 8 lists the specific things to check first.
 4. For super resolution, set the viewport's 3D scaling mode to **DLSS** and its 3D scale to the
    quality you want. For frame generation, turn on `rendering/streamline/frame_generation`.
 
-`rendering/streamline/verbose_logging` makes Streamline write its own log to the user data
-directory, which is the first place to look when a feature refuses to start.
+Startup reports what happened in the editor's Output panel and the debugger, at normal severity —
+no `--verbose` and no command line needed. Expect three things in order: the directory it resolved,
+a line confirming the version once `slInit` succeeds, and the list of features the adapter actually
+supports once the graphics device exists. A missing interposer, a rejected signature, a failed
+`slInit` and an unsupported feature each print their own message naming the cause.
+
+`rendering/streamline/verbose_logging` raises Streamline's *own* log level, which only takes effect
+after `slInit` succeeds. It is for diagnosing a feature that loaded and then misbehaved, not for
+finding out why nothing loaded.
 
 The interposer is refused unless the operating system trusts its Authenticode signature *and*
 the signer is NVIDIA Corporation. Without that check, dropping a hostile `sl.interposer.dll`
@@ -189,9 +196,12 @@ is reusable as is.
 
 In roughly the order a failure would be easiest to diagnose:
 
-1. **It loads.** Verbose logging on, look for `slInit` succeeding and the plugins being found.
-   A refused signature and a missing DLL both print a specific message.
-2. **Feature support.** With logging on, an unsupported feature prints why.
+1. **It loads.** Startup prints the directory it resolved and then confirms the version. If it
+   prints neither, the setting is off or was changed without a restart; if it names a directory and
+   then errors, the message says whether the file was missing, unsigned, or rejected by `slInit`.
+2. **Feature support.** Once the device exists, startup lists the available features and warns
+   individually about each unavailable one with the result code, which is what separates "this GPU
+   cannot" from "the plugin DLL is missing".
 3. **Super resolution produces an image at all.** A black or garbage output points at the
    resource tags — format, layout, extent — before it points at the constants.
 4. **Ghosting or smearing under camera motion** points at the motion vectors: first the sign of

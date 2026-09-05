@@ -181,11 +181,20 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 			dlss_available = StreamlineVK::get_singleton() != nullptr && StreamlineVK::get_singleton()->is_supported(StreamlineVK::FEATURE_DLSS_SUPER_RESOLUTION);
 #endif
 			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_DLSS && !dlss_available) {
-				// Streamline off, missing, or a GPU that cannot run DLSS. FSR 2 is the closest
-				// thing the engine can do on its own.
+				// FSR 2 is the closest thing the engine can do on its own. Which half of "not
+				// available" failed decides what the user has to do about it, so the message
+				// distinguishes them rather than reporting one unactionable sentence.
 				scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_FSR2;
 				scaling_type = RSE::scaling_3d_mode_type(scaling_3d_mode);
-				WARN_PRINT_ONCE("DLSS is not available. Falling back to FSR 2 scaling.");
+#ifdef STREAMLINE_ENABLED
+				if (StreamlineVK::get_singleton() != nullptr) {
+					WARN_PRINT_ONCE("DLSS is unavailable on this device: the Streamline runtime loaded, but reported no DLSS support. Falling back to FSR 2 scaling.");
+				} else {
+					WARN_PRINT_ONCE("DLSS needs the Streamline runtime, which is not loaded. Turn on rendering/streamline/enabled and restart; once it is on, startup reports why loading failed. Falling back to FSR 2 scaling.");
+				}
+#else
+				WARN_PRINT_ONCE("DLSS needs a Windows build using the Vulkan rendering driver. Falling back to FSR 2 scaling.");
+#endif
 			}
 
 			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL && !RD::get_singleton()->has_feature(RD::SUPPORTS_METALFX_TEMPORAL)) {
