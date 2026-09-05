@@ -553,15 +553,44 @@ Small, but three separate CI rounds were burned on it the first time.
 Independent of everything above — it touches no raytracing and can be ported on its own, or left
 out. Four new files plus about a dozen small hooks.
 
-**Scope of this stage.** It describes the *wiring* — where the pass hangs, what it shares, which
-interfaces it widens — and the numerical details that were wrong before they were measured. It does
-not describe the estimator's mathematics, because the four new files carry that with them in a port
-and their comments are the reference. If you are rebuilding the estimator rather than moving it, the
-shape is: a five-level farthest-biased depth pyramid at half resolution; a gather that marches
-horizons over a rotating set of slices and accumulates a **32-sector visibility bitmask** per slice
-rather than a running maximum horizon, which is what lets it account for thin occluders and gaps;
-two separable denoise passes weighted by distance from the shaded point's plane; and a bilateral
-upsample into the shared occlusion buffer. `gtao_gather.glsl` names its source paper at the top.
+**The estimator.** Five dispatches, in order. The paper is Jimenez et al's GTAO with the visibility
+bitmask of Therrien et al (2023), reduced to the occlusion term; `gtao_gather.glsl` cites both.
+
+1. **Prefilter** — build a five-level depth pyramid at half resolution, `R32_SFLOAT`, reducing by
+   taking the **farthest** of each group rather than the average or the nearest. Farthest is the
+   conservative choice for an occlusion query: a mip that reads nearer than the surface it stands
+   for invents occluders. The pyramid is sampled with a **nearest** sampler, which forces detail 1
+   below.
+2. **Gather** — per shaded pixel, reconstruct view position and normal, then for each of `slices`
+   directions (rotated per pixel and per frame; the rotation constants are a fixed
+   `cos`/`sin` pair, not a trig call) march `steps_per_slice` samples out along the slice in screen
+   space, stepping up the pyramid as the step grows so the tap count stays bounded.
+
+   For each sample, instead of keeping a running maximum horizon angle, mark the **arc it covers**
+   into a 32-bit sector mask:
+   - reject the sample when `dot(delta, normal) < dist * ANGLE_BIAS` — at or below the shaded
+     plane it cannot occlude, and a coplanar neighbor otherwise reconstructs to either side of the
+     plane at random and half of them mark sectors, so a flat floor occludes itself;
+   - form a back face by pushing the sample away from the camera by `thickness`; everything between
+     front and back is solid, everything beyond it is open again — this is the entire reason the
+     estimator handles thin geometry;
+   - measure both angles **inside the slice plane**, signed, as `atan2` of the sample resolved onto
+     the slice tangent and the view direction. An unsigned 3D angle against the view direction puts
+     a sample lying flat on the surface into the middle of the arc and darkens every flat plane;
+   - map both into `[0,1]` across the half turn centered on the projected normal, convert to a first
+     sector and a count, and OR that run into the mask.
+
+   Occlusion for the slice is then the population count of the open sectors, cosine-weighted. The
+   bitmask is what distinguishes this from horizon marching: with a single horizon the first
+   occluder on each side closes everything past it, however much sky lies beyond.
+3. **Denoise, twice** — separable, `filter_radius` derived on the CPU from the reach and the slice
+   count. Neighbors are weighted by their distance from the shaded point's **plane**, not by depth
+   difference, so a surface seen at a glancing angle keeps its own neighbors.
+4. **Upsample** — bilateral, into the shared occlusion buffer, plus the checkerboard reconstruction
+   described in item 4 below when that rate is active.
+
+The strength curve applies occlusion as a **ratio** rather than subtracting from white; see the
+`intensity_scale` entry in the reference values, and detail 3 below.
 
 **Done when:** `docs/rt_shadows/ao_validation/` scores a render inside the numbers in section 9 of
 the fork guide, and flipping `Environment.ssao_method` between the two estimators changes what the
@@ -654,6 +683,146 @@ sensibly guess at, so every backend is made to answer.
 
 `RenderSceneDataRD` also gains an `alpha_pass` bool that reaches the shader as a scene data flag;
 see stage 15. It is not on this table because nothing else implements that class.
+
+## Reference values
+
+Everything in this section belongs to the fork rather than to upstream, so unlike the rest of this
+document it can be copied literally and will not drift when Godot changes underneath it. A rebuild
+that reproduces the structure but guesses at these will be subtly wrong in ways that read as the
+system working.
+
+### Project settings — `rendering/lights_and_shadows/raytraced_shadows/`
+
+| Setting | Type | Default | Range / values |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | restart-required; every other setting here is live |
+| `samples_per_light` | int | `1` | 1–16 |
+| `max_ray_distance` | float | `0.0` | 0–4096, or greater; `0` = no extra clamp |
+| `softness_scale` | float | `1.0` | 0–1 |
+| `accurate_occluder_distance` | bool | `true` | |
+| `denoiser/enabled` | bool | `true` | |
+| `denoiser/spatial_passes` | int | `3` | 1–5 |
+| `denoiser/temporal_frames` | int | `32` | 1–64 |
+| `denoiser/min_filter_pixels` | float | `1.0` | 0–8 |
+| `denoiser/history_clamp_sigma` | float | `2.0` | 0–8; `0` disables |
+| `denoiser/lag_response` | float | `1.0` | 0–1; `0` restores pre-lag behavior |
+| `directional/enabled` | bool | `false` | live, snapshotted once per frame |
+| `directional/caster_distance_scale` | float | `2.0` | 0.5–8, or greater |
+| `directional/scatter_casters` | int | `1` | Disabled, **Near Camera**, Full Distance |
+| `directional/scatter_distance` | float | `25.0` | 0–500, or greater |
+| `directional/demoted_shadow_mode` | int | `2` | Keep Authored, Orthogonal, **2 Splits** |
+| `directional/demoted_shadow_size` | int | `1024` | 0–4096; `0` leaves the request alone |
+
+### Project settings — `rendering/environment/ssao/`
+
+| Setting | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `method` | int | `0` | **Legacy**, Ground Truth. Ships off. |
+| `ground_truth/slices` | int | `4` | |
+| `ground_truth/steps_per_slice` | int | `8` | |
+| `ground_truth/thickness` | float | `0.3` | the one real look tradeoff |
+| `ground_truth/screen_radius` | float | `0.1` | fraction of screen **height** |
+| `ground_truth/intensity_scale` | float | `0.5` | divides the legacy `ssao_intensity` default of 2.0 |
+| `ground_truth/scale_radius_with_distance` | bool | `true` | |
+| `ground_truth/visibility_bitmask` | bool | `true` | |
+| `ground_truth/shading_rate` | int | `1` | Quarter Resolution, **Checkerboard**; read only when `half_size` is on |
+
+### Node defaults this fork changes
+
+These are constructor defaults, not settings, and they apply in **every** renderer. A `.tscn` only
+stores what differs from a fresh node, so changing them changes existing scenes.
+
+| Property | Vanilla | Here |
+| --- | --- | --- |
+| `OmniLight3D.shadow_enabled` | `false` | `true` |
+| `SpotLight3D.shadow_enabled` | `false` | `true` |
+| `OmniLight3D` / `SpotLight3D` `light_size` | `0.0` | `0.05` |
+| `DirectionalLight3D.light_angular_distance` | `0.0` | `0.25` |
+
+A non-zero angular distance reaches further than shadows: it puts the cascade path on PCSS, draws a
+sun disk in the sky materials, and slows `LightmapGI` bakes. That is intended, and it is why
+`softness_scale` scales the trace's copy rather than the authored value.
+
+### Fixed constants
+
+Compile-time, and each is load-bearing for the reason given.
+
+| Constant | Value | Why it is that |
+| --- | --- | --- |
+| `LIGHTS_PER_PIXEL` | 4 | one RGBA8 mask texel per pixel |
+| `MAX_RT_LIGHTS` | 255 | the slot index rides in a float with 255 reserved as "not raytraced" |
+| `SLOT_NONE` | 255 | that sentinel, in the shader |
+| `TILE_SIZE` | 8 | the trace's workgroup, 64 threads |
+| `MAX_TILE_LIGHTS` | 128 | shared-memory candidate list per tile |
+| `MAX_PENUMBRA_PIXELS` | 32.0 | widest penumbra the 8-bit hit-distance channel describes |
+| `HISTORY_FILL_SCALE` | 4.0 | how much wider than its penumbra a disoccluded pixel may filter |
+| a-trous `KERNEL` | 0.375, 0.25, 0.0625 | the standard 5-tap B3 spline row |
+| `MAX_BLAS_BUILDS_PER_FRAME` | 64 | build budget; the rest defer |
+| `MAX_BLAS_BUILD_TRIANGLES_PER_FRAME` | 1 << 20 | the other half of that budget |
+| `MAX_RT_CASTERS` | 65536 | gather ceiling, warns and drops past it |
+| `SECTOR_COUNT` | 32 | bits in the GTAO visibility mask, one uint |
+| `ANGLE_BIAS` | 0.03 | GTAO self-occlusion guard |
+| `DEPTH_MIP_COUNT` | 5 | levels in the GTAO depth pyramid |
+
+### Texture formats
+
+Get these wrong and the failure is silent. Every one is created at the render buffer's **internal**
+size except where noted, and all are single-layer — this path is not multiview.
+
+| Texture | Format | Cleared to | Notes |
+| --- | --- | --- | --- |
+| RT shadow mask | `R8G8B8A8_UNORM` | white when the trace does not run | sqrt-encoded visibility, one channel per light |
+| RT shadow index | `R8G8B8A8_UINT` | 255 | which light each channel carries |
+| RT raw hit distance | `R8G8B8A8_UNORM` | 0 | penumbra pixels / `MAX_PENUMBRA_PIXELS` |
+| RT denoise A/B | `R8G8B8A8_UNORM` | 0 | ping-pong; the last a-trous pass writes the mask |
+| RT history visibility | `R8G8B8A8_UNORM` | 0 | |
+| RT history index | `R8G8B8A8_UINT` | 0 | |
+| RT history meta | `R16G16_SFLOAT` | 0 | linear view depth, history length normalized to the window |
+| RT history length | `R8_UNORM` | 0 | normalized to the window |
+| GTAO depth pyramid | `R32_SFLOAT` | — | 5 mips, half resolution, farthest-biased |
+| GTAO AO A/B | `R16G16_SFLOAT` | — | occlusion and the depth the denoise re-plane-fits against |
+| shared occlusion output | `R8_UNORM` | white when the pass does not run | `RB_SCOPE_SSAO` / `RB_FINAL`, full size, shared with the legacy estimator |
+
+### Push constant sizes
+
+Both sides must match exactly; see the note above the assertions in `effects/rt_shadows.h` for why a
+trailing pad on one side alone is fatal, and how to read the reflected size.
+
+| Struct | Bytes |
+| --- | --- |
+| `TracePushConstant` | 120 |
+| `TemporalPushConstant` | 112 |
+| `AtrousPushConstant` | 48 |
+| `GTAO::PrefilterPushConstant` | 32 |
+| `GTAO::GatherPushConstant` | 96 |
+| `GTAO::FilterPushConstant` | 80 |
+| `RaytracingScene::DequantizePushConstant` | 32 |
+
+---
+
+## Do not retry these
+
+Each was tried, measured, and refused. `FINDINGS.md` has the numbers; what a rebuild needs is the
+decision, because every one of these looks like an obvious improvement from the code alone.
+
+- **Widening the occlusion denoise unconditionally.** It is already sized from the radius and the
+  slice count. A wider fixed filter scores worse, because the problem at half resolution is missing
+  samples rather than too few candidates.
+- **Replacing the occlusion dither**, or rebalancing `slices` against `steps_per_slice`. Both were
+  measured against a traced reference and neither moved it.
+- **Averaging shadow visibility in sqrt space.** The mask stores a square root for precision, but
+  filtering the roots and squaring darkens every penumbra by Jensen's inequality. Encode and decode
+  bracket the storage only.
+- **Early-outing the shadow trace on a pair of agreeing probe rays.** Two points on a disk both read
+  lit across the outer half of a penumbra, so the shadow hardens as the sample count rises — the
+  opposite of what the setting is for.
+- **Feeding the a-trous result back into the temporal history.** It compounds without bound; a two
+  pixel kernel becomes a twenty pixel smear and contact hardening is the first thing lost. The
+  history stores the accumulation, never the filtered output.
+- **Deriving pass cost by subtracting whole-frame framerates.** It produced a fixed-overhead figure
+  that three direct measurements later refuted outright.
+
+---
 
 ## Quick reference: the seams that break
 
