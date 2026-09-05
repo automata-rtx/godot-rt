@@ -148,10 +148,96 @@ conclusion: **more than half the cost does not scale with gather resolution.** I
 resolution depth pyramid, the upsample that always runs at full resolution, and the barriers
 between five dispatches.
 
-Two consequences. On desktop hardware full resolution is simply affordable and the quality question
-answers itself. And on weaker hardware, reaching for the resolution setting can only ever address
-the smaller half of the cost -- the fixed part has to be measured per pass before it can be
-attacked.
+Two consequences were drawn from that: that full resolution is simply affordable on desktop, and
+that on weaker hardware the resolution knob can only ever address the smaller half of the cost.
+
+**Both are wrong, and so is the solve they came from.** See "The three rung solve" below. The fixed
+part is nine percent, not forty to sixty five, and the error is instructive: the derivation
+subtracted three whole-frame framerates, one of which this section already flagged as the least
+certain of the three, and a small error in a large subtrahend became a large error in a small
+difference. A pass that can be measured directly should never be inferred from frame totals.
+
+A second data point, from a Radeon 780M with `half_size` on and raytraced shadows running in the
+same frame: the whole `Process GTAO` block is **1.43 ms** of a GPU frame of about 11.2 ms, in which
+the raytraced shadow block alone is 4.49 ms. That is a whole-block figure and not a split, so it
+neither confirms nor refutes the forty to sixty five percent fixed share above. What it does do is
+warn against transplanting that share. If the fixed part really were dominated by full resolution
+bandwidth, a part with a small fraction of a 5090's bandwidth could not fit all five dispatches into
+1.43 ms at a comparable pixel count. Either the desktop solve over-estimated the fixed cost -- it
+leans on the "over 1000 fps with the effect off" figure this section already flags as the least
+certain of the three -- or the gather is a larger share on weak hardware than the desktop ratio
+implies.
+
+Two captures settle it on any part, with no code change and no restart: read the block with
+`half_size` on and again with it off. Which pair applies depends on the shading rate, because
+`half_size` on now shades a checkerboard -- half the pixels -- by default. At that default,
+`F = 2*t_half - t_full` and `G_full = 2*(t_full - t_half)`; set `ground_truth/shading_rate` to
+`Quarter Resolution` first and it is `F = (4*t_half - t_full)/3` and
+`G_full = (4/3)*(t_full - t_half)` instead. Using the second pair against a checkerboard capture can
+return a negative fixed cost, which is the sign it was the wrong pair rather than a bad reading.
+Discard the first frame after the toggle, because `gather_size`
+changes with `half_size` and the buffers are reallocated inside the mark.
+
+### The three rung solve, which refutes the framerate derivation outright
+
+Three shading rates, same RTX 5090, same camera, 3440x1440, occlusion the only variable:
+
+| rate | pixels shaded | `Process GTAO` |
+| --- | --- | --- |
+| quarter resolution grid | 25% | 0.35 ms |
+| checkerboard | 50% | 0.61 ms |
+| every pixel | 100% | 1.11 ms |
+
+Three points, two unknowns, so the model is over-determined and can be checked against itself.
+Solving each pair for a fixed cost F and a full resolution gather G:
+
+| pair | G | F | fixed share |
+| --- | --- | --- | --- |
+| quarter, checkerboard | 1.040 | 0.090 | 8% |
+| quarter, every pixel | 1.013 | 0.097 | 9% |
+| checkerboard, every pixel | 1.000 | 0.110 | 10% |
+
+They agree to within four percent, and the mean solve predicts all three measurements to within
+0.01 ms. **The fixed part is about nine percent of the effect and cost is essentially linear in
+shading rate.** The code agrees: the gather derives its reach and its sixty four samples from the
+full resolution footprint whatever the rate, so per shaded pixel work does not vary, and both
+denoise passes dispatch at the gather's own size. Only the depth pyramid and the upsample are
+fixed, and both are streaming passes moving on the order of ninety megabytes -- the right size for
+a tenth of a millisecond on that part, and nowhere near the half millisecond the old claim needed.
+
+The quality verdict alongside it: the checkerboard was judged indistinguishable from shading every
+pixel, and the quarter resolution grid noticeably worse but acceptable. So the top rung costs 0.50
+ms more than the middle one for nothing visible, and the default moved to the middle rung.
+
+### The direct desktop measurement, which superseded the framerate derivation
+
+Later, from the same RTX 5090 but measured properly -- the visual profiler rather than three
+whole-frame framerates -- at 3440x1440 full screen with `scaling_3d/scale` at 1.0, so 4.95 Mpx, all
+settings default except the occlusion running at FULL resolution, in a scene with dozens of
+raytraced shadow-casting lights including the sun:
+
+| | GPU |
+| --- | --- |
+| whole frame | 3.41 ms |
+| `Process GTAO`, full resolution | 1.12 ms |
+| `Raytraced Shadows` | 1.12 ms |
+| `Render Opaque Pass` | 0.64 ms |
+
+The two headline entries landing on the same figure is a coincidence and nothing more. The
+comparison that is not a coincidence is this one: the same frame's shadow block with
+`denoiser/enabled` off reads **0.34 ms**, so tracing roughly one ray per pixel for dozens of lights
+across 4.95 Mpx costs a third of a millisecond, and **the screen space occlusion estimator costs
+3.3 times that**. On hardware with ray accelerators, the cheapest thing in this renderer is the ray
+tracing.
+
+That 0.34 ms also splits the shadow block for the first time: trace 0.34, denoiser **0.78** -- the
+denoiser is 70% of the block and 23% of the whole GPU frame, and it costs 2.3 times the signal it
+is cleaning. It is the single largest lever in the frame.
+
+The old framerate derivation above survives contact with this: it predicted quarter resolution at
+roughly two thirds of full, which for a 1.12 ms full-resolution block puts quarter near 0.75 and the
+gap near 0.37, against the 0.3 it claimed. Consistent, and now the derivation can be retired in
+favor of the direct numbers.
 
 ### Shading a checkerboard beats shading a coarser grid
 
@@ -164,7 +250,7 @@ Reconstruction error against a fully shaded frame, interior scene, at the radius
 
 | scheme | shaded | overall | at silhouettes |
 | --- | --- | --- | --- |
-| quarter resolution grid, 2x2 reconstruction (what ships) | 25% | 0.01745 | 0.04095 |
+| quarter resolution grid, 2x2 reconstruction (what shipped then) | 25% | 0.01745 | 0.04095 |
 | quarter resolution grid, 7x7 reconstruction | 25% | 0.01488 | 0.03984 |
 | checkerboard at full resolution, 4 neighbors | 50% | 0.01238 | 0.02724 |
 | checkerboard at full resolution, 12 neighbors | 50% | 0.01238 | 0.02724 |
@@ -179,6 +265,32 @@ shaded. There is no tuning surface there to get wrong.
 The cost is real: twice the gather of the quarter resolution mode. It also wants the checkerboard
 packed into a half width buffer, because dispatching full resolution threads and exiting half of
 them wastes the saving on wave divergence.
+
+### Scored again against the shipped implementation, not the prototype
+
+The table above was measured on a prototype. Re-scored against the mapping and reconstruction the
+shaders actually run -- packed texel `(u, y)` holds pixel `(2u + (y & 1), y)`, shaded pixels copied
+through untouched, the rest averaged from four neighbors with the same plane weights -- on the
+interior scene at the shipped defaults, against a fully shaded frame:
+
+| scheme | overall | at silhouettes |
+| --- | --- | --- |
+| quarter resolution grid, 2x2 reconstruction | 0.00713 | 0.02472 |
+| checkerboard, 4 neighbors | 0.00502 | 0.01180 |
+
+Overall, 29.6% better, against the 29% the prototype measured -- close enough to say the shipped
+arithmetic is the arithmetic that was scored. The silhouette figure comes out further ahead than
+the prototype's 33%, but that one is not comparable: the mask here is "any pixel whose 3x3
+neighbourhood spans more than five percent of its own depth", which is this harness's definition
+and not the prototype's, and it selects 1.0% of the frame. Trust the overall column for
+cross-checking the two, and the silhouette column only for comparing the two schemes within this
+run.
+
+The mapping itself was checked exhaustively rather than by sampling: for every width to 129 and
+height to 69, the packed texels and the shaded pixels are in bijection, every unshaded pixel's
+on-screen neighbors are shaded and map into range, and exactly half the pixels are shaded. The
+only waste is one texel per odd row of an odd width buffer, which the gather clamps and nothing
+reads.
 
 ### Half resolution was misregistered by half a pixel
 
@@ -341,3 +453,94 @@ interior with sixteen such lamps, their own index queries were making three fift
 index visits during the gather and reached no caster the sun's query had not already reached.
 Skipping a query whose bounds are enclosed by one that is about to run changes the gathered set not
 at all.
+
+### A push constant that mismatches by a trailing pad fails whole, not partly
+
+`lag_response` was added to the temporal pass by taking the C++ struct's trailing `pad` and
+renaming it, and adding a field to the shader block beside a `pad` that was left there. Every real
+field still landed on the same byte offset on both sides; the only difference was four bytes of
+padding at the end that nothing reads. That looks like the safest kind of mismatch, and it is the
+opposite.
+
+`RenderingDevice::compute_list_set_push_constant` compares the size it is given against the size the
+shader reflected and rejects the call outright when they differ, and the dispatch that follows then
+fails its own check for a push constant having been supplied. Both are under `DEBUG_ENABLED`, so
+this is every editor build and every debug template, and not an exported release one — where the
+smaller push simply lands in the larger range and the padding is never read. So the failure appears
+only where the work is done, is invisible in a shipped build, and takes out the entire pass rather
+than corrupting one field of it.
+
+What it looked like from the outside: an entirely dark scene with no shadow shapes anywhere and
+lamps that lit nothing, which turning the denoiser off cured. The temporal pass never ran, its
+target held the zero it was cleared to at creation, the spatial passes carried that zero to the
+mask, and a mask of zero is every raytraced light fully occluded at every pixel. Two frames of
+console errors said so, in a log nobody was reading.
+
+Two things follow. The reflected size is the block's exact end, not a size rounded up to sixteen:
+push constant blocks are parsed with the flag that suppresses that rounding, so a trailing `pad`
+changes the reflected size where in a uniform block it would not. And a C++-side assertion is worth
+having but cannot see the half that broke, so it has to carry the pairing and the way to check it —
+`glslangValidator -V <shader> -q` prints the block size.
+
+### The mask has to be written every frame, and lit is the safe default
+
+Four paths through the raytraced shadow pass could return without writing the mask, and the forward
+shader samples it unconditionally with nothing to tell it the value is stale. A texture is created
+cleared to zero and a zero mask reads as fully occluded, so every one of those paths turned a
+recoverable failure — no acceleration structure, an allocation that did not fit on a 4 GB card, a
+light list truncated to nothing — into the worst picture available rather than a degraded one.
+
+The asymmetry is the point and it is not obvious from inside the pass: failing to shadow costs some
+contact darkening, failing to light costs the whole image. So the pass reports whether it wrote the
+mask and the caller lights it when it did not, rather than each early return being individually
+careful. The denoiser's own buffers stay exempt, because losing those already degrades correctly to
+the trace's raw output — noise instead of nothing.
+
+### Occlusion culling compounds here, because a culled lamp takes its casters with it
+
+Reported from a laptop test scene on a Radeon 780M: an interior that had been running in the low
+thirties reached 80–110 fps at half render scale after `OccluderInstance3D` planes were added around
+the level. That is a larger effect than the saved draw calls explain, and the extra comes from a
+path that has nothing to do with rasterization.
+
+The raytraced caster gather queries the geometry index with the bounds of every raytraced light in
+`scene_cull_result.lights` -- the loop in `RendererSceneCull` that pushes each raytraced-candidate
+light's `transformed_aabb` into the gather's bounds scratch, and the `aabb_query` over
+`Scenario::INDEXER_GEOMETRY` that runs over that scratch -- and that list is built inside the
+visible-instance cull, in the same branch that tests `OCCLUSION_CULLED` before pushing an instance
+into `cull_result.lights`. A lamp whose bounds are occluded is therefore
+absent from it, its query never runs, and every caster that was in the structure only on its account
+leaves too. The saving is then paid four times over: a smaller structure to build, fewer nodes for
+every ray in the frame to descend — including the sun's — fewer candidates in the per-pixel light
+selection loop, and one less light competing for the mask's four channels.
+
+Which also means occlusion culling attacks the lamp-density cost directly, and it is the cheapest
+thing to reach for before any of the raytracing settings.
+
+Two limits. It does not reach a raytraced `DirectionalLight3D`: the sun's caster volume is derived
+from the camera frustum and `scenario->directional_lights` is a scenario-level list that the
+per-frame occlusion test never sees. And it cannot cost a shadow, because a caster is in the
+structure on the strength of a light reaching it rather than the camera seeing it — the geometry
+behind a wall still casts into view. What can be lost is the lamp itself, which is stock Godot
+behavior for every light and not particular to this path.
+
+### The denoiser's history can be stale, and heals itself
+
+The history textures are cleared on the frame they are created and never again. Any frame
+`RTShadows::render` returns early leaves them holding whatever they held before, to be reprojected
+as though they were last frame's. The reachable route is not a settings toggle: it is every
+raytraced light simply leaving the camera's visible set and returning, which happens by walking
+around a corner.
+
+It self-heals within a frame or two and is not worth code. The reprojection compares a stored view
+depth against an expected one and rejects a tap that disagrees by more than the tolerance, the
+variance clamp pulls what survives into the range this frame actually sees, and `lag_response` at
+its default of 1.0 collapses the accumulation window as soon as the clamp fires. So the artifact is
+brief and low contrast rather than a smear.
+
+Recorded because it is the one place where "stale history read as current" is genuinely reachable in
+ordinary play, and someone who sees it should know it is understood rather than go hunting. If it
+ever does need fixing, the minimal change is to clear **only** the history meta texture, and only on
+the transition back: zeroed meta alone makes the depth comparison fail for every tap, which rejects
+the stale history without touching anything else. Clearing the whole scope would also take out the
+mask, the index and the hit distance, which are needed every frame.

@@ -95,6 +95,11 @@ int GTAO::filter_radius_for(const Settings &p_settings) {
 	// right where there is little noise to remove and a wider filter only costs
 	// contact detail. The shipped radius asks for two and the top of
 	// the range for three, which is where the variance actually needs it.
+	//
+	// With distance scaling off there is no on-screen reach to read, so a constant
+	// stands in and the width follows the slice count alone. At the shipped four
+	// slices that comes out at one -- three by three -- so turning distance scaling
+	// off narrows the filter rather than holding it wherever it was.
 	const float reach = p_settings.scale_radius_with_distance
 			? p_settings.screen_radius * MAX(p_settings.radius, 0.0f)
 			: 0.05f;
@@ -102,12 +107,21 @@ int GTAO::filter_radius_for(const Settings &p_settings) {
 	return CLAMP(int(Math::round(noise / 0.06f)), 1, 3);
 }
 
-Size2i GTAO::gather_size_for(const Size2i &p_full_size, bool p_half_resolution) {
+Size2i GTAO::gather_size_for(const Size2i &p_full_size, bool p_half_resolution, bool p_checkerboard) {
 	if (!p_half_resolution) {
 		return p_full_size;
 	}
 	// Rounded up so a resolution with an odd dimension still covers every pixel
 	// once the result is weighted back up.
+	if (p_checkerboard) {
+		// Half the width and the FULL height: the checkerboard is packed two
+		// full resolution pixels to a texel along x, one row to a row. Dispatching
+		// full resolution threads and exiting half of them instead would give the
+		// saving back to wave divergence. At an odd width the last texel of every
+		// odd row addresses a pixel past the right edge; the gather clamps it and
+		// nothing reads it, which costs one lane per odd row.
+		return Size2i(MAX((p_full_size.x + 1) / 2, 1), MAX(p_full_size.y, 1));
+	}
 	return Size2i(MAX((p_full_size.x + 1) / 2, 1), MAX((p_full_size.y + 1) / 2, 1));
 }
 
@@ -236,8 +250,10 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 		push.screen_radius = CLAMP(p_settings.screen_radius, 0.001f, 0.5f);
 		push.orthogonal = orthogonal ? 1 : 0;
 		push.use_bitmask = p_settings.use_bitmask ? 1 : 0;
+		const bool checkerboard = p_settings.half_resolution && p_settings.checkerboard;
 		push.gather_stride[0] = p_settings.half_resolution ? 2 : 1;
-		push.gather_stride[1] = p_settings.half_resolution ? 2 : 1;
+		push.gather_stride[1] = (p_settings.half_resolution && !checkerboard) ? 2 : 1;
+		push.checkerboard = checkerboard ? 1 : 0;
 
 		RD::ComputeListID list = RD::get_singleton()->compute_list_begin();
 		RD::get_singleton()->compute_list_bind_compute_pipeline(list, gather_pipeline);
@@ -257,6 +273,7 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 	// so it is a straight copy rather than a filter.
 	{
 		const int filter_radius = filter_radius_for(p_settings);
+		const bool checkerboard = p_settings.half_resolution && p_settings.checkerboard;
 		const int32_t stride = p_settings.half_resolution ? 2 : 1;
 
 		auto fill_common = [&](FilterPushConstant &push) {
@@ -304,13 +321,19 @@ void GTAO::render(const Buffers &p_buffers, RID p_depth_texture, RID p_normal_ro
 			push.source_size[1] = p_buffers.gather_size.y;
 			push.dest_size[0] = pass.size.x;
 			push.dest_size[1] = pass.size.y;
-			// Every pass needs the real stride. It is not the tap step -- taps
-			// walk the gather's own grid -- it is how a gather texel finds the
-			// full resolution pixel it answers for, which is where its normal
-			// and its view position come from. Handing the blur a stride of one
-			// pointed it at an unrelated pixel's normal at half resolution.
+			// Every pass that reads it needs the real stride. It is not the tap
+			// step -- taps walk the gather's own grid -- it is how a gather texel
+			// finds the full resolution pixel it answers for, which is where its
+			// normal and its view position come from. Handing the blur a stride of
+			// one pointed it at an unrelated pixel's normal at half resolution.
+			//
+			// The upsample ignores it entirely under the checkerboard, which has no
+			// uniform stride. The value below is still the honest one for the
+			// denoise passes, which do read it: a checkerboard row is full width, so
+			// its vertical stride really is one.
 			push.gather_stride[0] = pass.stride;
-			push.gather_stride[1] = pass.stride;
+			push.gather_stride[1] = checkerboard ? 1 : pass.stride;
+			push.checkerboard = checkerboard ? 1 : 0;
 			fill_common(push);
 			push.direction[0] = pass.dir_x;
 			push.direction[1] = pass.dir_y;

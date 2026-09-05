@@ -805,7 +805,7 @@ private:
 	/* Render Scene */
 	void _process_ssao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections);
 	void _process_gtao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections);
-	bool _ensure_gtao_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_half_resolution, RendererRD::GTAO::Buffers &r_buffers);
+	bool _ensure_gtao_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_half_resolution, bool p_checkerboard, RendererRD::GTAO::Buffers &r_buffers);
 	// Whether ground truth occlusion is the method in use and can run here. It
 	// is single view, so a stereo pair keeps the legacy effect.
 	bool _use_gtao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment) const;

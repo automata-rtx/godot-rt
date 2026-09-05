@@ -27,8 +27,9 @@
 >   three of SIGMA's ideas were adopted into the existing denoiser instead.
 > - **D9** says the feature cannot be enabled without raytracing hardware. It can — the engine warns
 >   and falls back to shadow maps.
-> - **§7.1**'s project-setting names are fictional, and its claim that they are live-toggleable is
->   false: every setting is read once at startup.
+> - **§7.1**'s project-setting names are fictional, but live tuning is what shipped: every setting
+>   except the master `enabled` flag is read live and takes effect on the next frame, with three of
+>   them snapshotted once per frame.
 > - **§10.1 and §11** say directional lights are not covered. They shipped.
 > - **§11** says area lights are covered from Phase 3. `AreaLight3D` is not covered at all.
 > - **§10.4, "What will not change for existing projects"**, is the most misleading page here.

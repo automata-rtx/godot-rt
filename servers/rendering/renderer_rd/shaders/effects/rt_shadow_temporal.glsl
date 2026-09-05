@@ -69,11 +69,14 @@ layout(push_constant, std430) uniform Params {
 	// How far outside the current frame's local spread the history is allowed to
 	// sit, in standard deviations. Zero disables the test.
 	float clamp_sigma;
+	// How much of the clamp's own correction is allowed to set the blend weight
+	// directly. One spends all of it; zero leaves only the window shortening,
+	// which is what shipped before.
+	float lag_response;
 	// Rays per light this frame, so the clamp can tell a neighborhood that
 	// genuinely agrees from one that has too few samples to disagree yet.
 	float sample_count;
 	uint frame_index;
-	float pad;
 }
 params;
 
@@ -201,6 +204,11 @@ void main() {
 	// Inside a penumbra, where one ray per pixel makes neighbors genuinely
 	// disagree, the spread is wide and accumulation proceeds untouched. The test
 	// costs nothing where it is not needed and everything where it is.
+	// How far the clamp had to move the history, kept for the accumulator below.
+	// Zero in the steady state and on every frame the clamp does not fire, so
+	// everything downstream of it is inert there.
+	float lag = 0.0;
+
 	if (params.clamp_sigma > 0.0 && history_length > 0.0) {
 		vec4 moment1 = vec4(0.0);
 		vec4 moment2 = vec4(0.0);
@@ -259,8 +267,8 @@ void main() {
 			// is wrong. Taking the worst of the four channels is deliberate: they
 			// share one window, and being late is worse than being brief.
 			vec4 moved = abs(clamped - history);
-			float lag = max(max(moved.x, moved.y), max(moved.z, moved.w));
-			history_length *= 1.0 - clamp(lag, 0.0, 1.0);
+			lag = clamp(max(max(moved.x, moved.y), max(moved.z, moved.w)), 0.0, 1.0);
+			history_length *= 1.0 - lag;
 
 			history = clamped;
 		}
@@ -272,6 +280,25 @@ void main() {
 	// the estimate is stable.
 	history_length = history_length > 0.0 ? min(history_length + 1.0, params.max_history) : 1.0;
 	float alpha = 1.0 / history_length;
+
+	// Shortening the window is not the same as discounting the value in it, and
+	// on its own it is far too gentle. At one ray per light the neighborhood in a
+	// covered umbra is unanimous, so the clamp window is the binomial floor alone
+	// and a history of fully lit is pulled only to the near edge of it -- a lag
+	// around 0.8, which leaves a window of about six frames and an alpha of
+	// 0.135. The pixel then keeps six sevenths of a value the clamp has just
+	// established is wrong by four fifths, and because the history now sits
+	// inside the window the clamp never fires again: what is left decays as
+	// 6/(6+n), hyperbolically, still visibly moving a third of a second later.
+	//
+	// The clamp already measured how wrong the history was. Letting that measure
+	// set the blend directly spends it, instead of spending a fifth of it. The
+	// floor is the clamp's own window edge, so this can never weight the new
+	// sample more heavily than this frame's own neighborhood supports.
+	//
+	// Inert wherever the clamp did not fire, which is every pixel in the steady
+	// state. Set lag_response to zero to restore the previous behavior exactly.
+	alpha = max(alpha, lag * params.lag_response);
 
 	vec4 accumulated = mix(history, current, alpha);
 

@@ -26,9 +26,9 @@ to `0.0` for hard shadows.
 
 These apply in **every** renderer, whether or not raytraced shadows are enabled, and they reach
 further than shadows: a non-zero angular distance puts the cascade path on its PCSS branch, makes
-`ProceduralSkyMaterial`/`PhysicalSkyMaterial` draw a visible **sun disk**, makes `LightmapGI` bakes
-soft-shadowed and slower, and makes every mesh lit by a default lamp compile the
-`use_light_soft_shadows` specialization.
+`ProceduralSkyMaterial`/`PhysicalSkyMaterial` draw a visible **sun disk**, and makes `LightmapGI`
+bakes soft-shadowed and slower; and a non-zero lamp `light_size` makes every mesh lit by a default
+`OmniLight3D` or `SpotLight3D` compile the `use_light_soft_shadows` specialization.
 
 `Light3D` gains one property, `shadow_map_enabled` (and `RenderingServer.light_set_shadow_map_enabled`).
 
@@ -48,15 +48,21 @@ Not covered, and silently falling back or losing shadowing:
 - **Alpha-scissor materials** — cast, but the cutout is *ignored*: a leaf card casts the shadow of
   the whole quad. This is the one that bites when authoring foliage. (Alpha-*blended* and
   screen-reading materials cast nothing, exactly as with shadow maps.)
+- **Alpha-blended surfaces also RECEIVE no shadow.** They cannot read the mask, which holds one
+  answer per pixel belonging to the opaque surface behind the glass. `shadow_map_enabled` restores
+  it, because the alpha pass then falls through to the map. Alpha-to-coverage and
+  `depth_prepass_alpha` materials write pre-pass depth and are shadowed from the mask normally.
 - **Subsurface transmittance** — falls back to the material's own transmittance depth. Known gap.
 - **Volumetric fog under a raytraced `OmniLight3D`/`SpotLight3D`** — lit, but casts no light shafts.
   A raytraced `DirectionalLight3D` traces its own ray per froxel, so sun shafts do work.
 - **XR / multiview, reflection probes, the Mobile and Compatibility renderers** — shadow maps.
 
 `Light3D.shadow_map_enabled` buys a light back its shadow map, at the cost of an atlas quadrant and
-a shadow map render. That helps the two entries above that read a map and find none -- subsurface
-transmittance, and volumetric fog under a lamp. The rest of the list never consults the mask in the
-first place, so the flag does nothing for them.
+a shadow map render. That helps the three entries above that read a map and find none -- subsurface
+transmittance, volumetric fog under a lamp, and alpha-blended surfaces receiving. The rest of the
+list never reads a shadow map in the first place -- an opaque surface under a light that holds a mask
+slot takes its answer from the mask whether or not a map was also rendered -- so the flag does
+nothing for them.
 
 ## Traps when authoring for raytraced shadows
 
@@ -72,7 +78,20 @@ first place, so the flag does nothing for them.
   mask of `0` is promoted to "everything casts" rather than "nothing casts".
   `shadow_reverse_cull_face` does nothing.
 - **At most four raytraced lights are shadowed per pixel.** Where more overlap, the losers render
-  **fully unshadowed there**, with no shadow-map fallback.
+  **fully unshadowed there**, with no shadow-map fallback. A second ceiling sits above it: at most
+  128 raytraced lights per 8x8 tile, and lights past that are dropped *before* the importance
+  ranking, so which ones lose is arbitrary. Directional lights claim their slots first, so it is
+  always a lamp that loses, never the sun.
+- **A mesh updated in place keeps its old shadow.** Only skinned surfaces carry a version check, so
+  `surface_update_vertex_region()` and `ImmediateMesh` rewrites cast the geometry the structure was
+  first built from. Replacing the surface outright is handled correctly.
+- **A light switching on or off resets the denoiser history for every light at that pixel**, because
+  the history is keyed on the whole set of light indices and compared for exact equality. This is
+  the one to know before building muzzle flashes: a light that blinks never lets the region it lights
+  accumulate, and its own shadow cannot converge past the number of frames it exists. Give a flash
+  `light_size = 0` and the problem goes away — a hard shadow is one deterministic ray and the filter
+  switches itself off. Turn a flash off with `visible = false` rather than fading `light_energy` to
+  zero: a zero-energy light keeps its slot and all of its rays.
 
 ## Two behaviors that surprise people
 
@@ -99,7 +118,9 @@ which ran. Ships **off**: the project setting defaults to legacy and an `Environ
 - `ssao_enabled`, `ssao_radius`, `ssao_intensity`, `ssao_power`, `half_size` and the fade distances
   apply to both. `ssao_detail`, `ssao_horizon`, `ssao_sharpness`, `quality` and `adaptive_target`
   are legacy-only and inert on the new one.
-- Tuning lives under `rendering/environment/ssao/ground_truth/`. `thickness` (0.3) is the one real
+- Tuning lives under `rendering/environment/ssao/ground_truth/`. `shading_rate` (Checkerboard) is
+  the first one to reach for on weak hardware — it is read only when `half_size` is on, and
+  `Quarter Resolution` is the cheaper rung. `thickness` (0.3) is the one real
   tradeoff: higher suits thick solid shapes, lower suits foliage and slats. `screen_radius` (0.1)
   is a fraction of screen **height** and is the knob to reach for first — a real interior wants more
   than a test scene does. `intensity_scale` (0.5) divides down the `ssao_intensity` default of 2.0,

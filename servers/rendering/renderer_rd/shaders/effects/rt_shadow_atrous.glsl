@@ -172,6 +172,34 @@ void main() {
 	vec4 floor_pixels = max(vec4(params.min_filter_pixels), fill_pixels);
 	vec4 reach_pixels = max(penumbra_pixels, has_penumbra * floor_pixels);
 
+	// Every tap in the loop below lands at least one kernel step from the center,
+	// and a tap's weight is clamp(1 - tap_pixels / reach_pixels). So a channel
+	// whose reach does not survive a single step contributes nothing from
+	// anywhere, and where that holds for all four channels the loop is
+	// twenty-four taps, each fetching four textures, that provably resolve to the
+	// center value.
+	//
+	// Two common cases land here rather than in the sky test above, which only
+	// catches pixels no raytraced light reaches at all. A pixel a light DOES
+	// reach but no ray hit has no blocker to measure a penumbra to, so its reach
+	// is zero on every pass -- in a sunlit frame that is most of the screen. And a
+	// contact shadow sits at the min_filter_pixels floor, which at its default of
+	// one is exactly the first pass's step, so the filter was already switching
+	// itself off there and paying full price to do it.
+	if (all(lessThanEqual(reach_pixels, vec4(float(params.step_size))))) {
+		imageStore(dest_visibility, pos, VIS_ENCODE(center));
+		// The same history this pass would have written below. NOT the sky path's
+		// zeroed meta: these are real surfaces with a real depth and a real
+		// accumulation length, and the temporal pass reprojects against both.
+		if (params.write_history != 0u) {
+			imageStore(dest_history_visibility, pos, VIS_ENCODE(center));
+			imageStore(dest_history_index, pos, center_index);
+			imageStore(dest_history_meta, pos,
+					vec4(linear_view_depth(center_depth), history_length, 0.0, 0.0));
+		}
+		return;
+	}
+
 	vec4 sum = center * KERNEL[0] * KERNEL[0];
 	vec4 weight_sum = vec4(KERNEL[0] * KERNEL[0]);
 

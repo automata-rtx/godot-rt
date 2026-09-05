@@ -82,10 +82,32 @@ layout(push_constant, std430) uniform Params {
 	// stride collapses from two to one, and the gather then answers only for
 	// the top left quadrant of the screen while the rest is magnified over it.
 	ivec2 gather_stride;
+	// When set, the gather shades a CHECKERBOARD packed two full resolution
+	// pixels to a texel along x and one row to a row, rather than a coarser grid.
+	// Half the pixels get their own answer instead of a quarter, and every pixel
+	// that does not has all four of its immediate neighbors shaded, one pixel
+	// away rather than two. The stride above does not describe that mapping and
+	// is ignored on this path.
+	bool checkerboard;
 	uint pad0;
-	uint pad1;
 }
 params;
+
+// The full resolution pixel a gather texel answers for.
+//
+// On the checkerboard the parity alternates per row, so texel (u, y) holds pixel
+// (2u + (y & 1), y): row 0 shades the even columns, row 1 the odd ones. At an odd
+// width the last texel of an odd row lands one past the right edge; clamping it
+// costs one lane per odd row, and no full resolution pixel maps back to it, so
+// the upsample never reads it. Do NOT skip it on that basis: the horizontal
+// denoise walks the gather's own grid and taps it as a neighbor, so leaving it
+// unwritten would put an uninitialized value into one column of the result.
+ivec2 gather_to_full(ivec2 gather_pos) {
+	ivec2 full_pos = params.checkerboard
+			? ivec2(gather_pos.x * 2 + (gather_pos.y & 1), gather_pos.y)
+			: gather_pos * params.gather_stride;
+	return min(full_pos, params.full_size - ivec2(1));
+}
 
 layout(set = 0, binding = 0) uniform sampler2D source_depth;
 layout(rgba8, set = 0, binding = 1) uniform restrict readonly image2D source_normal;
@@ -126,8 +148,7 @@ void main() {
 	// keeps the near field identical between the two resolutions: only how many
 	// pixels get their own answer changes, not how far the march reaches or how
 	// close its first step lands.
-	ivec2 full_pos = pos * params.gather_stride;
-	full_pos = min(full_pos, params.full_size - ivec2(1));
+	ivec2 full_pos = gather_to_full(pos);
 
 	float center_depth = texelFetch(source_depth, full_pos, 0).r;
 

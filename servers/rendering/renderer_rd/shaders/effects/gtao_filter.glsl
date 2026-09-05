@@ -45,6 +45,16 @@ layout(push_constant, std430) uniform Params {
 	// Which axis this pass blurs along. The blur is separable, so it runs
 	// twice: once across and once down.
 	ivec2 direction;
+
+	// Whether the gather shaded a checkerboard packed two full resolution pixels
+	// to a texel along x, rather than a coarser grid. It changes what a gather
+	// texel maps to, and it changes the reconstruction from a bilateral over a
+	// 2x2 block to an exact copy for half the pixels and a four neighbor average
+	// for the rest.
+	bool checkerboard;
+	uint pad0;
+	uint pad1;
+	uint pad2;
 }
 params;
 
@@ -78,8 +88,23 @@ float plane_weight(vec3 center_pos, vec3 center_normal, vec3 tap_pos) {
 	return max(1.0 - off / max(params.plane_tolerance * center_pos.z, 0.0001), 0.0);
 }
 
+// The full resolution pixel a gather texel answers for. On the checkerboard the
+// parity alternates per row, so texel (u, y) holds pixel (2u + (y & 1), y).
 ivec2 gather_to_full(ivec2 gather_pos) {
-	return min(gather_pos * params.gather_stride, params.full_size - ivec2(1));
+	ivec2 full_pos = params.checkerboard
+			? ivec2(gather_pos.x * 2 + (gather_pos.y & 1), gather_pos.y)
+			: gather_pos * params.gather_stride;
+	return min(full_pos, params.full_size - ivec2(1));
+}
+
+// The inverse, valid only for a pixel the checkerboard actually shaded, which is
+// every pixel whose coordinates sum to an even number.
+ivec2 full_to_gather_checker(ivec2 full_pos) {
+	return ivec2((full_pos.x - (full_pos.y & 1)) >> 1, full_pos.y);
+}
+
+bool is_shaded_checker(ivec2 full_pos) {
+	return ((full_pos.x + full_pos.y) & 1) == 0;
 }
 
 void main() {
@@ -122,6 +147,54 @@ void main() {
 	float center_depth = texelFetch(source_depth, pos, 0).r;
 	vec3 center_pos = view_pos(pos, center_depth);
 	vec3 center_normal = load_view_normal(pos);
+
+	// The checkerboard reconstructs rather than upsamples, and the two cases are
+	// not a filter and a narrower filter -- they are an exact value and an
+	// average of four exact values.
+	//
+	// Half the pixels were shaded, so they are copied through untouched: no
+	// interpolation, no bilateral, nothing to soften a silhouette. Each of the
+	// rest has all four of its immediate neighbors shaded, one pixel away rather
+	// than two, and averaging exactly those four is complete -- widening it to
+	// twelve neighbors was measured and changed nothing to five decimal places,
+	// because there is no further information to gather. The plane weights still
+	// run, so a neighbor across a silhouette is still rejected; where every
+	// neighbor is rejected -- nothing survived to blend -- the first one on
+	// screen is taken whole rather than blending surfaces this pixel is not on.
+	// Which of the four that is does not matter: all four are one pixel away.
+	if (params.checkerboard) {
+		if (is_shaded_checker(pos)) {
+			ivec2 tap = clamp(full_to_gather_checker(pos), ivec2(0), max_pos);
+			imageStore(dest_final, pos, vec4(texelFetch(source_ao, tap, 0).r));
+			return;
+		}
+
+		const ivec2 OFFSETS[4] = ivec2[](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+		float sum = 0.0;
+		float weight_sum = 0.0;
+		float nearest = -1.0;
+
+		for (int i = 0; i < 4; i++) {
+			ivec2 neighbor = pos + OFFSETS[i];
+			// A neighbor off the screen is skipped rather than clamped: clamping
+			// would land on an unshaded pixel and duplicate whichever tap sits
+			// opposite it. An edge pixel simply has two or three neighbors.
+			if (any(lessThan(neighbor, ivec2(0))) || any(greaterThanEqual(neighbor, params.full_size))) {
+				continue;
+			}
+			ivec2 tap = clamp(full_to_gather_checker(neighbor), ivec2(0), max_pos);
+			vec2 value = texelFetch(source_ao, tap, 0).rg;
+			if (nearest < 0.0) {
+				nearest = value.r;
+			}
+			float weight = plane_weight(center_pos, center_normal, view_pos(neighbor, value.g));
+			sum += value.r * weight;
+			weight_sum += weight;
+		}
+
+		imageStore(dest_final, pos, vec4(weight_sum > 0.0001 ? sum / weight_sum : max(nearest, 0.0)));
+		return;
+	}
 
 	// Gather texel k answers for full resolution PIXEL k * stride, whose center
 	// sits at continuous coordinate k * stride + 0.5. Inverting that gives

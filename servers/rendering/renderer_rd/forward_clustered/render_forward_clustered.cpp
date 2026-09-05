@@ -1461,16 +1461,21 @@ bool RenderForwardClustered::_use_gtao(Ref<RenderSceneBuffersRD> p_render_buffer
 	return int(GLOBAL_GET_CACHED(int, "rendering/environment/ssao/method")) == 1;
 }
 
-bool RenderForwardClustered::_ensure_gtao_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_half_resolution, RendererRD::GTAO::Buffers &r_buffers) {
+bool RenderForwardClustered::_ensure_gtao_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_half_resolution, bool p_checkerboard, RendererRD::GTAO::Buffers &r_buffers) {
 	if (p_render_buffers.is_null()) {
 		return false;
 	}
 
-	const uint32_t usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
-	const Size2i gather_size = RendererRD::GTAO::gather_size_for(p_size, p_half_resolution);
+	// CAN_COPY_TO is what makes the shared output clearable: texture_clear refuses a
+	// texture without it, so the unoccluded fallback below would fail every frame it
+	// was needed and leave the buffer holding whatever it already held.
+	const uint32_t usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT |
+			RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
+	const Size2i gather_size = RendererRD::GTAO::gather_size_for(p_size, p_half_resolution, p_checkerboard);
 
-	// A resolution change, or a switch between the two gather resolutions,
-	// invalidates every one of these at once. They live in their own scope so
+	// A resolution change, or a switch between any of the three gather rates --
+	// full, the checkerboard's half width, or the quarter grid -- invalidates
+	// every one of these at once. They live in their own scope so
 	// dropping them disturbs nothing else the renderer keeps here.
 	if (p_render_buffers->has_texture(RB_SCOPE_GTAO, RB_TEX_GTAO_AO_A)) {
 		const RD::TextureFormat existing = p_render_buffers->get_texture_format(RB_SCOPE_GTAO, RB_TEX_GTAO_AO_A);
@@ -1519,9 +1524,25 @@ void RenderForwardClustered::_process_gtao(Ref<RenderSceneBuffersRD> p_render_bu
 
 	const Size2i full_size = p_render_buffers->get_internal_size();
 	const bool half_resolution = GLOBAL_GET_CACHED(bool, "rendering/environment/ssao/half_size");
+	// Only meaningful when a reduced rate was asked for at all: it chooses how
+	// that rate is spent, not whether there is one.
+	const bool checkerboard = half_resolution &&
+			GLOBAL_GET_CACHED(int, "rendering/environment/ssao/ground_truth/shading_rate") == 1;
 
 	RendererRD::GTAO::Buffers buffers;
-	if (!_ensure_gtao_buffers(p_render_buffers, full_size, half_resolution, buffers)) {
+	if (!_ensure_gtao_buffers(p_render_buffers, full_size, half_resolution, checkerboard, buffers)) {
+		// The buffer the forward pass samples lives in a different context from the
+		// gather's own targets, so it survives the clear_context that drops those,
+		// and the legacy estimator may have created it before the method was
+		// switched. Either way it can exist while the gather targets do not -- an
+		// allocation that did not fit is the way there. It holds undefined contents until something
+		// writes it, and the forward pass multiplies ambient light by it without
+		// asking whether anything did. Unoccluded is the only safe answer: losing
+		// the occlusion costs some contact shading, and the alternative costs every
+		// ambient-lit surface on screen for as long as the viewport lives.
+		if (p_render_buffers->has_texture(RB_SCOPE_SSAO, RB_FINAL)) {
+			RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_SSAO, RB_FINAL), Color(1, 1, 1, 1), 0, 1, 0, 1);
+		}
 		return;
 	}
 
@@ -1546,6 +1567,7 @@ void RenderForwardClustered::_process_gtao(Ref<RenderSceneBuffersRD> p_render_bu
 	settings.slice_count = GLOBAL_GET_CACHED(int, "rendering/environment/ssao/ground_truth/slices");
 	settings.steps_per_slice = GLOBAL_GET_CACHED(int, "rendering/environment/ssao/ground_truth/steps_per_slice");
 	settings.half_resolution = half_resolution;
+	settings.checkerboard = checkerboard;
 
 	gtao->render(buffers, p_render_buffers->get_depth_texture(0), p_normal_buffers[0],
 			p_render_buffers->get_texture(RB_SCOPE_SSAO, RB_FINAL), full_size, p_projections[0], settings);
@@ -1708,7 +1730,17 @@ bool RenderForwardClustered::_ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD>
 		r_buffers.history_length = ensure(RB_TEX_RT_HISTORY_LENGTH, RD::DATA_FORMAT_R8_UNORM);
 	}
 
-	return r_buffers.output_mask.is_valid() && r_buffers.output_index.is_valid();
+	// All three the TRACE needs, not the two the forward pass samples. A device
+	// that runs out of memory partway through this list -- which a 4 GB card
+	// sharing itself with an editor can -- would otherwise report success here
+	// and have the trace decline to run against the incomplete set, leaving the
+	// mask at the zero it was cleared to and the scene fully shadowed.
+	//
+	// The denoiser's own textures are deliberately not required: render() checks
+	// them itself and falls back to handing the mask straight from the trace,
+	// which is a noisier picture rather than no picture.
+	return r_buffers.output_mask.is_valid() && r_buffers.output_index.is_valid() &&
+			r_buffers.raw_hit_distance.is_valid();
 }
 
 void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
@@ -1927,34 +1959,42 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			settings.max_history = RendererRD::RaytracingScene::get_denoiser_max_history();
 			settings.min_filter_pixels = RendererRD::RaytracingScene::get_denoiser_min_filter_pixels();
 			settings.history_clamp_sigma = RendererRD::RaytracingScene::get_denoiser_history_clamp_sigma();
+			settings.lag_response = RendererRD::RaytracingScene::get_denoiser_lag_response();
 			settings.accurate_occluder_distance = RendererRD::RaytracingScene::is_accurate_occluder_distance();
 
 			RendererRD::RTShadows::Buffers rt_buffers;
 			bool have_buffers = _ensure_rt_shadow_buffers(rb, internal_size, settings.denoise, rt_buffers);
 
-			if (have_buffers) {
-				if (tlas.is_valid()) {
-					RID normal_roughness = rb_data->has_normal_roughness() ? rb_data->get_normal_roughness() : RID();
+			// Whatever happens below, this frame must leave a mask the forward pass
+			// can read. It samples one per raytraced light unconditionally, and an
+			// unwritten mask is a mask full of the zero it was cleared to, which
+			// reads as every light fully occluded everywhere.
+			bool mask_written = false;
 
-					// The same correction the current projection gets, so the two
-					// clip spaces the denoiser maps between are built the same way.
-					Projection prev_correction;
-					prev_correction.set_depth_correction(true);
-					prev_correction.add_jitter_offset(p_render_data->scene_data->prev_taa_jitter);
-					const Projection prev_projection = prev_correction * p_render_data->scene_data->prev_cam_projection;
+			if (have_buffers && tlas.is_valid()) {
+				RID normal_roughness = rb_data->has_normal_roughness() ? rb_data->get_normal_roughness() : RID();
 
-					rt_shadows->render(tlas, rb->get_depth_texture(), normal_roughness,
-							rt_buffers, internal_size,
-							p_render_data->scene_data->get_cam_projection(), p_render_data->scene_data->get_cam_transform(),
-							prev_projection, p_render_data->scene_data->prev_cam_transform,
-							rt_lights, settings);
-				} else {
-					// Nothing to trace against (an empty scene, or every mesh was
-					// ineligible). A fully lit mask is the correct answer, and it makes
-					// the companion index irrelevant: whichever channel a light matches,
-					// it reads back as unshadowed.
-					RD::get_singleton()->texture_clear(rt_buffers.output_mask, Color(1, 1, 1, 1), 0, 1, 0, 1);
-				}
+				// The same correction the current projection gets, so the two
+				// clip spaces the denoiser maps between are built the same way.
+				Projection prev_correction;
+				prev_correction.set_depth_correction(true);
+				prev_correction.add_jitter_offset(p_render_data->scene_data->prev_taa_jitter);
+				const Projection prev_projection = prev_correction * p_render_data->scene_data->prev_cam_projection;
+
+				mask_written = rt_shadows->render(tlas, rb->get_depth_texture(), normal_roughness,
+						rt_buffers, internal_size,
+						p_render_data->scene_data->get_cam_projection(), p_render_data->scene_data->get_cam_transform(),
+						prev_projection, p_render_data->scene_data->prev_cam_transform,
+						rt_lights, settings);
+			}
+
+			if (!mask_written && rt_buffers.output_mask.is_valid()) {
+				// Nothing was traced: an empty structure, or a buffer that could not
+				// be built. A fully lit mask is the safe answer, and it makes the
+				// companion index irrelevant -- whichever channel a light matches, it
+				// reads back as unshadowed, so the scene loses its raytraced shadows
+				// rather than all of its light.
+				RD::get_singleton()->texture_clear(rt_buffers.output_mask, Color(1, 1, 1, 1), 0, 1, 0, 1);
 			}
 
 			RD::get_singleton()->draw_command_end_label();

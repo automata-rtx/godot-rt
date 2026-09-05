@@ -134,7 +134,9 @@ layout(push_constant, std430) uniform Params {
 	// measured in world units can be reported in the units the denoiser filters
 	// in.
 	float focal_pixels;
-	// Traversal flags for every shadow ray this dispatch casts.
+	// Base traversal flags for this dispatch. A light whose effective size is
+	// zero ORs in terminate-on-first-hit for its own rays, below, because the
+	// closest occluder only ever sizes a penumbra and that light has none.
 	uint ray_flags;
 }
 params;
@@ -572,6 +574,19 @@ void main() {
 
 		uint sample_count = light.size > 0.0 ? max(requested_samples, 1u) : 1u;
 
+		// A point emitter casts a hard shadow, and the only thing the closest
+		// occluder buys over the first one traversal happens to reach is the
+		// distance the penumbra is measured from. Both branches of that estimate
+		// below multiply by light.size, so at zero the distance is discarded
+		// whatever it cost to find. Stopping at the first hit is then free, and it
+		// is the difference between a ray that ends inside the first wall it meets
+		// and one that keeps descending the structure looking for a nearer one.
+		//
+		// Per light rather than per dispatch: the accurate_occluder_distance
+		// setting still decides for every light that has a size, and one lamp
+		// turned hard should not spend the others' traversal budget.
+		uint ray_flags = light.size > 0.0 ? params.ray_flags : (params.ray_flags | gl_RayFlagsTerminateOnFirstHitEXT);
+
 		// Every sample is traced; there is no early out on a pair of probe rays
 		// that agree. No pair can answer for a disk: two points on the rim,
 		// opposite each other, still both read lit over the whole outer half of a
@@ -611,7 +626,7 @@ void main() {
 			// makes the gap look larger than it is, and a shadow that should be
 			// crisp gets filtered as though it were soft. Which of the two matters
 			// more depends on the hardware, so it is a setting.
-			rayQueryInitializeEXT(ray_query, tlas, params.ray_flags,
+			rayQueryInitializeEXT(ray_query, tlas, ray_flags,
 					light.mask, origin, light.bias, direction, ray_length - light.bias);
 
 			// Every candidate is opaque, so traversal needs no help from us and
