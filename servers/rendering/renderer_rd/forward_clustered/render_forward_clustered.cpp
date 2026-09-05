@@ -2905,7 +2905,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				params.view_to_clip = correction * cur_proj;
 				params.clip_to_view = params.view_to_clip.inverse();
 				// Current clip to previous clip, the same reprojection FSR2 is given.
-				params.clip_to_prev_clip = (correction * prev_proj) * prev_transform.affine_inverse() * cur_transform * params.view_to_clip.inverse();
+				params.clip_to_prev_clip = (correction * prev_proj) * prev_transform.affine_inverse() * cur_transform * params.clip_to_view;
 				params.prev_clip_to_clip = params.clip_to_prev_clip.inverse();
 				params.camera_transform = cur_transform;
 

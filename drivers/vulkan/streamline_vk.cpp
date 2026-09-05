@@ -210,6 +210,10 @@ bool verify_nvidia_signature(const wchar_t *p_path) {
 }
 
 sl::CommandBuffer *to_sl_command_buffer(uint64_t p_command_buffer) {
+	// Safe by construction: the only callers are driver callbacks registered through
+	// `RenderingDevice::get_singleton()`, so the driver executing them is this one. Streamline
+	// drives that device and no other -- a local rendering device is a separate VkDevice it was
+	// never told about.
 	RenderingDeviceDriverVulkan *driver = static_cast<RenderingDeviceDriverVulkan *>(RenderingDevice::get_singleton()->get_device_driver());
 	return reinterpret_cast<sl::CommandBuffer *>(driver->command_buffer_get_vulkan_handle(RenderingDeviceDriver::CommandBufferID(p_command_buffer)));
 }
@@ -810,30 +814,40 @@ void StreamlineVK::_free_hudless(uint32_t p_viewport) {
 void StreamlineVK::frame_generation_capture_hudless(uint32_t p_viewport, RID p_source_texture, const Size2i &p_size) {
 	ERR_FAIL_NULL(internal);
 	Internal::FrameGenerationState *state = internal->frame_generation.getptr(p_viewport);
-	if (state == nullptr || !state->running || p_source_texture.is_null() || p_size.width <= 0 || p_size.height <= 0) {
+	if (state == nullptr || !state->running || p_source_texture.is_null()) {
 		return;
 	}
 
 	RenderingDevice *rendering_device = RenderingDevice::get_singleton();
+	const RenderingDevice::TextureFormat source_format = rendering_device->texture_get_format(p_source_texture);
+	const Size2i size = Size2i(int(source_format.width), int(source_format.height));
+	if (size.width <= 0 || size.height <= 0) {
+		return;
+	}
 
-	if (state->hudless_texture.is_null() || state->hudless_size != p_size) {
+	// Frame generation was configured with the size the caller expected the presented image to
+	// be. If the render target turns out to be a different size, the copy still succeeds but
+	// what Streamline interpolates no longer matches what it was told to expect.
+	if (size != p_size) {
+		WARN_PRINT_ONCE(vformat("Streamline: the render target is %dx%d but frame generation was configured for %dx%d.", size.width, size.height, p_size.width, p_size.height));
+	}
+
+	if (state->hudless_texture.is_null() || state->hudless_size != size) {
 		_free_hudless(p_viewport);
-
-		const RenderingDevice::TextureFormat source_format = rendering_device->texture_get_format(p_source_texture);
 
 		RenderingDevice::TextureFormat format;
 		format.format = source_format.format;
-		format.width = uint32_t(p_size.width);
-		format.height = uint32_t(p_size.height);
+		format.width = source_format.width;
+		format.height = source_format.height;
 		format.usage_bits = RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT | RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 
 		state->hudless_texture = rendering_device->texture_create(format, RenderingDevice::TextureView());
 		ERR_FAIL_COND(state->hudless_texture.is_null());
-		state->hudless_size = p_size;
+		state->hudless_size = size;
 		rendering_device->set_resource_name(state->hudless_texture, "Streamline HUD-less Color");
 	}
 
-	rendering_device->texture_copy(p_source_texture, state->hudless_texture, Vector3(), Vector3(), Vector3(p_size.width, p_size.height, 1), 0, 0, 0, 0);
+	rendering_device->texture_copy(p_source_texture, state->hudless_texture, Vector3(), Vector3(), Vector3(size.width, size.height, 1), 0, 0, 0, 0);
 }
 
 RID StreamlineVK::frame_generation_get_hudless(uint32_t p_viewport) const {
