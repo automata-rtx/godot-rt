@@ -49,10 +49,23 @@
 #include <wincrypt.h>
 #include <wintrust.h>
 
-// DLSSOptions still carries a deprecated `sharpness` member that its own defaulted constructor
-// initializes, so the warning fires from inside the SDK rather than at any call site of ours.
-GODOT_GCC_WARNING_PUSH_AND_IGNORE("-Wdeprecated-declarations")
-GODOT_CLANG_WARNING_PUSH_AND_IGNORE("-Wdeprecated-declarations")
+// The SDK's headers do not compile under this engine's warning set, and all three complaints are
+// about the SDK's own declarations rather than anything a caller here does: DLSSOptions has a
+// deprecated `sharpness` member that its own defaulted constructor initializes, PrecisionInfo's
+// constructor names its parameters after its members, and FrameToken is a virtual interface with
+// a non-virtual destructor -- deliberately, since it is never deleted through a base pointer.
+GODOT_GCC_WARNING_PUSH
+GODOT_GCC_WARNING_IGNORE("-Wdeprecated-declarations")
+GODOT_GCC_WARNING_IGNORE("-Wshadow")
+GODOT_GCC_WARNING_IGNORE("-Wnon-virtual-dtor")
+GODOT_CLANG_WARNING_PUSH
+GODOT_CLANG_WARNING_IGNORE("-Wdeprecated-declarations")
+GODOT_CLANG_WARNING_IGNORE("-Wshadow")
+GODOT_CLANG_WARNING_IGNORE("-Wnon-virtual-dtor")
+GODOT_MSVC_WARNING_PUSH
+GODOT_MSVC_WARNING_IGNORE(4458) // Declaration hides class member.
+GODOT_MSVC_WARNING_IGNORE(4265) // Class has virtual functions but a non-virtual destructor.
+GODOT_MSVC_WARNING_IGNORE(4996) // Deprecated declaration.
 #include "sl.h"
 #include "sl_consts.h"
 #include "sl_dlss.h"
@@ -60,6 +73,7 @@ GODOT_CLANG_WARNING_PUSH_AND_IGNORE("-Wdeprecated-declarations")
 #include "sl_helpers.h"
 #include "sl_pcl.h"
 #include "sl_reflex.h"
+GODOT_MSVC_WARNING_POP
 GODOT_CLANG_WARNING_POP
 GODOT_GCC_WARNING_POP
 

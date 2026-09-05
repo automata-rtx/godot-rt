@@ -141,6 +141,33 @@ which ran. Ships **off**: the project setting defaults to legacy and an `Environ
 - Do not tune it by screenshot. `docs/rt_shadows/ao_validation/` traces the scene on the CPU two
   ways and scores a render against both; section 9 of the fork guide has the numbers to beat.
 
+## DLSS through NVIDIA Streamline
+
+The fork also carries a Vulkan Streamline integration: **DLSS super resolution** as
+`VIEWPORT_SCALING_3D_MODE_DLSS`, and **DLSS frame generation** as the application-wide
+`rendering/streamline/frame_generation`. Read **`docs/streamline/INTEGRATION.md`** before
+answering anything about upscaling, frame generation or the Vulkan loader.
+
+- **Off by default, and Windows only.** `rendering/streamline/enabled` is restart-required
+  because it replaces the process's Vulkan entry-point loader with the interposer's: volk is
+  initialized with `vkGetInstanceProcAddr` from `sl.interposer.dll`, so `vkCreateInstance`,
+  `vkCreateDevice`, `vkCreateSwapchainKHR`, `vkAcquireNextImageKHR` and `vkQueuePresentKHR` all
+  become Streamline proxies without a single call site changing.
+- **No SDK binaries are vendored** — only the headers, under `thirdparty/streamline/`. The
+  runtime is loaded from `rendering/streamline/binary_path` and refused unless the OS trusts its
+  signature and the signer is NVIDIA, so a self-built Streamline will not load.
+- **Frame generation refuses rather than half-applies**: never in the editor, never in stereo,
+  never on a viewport no window presents, and never without motion vectors (which means a
+  temporal upscaler or TAA must be running). It provides hudless colour but **not UI alpha**,
+  which Godot cannot currently produce, so a moving interface element smears across generated
+  frames. Fixed 2x only — dynamic multi-frame generation is D3D12-only in this SDK.
+- **V-Sync with frame generation is D3D12-only too**, so on Vulkan it has to be forced from the
+  driver control panel.
+- **Streamline 2.12.0 does not ship XeSS.** Adding it means integrating Intel's SDK directly, not
+  adding a Streamline feature id.
+- **None of it has been run on hardware.** Section 8 of the integration document lists what to
+  check first and in what order.
+
 ## Working in this repo
 
 - `docs/rt_shadows/FORK_GUIDE.md` — what changed, why, and how to use it. Self-contained; copy it
@@ -151,6 +178,10 @@ which ran. Ships **off**: the project setting defaults to legacy and an `Environ
   re-trying an idea that looks obvious; several already were, and failed. Keep it out of the guide.
 - `docs/rt_shadows/PLAN.md` — the pre-implementation design document. **Historical. Superseded by
   the guide and the porting document; several of its decisions were not taken.** Not current.
+- `docs/streamline/INTEGRATION.md` — the DLSS integration: how it attaches, every seam it touches,
+  the motion vector and depth conventions it assumes, and what to check first on hardware.
+- `docs/streamline/EVALUATION.md` — the design note that preceded it. **Historical.** Some of its
+  decisions were taken differently.
 
 Set `GODOT_RT_DEBUG=1` to print per-frame acceleration structure and shadow mask diagnostics.
 

@@ -1,5 +1,10 @@
 # Streamline in this fork: how it would attach
 
+**Historical.** This is the design note that preceded the implementation; see `INTEGRATION.md`
+for what the engine actually does. Several decisions here were taken differently, most visibly
+the device-creation work, which Streamline's own create-instance and create-device proxies handle
+rather than the engine.
+
 An evaluation, not a plan of record. The question asked was how to get DLSS super resolution and
 frame generation into this engine cleanly, and what the inputs cost. Read against Streamline SDK
 **2.12.0** (`e8aaa6e`), which is what the conclusions below were checked against; NVIDIA moves this
