@@ -40,6 +40,8 @@
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
 #include "core/version.h"
+#include "drivers/vulkan/rendering_device_driver_vulkan.h"
+#include "servers/rendering/rendering_device.h"
 
 #include <windows.h>
 // Order matters: these three need windows.h first.
@@ -191,6 +193,11 @@ bool verify_nvidia_signature(const wchar_t *p_path) {
 	CryptMsgClose(message);
 	CertCloseStore(store, 0);
 	return signed_by_nvidia;
+}
+
+sl::CommandBuffer *to_sl_command_buffer(uint64_t p_command_buffer) {
+	RenderingDeviceDriverVulkan *driver = static_cast<RenderingDeviceDriverVulkan *>(RenderingDevice::get_singleton()->get_device_driver());
+	return reinterpret_cast<sl::CommandBuffer *>(driver->command_buffer_get_vulkan_handle(RenderingDeviceDriver::CommandBufferID(p_command_buffer)));
 }
 
 sl::Extent to_sl_extent(const StreamlineVK::Texture &p_texture) {
@@ -524,6 +531,56 @@ void StreamlineVK::set_marker(Marker p_marker) {
 	internal->pcl_set_marker(marker, *internal->frame);
 }
 
+StreamlineVK::Texture StreamlineVK::texture_from_rid(RID p_texture, TextureUse p_use) {
+	Texture texture;
+	if (p_texture.is_null()) {
+		return texture;
+	}
+
+	RenderingDevice *rendering_device = RenderingDevice::get_singleton();
+	texture.image = rendering_device->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE, p_texture);
+	texture.view = rendering_device->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE_VIEW, p_texture);
+	texture.format = uint32_t(rendering_device->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE_DATA_FORMAT, p_texture));
+
+	const RenderingDevice::TextureFormat format = rendering_device->texture_get_format(p_texture);
+	texture.size = Size2i(int(format.width), int(format.height));
+
+	// Streamline hands these straight to its own Vulkan backend, so they have to be the flags
+	// the image was actually created with. This mirrors the mapping in
+	// `RenderingDeviceDriverVulkan::texture_create()`; the two must not drift apart.
+	uint32_t usage = 0;
+	if (format.usage_bits & RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT) {
+		usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+	}
+	if (format.usage_bits & RenderingDevice::TEXTURE_USAGE_STORAGE_BIT) {
+		usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+	}
+	if (format.usage_bits & RenderingDevice::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT) {
+		usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	}
+	if (format.usage_bits & (RenderingDevice::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RenderingDevice::TEXTURE_USAGE_DEPTH_RESOLVE_ATTACHMENT_BIT)) {
+		usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	}
+	if (format.usage_bits & RenderingDevice::TEXTURE_USAGE_INPUT_ATTACHMENT_BIT) {
+		usage |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+	}
+	if (format.usage_bits & RenderingDevice::TEXTURE_USAGE_CAN_UPDATE_BIT) {
+		usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	}
+	if (format.usage_bits & RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT) {
+		usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	}
+	if (format.usage_bits & RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT) {
+		usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	}
+	texture.usage = usage;
+
+	// See TextureUse: the render graph put the image in this layout before the callback ran.
+	texture.layout = p_use == TEXTURE_USE_STORAGE ? uint32_t(VK_IMAGE_LAYOUT_GENERAL) : uint32_t(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+	return texture;
+}
+
 StreamlineVK::Quality StreamlineVK::quality_from_scale(float p_scale) {
 	// The thresholds sit halfway between the presets' own scale factors, so a viewport set to
 	// one of DLSS's canonical scales lands on that preset exactly.
@@ -643,7 +700,7 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 		tags.push_back(sl::ResourceTag(&exposure, sl::kBufferTypeExposure, sl::ResourceLifecycle::eValidUntilEvaluate));
 	}
 
-	sl::CommandBuffer *command_buffer = reinterpret_cast<sl::CommandBuffer *>(uintptr_t(p_command_buffer));
+	sl::CommandBuffer *command_buffer = to_sl_command_buffer(p_command_buffer);
 	sl::Result result = internal->set_tag_for_frame(*internal->frame, sl::ViewportHandle(p_viewport), tags.ptr(), tags.size(), command_buffer);
 	if (result != sl::Result::eOk) {
 		ERR_PRINT_ONCE(vformat("Streamline: tagging the super resolution inputs failed (%s).", sl::getResultAsStr(result)));
@@ -763,7 +820,7 @@ void StreamlineVK::frame_generation_tag(uint64_t p_command_buffer, uint32_t p_vi
 		tags.push_back(sl::ResourceTag(&hudless, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eValidUntilPresent, &hudless_extent));
 	}
 
-	sl::CommandBuffer *command_buffer = reinterpret_cast<sl::CommandBuffer *>(uintptr_t(p_command_buffer));
+	sl::CommandBuffer *command_buffer = to_sl_command_buffer(p_command_buffer);
 	const sl::Result result = internal->set_tag_for_frame(*internal->frame, sl::ViewportHandle(p_viewport), tags.ptr(), tags.size(), command_buffer);
 	if (result != sl::Result::eOk) {
 		ERR_PRINT_ONCE(vformat("Streamline: tagging the frame generation inputs failed (%s).", sl::getResultAsStr(result)));

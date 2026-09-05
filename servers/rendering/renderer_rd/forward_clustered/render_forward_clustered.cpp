@@ -109,6 +109,19 @@ bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_mfx_tempor
 }
 #endif
 
+#ifdef STREAMLINE_ENABLED
+uint32_t RenderForwardClustered::RenderBufferDataForwardClustered::get_dlss_viewport(uint32_t p_view) {
+	if (dlss_viewport == 0) {
+		// One block per render buffer, so the views of a stereo pair never collide, and never
+		// reused while this buffer lives. Starts at 1 because 0 means "not claimed yet".
+		static uint32_t next_viewport = 1;
+		dlss_viewport = next_viewport;
+		next_viewport += RendererSceneRender::MAX_RENDER_VIEWS;
+	}
+	return dlss_viewport + p_view;
+}
+#endif
+
 void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	// JIC, should already have been cleared
 	if (render_buffers) {
@@ -133,6 +146,15 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	if (mfx_temporal_context) {
 		memdelete(mfx_temporal_context);
 		mfx_temporal_context = nullptr;
+	}
+#endif
+
+#ifdef STREAMLINE_ENABLED
+	if (dlss_viewport != 0) {
+		for (uint32_t v = 0; v < RendererSceneRender::MAX_RENDER_VIEWS; v++) {
+			RendererRD::DLSSEffect::release(dlss_viewport + v);
+		}
+		dlss_viewport = 0;
 	}
 #endif
 
@@ -2116,11 +2138,19 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		SCALE_NONE,
 		SCALE_FSR2,
 		SCALE_MFX,
+		SCALE_DLSS,
 	} scale_type = SCALE_NONE;
 
 	switch (rb->get_scaling_3d_mode()) {
 		case RSE::VIEWPORT_SCALING_3D_MODE_FSR2:
 			scale_type = SCALE_FSR2;
+			break;
+		case RSE::VIEWPORT_SCALING_3D_MODE_DLSS:
+#ifdef STREAMLINE_ENABLED
+			scale_type = SCALE_DLSS;
+#else
+			scale_type = SCALE_NONE;
+#endif
 			break;
 		case RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL:
 #ifdef METAL_MFXTEMPORAL_ENABLED
@@ -2852,6 +2882,60 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			}
 
 			RD::get_singleton()->draw_command_end_label();
+		} else if (scale_type == SCALE_DLSS) {
+#ifdef STREAMLINE_ENABLED
+			RID exposure;
+			if (RSG::camera_attributes->camera_attributes_uses_auto_exposure(p_render_data->camera_attributes)) {
+				exposure = luminance->get_current_luminance_buffer(rb);
+			}
+
+			RD::get_singleton()->draw_command_begin_label("DLSS");
+			RENDER_TIMESTAMP("DLSS");
+
+			Projection correction;
+			correction.set_depth_correction(true, true, false);
+
+			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+				const real_t fov = p_render_data->scene_data->cam_projection.get_fov();
+				const real_t aspect = p_render_data->scene_data->cam_projection.get_aspect();
+
+				RendererRD::DLSSEffect::Parameters params;
+				params.viewport = rb_data->get_dlss_viewport(v);
+				params.internal_size = rb->get_internal_size();
+				params.target_size = rb->get_target_size();
+				params.scale = float(rb->get_internal_size().width) / float(MAX(rb->get_target_size().width, 1));
+				params.color = rb->get_internal_texture(v);
+				params.depth = rb->get_depth_texture(v);
+				params.velocity = rb->get_velocity_buffer(false, v);
+				params.exposure = exposure;
+				params.output = rb->get_upscaled_texture(v);
+				params.z_near = p_render_data->scene_data->z_near;
+				params.z_far = p_render_data->scene_data->z_far;
+				params.fov_y = float(p_render_data->scene_data->cam_projection.get_fovy(fov, 1.0 / aspect));
+				params.aspect = float(aspect);
+				// Streamline wants the jitter in pixels of the render target, which is the same
+				// value FSR2 is handed a few lines above.
+				params.jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
+				params.reset_accumulation = false; // FIXME: The engine does not provide a way to reset the accumulation.
+				params.orthographic = p_render_data->scene_data->cam_orthogonal;
+
+				const Projection &prev_proj = p_render_data->scene_data->prev_cam_projection;
+				const Projection &cur_proj = p_render_data->scene_data->cam_projection;
+				const Transform3D &prev_transform = p_render_data->scene_data->prev_cam_transform;
+				const Transform3D &cur_transform = p_render_data->scene_data->cam_transform;
+
+				params.view_to_clip = correction * cur_proj;
+				params.clip_to_view = params.view_to_clip.inverse();
+				// Current clip to previous clip, the same reprojection FSR2 is given.
+				params.clip_to_prev_clip = (correction * prev_proj) * prev_transform.affine_inverse() * cur_transform * params.view_to_clip.inverse();
+				params.prev_clip_to_clip = params.clip_to_prev_clip.inverse();
+				params.camera_transform = cur_transform;
+
+				dlss_effect->upscale(params);
+			}
+
+			RD::get_singleton()->draw_command_end_label();
+#endif
 		} else if (scale_type == SCALE_MFX) {
 #ifdef METAL_MFXTEMPORAL_ENABLED
 			bool reset = rb_data->ensure_mfx_temporal(mfx_temporal_effect);
@@ -5645,6 +5729,9 @@ RenderForwardClustered::RenderForwardClustered() {
 
 	taa = memnew(RendererRD::TAA);
 	fsr2_effect = memnew(RendererRD::FSR2Effect);
+#ifdef STREAMLINE_ENABLED
+	dlss_effect = memnew(RendererRD::DLSSEffect);
+#endif
 	ss_effects = memnew(RendererRD::SSEffects);
 	gtao = memnew(RendererRD::GTAO);
 #ifdef METAL_MFXTEMPORAL_ENABLED
@@ -5673,6 +5760,13 @@ RenderForwardClustered::~RenderForwardClustered() {
 		memdelete(fsr2_effect);
 		fsr2_effect = nullptr;
 	}
+
+#ifdef STREAMLINE_ENABLED
+	if (dlss_effect) {
+		memdelete(dlss_effect);
+		dlss_effect = nullptr;
+	}
+#endif
 
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	if (mfx_temporal_effect) {

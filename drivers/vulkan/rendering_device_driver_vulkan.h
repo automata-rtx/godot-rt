@@ -412,6 +412,10 @@ private:
 	};
 
 public:
+	// The raw handle, for the one case the abstraction cannot cover: handing the command buffer
+	// to a library outside the engine.
+	VkCommandBuffer command_buffer_get_vulkan_handle(CommandBufferID p_cmd_buffer) const;
+
 	virtual CommandBufferID command_buffer_create(CommandPoolID p_cmd_pool) override final;
 	virtual bool command_buffer_begin(CommandBufferID p_cmd_buffer) override final;
 	virtual bool command_buffer_begin_secondary(CommandBufferID p_cmd_buffer, RenderPassID p_render_pass, uint32_t p_subpass, FramebufferID p_framebuffer) override final;

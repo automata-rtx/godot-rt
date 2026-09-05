@@ -3492,6 +3492,13 @@ void RenderingDeviceDriverVulkan::command_pool_free(CommandPoolID p_cmd_pool) {
 
 // ----- BUFFER -----
 
+VkCommandBuffer RenderingDeviceDriverVulkan::command_buffer_get_vulkan_handle(CommandBufferID p_cmd_buffer) const {
+	if (!p_cmd_buffer) {
+		return VK_NULL_HANDLE;
+	}
+	return ((const CommandBufferInfo *)(p_cmd_buffer.id))->vk_command_buffer;
+}
+
 RDD::CommandBufferID RenderingDeviceDriverVulkan::command_buffer_create(CommandPoolID p_cmd_pool) {
 	DEV_ASSERT(p_cmd_pool);
 

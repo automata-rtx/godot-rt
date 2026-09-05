@@ -2929,6 +2929,7 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_METALFX_SPATIAL);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_NEAREST);
+	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_DLSS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_MAX);
 
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_UPDATE_DISABLED);
@@ -3811,9 +3812,16 @@ void RenderingServer::init() {
 	{
 		String mode_hints;
 		String mode_hints_metal;
+		String mode_hints_windows;
 		{
 			Vector<String> mode_hints_arr = { "Nearest (Fastest):5", "Bilinear (Fastest):0", "FSR 1.0 (Fast):1", "FSR 2.2 (Slow):2" };
 			mode_hints = String(",").join(mode_hints_arr);
+
+			// DLSS reaches the hardware through Streamline, which is Windows-only, and falls
+			// back to FSR 2 on a machine that cannot run it.
+			Vector<String> mode_hints_windows_arr = mode_hints_arr;
+			mode_hints_windows_arr.push_back("DLSS (Slow):6");
+			mode_hints_windows = String(",").join(mode_hints_windows_arr);
 
 			mode_hints_arr.push_back("MetalFX (Spatial - Fast):3");
 			mode_hints_arr.push_back("MetalFX (Temporal - Slow):4");
@@ -3823,6 +3831,7 @@ void RenderingServer::init() {
 		GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/scaling_3d/mode", PROPERTY_HINT_ENUM, mode_hints), 0);
 		GLOBAL_DEF_NOVAL(PropertyInfo(Variant::INT, "rendering/scaling_3d/mode.ios", PROPERTY_HINT_ENUM, mode_hints_metal), 0);
 		GLOBAL_DEF_NOVAL(PropertyInfo(Variant::INT, "rendering/scaling_3d/mode.macos", PROPERTY_HINT_ENUM, mode_hints_metal), 0);
+		GLOBAL_DEF_NOVAL(PropertyInfo(Variant::INT, "rendering/scaling_3d/mode.windows", PROPERTY_HINT_ENUM, mode_hints_windows), 0);
 	}
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/scaling_3d/scale", PROPERTY_HINT_RANGE, "0.1,2.0,0.0001"), 1.0);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/scaling_3d/fsr_sharpness", PROPERTY_HINT_RANGE, "0,2,0.01"), 0.2f);

@@ -36,6 +36,8 @@
 #include "core/object/worker_thread_pool.h"
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
+// Self-guarding: it defines STREAMLINE_ENABLED and compiles to nothing where the SDK cannot run.
+#include "drivers/vulkan/streamline_vk.h"
 #include "servers/display/display_server.h"
 #include "servers/rendering/renderer_canvas_cull.h"
 #include "servers/rendering/renderer_compositor.h"
@@ -159,10 +161,22 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 				WARN_PRINT_ONCE("MetalFX and FSR upscaling are not supported in the Compatibility renderer. Falling back to bilinear scaling.");
 			}
 
-			if ((scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_FSR || scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_FSR2 || scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL) && OS::get_singleton()->get_current_rendering_method() == "mobile") {
+			if ((scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_FSR || scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_FSR2 || scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL || scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_DLSS) && OS::get_singleton()->get_current_rendering_method() == "mobile") {
 				scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR;
 				scaling_type = RSE::scaling_3d_mode_type(scaling_3d_mode);
 				WARN_PRINT_ONCE("MetalFX temporal and FSR upscaling are not supported in the Mobile renderer. Falling back to bilinear scaling.");
+			}
+
+			bool dlss_available = false;
+#ifdef STREAMLINE_ENABLED
+			dlss_available = StreamlineVK::get_singleton() != nullptr && StreamlineVK::get_singleton()->is_supported(StreamlineVK::FEATURE_DLSS_SUPER_RESOLUTION);
+#endif
+			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_DLSS && !dlss_available) {
+				// Streamline off, missing, or a GPU that cannot run DLSS. FSR 2 is the closest
+				// thing the engine can do on its own.
+				scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_FSR2;
+				scaling_type = RSE::scaling_3d_mode_type(scaling_3d_mode);
+				WARN_PRINT_ONCE("DLSS is not available. Falling back to FSR 2 scaling.");
 			}
 
 			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL && !RD::get_singleton()->has_feature(RD::SUPPORTS_METALFX_TEMPORAL)) {
@@ -220,7 +234,7 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 			if (use_taa && scaling_type == RSE::VIEWPORT_SCALING_3D_TYPE_TEMPORAL) {
 				// Temporal upscalers can't be used with TAA.
 				// Turn it off and prefer using the temporal upscaler.
-				WARN_PRINT_ONCE("FSR 2 or MetalFX Temporal is not compatible with TAA. Disabling TAA internally.");
+				WARN_PRINT_ONCE("FSR 2, MetalFX Temporal and DLSS are not compatible with TAA. Disabling TAA internally.");
 				use_taa = false;
 			}
 
@@ -243,6 +257,7 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 				case RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL:
 				case RSE::VIEWPORT_SCALING_3D_MODE_FSR:
 				case RSE::VIEWPORT_SCALING_3D_MODE_FSR2:
+				case RSE::VIEWPORT_SCALING_3D_MODE_DLSS:
 					target_width = p_viewport->size.width;
 					target_height = p_viewport->size.height;
 					render_width = MAX(target_width * scaling_3d_scale, 1.0); // target_width / (target_width * scaling)
@@ -1030,6 +1045,10 @@ void RendererViewport::viewport_set_scaling_3d_mode(RID p_viewport, RSE::Viewpor
 		}
 		if (p_mode == RSE::VIEWPORT_SCALING_3D_MODE_FSR2) {
 			WARN_PRINT_ONCE_ED("FSR2 3D scaling is only available when using the Forward+ renderer.");
+			return;
+		}
+		if (p_mode == RSE::VIEWPORT_SCALING_3D_MODE_DLSS) {
+			WARN_PRINT_ONCE_ED("DLSS 3D scaling is only available when using the Forward+ renderer.");
 			return;
 		}
 		if (p_mode == RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL) {

@@ -3541,6 +3541,9 @@
 		<member name="rendering/scaling_3d/mode.macos" type="int" setter="" getter="">
 			macOS override for [member rendering/scaling_3d/mode]. This allows selecting the MetalFX spatial and MetalFX temporal scaling modes, which are exclusive to platforms where the Metal rendering driver is used.
 		</member>
+		<member name="rendering/scaling_3d/mode.windows" type="int" setter="" getter="">
+			Windows override for [member rendering/scaling_3d/mode]. This allows selecting the DLSS scaling mode, which needs the NVIDIA Streamline runtime and is therefore exclusive to Windows.
+		</member>
 		<member name="rendering/scaling_3d/scale" type="float" setter="" getter="" default="1.0">
 			Scales the 3D render buffer based on the viewport size uses an image filter specified in [member rendering/scaling_3d/mode] to scale the output image to the full viewport size. Values lower than [code]1.0[/code] can be used to speed up 3D rendering at the cost of quality (undersampling). Values greater than [code]1.0[/code] are only valid for bilinear mode and can be used to improve 3D rendering quality at a high performance cost (supersampling). See also [member rendering/anti_aliasing/quality/msaa_3d] for multi-sample antialiasing, which is significantly cheaper but only smooths the edges of polygons.
 			[b]Note:[/b] When using the [b]Nearest[/b] scaling mode, to avoid uneven pixel scaling, it's highly recommended to use a value equal to an integer divisor with a dividend of [code]1[/code]. For example, it's best to use a scale of [code]0.5[/code] (1/2), [code]0.3333[/code] (1/3), [code]0.25[/code] (1/4), [code]0.2[/code] (1/5), and so on.
@@ -3564,6 +3567,25 @@
 		</member>
 		<member name="rendering/shading/overrides/force_vertex_shading" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], forces vertex shading for all rendering. This can increase performance a lot, but also reduces quality immensely. Can be used to optimize performance on low-end mobile devices.
+		</member>
+		<member name="rendering/streamline/binary_path" type="String" setter="" getter="" default="&quot;&quot;">
+			Directory holding [code]sl.interposer.dll[/code] and the [code]sl.*.dll[/code] plugins. If empty, the directory the executable is in is used, which is where an exported game's own libraries end up.
+			[b]Note:[/b] The Streamline binaries are not distributed with the engine. Download them from an official NVIDIA Streamline release; the interposer is refused unless the operating system trusts its signature and the signer is NVIDIA.
+		</member>
+		<member name="rendering/streamline/enabled" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], loads the NVIDIA Streamline runtime at startup, which is what makes [constant Viewport.SCALING_3D_MODE_DLSS] and [member rendering/streamline/frame_generation] available.
+			[b]Note:[/b] Enabling this replaces the process's Vulkan entry-point loader with Streamline's, so it only takes effect after a restart. It does nothing outside Windows, or when the Vulkan rendering driver is not in use.
+		</member>
+		<member name="rendering/streamline/frame_generation" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], DLSS frame generation interpolates an extra frame between each pair of rendered ones. Requires [member rendering/streamline/enabled], an NVIDIA RTX 40 series GPU or newer, and Reflex, which is switched on automatically alongside it.
+			[b]Note:[/b] Unlike super resolution this is one switch for the whole application rather than a per-viewport setting, because frame generation takes over the swap chain. It never runs in the editor, where the presented image is the editor's own interface.
+			[b]Note:[/b] On Vulkan, Streamline cannot pace generated frames against vertical sync itself. Force V-Sync from the graphics driver's control panel to get a tear-free result.
+		</member>
+		<member name="rendering/streamline/project_id" type="String" setter="" getter="" default="&quot;&quot;">
+			GUID issued by NVIDIA for this application. Without one, Streamline identifies the application by engine name and version instead, which is enough for development but not for the per-title tuning NVIDIA ships over the air.
+		</member>
+		<member name="rendering/streamline/verbose_logging" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], Streamline writes verbose logs to the user data directory. Only useful when diagnosing why a feature refuses to start.
 		</member>
 		<member name="rendering/textures/basis_universal/rdo_dict_size" type="int" setter="" getter="" default="1024">
 			The dictionary size for Rate-Distortion Optimization (RDO) when importing textures as Basis Universal and when RDO is enabled, ranging from [code]64[/code] to [code]65536[/code]. Higher values reduce the file sizes further, but make encoding times significantly longer.

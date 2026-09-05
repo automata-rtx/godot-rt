@@ -42,6 +42,7 @@
 #include "core/math/transform_3d.h"
 #include "core/math/vector2.h"
 #include "core/string/ustring.h"
+#include "core/templates/rid.h"
 
 // Owns the Streamline runtime for the process.
 //
@@ -87,10 +88,15 @@ public:
 		QUALITY_ULTRA_PERFORMANCE,
 	};
 
-	// One Vulkan image, described the way Streamline wants to be handed one. `layout` is the
-	// layout the image is actually in when the command buffer reaches the tag, which for a
-	// resource passed through `RenderingDevice::driver_callback_add()` is decided by the usage
-	// declared alongside it.
+	// How a texture is being handed over, which is what decides the layout it is in when the
+	// command buffer reaches the tag. These have to agree with the usage the same texture was
+	// declared with in the enclosing `RenderingDevice::driver_callback_add()` call.
+	enum TextureUse {
+		TEXTURE_USE_SAMPLED, // CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE.
+		TEXTURE_USE_STORAGE, // CALLBACK_RESOURCE_USAGE_STORAGE_IMAGE_READ_WRITE.
+	};
+
+	// One Vulkan image, described the way Streamline wants to be handed one.
 	struct Texture {
 		uint64_t image = 0; // VkImage.
 		uint64_t view = 0; // VkImageView.
@@ -155,6 +161,9 @@ public:
 
 	// Super resolution. Options are re-sent only when the output size, quality or exposure
 	// source actually changes, so this is safe to call once per frame per view.
+	//
+	// `p_command_buffer` is an `RDD::CommandBufferID`, as handed to a driver callback; the
+	// underlying VkCommandBuffer is resolved here rather than at the call site.
 	bool super_resolution_evaluate(uint64_t p_command_buffer, uint32_t p_viewport, const Size2i &p_output_size, Quality p_quality, const CameraConstants &p_camera, const UpscaleInputs &p_inputs);
 	void super_resolution_release(uint32_t p_viewport);
 
@@ -167,6 +176,10 @@ public:
 	void frame_generation_tag(uint64_t p_command_buffer, uint32_t p_viewport, const CameraConstants &p_camera, const FrameGenerationInputs &p_inputs);
 
 	static Quality quality_from_scale(float p_scale);
+
+	// Translates one of the engine's textures. Returns an empty Texture for an invalid RID, so
+	// an optional input can simply be passed through.
+	static Texture texture_from_rid(RID p_texture, TextureUse p_use);
 
 	StreamlineVK() {}
 	~StreamlineVK() {}
