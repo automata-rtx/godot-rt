@@ -1466,7 +1466,11 @@ bool RenderForwardClustered::_ensure_gtao_buffers(Ref<RenderSceneBuffersRD> p_re
 		return false;
 	}
 
-	const uint32_t usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
+	// CAN_COPY_TO is what makes the shared output clearable: texture_clear refuses a
+	// texture without it, so the unoccluded fallback below would fail every frame it
+	// was needed and leave the buffer holding whatever it already held.
+	const uint32_t usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT |
+			RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
 	const Size2i gather_size = RendererRD::GTAO::gather_size_for(p_size, p_half_resolution, p_checkerboard);
 
 	// A resolution change, or a switch between any of the three gather rates --
@@ -1527,9 +1531,11 @@ void RenderForwardClustered::_process_gtao(Ref<RenderSceneBuffersRD> p_render_bu
 
 	RendererRD::GTAO::Buffers buffers;
 	if (!_ensure_gtao_buffers(p_render_buffers, full_size, half_resolution, checkerboard, buffers)) {
-		// The buffer the forward pass samples is created before the gather's own
-		// targets are, so it can exist while they do not -- an allocation that did
-		// not fit is the way there. It holds undefined contents until something
+		// The buffer the forward pass samples lives in a different context from the
+		// gather's own targets, so it survives the clear_context that drops those,
+		// and the legacy estimator may have created it before the method was
+		// switched. Either way it can exist while the gather targets do not -- an
+		// allocation that did not fit is the way there. It holds undefined contents until something
 		// writes it, and the forward pass multiplies ambient light by it without
 		// asking whether anything did. Unoccluded is the only safe answer: losing
 		// the occlusion costs some contact shading, and the alternative costs every

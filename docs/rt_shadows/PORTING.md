@@ -80,8 +80,10 @@ questions and only the second matters), every frame is byte-identical to the unm
 with the setting on a mesh's vertex buffer is created with `DEVICE_ADDRESS` and AS-build-input usage.
 
 - The settings must be registered in `ProjectSettings`' own constructor, not near their consumer.
-  `mesh_add_surface` decides buffer creation bits at upload time, **before the RenderingDevice and
-  the renderer exist** -- which is also exactly why the master setting is restart-required.
+  `mesh_add_surface` decides buffer creation bits at upload time, **before the `RaytracingScene`
+  object that would otherwise own them exists** -- which is also exactly why the master setting is
+  restart-required. The RenderingDevice itself is up by then, which is what lets the predicate ask
+  it for feature support.
 - **Latch only the settings that genuinely cannot change; read the rest through
   `GLOBAL_GET_CACHED`.** The fork's first version resolved the whole family once behind a
   `settings_registered` flag, which quietly made every tuning knob restart-required while the editor
@@ -153,7 +155,7 @@ lamps, the structure held seven casters, reached by visiting nineteen nodes of t
   `R32G32B32_SFLOAT`. Decode is `position.xyz * aabb.size + aabb.position`. If the newer engine
   changed the scheme, that shader and the format tests are what must be rewritten. **Re-find it** by
   grepping `_mesh_surface_generate_version_for_input_mask` for
-  `offset = i == ARRAY_NORMAL ? position_stride * s->vertex_count : 0` -- if positions are no longer
+  `offset = i == RSE::ARRAY_NORMAL ? position_stride * s->vertex_count : 0` -- if positions are no longer
   a contiguous `float32x3` block at offset 0 ahead of the attribute block, the zero-copy path is gone.
 - Uncompressed surfaces are zero-copy: point at the surface buffer with offset 0, stride 12.
   Classify ineligible surfaces once (non-`PRIMITIVE_TRIANGLES`, `ARRAY_FLAG_USE_2D_VERTICES`,
@@ -197,7 +199,9 @@ buffer. The render is still byte-identical.
 - **Grant a slot only when a built TLAS exists this frame.** A slot with nothing behind it makes the
   forward shader skip the shadow atlas *and* read "fully lit" from the mask: the light casts no
   shadow from any source, which is strictly worse than not enabling the feature.
-- The per-instance ray cull mask folds from the light's **`shadow_caster_mask`**, not its cull mask
+- The ray cull mask each light traces with folds from its own **`shadow_caster_mask`**, not its cull
+  mask -- this is the per-light mask, distinct from the per-instance `layer_mask` folded where the
+  TLAS instance is written
   (which decides what the light *lights*). Fold 32 bits to 8 by OR-ing the four bytes --
   conservative, never under-inclusive -- and promote a zero fold to `0xFF`.
 
@@ -215,8 +219,9 @@ the setting off renders byte-identically.
 - **`rt_shadow_lookup()` must live in `scene_forward_lights_inc.glsl`** (fragment-only), *not* in
   `scene_forward_clustered_inc.glsl`, which the `#[vertex]` stage also includes. `gl_FragCoord` does
   not exist there, every Forward+ vertex variant fails to compile, and **the symptom is the editor
-  appearing to hang on the splash screen** with the CPU at 90–120 ms and the GPU idle. That file is
-  also shared with the mobile renderer, so every added block needs `#ifndef USING_MOBILE_RENDERER`.
+  appearing to hang on the splash screen** with the CPU at 90-120 ms and the GPU idle.
+  `scene_forward_lights_inc.glsl` is the one shared with the mobile renderer, so every block added to
+  *that* file needs `#ifndef USING_MOBILE_RENDERER`.
 - `texelFetch` on a bare `texture2D` requires `GL_EXT_samplerless_texture_functions`, which these
   shaders do not enable. Build a combined sampler -- `sampler2D(rt_shadow_mask, SAMPLER_NEAREST_CLAMP)` --
   the way `ssil_buffer` and `ssr_buffer` do.
@@ -258,7 +263,7 @@ tile has geometry" and no separate flag is needed. Both claim passes below sit b
 of pure sky claims nothing and its candidate list stays empty.
 
 A lamp is admitted when its sphere meets the box: `closest = clamp(light.position, bounds_min,
-bounds_max)`, and in if `dot(closest - light.position, closest - light.position) <= radius * radius`.
+bounds_max)`, and it meets it if `dot(closest - light.position, closest - light.position) <= radius * radius`.
 Rows with `radius <= 0` are the sparse buffer's gaps and are skipped before that. **There is no cone
 test here.** Narrowing a spot light to its cone at tile level would be sound, but it is the wrong way
 to be wrong: an extra candidate costs one rejected distance test in the per-pixel stage, a missing
@@ -419,10 +424,11 @@ accumulator's alpha comes out 1, and the pixel takes this frame's raw trace.
   is one noisy sample inside a region that still needs filtering, and skipping it leaves speckle.
 - **Every early return in the history-writing iteration must still write all three forward-carried
   history textures**, or next frame reprojects against the frame before last. The two exits write
-  deliberately different meta: an exit on a real surface writes that surface's real view distance
-  and history length, because the temporal pass will reproject onto it; the sky exit writes zeroed
-  meta, and a stored zero fails the relative depth test against any real distance, so nothing
-  reprojects onto it.
+  deliberately different meta. The shared early-out above -- sky, or a pixel no raytraced light
+  reaches -- writes zeroed meta, and a stored zero fails the relative depth test against any real
+  distance, so nothing reprojects onto it. The reach early-out that stage 6 adds writes the pixel's
+  real view distance and history length, because that pixel is a surface the temporal pass will
+  reproject onto.
 - Multiview is not a fallback inside the denoiser; the whole raytraced path is off. The availability
   query that gates the mask returns false unless the view count is one, so a stereo render traces
   nothing, warns once, and every light keeps its shadow map. A stereo pair would need its own trace
@@ -441,9 +447,13 @@ perspective camera, and confirm the model first by checking that the 50% crossin
 edge lands within a pixel of the analytic edge at every distance. RMSE against a rendered reference
 will not catch any of the three defects below, because all three are present in the reference too.
 
-Recover the shadow term before measuring. Divide the render by an occluder-free render of the same
-scene: that cancels the falloff, the lambert term and the sRGB transfer and leaves visibility, which
-is the quantity the geometry predicts. A 10-90 measured on pixel values instead is a 10-90 of a
+Recover the shadow term before measuring, and do it in linear light. Linearize both frames first,
+then divide the render by an occluder-free render of the same scene: in linear light that cancels the
+falloff and the lambert term and leaves visibility, which is the quantity the geometry predicts.
+Dividing the encoded frames instead cancels the falloff and the lambert term but not the transfer --
+the quotient is visibility still encoded, so a 10-90 read off it crosses the real visibility at
+roughly 0.006 and 0.79 under a 2.2 power law, a far wider band than the geometry predicts. A 10-90
+measured on pixel values with no division at all is a 10-90 of a
 tonemapped product and does not correspond to anything.
 
 Three defects each squeeze or stretch the penumbra, and each is invisible without that ground truth:
@@ -555,7 +565,8 @@ ordinary jittered stratification and is still the better estimator.
   formulas multiply by the emitter size and throw the distance away, so the accuracy it bought
   cannot reach the picture.
 - Both floors (`min_filter_pixels` and the history-fill widening) must apply **only where a penumbra
-  was actually measured**, or a freshly disoccluded pixel is filtered across twelve pixels and takes
+  was actually measured**, or a pixel a light reaches but no ray hit is dragged into the tap loop at
+  that floor -- up to the eight pixels the setting allows -- and takes
   thirty-one frames to recover -- every camera turn does that to the newly revealed screen edge.
   The a-trous also skips the whole tap loop where no channel's reach survives a single step, which
   catches two common cases at once: a pixel a light reaches but no ray hit, so there is no blocker
@@ -858,7 +869,8 @@ spotlight with a projector cookie still projects with no atlas quadrant.
   culler uses to build that spot's cascade-zero shadow transform, which is what makes the recomputed
   matrix interchangeable with the one the map path would have produced. Of those, the FOV and the
   aspect are what place the cookie, together with the bias matrix: the projector divides by w and
-  reads only x and y, and neither the bias nor the depth correction touches those rows. Near and far
+  reads only x and y, and neither the bias nor the depth correction mixes the z row into those two --
+  the bias only rescales x and y from `[-1,1]` into `[0,1]`, which is why it is load-bearing here. Near and far
   live in the z row, which on this path nothing reads, so getting them wrong is invisible until some
   later change starts reading depth from this matrix. Take them from the map path anyway.
 
@@ -946,7 +958,8 @@ Bound the sun's caster set behind its own setting, and fix the cascade-slot fill
   denominator of the last blur factor in the PCF ladder, `shadow_split_offsets.x /
   shadow_split_offsets.w` -- a division by zero for every fragment past the last real split, with
   blend splits on or off, since the blend ladder computes the same quotient. GLES3 already clamps
-  the source index for the split offsets alone -- extend it to the matrix, ranges, biases and atlas
+  the source index for the split offsets alone -- extend it to the matrix, ranges, biases, uv scales
+  and atlas
   rect.
 
 ### 13. Directional trace
@@ -1021,15 +1034,6 @@ cascade map's uniform 0/1/1 -- the traced sun's penumbra grows with the gap it c
   node carries `0.25` itself rather than the trace hiding a default behind zero, so the inspector
   value is what is traced and zero means genuinely hard.
 
----
-
-And in **Quick reference: the seams that break**, replace the directional-loop row, which currently
-says the fade runs on both paths:
-
-| Seam | What to verify on the new engine |
-| --- | --- |
-| Directional loop in `scene_forward_clustered.glsl` | Re-derive the three-way split by hand: upstream's single `shadow_opacity` block becomes a mask block, a cascade block gated on `shadow_map_opacity`, and a shared tail gated on `rt_shadowed \|\| shadow_opacity`. The lightmap shadowmask branches and the vertex-lighting apply run on both paths; the plain fade smoothstep runs only on the non-raytraced one, because the trace already baked it. |
-
 ### 14. Directional demotion
 
 Cut the sun's remaining shadow map down to what still reads it, as two settings rather than constants.
@@ -1061,7 +1065,9 @@ to 180.3, and every opaque test scene renders identically.
   `ALPHA_ANTIALIASING_EDGE_USED`) and must skip the runtime test entirely. Alpha scissor and alpha
   hash go through the pre-pass like anything opaque and were never affected.
 - The runtime half of the test is a scene-data flag rather than a shader variant: a bool on
-  `RenderSceneDataRD` set while the transparent list is drawn, packed into the scene data flags as
+  `RenderSceneDataRD` set true only across the transparent pass's own scene-data setup call -- the one
+  that builds that pass's uniform buffer, before the list is drawn -- and cleared again immediately,
+  so that only that buffer carries the bit, packed into the scene data flags as
   `SCENE_DATA_FLAGS_IN_ALPHA_PASS` and mirrored in `scene_data_inc.glsl`. The shader wraps both
   halves in one macro so each mask read is a single condition, and so the compile-time exemptions
   above collapse it to a constant `true` where they apply.
@@ -1364,7 +1370,9 @@ makes the filter reject the gather's own samples along every slope.
    grid it is a 2x2 bilinear weighted by the same plane term; where the weights sum to 0.0001 or
    less -- every candidate rejected -- it takes the tap the fractional position rounds to, whole,
    because a floor mixed into the weights instead would drag a silhouette's own value toward
-   whatever lies across it. On the checkerboard it is not a filter at all -- see detail 4 below. At
+   whatever lies across it. On the checkerboard it is a different filter -- an exact copy for the
+   shaded half and a plane-weighted average of four one-pixel neighbors for the rest; see detail 4
+   below. At
    matching resolutions every weight collapses onto the pixel's own texel and the pass degenerates
    to a copy.
 
@@ -1393,13 +1401,16 @@ The prefilter's linearization and the gather's UV-to-view do handle it.
      from white has a hard floor and clips a third of the tonal range to black inside the gather,
      where no filter can recover it. The one-step test: put a flawless traced occlusion through the
      curve and see whether the artifact survives.
-  4. **The checkerboard is the shipped shading rate whenever half resolution is on**, and items 4
+  4. **The checkerboard is the shipped shading rate whenever half resolution is on**, and items 5
      and 6 below describe the quarter resolution grid, which is now the fallback rung. A port that
      reproduces only the grid ships a renderer whose default occlusion path does not exist. The
      checkerboard packs pixel `(2u + (y & 1), y)` into gather texel `(u, y)`, so the gather is half
      width and full height rather than half of both; reconstruction copies the shaded half through
-     untouched and averages the four immediate neighbors of the rest, which is complete rather than
-     an approximation. One detail is load bearing: at an odd width the last texel of an odd row is
+     untouched and takes a **plane-weighted** average of the four immediate neighbors of the rest --
+     the same plane term the quarter grid uses, so a neighbor across a silhouette is still rejected,
+     and where the weights sum to 0.0001 or less the first on-screen neighbor is taken whole. An
+     off-screen neighbor is skipped rather than clamped, so an edge pixel blends two or three. Four
+     taps is complete rather than an approximation. One detail is load bearing: at an odd width the last texel of an odd row is
      clamped and no full resolution pixel maps back to it, so the upsample never reads it -- but the
      horizontal denoise walks the gather's own grid and does, so it must still be written.
   5. The half resolution stride is **passed** in a push constant. `gather_size_for` rounds up and
@@ -1620,6 +1631,7 @@ trailing pad on one side alone is fatal, and how to read the reflected size.
 | `GTAO::FilterPushConstant` | 80 |
 | `RaytracingScene::DequantizePushConstant` | 32 |
 
+*The three GTAO structs carry their field order here as well, because that order is the other half
 of the contract; the assertions catch a size mismatch but not a reordering.*
 
 | Struct | Bytes | Fields, in order |
@@ -1676,7 +1688,7 @@ format Godot revises between versions. Check these first.
 | `_setup_render_pass_uniform_set` | Bindings added on every path, including probe and no-render-buffer renders. |
 | `update_light_buffers` | Every early-out preserves both invariants: `rt_slot < RT_SLOT_NONE` iff the light has a channel this frame, `shadow_map_opacity > 0.001` iff an atlas rect or cascade was actually written. |
 | `_pre_opaque_render` dispatch site | Depth is resolved before it; the trace is fed `scene_data->get_cam_projection()`, not the raw member. |
-| Directional loop in `scene_forward_clustered.glsl` | Re-derive the three-way split by hand; the lightmap shadowmask handling and the fade smoothstep must be hoisted out so both paths run them. |
+| Directional loop in `scene_forward_clustered.glsl` | Re-derive the three-way split by hand: upstream's single `shadow_opacity` block becomes a mask block, a cascade block gated on `shadow_map_opacity`, and a shared tail gated on `rt_shadowed \|\| shadow_opacity`. The lightmap shadowmask branches and the vertex-lighting apply run on both paths; the plain fade smoothstep runs only on the non-raytraced one, because the trace already baked it. |
 | Fog `Params` UBO / `ParamsUBO` | `cam_position` at the identical offset on both sides. |
 | Fog `ShaderGroup` enum | The four device-capability groups still contiguous and first; `+ SHADER_GROUP_BASE_RAYTRACED` silently maps wrong if a fifth is inserted. |
 | `_get_fog_process_variant` | Still `device_group * VOLUMETRIC_FOG_PROCESS_SHADER_MAX + idx`, and the push order matches the enum position-for-position. |
@@ -1697,10 +1709,12 @@ Know what that distorts: lavapipe traverses the BVH on the CPU, so it **overstat
 cost and **understates** the benefit of ray early-out. Treat its frame times as directional only.
 Image comparisons are trustworthy and reproducible to the byte.
 
-The technique that settled most questions was **RMSE against a high-sample, denoiser-off render of
-the same scene** -- one sample plus denoiser versus sixteen-sample ground truth. Edge-width metrics
-were tried first and proved unreliable, because they were confounded by the two images having
-different noise levels.
+The technique that settled most **denoiser** questions was **RMSE against a high-sample,
+denoiser-off render of the same scene** -- one sample plus denoiser versus sixteen-sample ground
+truth. Edge-width metrics were tried first and proved unreliable there, because they were confounded
+by the two images having different noise levels. Note that this does not replace stage 6's
+acceptance gate: a rendered reference carries the same geometric defects as the render, so the three
+that stage names have to be measured against a closed form instead.
 
 For "this change costs nothing when unused", the standard is **byte-identical output**: build with
 the change and render; stash the change, rebuild, render the same scene; compare checksums. That is

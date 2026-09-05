@@ -169,8 +169,13 @@ certain of the three -- or the gather is a larger share on weak hardware than th
 implies.
 
 Two captures settle it on any part, with no code change and no restart: read the block with
-`half_size` on and again with it off, then `F = (4*t_half - t_full)/3` and
-`G_full = (4/3)*(t_full - t_half)`. Discard the first frame after the toggle, because `gather_size`
+`half_size` on and again with it off. Which pair applies depends on the shading rate, because
+`half_size` on now shades a checkerboard -- half the pixels -- by default. At that default,
+`F = 2*t_half - t_full` and `G_full = 2*(t_full - t_half)`; set `ground_truth/shading_rate` to
+`Quarter Resolution` first and it is `F = (4*t_half - t_full)/3` and
+`G_full = (4/3)*(t_full - t_half)` instead. Using the second pair against a checkerboard capture can
+return a negative fixed cost, which is the sign it was the wrong pair rather than a bad reading.
+Discard the first frame after the toggle, because `gather_size`
 changes with `half_size` and the buffers are reallocated inside the mark.
 
 ### The three rung solve, which refutes the framerate derivation outright
@@ -499,8 +504,11 @@ the level. That is a larger effect than the saved draw calls explain, and the ex
 path that has nothing to do with rasterization.
 
 The raytraced caster gather queries the geometry index with the bounds of every raytraced light in
-`scene_cull_result.lights` (`renderer_scene_cull.cpp:3539-3545`, `:3701-3703`), and that list is
-built inside the occlusion test (`:2967-2970`). A lamp whose bounds are occluded is therefore
+`scene_cull_result.lights` -- the loop in `RendererSceneCull` that pushes each raytraced-candidate
+light's `transformed_aabb` into the gather's bounds scratch, and the `aabb_query` over
+`Scenario::INDEXER_GEOMETRY` that runs over that scratch -- and that list is built inside the
+visible-instance cull, in the same branch that tests `OCCLUSION_CULLED` before pushing an instance
+into `cull_result.lights`. A lamp whose bounds are occluded is therefore
 absent from it, its query never runs, and every caster that was in the structure only on its account
 leaves too. The saving is then paid four times over: a smaller structure to build, fewer nodes for
 every ray in the frame to descend — including the sun's — fewer candidates in the per-pixel light

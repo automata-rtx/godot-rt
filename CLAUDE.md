@@ -26,9 +26,9 @@ to `0.0` for hard shadows.
 
 These apply in **every** renderer, whether or not raytraced shadows are enabled, and they reach
 further than shadows: a non-zero angular distance puts the cascade path on its PCSS branch, makes
-`ProceduralSkyMaterial`/`PhysicalSkyMaterial` draw a visible **sun disk**, makes `LightmapGI` bakes
-soft-shadowed and slower, and makes every mesh lit by a default lamp compile the
-`use_light_soft_shadows` specialization.
+`ProceduralSkyMaterial`/`PhysicalSkyMaterial` draw a visible **sun disk**, and makes `LightmapGI`
+bakes soft-shadowed and slower; and a non-zero lamp `light_size` makes every mesh lit by a default
+`OmniLight3D` or `SpotLight3D` compile the `use_light_soft_shadows` specialization.
 
 `Light3D` gains one property, `shadow_map_enabled` (and `RenderingServer.light_set_shadow_map_enabled`).
 
@@ -60,7 +60,9 @@ Not covered, and silently falling back or losing shadowing:
 `Light3D.shadow_map_enabled` buys a light back its shadow map, at the cost of an atlas quadrant and
 a shadow map render. That helps the three entries above that read a map and find none -- subsurface
 transmittance, volumetric fog under a lamp, and alpha-blended surfaces receiving. The rest of the
-list never consults the mask in the first place, so the flag does nothing for them.
+list never reads a shadow map in the first place -- an opaque surface under a light that holds a mask
+slot takes its answer from the mask whether or not a map was also rendered -- so the flag does
+nothing for them.
 
 ## Traps when authoring for raytraced shadows
 
