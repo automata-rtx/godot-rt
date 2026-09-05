@@ -127,7 +127,7 @@ Manage 3D settings → Vertical sync → On) for a tear-free result.
 ### The hudless copy
 
 Frame generation needs the presented image without the interface drawn over it, because it
-interpolates the two neighbouring frames and interpolated UI is the artifact people notice
+interpolates the two neighboring frames and interpolated UI is the artifact people notice
 first.
 
 The copy is taken at the one moment that image exists: the scene renderer has just tone-mapped
@@ -205,7 +205,7 @@ In roughly the order a failure would be easiest to diagnose:
 8. **Interface smearing across generated frames** is the known UI alpha gap in section 4, not a
    bug in the hudless copy.
 
-Two structural limits that would show up as puzzling behaviour rather than an error:
+Two structural limits that would show up as puzzling behavior rather than an error:
 
 - The latency markers bracket the render thread's frame rather than the game's simulation step
   when the rendering thread model is threaded, because the frame token cannot safely cross that

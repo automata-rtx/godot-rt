@@ -218,6 +218,32 @@ sl::CommandBuffer *to_sl_command_buffer(uint64_t p_command_buffer) {
 	return reinterpret_cast<sl::CommandBuffer *>(driver->command_buffer_get_vulkan_handle(RenderingDeviceDriver::CommandBufferID(p_command_buffer)));
 }
 
+String frame_generation_status_as_str(sl::DLSSGStatus p_status) {
+	if (p_status == sl::DLSSGStatus::eOk) {
+		return String();
+	}
+	Vector<String> reasons;
+	if (p_status & sl::DLSSGStatus::eFailResolutionTooLow) {
+		reasons.push_back("the output resolution is too low");
+	}
+	if (p_status & sl::DLSSGStatus::eFailReflexNotDetectedAtRuntime) {
+		reasons.push_back("Reflex is not running");
+	}
+	if (p_status & sl::DLSSGStatus::eFailHDRFormatNotSupported) {
+		reasons.push_back("the colour format is not supported");
+	}
+	if (p_status & sl::DLSSGStatus::eFailCommonConstantsInvalid) {
+		reasons.push_back("the common constants are invalid");
+	}
+	if (p_status & sl::DLSSGStatus::eFailGetCurrentBackBufferIndexNotCalled) {
+		reasons.push_back("the back buffer index was not queried");
+	}
+	if (reasons.is_empty()) {
+		reasons.push_back(vformat("an unrecognized status (0x%x)", uint32_t(p_status)));
+	}
+	return String(", ").join(reasons);
+}
+
 sl::Extent to_sl_extent(const StreamlineVK::Texture &p_texture) {
 	sl::Extent extent;
 	if (p_texture.extent.size.width > 0 && p_texture.extent.size.height > 0) {
@@ -906,6 +932,15 @@ void StreamlineVK::frame_generation_tag(uint64_t p_command_buffer, uint32_t p_vi
 	const sl::Result result = internal->set_tag_for_frame(*internal->frame, sl::ViewportHandle(p_viewport), tags.ptr(), tags.size(), to_sl_command_buffer(p_command_buffer));
 	if (result != sl::Result::eOk) {
 		ERR_PRINT_ONCE(vformat("Streamline: tagging the frame generation inputs failed (%s).", sl::getResultAsStr(result)));
+	}
+
+	// Frame generation reports why it is not interpolating rather than failing any call, so
+	// without this a machine that cannot run it looks identical to one where it is working.
+	if (internal->dlssg_get_state != nullptr) {
+		sl::DLSSGState fg_state;
+		if (internal->dlssg_get_state(sl::ViewportHandle(p_viewport), fg_state, nullptr) == sl::Result::eOk && fg_state.status != sl::DLSSGStatus::eOk) {
+			WARN_PRINT_ONCE(vformat("Streamline: frame generation is not running because %s.", frame_generation_status_as_str(fg_state.status)));
+		}
 	}
 }
 
