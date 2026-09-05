@@ -83,7 +83,7 @@ with the setting on a mesh's vertex buffer is created with `DEVICE_ADDRESS` and 
   `mesh_add_surface` decides buffer creation bits at upload time, **before the RenderingDevice and
   the renderer exist** — which is also exactly why the master setting is restart-required.
 - **Latch only the settings that genuinely cannot change; read the rest through
-  `GLOBAL_GET_CACHED`.** The fork's first version resolved all fifteen once behind a
+  `GLOBAL_GET_CACHED`.** The fork's first version resolved the whole family once behind a
   `settings_registered` flag, which quietly made every tuning knob restart-required while the editor
   advertised only two of them as such — so turning the denoiser off in the inspector did nothing at
   all, with no feedback. `GLOBAL_GET_CACHED` keeps a typed copy keyed on `ProjectSettings`' version
@@ -551,16 +551,20 @@ Small, but three separate CI rounds were burned on it the first time.
 ### 18. Ground truth ambient occlusion
 
 Independent of everything above — it touches no raytracing and can be ported on its own, or left
-out. Four new files plus about a dozen small hooks.
+out. Five new files plus about a dozen small hooks.
 
 **The estimator.** Five dispatches, in order. The paper is Jimenez et al's GTAO with the visibility
 bitmask of Therrien et al (2023), reduced to the occlusion term; `gtao_gather.glsl` cites both.
 
-1. **Prefilter** — build a five-level depth pyramid at half resolution, `R32_SFLOAT`, reducing by
+1. **Prefilter** — build a five-level depth pyramid at **full internal resolution**, `R32_SFLOAT`,
+   reducing by
    taking the **farthest** of each group rather than the average or the nearest. Farthest is the
    conservative choice for an occlusion query: a mip that reads nearer than the surface it stands
-   for invents occluders. The pyramid is sampled with a **nearest** sampler, which forces detail 1
-   below.
+   for invents occluders. Full resolution at mip 0 is the reason this cannot reuse the legacy
+   estimator's pyramid, which is half resolution and differently filtered: the innermost steps of a
+   march would have no full resolution depth to read at all. It is full regardless of `half_size`
+   and the shading rate, both of which reduce the GATHER and not this. Sampled with a **nearest**
+   sampler, which forces detail 1 below.
 2. **Gather** — per shaded pixel, reconstruct view position and normal, then for each of `slices`
    directions (rotated per pixel and per frame; the rotation constants are a fixed
    `cos`/`sin` pair, not a trig call) march `steps_per_slice` samples out along the slice in screen
@@ -616,7 +620,7 @@ frame looks like without changing anything else.
 - `Environment::_validate_property` hides `ssao_detail`, `ssao_horizon` and `ssao_sharpness` when
   the ground truth estimator will run; the existing `!= "forward_plus"` branch is the natural place
   and its `else` was previously empty.
-- Five details are load-bearing, and every one was wrong before it was measured. Each is a steady
+- Six details are load-bearing, and every one was wrong before it was measured. Each is a steady
   bias that reads as the effect working rather than as a bug, so none will be caught by looking.
   `FINDINGS.md` has the measurements; what a port needs is the list.
   1. The depth pyramid is sampled with a **nearest** sampler, so a sample must be reconstructed at
@@ -764,22 +768,71 @@ Compile-time, and each is load-bearing for the reason given.
 | `ANGLE_BIAS` | 0.03 | GTAO self-occlusion guard |
 | `DEPTH_MIP_COUNT` | 5 | levels in the GTAO depth pyramid |
 
+### The light record
+
+64 bytes, `std430`, one row per slot in a storage buffer indexed by `rt_slot` and sized to the
+highest live slot. Slots are sticky, so the buffer is sparse: gaps are zeroed and the trace skips any
+row with `radius <= 0`, which is why a live light keeps a positive radius whatever its type. A
+directional light takes a row in the same buffer and reinterprets four fields — `light_type` is the
+discriminator and the trace branches on it once, never on a sentinel in another field.
+
+This is the whole CPU-to-shader contract for the trace, the mask and the directional path. Keep the
+C++ mirror and the GLSL struct in one commit, with a `static_assert` on the size.
+
+| Off | Field | Type | Omni / spot | Directional |
+| --- | --- | --- | --- | --- |
+| 0 | `position` | float[3] | light world position | the **camera's** world position |
+| 12 | `radius` | float | world range, m | view depth at which the shadow has fully faded |
+| 16 | `direction` | float[3] | axis the light points **away** along | unit vector **toward** the light — the ray's own |
+| 28 | `cos_spot_angle` | float | `cos(spot_angle)` | unused |
+| 32 | `size` | float | emitter radius in m, times `softness_scale` | **tan** of the angular radius, times `softness_scale` |
+| 36 | `light_type` | uint | 0 omni, 1 spot | 2 |
+| 40 | `mask` | uint | 8-bit fold of `shadow_caster_mask`, zero promoted to `0xFF` | same |
+| 44 | `energy` | float | per-pixel ranking term only | same |
+| 48 | `bias` | float | `shadow_bias * 0.05`, m — the ray's `tmin` | same |
+| 52 | `normal_bias` | float | `shadow_normal_bias * 0.015` | `* 0.0075` |
+| 56 | `fade_from` | float | unused | view depth where the fade begins |
+| 60 | `max_ray_length` | float | unused | ray `tmax`: `radius * (1 + caster_distance_scale)` |
+
+The two directional depths are the negation of the `fade_from`/`fade_to` the cascade path already
+computes, which is what keeps the traced fade and the cascade fade from drifting apart. The
+directional normal bias is half the lamp scale because the node defaults that property to 2.0 for a
+`DirectionalLight3D` and 1.0 for a lamp, so the same slider has to mean the same offset.
+
+### The caster record
+
+What the culler hands the renderer, one per instance, built into a list the renderer consumes whole.
+Casters are deliberately **not** frustum culled, so this list is not the visible set.
+
+| Field | What it is |
+| --- | --- |
+| `mesh` | mesh RID. For a multimesh, the shared mesh — emitted once per element |
+| `mesh_instance` | set only where the geometry deforms; the per-instance skinned buffer the structure reads |
+| `transform` | world. For a multimesh element, instance transform times element transform |
+| `layer_mask` | the full **32-bit** layers. The fold to eight happens where the TLAS instance is written, not here |
+| `surface_mask` | one bit per surface, from the eligibility predicate; surfaces past the thirty-second always cast |
+
+There is no multimesh in the record: the culler expands elements itself, so per-element culling is
+the culler's job rather than an interface the renderer sees.
+
 ### Texture formats
 
-Get these wrong and the failure is silent. Every one is created at the render buffer's **internal**
-size except where noted, and all are single-layer — this path is not multiview.
+Get these wrong and the failure is silent. All are single-layer — this path is not multiview. The
+raytraced set and the GTAO depth pyramid are created at the render buffer's **internal** size; the
+two GTAO AO buffers are the reduced ones, created at `gather_size`, which is the internal size cut
+down by `half_size` and the shading rate.
 
 | Texture | Format | Cleared to | Notes |
 | --- | --- | --- | --- |
 | RT shadow mask | `R8G8B8A8_UNORM` | white when the trace does not run | sqrt-encoded visibility, one channel per light |
-| RT shadow index | `R8G8B8A8_UINT` | 255 | which light each channel carries |
+| RT shadow index | `R8G8B8A8_UINT` | 0 | which light each channel carries; the trace writes 255 (`SLOT_NONE`) into unused channels |
 | RT raw hit distance | `R8G8B8A8_UNORM` | 0 | penumbra pixels / `MAX_PENUMBRA_PIXELS` |
 | RT denoise A/B | `R8G8B8A8_UNORM` | 0 | ping-pong; the last a-trous pass writes the mask |
 | RT history visibility | `R8G8B8A8_UNORM` | 0 | |
 | RT history index | `R8G8B8A8_UINT` | 0 | |
 | RT history meta | `R16G16_SFLOAT` | 0 | linear view depth, history length normalized to the window |
 | RT history length | `R8_UNORM` | 0 | normalized to the window |
-| GTAO depth pyramid | `R32_SFLOAT` | — | 5 mips, half resolution, farthest-biased |
+| GTAO depth pyramid | `R32_SFLOAT` | — | 5 mips, mip 0 at **full** internal size, farthest-biased |
 | GTAO AO A/B | `R16G16_SFLOAT` | — | occlusion and the depth the denoise re-plane-fits against |
 | shared occlusion output | `R8_UNORM` | white when the pass does not run | `RB_SCOPE_SSAO` / `RB_FINAL`, full size, shared with the legacy estimator |
 
@@ -808,8 +861,11 @@ decision, because every one of these looks like an obvious improvement from the 
 - **Widening the occlusion denoise unconditionally.** It is already sized from the radius and the
   slice count. A wider fixed filter scores worse, because the problem at half resolution is missing
   samples rather than too few candidates.
-- **Replacing the occlusion dither**, or rebalancing `slices` against `steps_per_slice`. Both were
-  measured against a traced reference and neither moved it.
+- **Replacing the occlusion dither.** Measured against a traced reference and it did not move.
+- **Rebalancing `slices` against `steps_per_slice`** — specifically, spending the budget on slices
+  instead of steps. Steps buy accuracy and slices buy smoothness, and they are not interchangeable:
+  at a large radius 8 slices x 4 steps is 18% smoother and **35% less accurate** than the shipped
+  4 x 8. Keep the ratio; raise both if you want more.
 - **Averaging shadow visibility in sqrt space.** The mask stores a square root for precision, but
   filtering the roots and squaring darkens every penumbra by Jensen's inequality. Encode and decode
   bracket the storage only.
