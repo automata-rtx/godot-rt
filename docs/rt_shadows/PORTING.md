@@ -676,6 +676,21 @@ a solid shadow.
 **Done when:** dragging a `BoxMesh`'s size in the inspector no longer prints `Parameter blas is null`
 at frame rate, and shadows survive the session.
 
+- **The cache key is `SurfaceKey { RID source; uint32_t surface; }`, and only `source` varies by case.**
+  `surface` is the index in the walk over the mesh's surface count, and it is what separates the
+  surfaces of one mesh that share a `source`. `source` is the per-instance skinned vertex buffer when
+  the caster record carries a mesh instance and mesh storage's per-surface skinned-buffer accessor
+  returns one -- stage 7 has why -- and the **mesh RID** in every other case. Every other case is the
+  common one: the culler fills that field only on the single-mesh path, so every static mesh and every
+  multimesh element keys on the mesh, and one built structure per surface serves all of them. That is
+  what makes the multimesh expansion in stage 8 cheap, since an element contributes a transform and
+  nothing else.
+- **Do not key a static entry on the surface's own vertex buffer, even though that is what it builds
+  from.** The mesh RID is valid for every caster the gather can hand over -- the walk skips a record
+  with a null mesh -- and it stays valid across a surface being cleared and re-added, so every surface
+  gets a distinct, non-null key whether or not it currently has a buffer to build from. That is what
+  lets a surface that can never build be *remembered* as ineligible under its own key instead of being
+  re-attempted every call.
 - Every `PrimitiveMesh` clears its mesh and re-adds surface zero whenever a property changes, and
   `ArrayMesh.clear_surfaces()` does the same. That frees the vertex buffer, and the structure was
   registered as a dependent of that buffer when it was created, so the structure goes with it. **A
@@ -683,8 +698,8 @@ at frame rate, and shadows survive the session.
   the whole TLAS build rather than one shadow.
 - The guard is to compare, on every cache hit, the buffer the surface would build from *now* against
   the one the entry was built from, and to **erase** the entry when they differ rather than skip it
-  for the frame -- a skipped entry is handed out again next frame. That comparison is the whole
-  test, and it is exact: being freed with its buffer is the only way one of these structures
+  for the frame -- a skipped entry is handed out again next frame. That comparison is exact for a
+  mesh-keyed entry, which is the case it exists for: being freed with its buffer is the only way one of these structures
   disappears without the cache doing it, and the RID allocator stamps a fresh validator into every
   RID it hands out, so a buffer RID that still compares equal is the same buffer and its dependents
   are still alive. A surface that has gone away entirely answers with a null RID, which also fails
@@ -694,6 +709,26 @@ at frame rate, and shadows survive the session.
   once per entry actually released; and the check before the TLAS build must stay a state check on
   the cache entry rather than a device call per surface. `FINDINGS.md` has what the device-lock
   version cost.
+- **The key is not the quantity the guard above compares, and that gap is what makes the guard work.**
+  The entry separately records the buffer it was built from, and the guard compares that against what
+  the surface would build from now. For a mesh-keyed entry the two are different objects: the key
+  survives `clear_surfaces()`, so the dead entry is still found and can be erased, while the buffer
+  does not, so the comparison fails and erases it. Key on the buffer instead and the dead entry is
+  never looked up again -- no crash, it just sits there until eviction while a second entry is built
+  beside it. For a buffer-keyed skinned entry the two are the same RID by construction, so the
+  comparison can never fail; it does not need to, because when that buffer goes away the key goes with
+  it, the entry is unreachable and leaves through eviction holding a handle the device already freed,
+  which is exactly what the release path's validity check is for. Nothing tells this cache that a mesh
+  or an instance went away, so the guard and the sweep are the only two ways an entry ever leaves.
+- **An entry has three states and only `BLAS_READY` is ever re-examined.** `BLAS_UNBUILT` is the
+  initial value of a fresh record and is never stored -- a surface that loses to the build budget has
+  no entry inserted at all, so it is simply reached again by the next call's walk. `BLAS_INELIGIBLE`
+  is a cached verdict, and it is permanent for the life of the key: the used-this-frame stamp is
+  refreshed before the state is looked at, and the buffer comparison above is scoped to ready entries,
+  so an ineligible surface that stays in range of a light neither re-tests nor ages out. Cache the
+  verdict -- stage 2's reason for classifying once stands -- but know that a failure of the device
+  calls that allocate and then build the structure is cached exactly as permanently as a non-triangle
+  primitive is.
 - The build budget gates **first-time builds only**. Check it after the cache lookup has already
   returned, so that a skinned surface whose pose moved is refreshed regardless of how many new
   surfaces the frame is also building -- a deferred pose is a visibly wrong shadow, where a deferred
@@ -732,6 +767,28 @@ at frame rate, and shadows survive the session.
   both places. And a freshly created or resized TLAS describes nothing yet, so clear the
   "has been built" flag whenever the structure is recreated. Keep that flag distinct from the
   per-frame "may trace against it" flag: one outlives a frame, the other does not.
+- **The expanded position buffer belongs to the entry, not to the build**, and only a compressed
+  source has one. The entry holds the source buffer, its stride and the surface AABB beside it so that
+  a skinned refresh can re-expand the new pose into the *same* allocation: the geometry description
+  was fixed when the structure was created and cannot be re-pointed, so the refresh rewrites the
+  buffer in place and never touches mesh storage again. Free it on every path that drops an entry,
+  ineligible ones included -- it is allocated before the build is attempted, so a surface that failed
+  to create its structure still owns one.
+- **Every "frame" in this stage is an `update()` call, not a rendered frame.** The frame counter and
+  both budgets are reset at the top of that call, and the culler makes it once per camera render that
+  is not a reflection probe. Two viewports therefore build up to 64 structures each per rendered
+  frame, sweep twice as often, and cut the sixty-frame grace period to thirty rendered frames. They
+  also pay a TLAS rebuild each: the structure is one process-wide object, and each camera rebuilds it
+  from its own caster list, which differs from the other camera's as soon as a directional light is in
+  the scene, because that light's caster volume is the camera's own frustum swept towards it. Each
+  camera still traces against a structure built for it moments earlier, so this costs rebuilds, not
+  correctness.
+- **A second entry ceiling lives here**, on the TLAS instance list rather than on the gather stage 8
+  bounds: **65536**, tested before each push, and unlike the gather's it warns about nothing. The two
+  count different things -- the gather counts casters, this counts caster surfaces -- so any scene of
+  multi-surface meshes reaches this one first. It also breaks only the current instance's surface
+  loop, so the walk continues past it and later instances still refresh their cache stamps and can
+  still spend build budget on structures nothing will trace this frame.
 
 ### 11. Drop the shadow maps
 
@@ -1475,6 +1532,7 @@ Compile-time, and each is load-bearing for the reason given.
 | `MAX_BLAS_BUILDS_PER_FRAME` | 64 | build budget; the rest defer |
 | `MAX_BLAS_BUILD_TRIANGLES_PER_FRAME` | 1 << 20 | the other half of that budget |
 | `MAX_RT_CASTERS` | 65536 | gather ceiling, warns and drops past it |
+| TLAS instance ceiling | 65536 | a second, separate ceiling on caster SURFACES rather than casters, tested as a bare literal in the structure update and silent when it is hit -- a scene of multi-surface meshes reaches it first |
 | `SECTOR_COUNT` | 32 | bits in the GTAO visibility mask, one uint |
 | `ANGLE_BIAS` | 0.03 | GTAO self-occlusion guard |
 | `DEPTH_MIP_COUNT` | 5 | levels in the GTAO depth pyramid |
