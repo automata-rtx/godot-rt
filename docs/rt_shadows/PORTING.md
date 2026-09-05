@@ -344,6 +344,9 @@ Only surfaces that can actually write a shadow enter the structure, decided per 
 **Done when:** a pane of glass in front of a lamp costs one fewer structure entry and stops casting
 a solid shadow.
 
+- It arrives as a new **pure virtual** on the shared material storage interface,
+  `material_shadow_casting_disabled`, so the RD, dummy and GL backends each need an implementation
+  before the engine will link. The last two return `false` and say why.
 - **This is not the negation of `material_casts_shadows`.** Upstream's predicate deliberately errs
   toward yes so the instance stays in the shadow render list and each draw decides for itself; a
   raytraced caster is decided once as it enters the structure and needs the exact answer.
@@ -471,6 +474,11 @@ to 180.3, and every opaque test scene renders identically.
   them correctly — those are known at compile time (`USE_OPAQUE_PREPASS` /
   `ALPHA_ANTIALIASING_EDGE_USED`) and must skip the runtime test entirely. Alpha scissor and alpha
   hash go through the pre-pass like anything opaque and were never affected.
+- The runtime half of the test is a scene-data flag rather than a shader variant: a bool on
+  `RenderSceneDataRD` set while the transparent list is drawn, packed into the scene data flags as
+  `SCENE_DATA_FLAGS_IN_ALPHA_PASS` and mirrored in `scene_data_inc.glsl`. The shader wraps both
+  halves in one macro so each mask read is a single condition, and so the compile-time exemptions
+  above collapse it to a constant `true` where they apply.
 - The fallback guards move from `shadow_opacity` to `shadow_map_opacity` at the same time.
 - **Demonstrating this needs a horizontal pane.** A vertical one edge-on to the sun receives almost
   no direct light, the shadow term is multiplied by nearly nothing, and the bug is invisible. Three
@@ -545,6 +553,16 @@ Small, but three separate CI rounds were burned on it the first time.
 Independent of everything above — it touches no raytracing and can be ported on its own, or left
 out. Four new files plus about a dozen small hooks.
 
+**Scope of this stage.** It describes the *wiring* — where the pass hangs, what it shares, which
+interfaces it widens — and the numerical details that were wrong before they were measured. It does
+not describe the estimator's mathematics, because the four new files carry that with them in a port
+and their comments are the reference. If you are rebuilding the estimator rather than moving it, the
+shape is: a five-level farthest-biased depth pyramid at half resolution; a gather that marches
+horizons over a rotating set of slices and accumulates a **32-sector visibility bitmask** per slice
+rather than a running maximum horizon, which is what lets it account for thin occluders and gaps;
+two separable denoise passes weighted by distance from the shaded point's plane; and a bilateral
+upsample into the shared occlusion buffer. `gtao_gather.glsl` names its source paper at the top.
+
 **Done when:** `docs/rt_shadows/ao_validation/` scores a render inside the numbers in section 9 of
 the fork guide, and flipping `Environment.ssao_method` between the two estimators changes what the
 frame looks like without changing anything else.
@@ -609,6 +627,33 @@ frame looks like without changing anything else.
   the view space normal and the projection terms bound to it as well as the AO buffer.
 
 ---
+
+## Shared interfaces this fork widens
+
+Every entry here is a member added to an interface the engine implements more than once, so a port
+that adds it in one place and not the others fails to link — and for a pure virtual the error names
+an abstract class being instantiated, far from anything this fork touched. The stages introduce
+these in passing; this is the checklist, because "far from the change" is exactly the failure a
+recipe should not leave you to rediscover.
+
+| Added to | Member | Kind | Who must implement it |
+| --- | --- | --- | --- |
+| `storage/light_storage.h` | `light_set_shadow_map_enabled`, `light_get_shadow_map_enabled` | pure virtual | RD, dummy, GL |
+| `storage/light_storage.h` | `light_instance_is_raytraced_shadow_candidate`, `light_instance_can_use_raytraced_shadows`, `light_instance_set_raytraced_shadow`, `light_instance_has_raytraced_shadow` | virtual, defaulted | RD only; the defaults answer for the rest |
+| `storage/material_storage.h` | `material_shadow_casting_disabled` | pure virtual | RD, dummy, GL |
+| `storage/mesh_storage.h` | `multimesh_uses_3d_transforms` | virtual, defaulted `false` | RD only |
+| `rendering_server.h` | `light_set_shadow_map_enabled`, `environment_set_ssao_method` | pure virtual | `RenderingServerDefault` (`FUNC2`) |
+| `rendering_method.h` | `environment_set_ssao_method` | pure virtual | `RendererSceneCull` (`PASS2`) |
+| `renderer_scene_render.h` | `environment_set_ssao_method` / `_get_`, and the `RaytracingInstance` record | non-virtual | forwards to `RendererEnvironmentStorage` |
+| `storage/environment_storage.h` | `environment_set_ssao_method` / `_get_` | non-virtual | the storage itself |
+| `rendering_device.h` | `acceleration_structure_is_valid` | non-virtual | the device |
+
+The defaulted virtuals are deliberate: a renderer that has no raytraced shadows should not have to
+say so four times. The pure ones are the opposite call — they change behavior a backend cannot
+sensibly guess at, so every backend is made to answer.
+
+`RenderSceneDataRD` also gains an `alpha_pass` bool that reaches the shader as a scene data flag;
+see stage 15. It is not on this table because nothing else implements that class.
 
 ## Quick reference: the seams that break
 
