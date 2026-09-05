@@ -63,9 +63,11 @@ void DLSSEffect::upscale(const Parameters &p_params) {
 	args->camera.reset = p_params.reset_accumulation;
 	args->camera.orthographic = p_params.orthographic;
 
-	// The engine's colour, depth and velocity buffers are all allocated at the target size and
-	// only the top-left corner is rendered at the internal size, so every input carries an
-	// extent rather than being taken whole. The output is the full upscaled image.
+	// The colour, depth and velocity buffers are allocated at the internal size, so this covers
+	// the whole of each of them. It is stated rather than left implicit so that the resolution
+	// Streamline upscales from stays tied to the renderer's internal size even if one of those
+	// buffers is ever allocated larger than the region actually rendered. The output carries no
+	// extent: it is the full upscaled image.
 	const Rect2i internal_rect(Point2i(), p_params.internal_size);
 
 	args->inputs.color = StreamlineVK::texture_from_rid(p_params.color, StreamlineVK::TEXTURE_USE_SAMPLED);

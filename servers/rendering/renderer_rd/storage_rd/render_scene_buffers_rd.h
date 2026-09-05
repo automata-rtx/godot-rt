@@ -247,6 +247,9 @@ public:
 	// handle it was given, so this has to be stable for as long as these buffers are, and must
 	// not be reused by another view while it still holds history. Claimed on first use.
 	uint32_t get_streamline_viewport(uint32_t p_view);
+	// Whether a handle was ever claimed, so a viewport that has never touched Streamline can be
+	// skipped without claiming one.
+	bool has_streamline_viewport() const { return streamline_viewport != 0; }
 #endif
 	_FORCE_INLINE_ Size2i get_internal_size() const { return internal_size; }
 	_FORCE_INLINE_ Size2i get_target_size() const { return target_size; }

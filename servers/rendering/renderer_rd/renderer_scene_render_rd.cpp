@@ -1524,7 +1524,6 @@ void RendererSceneRenderRD::_process_frame_generation(const Ref<RenderSceneBuffe
 		return;
 	}
 
-	const uint32_t viewport = p_render_buffers->get_streamline_viewport(0);
 	const RID render_target = p_render_buffers->get_render_target();
 
 	bool enabled = GLOBAL_GET_CACHED(bool, "rendering/streamline/frame_generation") &&
@@ -1542,8 +1541,14 @@ void RendererSceneRenderRD::_process_frame_generation(const Ref<RenderSceneBuffe
 		enabled = false;
 	}
 
+	if (!enabled && !p_render_buffers->has_streamline_viewport()) {
+		// Never started here, so there is nothing to stop and no reason to claim a handle. This
+		// is the path every SubViewport in a project takes.
+		return;
+	}
+
 	RendererRD::DLSSFrameGeneration::Parameters params;
-	params.viewport = viewport;
+	params.viewport = p_render_buffers->get_streamline_viewport(0);
 	params.enabled = enabled;
 	params.output_size = p_render_buffers->get_target_size();
 	params.internal_size = p_render_buffers->get_internal_size();

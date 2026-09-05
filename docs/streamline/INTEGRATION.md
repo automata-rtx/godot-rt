@@ -200,8 +200,9 @@ In roughly the order a failure would be easiest to diagnose:
    transpose convention in section 5.
 6. **Jitter.** If the image is stable but soft, or shimmering at native scale, check the sign of
    the jitter offset against DLSS's convention.
-7. **Frame generation starting.** `slDLSSGGetState` reports a status bitfield; the common
-   refusals are Reflex not running and the output resolution being too low.
+7. **Frame generation starting.** It refuses through a status bitfield rather than by failing a
+   call, so the engine reads that back each frame and warns once with the reason in words. The
+   common refusals are Reflex not running and the output resolution being too low.
 8. **Interface smearing across generated frames** is the known UI alpha gap in section 4, not a
    bug in the hudless copy.
 

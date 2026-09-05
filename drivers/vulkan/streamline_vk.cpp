@@ -586,6 +586,7 @@ StreamlineVK::Texture StreamlineVK::texture_from_rid(RID p_texture, TextureUse p
 	}
 
 	RenderingDevice *rendering_device = RenderingDevice::get_singleton();
+	ERR_FAIL_NULL_V(rendering_device, texture);
 	texture.image = rendering_device->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE, p_texture);
 	texture.view = rendering_device->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE_VIEW, p_texture);
 	texture.format = uint32_t(rendering_device->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE_DATA_FORMAT, p_texture));
@@ -831,7 +832,10 @@ bool StreamlineVK::frame_generation_set_enabled(uint32_t p_viewport, bool p_enab
 void StreamlineVK::_free_hudless(uint32_t p_viewport) {
 	Internal::FrameGenerationState *state = internal->frame_generation.getptr(p_viewport);
 	if (state != nullptr && state->hudless_texture.is_valid()) {
-		RenderingDevice::get_singleton()->free_rid(state->hudless_texture);
+		// Null during shutdown, when the render buffers are torn down after the device.
+		if (RenderingDevice::get_singleton() != nullptr) {
+			RenderingDevice::get_singleton()->free_rid(state->hudless_texture);
+		}
 		state->hudless_texture = RID();
 		state->hudless_size = Size2i();
 	}
