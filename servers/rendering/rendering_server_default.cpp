@@ -33,6 +33,8 @@
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
+// Self-guarding: it defines STREAMLINE_ENABLED and compiles to nothing where the SDK cannot run.
+#include "drivers/vulkan/streamline_vk.h"
 #include "servers/display/display_server.h"
 #include "servers/rendering/renderer_canvas_cull.h"
 #include "servers/rendering/renderer_scene_cull.h"
@@ -74,6 +76,25 @@ void RenderingServerDefault::request_frame_drawn_callback(const Callable &p_call
 }
 
 void RenderingServerDefault::_draw(bool p_swap_buffers, double frame_step) {
+#ifdef STREAMLINE_ENABLED
+	// The whole of a frame's Streamline work -- its token, its latency markers, the tags it
+	// hands over and the features it evaluates -- happens here, on whichever thread renders.
+	// Nothing crosses to the main thread: `draw()` queues this without waiting, so a token taken
+	// during simulation could be replaced while the previous frame was still being tagged.
+	//
+	// The cost is that the simulation markers bracket the render thread's frame rather than the
+	// game's simulation step, so Reflex's latency report is approximate when the rendering
+	// thread model is threaded. Its pacing, and DLSS frame generation's requirement that Reflex
+	// be running, are satisfied either way; with a single-threaded rendering model the markers
+	// land where they belong, because this runs on the main thread right after simulation.
+	StreamlineVK *streamline = StreamlineVK::get_singleton();
+	if (streamline != nullptr) {
+		streamline->frame_begin();
+		streamline->sleep();
+		streamline->set_marker(StreamlineVK::MARKER_SIMULATION_START);
+	}
+#endif
+
 	GodotProfileZoneGroupedFirst(_profile_zone, "rasterizer->begin_frame");
 	RSG::rasterizer->begin_frame(frame_step);
 
@@ -105,14 +126,37 @@ void RenderingServerDefault::_draw(bool p_swap_buffers, double frame_step) {
 	GodotProfileZoneGrouped(_profile_zone, "scene->render_probes");
 	RSG::scene->render_probes();
 
+#ifdef STREAMLINE_ENABLED
+	if (streamline != nullptr) {
+		streamline->set_marker(StreamlineVK::MARKER_SIMULATION_END);
+		streamline->set_marker(StreamlineVK::MARKER_RENDER_SUBMIT_START);
+	}
+#endif
+
 	GodotProfileZoneGrouped(_profile_zone, "viewport->draw_viewports");
 	RSG::viewport->draw_viewports(p_swap_buffers);
 
 	GodotProfileZoneGrouped(_profile_zone, "canvas_render->update");
 	RSG::canvas_render->update();
 
+#ifdef STREAMLINE_ENABLED
+	if (streamline != nullptr) {
+		streamline->set_marker(StreamlineVK::MARKER_RENDER_SUBMIT_END);
+		streamline->set_marker(StreamlineVK::MARKER_PRESENT_START);
+	}
+#endif
+
 	GodotProfileZoneGrouped(_profile_zone, "rasterizer->end_frame");
 	RSG::rasterizer->end_frame(p_swap_buffers);
+
+#ifdef STREAMLINE_ENABLED
+	if (streamline != nullptr) {
+		// end_frame() is where the swap chain is presented, so frame generation's own work runs
+		// inside it, between these two markers.
+		streamline->set_marker(StreamlineVK::MARKER_PRESENT_END);
+		streamline->frame_end();
+	}
+#endif
 
 #ifndef XR_DISABLED
 	if (xr_server != nullptr) {

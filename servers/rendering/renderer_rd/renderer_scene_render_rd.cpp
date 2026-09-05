@@ -30,8 +30,10 @@
 
 #include "renderer_scene_render_rd.h"
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/io/image.h"
+#include "servers/rendering/renderer_rd/effects/dlss.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
 #include "servers/rendering/renderer_rd/shaders/decal_data_inc.glsl.gen.h"
@@ -39,8 +41,10 @@
 #include "servers/rendering/renderer_rd/shaders/scene_data_inc.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/particles_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
+#include "servers/rendering/renderer_viewport.h"
 #include "servers/rendering/rendering_server_default.h"
 #include "servers/rendering/rendering_server_enums.h"
+#include "servers/rendering/rendering_server_globals.h"
 #include "servers/rendering/shader_include_db.h"
 #include "servers/rendering/storage/camera_attributes_storage.h"
 
@@ -1507,7 +1511,66 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 
 	//calls _pre_opaque_render between depth pre-pass and opaque pass
 	_render_scene(&render_data, clear_color);
+
+#ifdef STREAMLINE_ENABLED
+	_process_frame_generation(rb, &scene_data, p_reflection_probe);
+#endif
 }
+
+#ifdef STREAMLINE_ENABLED
+void RendererSceneRenderRD::_process_frame_generation(const Ref<RenderSceneBuffersRD> &p_render_buffers, const RenderSceneDataRD *p_scene_data, RID p_reflection_probe) {
+	StreamlineVK *streamline = StreamlineVK::get_singleton();
+	if (streamline == nullptr || p_render_buffers.is_null() || p_reflection_probe.is_valid()) {
+		return;
+	}
+
+	const uint32_t viewport = p_render_buffers->get_streamline_viewport(0);
+	const RID render_target = p_render_buffers->get_render_target();
+
+	bool enabled = GLOBAL_GET_CACHED(bool, "rendering/streamline/frame_generation") &&
+			RendererRD::DLSSFrameGeneration::is_available() &&
+			// The presented image in the editor is the editor's own interface, not a game frame.
+			!Engine::get_singleton()->is_editor_hint() &&
+			// Stereo has no single presented image to interpolate.
+			p_render_buffers->get_view_count() == 1 &&
+			RSG::viewport->is_render_target_presented(render_target);
+
+	// Interpolation is driven by the motion vectors, and the engine only fills the velocity
+	// buffer for a viewport that has a temporal upscaler or TAA running.
+	if (enabled && !p_render_buffers->has_velocity_buffer(false)) {
+		WARN_PRINT_ONCE("DLSS frame generation needs motion vectors. Set the viewport's 3D scaling mode to DLSS or FSR 2, or enable TAA.");
+		enabled = false;
+	}
+
+	RendererRD::DLSSFrameGeneration::Parameters params;
+	params.viewport = viewport;
+	params.enabled = enabled;
+	params.output_size = p_render_buffers->get_target_size();
+	params.internal_size = p_render_buffers->get_internal_size();
+	params.hudless_source = RendererRD::TextureStorage::get_singleton()->render_target_get_rd_texture(render_target);
+	params.depth = p_render_buffers->get_depth_texture(0);
+	params.velocity = enabled ? p_render_buffers->get_velocity_buffer(false, 0) : RID();
+
+	const real_t fov = p_scene_data->cam_projection.get_fov();
+	const real_t aspect = p_scene_data->cam_projection.get_aspect();
+	params.z_near = p_scene_data->z_near;
+	params.z_far = p_scene_data->z_far;
+	params.fov_y = float(p_scene_data->cam_projection.get_fovy(fov, 1.0 / aspect));
+	params.aspect = float(aspect);
+	params.jitter = p_scene_data->taa_jitter * Vector2(p_render_buffers->get_internal_size()) * 0.5f;
+	params.orthographic = p_scene_data->cam_orthogonal;
+
+	Projection correction;
+	correction.set_depth_correction(true, true, false);
+	params.view_to_clip = correction * p_scene_data->cam_projection;
+	params.clip_to_view = params.view_to_clip.inverse();
+	params.clip_to_prev_clip = (correction * p_scene_data->prev_cam_projection) * p_scene_data->prev_cam_transform.affine_inverse() * p_scene_data->cam_transform * params.clip_to_view;
+	params.prev_clip_to_clip = params.clip_to_prev_clip.inverse();
+	params.camera_transform = p_scene_data->cam_transform;
+
+	RendererRD::DLSSFrameGeneration::update(params);
+}
+#endif
 
 void RendererSceneRenderRD::render_material(const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region) {
 	_render_material(p_cam_transform, p_cam_projection, p_cam_orthogonal, p_instances, p_framebuffer, p_region, 1.0);

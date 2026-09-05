@@ -91,7 +91,54 @@ public:
 
 	static bool is_available();
 	void upscale(const Parameters &p_params);
-	static void release(uint32_t p_viewport);
+};
+
+// DLSS frame generation.
+//
+// Unlike super resolution this runs nowhere in the frame the engine records: the interpolation
+// happens inside the present hook, long after this command buffer has been submitted. All this
+// does is hand Streamline the inputs it will read there -- which is why they are tagged as valid
+// until present, and why the hudless colour has to be a copy rather than the render target
+// itself: the interface is drawn over the render target before it reaches the screen.
+class DLSSFrameGeneration {
+	struct CallbackArgs {
+		uint32_t viewport = 0;
+		StreamlineVK::CameraConstants camera;
+		StreamlineVK::FrameGenerationInputs inputs;
+	};
+
+	static void callback(RDD *p_driver, RDD::CommandBufferID p_command_buffer, CallbackArgs *p_userdata);
+
+public:
+	struct Parameters {
+		uint32_t viewport = 0;
+		bool enabled = false;
+		Size2i output_size;
+		Size2i internal_size;
+
+		// The render target, still holding the tone-mapped 3D image with nothing drawn over it.
+		RID hudless_source;
+		RID depth;
+		RID velocity;
+
+		float z_near = 0.0f;
+		float z_far = 0.0f;
+		float fov_y = 0.0f;
+		float aspect = 1.0f;
+		Vector2 jitter;
+		bool reset_accumulation = false;
+		bool orthographic = false;
+
+		Projection view_to_clip;
+		Projection clip_to_view;
+		Projection clip_to_prev_clip;
+		Projection prev_clip_to_clip;
+		Transform3D camera_transform;
+	};
+
+	static bool is_available();
+	// Returns whether frame generation is running on this viewport after the call.
+	static bool update(const Parameters &p_params);
 };
 
 } //namespace RendererRD

@@ -109,19 +109,6 @@ bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_mfx_tempor
 }
 #endif
 
-#ifdef STREAMLINE_ENABLED
-uint32_t RenderForwardClustered::RenderBufferDataForwardClustered::get_dlss_viewport(uint32_t p_view) {
-	if (dlss_viewport == 0) {
-		// One block per render buffer, so the views of a stereo pair never collide, and never
-		// reused while this buffer lives. Starts at 1 because 0 means "not claimed yet".
-		static uint32_t next_viewport = 1;
-		dlss_viewport = next_viewport;
-		next_viewport += RendererSceneRender::MAX_RENDER_VIEWS;
-	}
-	return dlss_viewport + p_view;
-}
-#endif
-
 void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	// JIC, should already have been cleared
 	if (render_buffers) {
@@ -146,15 +133,6 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	if (mfx_temporal_context) {
 		memdelete(mfx_temporal_context);
 		mfx_temporal_context = nullptr;
-	}
-#endif
-
-#ifdef STREAMLINE_ENABLED
-	if (dlss_viewport != 0) {
-		for (uint32_t v = 0; v < RendererSceneRender::MAX_RENDER_VIEWS; v++) {
-			RendererRD::DLSSEffect::release(dlss_viewport + v);
-		}
-		dlss_viewport = 0;
 	}
 #endif
 
@@ -2900,7 +2878,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				const real_t aspect = p_render_data->scene_data->cam_projection.get_aspect();
 
 				RendererRD::DLSSEffect::Parameters params;
-				params.viewport = rb_data->get_dlss_viewport(v);
+				params.viewport = rb->get_streamline_viewport(v);
 				params.internal_size = rb->get_internal_size();
 				params.target_size = rb->get_target_size();
 				params.scale = float(rb->get_internal_size().width) / float(MAX(rb->get_target_size().width, 1));

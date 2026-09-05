@@ -167,12 +167,19 @@ public:
 	bool super_resolution_evaluate(uint64_t p_command_buffer, uint32_t p_viewport, const Size2i &p_output_size, Quality p_quality, const CameraConstants &p_camera, const UpscaleInputs &p_inputs);
 	void super_resolution_release(uint32_t p_viewport);
 
-	// Frame generation. `frame_generation_is_running()` is what gates the hudless copy: it only
-	// answers true once the feature is supported, switched on, and actually configured for this
-	// viewport.
-	bool frame_generation_set_enabled(uint32_t p_viewport, bool p_enabled, const Size2i &p_output_size);
+	// Frame generation. `frame_generation_set_enabled()` returns whether it is actually running,
+	// which is what gates everything below it: the feature has to be supported, switched on,
+	// backed by Reflex, and accepted by the plugin for this viewport.
+	bool frame_generation_set_enabled(uint32_t p_viewport, bool p_enabled, const Size2i &p_output_size, const Size2i &p_mvec_depth_size);
 	bool frame_generation_is_running(uint32_t p_viewport) const;
 	void frame_generation_release(uint32_t p_viewport);
+
+	// Takes the copy of the presented image from before the interface was drawn over it.
+	// Allocates its target on first use and frees it again as soon as frame generation stops,
+	// so a project that never turns the feature on never pays for the texture or the copy.
+	void frame_generation_capture_hudless(uint32_t p_viewport, RID p_source_texture, const Size2i &p_size);
+	RID frame_generation_get_hudless(uint32_t p_viewport) const;
+
 	void frame_generation_tag(uint64_t p_command_buffer, uint32_t p_viewport, const CameraConstants &p_camera, const FrameGenerationInputs &p_inputs);
 
 	static Quality quality_from_scale(float p_scale);
@@ -186,6 +193,7 @@ public:
 
 private:
 	void _set_constants(uint32_t p_viewport, const CameraConstants &p_camera);
+	void _free_hudless(uint32_t p_viewport);
 
 	static StreamlineVK *singleton;
 

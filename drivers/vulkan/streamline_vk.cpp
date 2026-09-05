@@ -264,8 +264,12 @@ struct StreamlineVK::Internal {
 	};
 	struct FrameGenerationState {
 		Size2i output_size;
+		Size2i mvec_depth_size;
 		bool enabled = false;
 		bool running = false;
+		// Only allocated while frame generation is running on this viewport.
+		RID hudless_texture;
+		Size2i hudless_size;
 	};
 	HashMap<uint32_t, SuperResolutionState> super_resolution;
 	HashMap<uint32_t, FrameGenerationState> frame_generation;
@@ -729,7 +733,7 @@ void StreamlineVK::super_resolution_release(uint32_t p_viewport) {
 	}
 }
 
-bool StreamlineVK::frame_generation_set_enabled(uint32_t p_viewport, bool p_enabled, const Size2i &p_output_size) {
+bool StreamlineVK::frame_generation_set_enabled(uint32_t p_viewport, bool p_enabled, const Size2i &p_output_size, const Size2i &p_mvec_depth_size) {
 	ERR_FAIL_NULL_V(internal, false);
 
 	Internal::FrameGenerationState &state = internal->frame_generation[p_viewport];
@@ -739,7 +743,7 @@ bool StreamlineVK::frame_generation_set_enabled(uint32_t p_viewport, bool p_enab
 	// which is a much more confusing failure than not starting at all.
 	const bool wanted = p_enabled && is_supported(FEATURE_DLSS_FRAME_GENERATION) && internal->reflex_running && internal->dlssg_set_options != nullptr;
 
-	if (state.running == wanted && state.output_size == p_output_size) {
+	if (state.running == wanted && state.output_size == p_output_size && state.mvec_depth_size == p_mvec_depth_size) {
 		return state.running;
 	}
 	if (!wanted && !state.running) {
@@ -755,10 +759,10 @@ bool StreamlineVK::frame_generation_set_enabled(uint32_t p_viewport, bool p_enab
 	options.numFramesToGenerate = 1;
 	options.colorWidth = uint32_t(p_output_size.width);
 	options.colorHeight = uint32_t(p_output_size.height);
-	options.mvecDepthWidth = uint32_t(p_output_size.width);
-	options.mvecDepthHeight = uint32_t(p_output_size.height);
-	// Vulkan is the only API where the presenting queue does not have to be blocked while the
-	// interpolation workload runs, which is where most of the multiplier actually comes from.
+	// Depth and motion vectors come from the 3D buffers, which are at the internal size when
+	// the viewport is upscaling.
+	options.mvecDepthWidth = uint32_t(p_mvec_depth_size.width);
+	options.mvecDepthHeight = uint32_t(p_mvec_depth_size.height);
 	options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
 
 	const sl::Result result = internal->dlssg_set_options(sl::ViewportHandle(p_viewport), options);
@@ -766,13 +770,62 @@ bool StreamlineVK::frame_generation_set_enabled(uint32_t p_viewport, bool p_enab
 		ERR_PRINT_ONCE(vformat("Streamline: slDLSSGSetOptions failed (%s).", sl::getResultAsStr(result)));
 		state.enabled = p_enabled;
 		state.running = false;
+		_free_hudless(p_viewport);
 		return false;
 	}
 
 	state.enabled = p_enabled;
 	state.running = wanted;
 	state.output_size = p_output_size;
+	state.mvec_depth_size = p_mvec_depth_size;
+	if (!state.running) {
+		_free_hudless(p_viewport);
+	}
 	return state.running;
+}
+
+void StreamlineVK::_free_hudless(uint32_t p_viewport) {
+	Internal::FrameGenerationState *state = internal->frame_generation.getptr(p_viewport);
+	if (state != nullptr && state->hudless_texture.is_valid()) {
+		RenderingDevice::get_singleton()->free_rid(state->hudless_texture);
+		state->hudless_texture = RID();
+		state->hudless_size = Size2i();
+	}
+}
+
+void StreamlineVK::frame_generation_capture_hudless(uint32_t p_viewport, RID p_source_texture, const Size2i &p_size) {
+	ERR_FAIL_NULL(internal);
+	Internal::FrameGenerationState *state = internal->frame_generation.getptr(p_viewport);
+	if (state == nullptr || !state->running || p_source_texture.is_null() || p_size.width <= 0 || p_size.height <= 0) {
+		return;
+	}
+
+	RenderingDevice *rendering_device = RenderingDevice::get_singleton();
+
+	if (state->hudless_texture.is_null() || state->hudless_size != p_size) {
+		_free_hudless(p_viewport);
+
+		const RenderingDevice::TextureFormat source_format = rendering_device->texture_get_format(p_source_texture);
+
+		RenderingDevice::TextureFormat format;
+		format.format = source_format.format;
+		format.width = uint32_t(p_size.width);
+		format.height = uint32_t(p_size.height);
+		format.usage_bits = RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT | RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+
+		state->hudless_texture = rendering_device->texture_create(format, RenderingDevice::TextureView());
+		ERR_FAIL_COND(state->hudless_texture.is_null());
+		state->hudless_size = p_size;
+		rendering_device->set_resource_name(state->hudless_texture, "Streamline HUD-less Color");
+	}
+
+	rendering_device->texture_copy(p_source_texture, state->hudless_texture, Vector3(), Vector3(), Vector3(p_size.width, p_size.height, 1), 0, 0, 0, 0);
+}
+
+RID StreamlineVK::frame_generation_get_hudless(uint32_t p_viewport) const {
+	ERR_FAIL_NULL_V(internal, RID());
+	const Internal::FrameGenerationState *state = internal->frame_generation.getptr(p_viewport);
+	return state != nullptr ? state->hudless_texture : RID();
 }
 
 bool StreamlineVK::frame_generation_is_running(uint32_t p_viewport) const {
@@ -783,9 +836,11 @@ bool StreamlineVK::frame_generation_is_running(uint32_t p_viewport) const {
 
 void StreamlineVK::frame_generation_release(uint32_t p_viewport) {
 	ERR_FAIL_NULL(internal);
-	if (!internal->frame_generation.has(p_viewport)) {
+	Internal::FrameGenerationState *state = internal->frame_generation.getptr(p_viewport);
+	if (state == nullptr) {
 		return;
 	}
+	_free_hudless(p_viewport);
 	internal->frame_generation.erase(p_viewport);
 	if (internal->device_ready) {
 		internal->free_resources(sl::kFeatureDLSS_G, sl::ViewportHandle(p_viewport));
@@ -820,8 +875,7 @@ void StreamlineVK::frame_generation_tag(uint64_t p_command_buffer, uint32_t p_vi
 		tags.push_back(sl::ResourceTag(&hudless, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eValidUntilPresent, &hudless_extent));
 	}
 
-	sl::CommandBuffer *command_buffer = to_sl_command_buffer(p_command_buffer);
-	const sl::Result result = internal->set_tag_for_frame(*internal->frame, sl::ViewportHandle(p_viewport), tags.ptr(), tags.size(), command_buffer);
+	const sl::Result result = internal->set_tag_for_frame(*internal->frame, sl::ViewportHandle(p_viewport), tags.ptr(), tags.size(), to_sl_command_buffer(p_command_buffer));
 	if (result != sl::Result::eOk) {
 		ERR_PRINT_ONCE(vformat("Streamline: tagging the frame generation inputs failed (%s).", sl::getResultAsStr(result)));
 	}

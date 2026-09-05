@@ -135,6 +135,15 @@ Vector<RendererViewport::Viewport *> RendererViewport::_sort_active_viewports() 
 	return result;
 }
 
+bool RendererViewport::is_render_target_presented(RID p_render_target) const {
+	for (const Viewport *viewport : active_viewports) {
+		if (viewport->render_target == p_render_target) {
+			return viewport->viewport_to_screen != DisplayServerEnums::INVALID_WINDOW_ID;
+		}
+	}
+	return false;
+}
+
 void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 	if (p_viewport->render_buffers.is_valid()) {
 		if (p_viewport->size.width == 0 || p_viewport->size.height == 0) {

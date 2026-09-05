@@ -31,6 +31,8 @@
 #pragma once
 
 #include "core/templates/hash_map.h"
+// Self-guarding: it defines STREAMLINE_ENABLED and compiles to nothing where the SDK cannot run.
+#include "drivers/vulkan/streamline_vk.h"
 #include "servers/rendering/renderer_rd/effects/vrs.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_buffer_custom_data_rd.h"
@@ -79,6 +81,9 @@ private:
 	RID render_target;
 	Size2i target_size = Size2i(0, 0);
 	uint32_t view_count = 1;
+#ifdef STREAMLINE_ENABLED
+	uint32_t streamline_viewport = 0; // 0 means "not claimed yet".
+#endif
 
 	// The internal size of the textures we render 3D to in case we render at a lower resolution and upscale
 	Size2i internal_size = Size2i(0, 0);
@@ -236,6 +241,13 @@ public:
 
 	_FORCE_INLINE_ RID get_render_target() const { return render_target; }
 	_FORCE_INLINE_ uint32_t get_view_count() const { return view_count; }
+
+#ifdef STREAMLINE_ENABLED
+	// Streamline keeps a viewport's temporal history and its per-feature resources under the
+	// handle it was given, so this has to be stable for as long as these buffers are, and must
+	// not be reused by another view while it still holds history. Claimed on first use.
+	uint32_t get_streamline_viewport(uint32_t p_view);
+#endif
 	_FORCE_INLINE_ Size2i get_internal_size() const { return internal_size; }
 	_FORCE_INLINE_ Size2i get_target_size() const { return target_size; }
 	_FORCE_INLINE_ RSE::ViewportScaling3DMode get_scaling_3d_mode() const { return scaling_3d_mode; }

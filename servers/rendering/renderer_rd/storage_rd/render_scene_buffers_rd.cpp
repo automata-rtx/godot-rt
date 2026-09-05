@@ -33,6 +33,7 @@
 
 #include "core/object/class_db.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
+#include "servers/rendering/renderer_scene_render.h"
 #include "servers/rendering/rendering_device_binds.h"
 #include "servers/rendering/rendering_server.h" // IWYU pragma: keep // Needed to bind RSE enums.
 #include "servers/rendering/rendering_server_enums.h"
@@ -40,8 +41,35 @@
 RenderSceneBuffersRD::RenderSceneBuffersRD() {
 }
 
+#ifdef STREAMLINE_ENABLED
+uint32_t RenderSceneBuffersRD::get_streamline_viewport(uint32_t p_view) {
+	if (streamline_viewport == 0) {
+		// One block of handles per set of buffers, so the two views of a stereo pair never
+		// collide and no handle is reused while these buffers still hold history under it.
+		// Starts at 1 because 0 means "not claimed yet".
+		static uint32_t next_viewport = 1;
+		streamline_viewport = next_viewport;
+		next_viewport += RendererSceneRender::MAX_RENDER_VIEWS;
+	}
+	return streamline_viewport + p_view;
+}
+#endif
+
 RenderSceneBuffersRD::~RenderSceneBuffersRD() {
 	cleanup();
+
+#ifdef STREAMLINE_ENABLED
+	if (streamline_viewport != 0) {
+		for (uint32_t v = 0; v < RendererSceneRender::MAX_RENDER_VIEWS; v++) {
+			StreamlineVK *streamline = StreamlineVK::get_singleton();
+			if (streamline != nullptr) {
+				streamline->super_resolution_release(streamline_viewport + v);
+				streamline->frame_generation_release(streamline_viewport + v);
+			}
+		}
+		streamline_viewport = 0;
+	}
+#endif
 
 	data_buffers.clear();
 

@@ -120,12 +120,6 @@ public:
 #ifdef METAL_MFXTEMPORAL_ENABLED
 		RendererRD::MFXTemporalContext *mfx_temporal_context = nullptr;
 #endif
-#ifdef STREAMLINE_ENABLED
-		// Streamline keeps a viewport's history under the handle it was given, so this has to
-		// be stable for as long as the buffers are, and must not be reused by another view
-		// while it holds history. 0 means "not claimed yet".
-		uint32_t dlss_viewport = 0;
-#endif
 
 	public:
 		ClusterBuilderRD *cluster_builder = nullptr;
@@ -175,10 +169,6 @@ public:
 #ifdef METAL_MFXTEMPORAL_ENABLED
 		bool ensure_mfx_temporal(RendererRD::MFXTemporalEffect *p_effect);
 		RendererRD::MFXTemporalContext *get_mfx_temporal_context() const { return mfx_temporal_context; }
-#endif
-
-#ifdef STREAMLINE_ENABLED
-		uint32_t get_dlss_viewport(uint32_t p_view);
 #endif
 
 		RID get_color_only_fb();

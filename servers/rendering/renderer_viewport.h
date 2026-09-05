@@ -204,6 +204,13 @@ public:
 
 private:
 	Vector<Viewport *> _sort_active_viewports();
+
+public:
+	// True when this render target is the one a window actually presents, which is the only
+	// image frame generation can interpolate.
+	bool is_render_target_presented(RID p_render_target) const;
+
+private:
 	void _viewport_set_size(Viewport *p_viewport, int p_width, int p_height, uint32_t p_view_count);
 	bool _viewport_requires_motion_vectors(Viewport *p_viewport);
 	void _viewport_set_force_motion_vectors(Viewport *p_viewport, bool p_force_motion_vectors);

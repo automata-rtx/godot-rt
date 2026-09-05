@@ -118,6 +118,12 @@ protected:
 	void _render_buffers_copy_depth_texture(const RenderDataRD *p_render_data, bool p_use_msaa = false);
 	void _render_buffers_post_process_and_tonemap(const RenderDataRD *p_render_data, bool p_use_msaa = false);
 	void _post_process_subpass(RID p_source_texture, RID p_framebuffer, const RenderDataRD *p_render_data);
+
+#ifdef STREAMLINE_ENABLED
+	// Runs once the frame's 3D image is in the render target and before anything is drawn over
+	// it, which is the only moment a hudless copy can be taken.
+	void _process_frame_generation(const Ref<RenderSceneBuffersRD> &p_render_buffers, const RenderSceneDataRD *p_scene_data, RID p_reflection_probe);
+#endif
 	void _disable_clear_request(const RenderDataRD *p_render_data);
 
 	// needed for a single argument calls (material and uv2)
