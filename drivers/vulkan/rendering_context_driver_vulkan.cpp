@@ -36,6 +36,7 @@
 #include "core/config/project_settings.h"
 #include "core/version.h"
 #include "drivers/vulkan/rendering_device_driver_vulkan.h"
+#include "drivers/vulkan/streamline_vk.h"
 #include "drivers/vulkan/vulkan_hooks.h"
 
 #ifndef DEV_ENABLED
@@ -394,6 +395,11 @@ RenderingContextDriverVulkan::~RenderingContextDriverVulkan() {
 	if (instance != VK_NULL_HANDLE) {
 		vkDestroyInstance(instance, get_allocation_callbacks(VK_OBJECT_TYPE_INSTANCE));
 	}
+
+#ifdef STREAMLINE_ENABLED
+	// After the instance, because the interposer owns the Vulkan entry points that destroyed it.
+	StreamlineVK::finalize();
+#endif
 }
 
 Error RenderingContextDriverVulkan::_initialize_vulkan_version() {
@@ -903,7 +909,19 @@ Error RenderingContextDriverVulkan::initialize() {
 	Error err;
 
 #ifdef USE_VOLK
-	if (volkInitialize() != VK_SUCCESS) {
+	uint64_t streamline_proc_addr = 0;
+#ifdef STREAMLINE_ENABLED
+	// Loading Streamline first and letting volk resolve through it is the entire hooking step:
+	// the interposer returns its own proxies for the entry points listed in sl_hooks.h -- among
+	// them vkCreateInstance, vkCreateDevice, vkCreateSwapchainKHR, vkAcquireNextImageKHR and
+	// vkQueuePresentKHR -- and the Vulkan loader's own functions for everything else. Nothing
+	// downstream calls Vulkan differently. If Streamline is off or missing this stays 0 and the
+	// engine takes the ordinary loader path.
+	streamline_proc_addr = StreamlineVK::initialize();
+#endif
+	if (streamline_proc_addr != 0) {
+		volkInitializeCustom(PFN_vkGetInstanceProcAddr(uintptr_t(streamline_proc_addr)));
+	} else if (volkInitialize() != VK_SUCCESS) {
 		return FAILED;
 	}
 #endif

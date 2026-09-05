@@ -1910,6 +1910,25 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/rendering_device/pipeline_cache/save_chunk_size_mb", PROPERTY_HINT_RANGE, "0.000001,64.0,0.001,or_greater"), 3.0);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/vulkan/max_descriptors_per_pool", PROPERTY_HINT_RANGE, "1,256,1,or_greater"), 64);
 
+	// NVIDIA Streamline. The SDK's headers are vendored but none of its binaries are: the
+	// interposer and the DLSS plugins are closed source, and they are loaded at run time from
+	// `binary_path` if they are there at all. Enabling this replaces the process's Vulkan
+	// entry-point loader with the interposer's, which is why it takes a restart -- and why it
+	// stays off by default even in a build that has the headers.
+	GLOBAL_DEF_RST(PropertyInfo(Variant::BOOL, "rendering/streamline/enabled"), false);
+	// Directory holding sl.interposer.dll and the sl.*.dll plugins. Empty means the directory
+	// the executable is in, which is where an exported game's own libraries sit.
+	GLOBAL_DEF_RST(PropertyInfo(Variant::STRING, "rendering/streamline/binary_path", PROPERTY_HINT_GLOBAL_DIR), "");
+	// GUID issued by NVIDIA for this title. Without one, Streamline identifies the application
+	// by engine name and version instead, which is enough for development but not for the
+	// per-title tuning NVIDIA ships over the air.
+	GLOBAL_DEF(PropertyInfo(Variant::STRING, "rendering/streamline/project_id"), "");
+	GLOBAL_DEF_RST(PropertyInfo(Variant::BOOL, "rendering/streamline/verbose_logging"), false);
+	// DLSS frame generation. Unlike super resolution, which is a viewport scaling mode, this is
+	// one switch for the whole application: it takes over the swap chain. It never runs in the
+	// editor, where the presented image is the editor's own interface.
+	GLOBAL_DEF(PropertyInfo(Variant::BOOL, "rendering/streamline/frame_generation"), false);
+
 	GLOBAL_DEF_RST("rendering/rendering_device/d3d12/max_resource_descriptors", 65536);
 	custom_prop_info["rendering/rendering_device/d3d12/max_resource_descriptors"] = PropertyInfo(Variant::INT, "rendering/rendering_device/d3d12/max_resource_descriptors", PROPERTY_HINT_RANGE, "512,1000000");
 	GLOBAL_DEF_RST("rendering/rendering_device/d3d12/max_sampler_descriptors", 1024);

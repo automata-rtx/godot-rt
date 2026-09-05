@@ -34,6 +34,7 @@
 #include "core/config/project_settings.h"
 #include "core/os/os.h"
 #include "core/templates/fixed_vector.h"
+#include "drivers/vulkan/streamline_vk.h"
 #include "drivers/vulkan/vulkan_hooks.h"
 
 #include <thirdparty/misc/smolv.h>
@@ -1904,6 +1905,15 @@ Error RenderingDeviceDriverVulkan::initialize(uint32_t p_device_index, uint32_t 
 
 	err = _initialize_pipeline_cache();
 	ERR_FAIL_COND_V_MSG(err != OK, err, "Couldn't initialize Vulkan pipeline cache. This may be caused by an incompatible or outdated graphics driver.");
+
+#ifdef STREAMLINE_ENABLED
+	if (StreamlineVK::get_singleton() != nullptr) {
+		// Which features are available depends on the adapter, so nothing could be asked before
+		// now. Only the first device counts: a local rendering device created later is a
+		// separate VkDevice that Streamline is not driving.
+		StreamlineVK::get_singleton()->set_physical_device(uint64_t(uintptr_t(physical_device)));
+	}
+#endif
 
 	max_descriptor_sets_per_pool = GLOBAL_GET("rendering/rendering_device/vulkan/max_descriptors_per_pool");
 

@@ -596,6 +596,11 @@ Comment: Swappy
 Copyright: 2019, The Android Open Source Project
 License: Apache-2.0
 
+Files: thirdparty/streamline/*
+Comment: Streamline
+Copyright: 2022-2023, NVIDIA CORPORATION
+License: Expat
+
 Files: thirdparty/thorvg/*
 Comment: ThorVG
 Copyright: 2020-2026, The ThorVG Project

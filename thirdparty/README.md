@@ -1072,6 +1072,27 @@ Files extracted from upstream source:
 - `LICENSE`
 
 
+## streamline
+
+- Upstream: https://github.com/NVIDIA-RTX/Streamline
+- Version: 2.12.0 (e8aaa6eaac968711fb62473d4ae8256dde20919b, 2026)
+- License: MIT
+
+Public headers only. The Streamline runtime (`sl.interposer.dll` and the plugin
+DLLs) is *not* vendored: it is closed source for DLSS Frame Generation and is
+loaded at run time from the directory named by the
+`rendering/streamline/binary_path` project setting, so the engine builds and
+links without it.
+
+`sl_nvperf.h` is deliberately not extracted; it carries the NVIDIA Nsight Perf
+SDK license rather than MIT, and nothing here uses it.
+
+Files extracted from upstream source:
+
+- `include/*.h` except `sl_nvperf.h`
+- `license.txt` as `LICENSE.txt`
+
+
 ## thorvg
 
 - Upstream: https://github.com/thorvg/thorvg

@@ -8,6 +8,7 @@ thirdparty_dir = "#thirdparty/vulkan"
 thirdparty_volk_dir = "#thirdparty/volk"
 thirdparty_spirv_headers_dir = "#thirdparty/spirv-headers"
 thirdparty_respirv_dir = "#thirdparty/re-spirv"
+thirdparty_streamline_dir = "#thirdparty/streamline"
 
 # Use bundled Vulkan headers
 env.Prepend(CPPPATH=[thirdparty_dir, thirdparty_dir + "/include"])
@@ -15,6 +16,10 @@ env.Prepend(CPPPATH=[thirdparty_dir, thirdparty_dir + "/include"])
 if env["use_volk"]:
     env.AppendUnique(CPPDEFINES=["USE_VOLK"])
     env.Prepend(CPPPATH=[thirdparty_volk_dir])
+
+# Streamline is headers-only here: the interposer and the DLSS plugins are loaded at run time,
+# so nothing is compiled or linked from the SDK and a build without them still works.
+env.Prepend(CPPPATH=[thirdparty_streamline_dir + "/include"])
 
 if env["platform"] == "android":
     env.AppendUnique(CPPDEFINES=["VK_USE_PLATFORM_ANDROID_KHR"])
