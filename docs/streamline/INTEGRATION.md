@@ -257,6 +257,11 @@ In roughly the order a failure would be easiest to diagnose:
    resource tags — format, layout, extent — before it points at the constants.
 4. **Ghosting or smearing under camera motion** points at the motion vectors: first the sign of
    each axis, then `mvecScale`.
+   Note that DLSS is given a camera-motion pre-fill of the velocity buffer, the same one MetalFX
+   Temporal uses. It has to be: Godot clears that buffer to `(-1, -1)` as a sentinel for "nothing
+   wrote here", FSR2 recognizes the value in its own patched shader and derives camera motion from
+   depth, and DLSS -- whose shader cannot be patched -- would otherwise read the sentinel as a
+   full screen of motion at every pixel the motion pass did not cover.
 5. **Ghosting that survives a still camera** points at `clipToPrevClip`, i.e. the matrix
    transpose convention in section 5.
 6. **Jitter.** If the image is stable but soft, or shimmering at native scale, check the sign of

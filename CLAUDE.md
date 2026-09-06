@@ -167,6 +167,11 @@ answering anything about upscaling, frame generation or the Vulkan loader.
   fails to create one and renders blank. It is left out of `featuresToLoad` there. DLSS super
   resolution registers no hooks and is unaffected. A game that presents more than one window is
   still unhandled.
+- **DLSS needs the velocity buffer pre-filled with camera motion**, which is why
+  `MotionVectorsStore` is no longer MetalFX-only. Godot clears that buffer to `(-1, -1)` meaning
+  "nothing wrote here" and FSR2 decodes the sentinel inside its own patched shader; DLSS reads it
+  literally and, scaled by the render size, sees a full screen of motion everywhere the motion pass
+  did not draw. The symptom is edges that crawl and never resolve even with the camera still.
 - **Frame generation refuses rather than half-applies**: never in the editor, never in stereo,
   never on a viewport no window presents, and never without motion vectors (which means a
   temporal upscaler or TAA must be running). It provides hudless colour but **not UI alpha**,

@@ -2577,7 +2577,20 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RD::get_singleton()->draw_command_end_label();
 
 		if (using_motion_pass) {
-			if (scale_type == SCALE_MFX) {
+			// (-1, -1) is a sentinel meaning "nothing wrote a motion vector here", not a motion
+			// vector. FSR2 gets away with it because Godot patched its shader to recognize the
+			// value and derive camera motion from depth on the spot
+			// (FFX_FSR2_OPTION_GODOT_DERIVE_INVALID_MOTION_VECTORS). DLSS cannot be patched: it
+			// reads whatever the buffer holds, and with mvecScale left at 1 the plugin multiplies
+			// by the render size, so the sentinel arrives as a full screen of motion at every
+			// pixel the motion pass did not overwrite -- which, in a still scene, is every pixel.
+			// History then misses everywhere on every frame and nothing ever accumulates, so the
+			// output stays at the current jittered low-resolution render and every edge crawls
+			// with the jitter sequence forever.
+			//
+			// So DLSS takes the same camera-motion pre-fill MetalFX does. The motion pass that
+			// follows overwrites it for anything actually moving.
+			if (scale_type == SCALE_MFX || scale_type == SCALE_DLSS) {
 				motion_vectors_store->process(rb,
 						p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform,
 						p_render_data->scene_data->prev_cam_projection, p_render_data->scene_data->prev_cam_transform);
@@ -5712,8 +5725,10 @@ RenderForwardClustered::RenderForwardClustered() {
 #endif
 	ss_effects = memnew(RendererRD::SSEffects);
 	gtao = memnew(RendererRD::GTAO);
-#ifdef METAL_MFXTEMPORAL_ENABLED
+	// Not tied to MetalFX any more: DLSS needs the same camera-motion fill, and nothing in this
+	// effect is platform-specific -- it is one compute shader over depth.
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
+#ifdef METAL_MFXTEMPORAL_ENABLED
 	mfx_temporal_effect = memnew(RendererRD::MFXTemporalEffect);
 #endif
 }
@@ -5751,12 +5766,12 @@ RenderForwardClustered::~RenderForwardClustered() {
 		memdelete(mfx_temporal_effect);
 		mfx_temporal_effect = nullptr;
 	}
+#endif
 
 	if (motion_vectors_store) {
 		memdelete(motion_vectors_store);
 		motion_vectors_store = nullptr;
 	}
-#endif
 
 	RD::get_singleton()->free_rid(shadow_sampler);
 	if (rt_shadow_index_fallback.is_valid()) {
