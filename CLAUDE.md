@@ -170,8 +170,13 @@ answering anything about upscaling, frame generation or the Vulkan loader.
 - **`rendering/anti_aliasing/quality/dlss_preset` forces a DL model** (Default, J, K, L, M — the
   other eleven SDK slots are removed, deprecated, or revert to default). Live, and applied to every
   quality mode at once. **Which model is actually running cannot be read back**: `DLSSState` carries
-  only a VRAM estimate and the NGX preset parameters are write-only hints, so on Default the editor
-  overlay reports the preset the SDK header documents for the mode and labels it as such.
+  only a VRAM estimate, the NGX preset parameters are write-only hints, and `sl.dlss`'s own debug
+  HUD prints the quality mode and not the preset -- the plugin does not know it either. So on
+  Default the editor overlay reports the preset the SDK header documents for the mode and labels it
+  as such. The authoritative answer is NVIDIA's on-screen indicator, a machine-wide registry switch
+  (`HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore\ShowDlssIndicator`, flipped by the SDK's
+  own `scripts/ngx_driver_onscreenindicator.reg`); the overlay reads that value and defers to the
+  letter on screen when it is on.
 - **View → View Information shows the DLSS resolutions, scale and preset** when DLSS is the
   upscaler that actually ran. It reads `viewport_get_internal_size` and
   `viewport_get_effective_scaling_3d_mode`, which report what the renderer did rather than what the

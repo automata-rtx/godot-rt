@@ -152,6 +152,24 @@ says "documented default" rather than presenting it as fact, because the same he
 choice "may or may not change after an OTA". Force a preset and the overlay reports it plainly,
 because then it is exactly what was handed to the runtime.
 
+The one thing that does report the model authoritatively is NVIDIA's on-screen DLSS indicator,
+which the runtime draws into the upscaled image from inside `nvngx_dlss.dll` — where the choice is
+actually made. It is a machine-wide registry switch with no API behind it, and the SDK ships the
+two files that flip it: `scripts/ngx_driver_onscreenindicator.reg` sets
+`HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore\ShowDlssIndicator` to 1, and the `_off`
+variant back to 0. Writing it needs elevation; reading it does not, so the overlay reads the value
+and, when the indicator is on, says so and defers to the letter on screen.
+
+How thoroughly this was checked, so nobody spends the day repeating it: the NGX parameter namespace
+is 393 defines and the only `Get`-prefixed keys in it are the four dynamic render extents; the whole
+preset surface is six keys with `Hint` in every name; the only NGX runtime query that exists returns
+`SizeInBytes`, `OptLevel` and `IsDevSnippetBranch`, which describe how the DLL was built rather than
+which model it picked; Streamline reads 25 parameter values in its entire source tree and none is
+preset-shaped; and `sl.dlss`'s own debug HUD prints mode, viewport, runtime and VRAM
+(`dlssEntry.cpp:84-91`, filled at `:772-775`) — NVIDIA's own overlay, with full access to the
+plugin's state, cannot print a preset letter either, because the plugin does not know it.
+
+
 ### The editor overlay
 
 **View → View Information** in the 3D viewport gains two lines whenever DLSS is the upscaler that

@@ -346,6 +346,40 @@ const char *documented_default_letter(StreamlineVK::Quality p_quality) {
 	}
 }
 
+// Whether NVIDIA's own on-screen DLSS indicator is switched on. It is the only thing that reports
+// the model authoritatively -- the runtime draws the letter into the upscaled image from inside
+// nvngx_dlss.dll, where the choice is actually made -- but it is a machine-wide registry switch
+// with no API behind it, so the most an application can do is notice that it is on and say the
+// letter on screen is worth more than a documented default. Reading the value needs no elevation;
+// writing it does, which is why the SDK ships ngx_driver_onscreenindicator.reg to do it instead.
+enum class IndicatorState {
+	Unknown,
+	Off,
+	On,
+};
+
+IndicatorState nvidia_indicator_state() {
+	// Read once. It cannot change without the driver being reloaded, and the overlay asking every
+	// frame would put a registry hit in the frame loop for a value that never moves.
+	static const IndicatorState state = []() {
+		DWORD value = 0;
+		DWORD size = sizeof(value);
+		const LSTATUS result = RegGetValueW(HKEY_LOCAL_MACHINE,
+				L"SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore",
+				L"ShowDlssIndicator", RRF_RT_REG_DWORD, nullptr, &value, &size);
+		if (result == ERROR_FILE_NOT_FOUND) {
+			// The key exists on any machine with the NGX runtime; the value only once someone has
+			// set it either way, so its absence means off rather than unknown.
+			return IndicatorState::Off;
+		}
+		if (result != ERROR_SUCCESS) {
+			return IndicatorState::Unknown;
+		}
+		return value != 0 ? IndicatorState::On : IndicatorState::Off;
+	}();
+	return state;
+}
+
 const char *quality_name(StreamlineVK::Quality p_quality) {
 	switch (p_quality) {
 		case StreamlineVK::QUALITY_MAX_QUALITY:
@@ -950,10 +984,13 @@ String StreamlineVK::super_resolution_preset_description(uint32_t p_viewport) co
 		// Forced by the project, so this one is fact: it is exactly what was handed to the runtime.
 		return String(preset_letter(state->preset));
 	}
-	// Nothing reads the active model back. `DLSSState` carries only a VRAM estimate, and every NGX
-	// preset parameter is a write-only hint, so the honest answer for a viewport on the default is
-	// the preset the SDK documents for its mode -- said as such.
-	return vformat("%s (documented default)", documented_default_letter(state->quality));
+	// Nothing reads the active model back. `DLSSState` carries only a VRAM estimate, every NGX
+	// preset parameter is a write-only hint, and NVIDIA's own debug overlay inside sl.dlss prints
+	// the quality mode and not the preset -- the plugin does not know it either. So the honest
+	// answer for a viewport on the default is the preset the SDK documents for its mode, said as
+	// such, and a pointer at the one thing that does know when it is switched on.
+	const String documented = vformat("%s (documented default)", documented_default_letter(state->quality));
+	return nvidia_indicator_state() == IndicatorState::On ? documented + " " + String::utf8("\u2014 NVIDIA's indicator is on, trust the letter it draws") : documented;
 }
 
 String StreamlineVK::super_resolution_mode_name(uint32_t p_viewport) const {
