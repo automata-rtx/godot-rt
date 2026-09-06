@@ -194,7 +194,7 @@ public:
 	//
 	// `p_command_buffer` is an `RDD::CommandBufferID`, as handed to a driver callback; the
 	// underlying VkCommandBuffer is resolved here rather than at the call site.
-	bool super_resolution_evaluate(uint64_t p_command_buffer, uint32_t p_viewport, const Size2i &p_output_size, Quality p_quality, Preset p_preset, const CameraConstants &p_camera, const UpscaleInputs &p_inputs);
+	bool super_resolution_evaluate(uint64_t p_command_buffer, uint32_t p_viewport, const Size2i &p_output_size, Quality p_quality, Preset p_preset, bool p_upscale_alpha, const CameraConstants &p_camera, const UpscaleInputs &p_inputs);
 	void super_resolution_release(uint32_t p_viewport);
 
 	// Frame generation. `frame_generation_set_enabled()` returns whether it is actually running,

@@ -144,6 +144,10 @@ bool RendererViewport::is_render_target_presented(RID p_render_target) const {
 	return false;
 }
 
+static bool _update_mode_has_frame_history(RSE::ViewportUpdateMode p_mode) {
+	return p_mode != RSE::VIEWPORT_UPDATE_ONCE && p_mode != RSE::VIEWPORT_UPDATE_DISABLED;
+}
+
 void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 	if (p_viewport->render_buffers.is_valid()) {
 		if (p_viewport->size.width == 0 || p_viewport->size.height == 0) {
@@ -213,10 +217,16 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 			// Falling back to bilinear rather than to another upscaler, because the ladder's usual
 			// destination -- FSR 2 -- is temporal too and has exactly the same problem.
 			if (scaling_type == RSE::VIEWPORT_SCALING_3D_TYPE_TEMPORAL &&
-					(p_viewport->update_mode == RSE::VIEWPORT_UPDATE_ONCE || p_viewport->update_mode == RSE::VIEWPORT_UPDATE_DISABLED)) {
-				WARN_PRINT_ONCE(vformat("Temporal 3D scaling needs a viewport that keeps drawing, and this one is set to update %s, so it has no frame history to reconstruct from. Falling back to bilinear scaling. (Viewport RID %d.)",
-						p_viewport->update_mode == RSE::VIEWPORT_UPDATE_ONCE ? "once" : "never",
-						int64_t(p_viewport->self.get_id())));
+					!_update_mode_has_frame_history(p_viewport->requested_update_mode)) {
+				// WARN_PRINT_ONCE suppresses by call site, so with several bake viewports it would
+				// name whichever RID reached here first and demote the rest in silence. Dedupe on
+				// the viewport instead.
+				if (!p_viewport->warned_no_frame_history) {
+					p_viewport->warned_no_frame_history = true;
+					WARN_PRINT(vformat("Temporal 3D scaling needs a viewport that keeps drawing, and this one is set to update %s, so it has no frame history to reconstruct from. Falling back to bilinear scaling. (Viewport RID %d.)",
+							p_viewport->requested_update_mode == RSE::VIEWPORT_UPDATE_ONCE ? "once" : "never",
+							int64_t(p_viewport->self.get_id())));
+				}
 				scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR;
 				scaling_type = RSE::scaling_3d_mode_type(scaling_3d_mode);
 			}
@@ -1269,7 +1279,20 @@ void RendererViewport::viewport_set_update_mode(RID p_viewport, RSE::ViewportUpd
 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL(viewport);
 
+	const bool had_history = _update_mode_has_frame_history(viewport->requested_update_mode);
 	viewport->update_mode = p_mode;
+	viewport->requested_update_mode = p_mode;
+
+	// Whether a temporal upscaler may run here is decided in `_configure_3d_render_buffers`, and
+	// until now this was the only input to that decision with no reconfigure behind it -- so a
+	// viewport that was sized first and set to draw once second kept whatever upscaler it had been
+	// given. Reconfiguring only when the classification flips keeps a bake from reallocating every
+	// time it re-arms UPDATE_ONCE. The post-draw flip to UPDATE_DISABLED deliberately does not come
+	// through here, and writes `update_mode` directly, for the same reason.
+	if (_update_mode_has_frame_history(p_mode) != had_history) {
+		viewport->warned_no_frame_history = false;
+		_configure_3d_render_buffers(viewport);
+	}
 }
 
 RSE::ViewportUpdateMode RendererViewport::viewport_get_update_mode(RID p_viewport) const {

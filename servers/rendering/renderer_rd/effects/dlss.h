@@ -53,6 +53,7 @@ class DLSSEffect {
 		Size2i output_size;
 		StreamlineVK::Quality quality = StreamlineVK::QUALITY_DLAA;
 		StreamlineVK::Preset preset = StreamlineVK::PRESET_DEFAULT;
+		bool upscale_alpha = false;
 		StreamlineVK::CameraConstants camera;
 		StreamlineVK::UpscaleInputs inputs;
 	};
@@ -83,6 +84,9 @@ public:
 		Vector2 jitter; // Pixels, the same value FSR2 is given.
 		bool reset_accumulation = false;
 		bool orthographic = false;
+		// The render target keeps its alpha, so the upscale has to produce one rather than leaving
+		// whatever the runtime left in the channel.
+		bool transparent = false;
 
 		Projection view_to_clip;
 		Projection clip_to_view;

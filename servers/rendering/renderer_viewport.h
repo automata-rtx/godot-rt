@@ -68,6 +68,11 @@ public:
 		bool fsr_enabled = false;
 		uint32_t jitter_phase_count = 0;
 		RSE::ViewportUpdateMode update_mode = RSE::VIEWPORT_UPDATE_WHEN_VISIBLE;
+		// What the caller last asked for. `update_mode` stops describing the viewport the moment
+		// it has drawn once, because the draw overwrites it with UPDATE_DISABLED, so nothing
+		// durable can be decided from it.
+		RSE::ViewportUpdateMode requested_update_mode = RSE::VIEWPORT_UPDATE_WHEN_VISIBLE;
+		bool warned_no_frame_history = false;
 		RID render_target;
 		RID render_target_texture;
 		Ref<RenderSceneBuffers> render_buffers;

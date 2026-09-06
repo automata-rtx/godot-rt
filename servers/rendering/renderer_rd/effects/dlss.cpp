@@ -50,6 +50,7 @@ void DLSSEffect::upscale(const Parameters &p_params) {
 	args->output_size = p_params.target_size;
 	args->quality = StreamlineVK::quality_from_scale(p_params.scale);
 	args->preset = p_params.preset;
+	args->upscale_alpha = p_params.transparent;
 
 	args->camera.view_to_clip = p_params.view_to_clip;
 	args->camera.clip_to_view = p_params.clip_to_view;
@@ -97,7 +98,7 @@ void DLSSEffect::upscale(const Parameters &p_params) {
 void DLSSEffect::callback(RDD *p_driver, RDD::CommandBufferID p_command_buffer, CallbackArgs *p_userdata) {
 	StreamlineVK *streamline = StreamlineVK::get_singleton();
 	if (streamline != nullptr) {
-		streamline->super_resolution_evaluate(p_command_buffer.id, p_userdata->viewport, p_userdata->output_size, p_userdata->quality, p_userdata->preset, p_userdata->camera, p_userdata->inputs);
+		streamline->super_resolution_evaluate(p_command_buffer.id, p_userdata->viewport, p_userdata->output_size, p_userdata->quality, p_userdata->preset, p_userdata->upscale_alpha, p_userdata->camera, p_userdata->inputs);
 	}
 	p_userdata->owner->args_allocator.free(p_userdata);
 }

@@ -456,6 +456,7 @@ struct StreamlineVK::Internal {
 		Quality quality = QUALITY_DLAA;
 		Preset preset = PRESET_DEFAULT;
 		bool auto_exposure = false;
+		bool upscale_alpha = false;
 		bool configured = false;
 	};
 	struct FrameGenerationState {
@@ -1006,7 +1007,7 @@ String StreamlineVK::super_resolution_mode_name(uint32_t p_viewport) const {
 	return String(quality_name(state->quality));
 }
 
-bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t p_viewport, const Size2i &p_output_size, Quality p_quality, Preset p_preset, const CameraConstants &p_camera, const UpscaleInputs &p_inputs) {
+bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t p_viewport, const Size2i &p_output_size, Quality p_quality, Preset p_preset, bool p_upscale_alpha, const CameraConstants &p_camera, const UpscaleInputs &p_inputs) {
 	ERR_FAIL_NULL_V(internal, false);
 	if (!is_supported(FEATURE_DLSS_SUPER_RESOLUTION) || internal->frame == nullptr || internal->dlss_set_options == nullptr) {
 		return false;
@@ -1015,7 +1016,7 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 
 	const bool auto_exposure = !p_inputs.exposure.is_valid();
 	Internal::SuperResolutionState &state = internal->super_resolution[p_viewport];
-	if (!state.configured || state.output_size != p_output_size || state.quality != p_quality || state.preset != p_preset || state.auto_exposure != auto_exposure) {
+	if (!state.configured || state.output_size != p_output_size || state.quality != p_quality || state.preset != p_preset || state.auto_exposure != auto_exposure || state.upscale_alpha != p_upscale_alpha) {
 		sl::DLSSOptions options;
 		switch (p_quality) {
 			case QUALITY_DLAA:
@@ -1040,6 +1041,13 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 		// upscaling, so DLSS is being handed pre-tonemap colour.
 		options.colorBuffersHDR = sl::Boolean::eTrue;
 		options.useAutoExposure = auto_exposure ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+		// DLSS upscales RGB only unless asked otherwise, and the engine reads the upscaled image's
+		// alpha straight through -- the tone mapper samples the upscaled colour and writes all four
+		// channels. On a viewport with a transparent background that alpha is the subject's
+		// coverage, so an RGB-only upscale hands back whatever the runtime happened to leave in the
+		// channel: opaque black behind the subject where there should be nothing. Asked for only
+		// where the alpha is actually read, because NVIDIA documents it as costing performance.
+		options.alphaUpscalingEnabled = p_upscale_alpha ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 		// Set on every mode rather than only the active one: the mode follows the viewport's 3D
 		// scale, so it changes under the project's feet, and a preset that only applied to
 		// whichever mode happened to be selected when it was set would be a confusing knob.
@@ -1061,6 +1069,7 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 		state.quality = p_quality;
 		state.preset = p_preset;
 		state.auto_exposure = auto_exposure;
+		state.upscale_alpha = p_upscale_alpha;
 		state.configured = true;
 	}
 
@@ -1069,10 +1078,13 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 		// call belongs to is otherwise invisible from outside, which turns any question about one
 		// viewport's upscaling reaching another into guesswork.
 		const char *letter = preset_letter(p_preset);
-		print_line(vformat("Streamline: DLSS evaluate on viewport %d, %dx%d -> %dx%d, %s, preset %s.",
-				int(p_viewport), p_inputs.color.size.width, p_inputs.color.size.height,
+		// `extent` rather than `size`: the colour buffer can be larger than the region actually
+		// rendered, and the extent is what Streamline upscales from.
+		const Size2i input_size = p_inputs.color.extent.size == Size2i() ? p_inputs.color.size : p_inputs.color.extent.size;
+		print_line(vformat("Streamline: DLSS evaluate on viewport handle %d, %dx%d -> %dx%d, %s, preset %s%s.",
+				int(p_viewport), input_size.width, input_size.height,
 				p_output_size.width, p_output_size.height, quality_name(p_quality),
-				letter[0] == 0 ? "default" : letter));
+				letter[0] == 0 ? "default" : letter, p_upscale_alpha ? ", alpha" : ""));
 	}
 
 	_set_constants(p_viewport, p_camera);

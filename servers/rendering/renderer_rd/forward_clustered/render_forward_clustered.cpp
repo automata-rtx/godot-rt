@@ -2914,6 +2914,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				params.jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
 				params.reset_accumulation = false; // FIXME: The engine does not provide a way to reset the accumulation.
 				params.orthographic = p_render_data->scene_data->cam_orthogonal;
+				params.transparent = RendererRD::TextureStorage::get_singleton()->render_target_get_transparent(rb->get_render_target());
 
 				const Projection &prev_proj = p_render_data->scene_data->prev_cam_projection;
 				const Projection &cur_proj = p_render_data->scene_data->cam_projection;
