@@ -88,6 +88,27 @@ public:
 		QUALITY_ULTRA_PERFORMANCE,
 	};
 
+	// The DL models that can be forced instead of letting the runtime choose. The SDK enumerates
+	// sixteen slots, but only these select a model: A through D were removed, E and F are
+	// deprecated, and G, H, I, N and O are all documented as reverting to default behavior, so
+	// offering them would be five menu entries that do nothing.
+	enum Preset {
+		PRESET_DEFAULT,
+		PRESET_J,
+		PRESET_K,
+		PRESET_L,
+		PRESET_M,
+		PRESET_MAX,
+	};
+
+	// A short description of the model a viewport is upscaling with, or an empty string if that
+	// viewport is not running DLSS. Nothing reads the choice back out of the runtime -- see
+	// `super_resolution_preset_description` for why -- so a viewport left on the default reports
+	// the preset NVIDIA documents for its quality mode, marked as such.
+	String super_resolution_preset_description(uint32_t p_viewport) const;
+	// "DLAA", "Quality", ... for the same viewport, or an empty string.
+	String super_resolution_mode_name(uint32_t p_viewport) const;
+
 	// How a texture is being handed over, which is what decides the layout it is in when the
 	// command buffer reaches the tag. These have to agree with the usage the same texture was
 	// declared with in the enclosing `RenderingDevice::driver_callback_add()` call.
@@ -173,7 +194,7 @@ public:
 	//
 	// `p_command_buffer` is an `RDD::CommandBufferID`, as handed to a driver callback; the
 	// underlying VkCommandBuffer is resolved here rather than at the call site.
-	bool super_resolution_evaluate(uint64_t p_command_buffer, uint32_t p_viewport, const Size2i &p_output_size, Quality p_quality, const CameraConstants &p_camera, const UpscaleInputs &p_inputs);
+	bool super_resolution_evaluate(uint64_t p_command_buffer, uint32_t p_viewport, const Size2i &p_output_size, Quality p_quality, Preset p_preset, const CameraConstants &p_camera, const UpscaleInputs &p_inputs);
 	void super_resolution_release(uint32_t p_viewport);
 
 	// Frame generation. `frame_generation_set_enabled()` returns whether it is actually running,

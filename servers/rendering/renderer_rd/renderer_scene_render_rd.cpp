@@ -1623,6 +1623,28 @@ bool RendererSceneRenderRD::free(RID p_rid) {
 	return true;
 }
 
+String RendererSceneRenderRD::debug_get_upscaler_status(const Ref<RenderSceneBuffers> &p_render_buffers) const {
+#ifdef STREAMLINE_ENABLED
+	const Ref<RenderSceneBuffersRD> rb = p_render_buffers;
+	StreamlineVK *streamline = StreamlineVK::get_singleton();
+	if (rb.is_null() || streamline == nullptr || !rb->has_streamline_viewport()) {
+		return String();
+	}
+	// View 0: a debug overlay reports the one the reader is looking at, and the editor is never
+	// stereo anyway.
+	const uint32_t viewport = rb->get_claimed_streamline_viewport(0);
+	const String mode = streamline->super_resolution_mode_name(viewport);
+	if (mode.is_empty()) {
+		// The handle exists because frame generation claimed it; super resolution never ran.
+		return String();
+	}
+	const String preset = streamline->super_resolution_preset_description(viewport);
+	return preset.is_empty() ? mode : vformat("%s, preset %s", mode, preset);
+#else
+	return String();
+#endif
+}
+
 void RendererSceneRenderRD::set_debug_draw_mode(RSE::ViewportDebugDraw p_debug_draw) {
 	debug_draw = p_debug_draw;
 }

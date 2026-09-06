@@ -130,6 +130,45 @@ Inputs are the internal colour, depth and velocity buffers, plus the auto-exposu
 the camera has auto exposure on; without it DLSS estimates exposure itself. The output is the
 upscaled colour buffer the engine already allocates for FSR2.
 
+### Model presets
+
+`rendering/anti_aliasing/quality/dlss_preset` forces a DL model instead of letting the runtime
+choose. It is read every frame, so it can be changed without restarting, and it is applied to every
+quality mode at once — the mode follows the viewport's 3D scale and therefore moves under the
+project's feet, so a preset that only bound to whichever mode happened to be selected would be a
+trap.
+
+Only Default, J, K, L and M are offered. Of the SDK's sixteen slots, A–D were removed, E and F are
+deprecated, and G, H, I, N and O are documented as reverting to default behavior; listing them would
+be five entries that do nothing.
+
+**Nothing reads back which model is actually running.** `sl::DLSSState` carries only
+`estimatedVRAMUsageInBytes`, and every NGX preset parameter is a write-only *hint*
+(`DLSS.Hint.Render.Preset.*`). NVIDIA's own on-screen DLSS indicator knows, because it is drawn from
+inside the runtime, but it is enabled by a machine-wide registry key and exposes nothing to the
+application. So a viewport left on Default reports the preset the SDK's own header documents for its
+quality mode — K for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance — and
+says "documented default" rather than presenting it as fact, because the same header warns the
+choice "may or may not change after an OTA". Force a preset and the overlay reports it plainly,
+because then it is exactly what was handed to the runtime.
+
+### The editor overlay
+
+**View → View Information** in the 3D viewport gains two lines whenever DLSS is the upscaler that
+actually ran:
+
+```
+DLSS: 1720 × 720 → 3440 × 1440 (50%)
+Quality, preset K (documented default)
+```
+
+The resolutions come from `RenderingServer::viewport_get_internal_size`, not from multiplying the
+viewport size by its 3D scale, and the mode from
+`RenderingServer::viewport_get_effective_scaling_3d_mode` — both of which answer what the renderer
+did rather than what it was asked to do. That distinction is the point: a DLSS request lands on
+FSR 2 wherever DLSS cannot run, and the old `Size:` line would have gone on reporting the requested
+scale as though it had been honored. It now uses the same authoritative number.
+
 ## 4. Frame generation
 
 **It is not loaded in the editor at all.** `sl.dlss_g` is the one plugin that hooks

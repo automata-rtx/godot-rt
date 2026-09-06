@@ -1928,6 +1928,15 @@ ProjectSettings::ProjectSettings() {
 	// one switch for the whole application: it takes over the swap chain. It never runs in the
 	// editor, where the presented image is the editor's own interface.
 	GLOBAL_DEF_BASIC(PropertyInfo(Variant::BOOL, "rendering/streamline/frame_generation"), false);
+	// Which DL model DLSS super resolution should use. Grouped with the anti-aliasing settings
+	// rather than with the rest of Streamline because that is what it is: the choice between
+	// models is a choice about image stability, ghosting and sharpness.
+	//
+	// The SDK enumerates sixteen preset slots and only four of them still select a model. A
+	// through D were removed, E and F are deprecated, and G, H, I, N and O are documented as
+	// reverting to default behavior, so they are not offered -- they would be menu entries that
+	// do nothing.
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "rendering/anti_aliasing/quality/dlss_preset", PROPERTY_HINT_ENUM, "Default,J,K,L,M"), 0);
 
 	GLOBAL_DEF_RST("rendering/rendering_device/d3d12/max_resource_descriptors", 65536);
 	custom_prop_info["rendering/rendering_device/d3d12/max_resource_descriptors"] = PropertyInfo(Variant::INT, "rendering/rendering_device/d3d12/max_resource_descriptors", PROPERTY_HINT_RANGE, "512,1000000");

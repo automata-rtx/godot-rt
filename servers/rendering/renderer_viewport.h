@@ -50,6 +50,11 @@ public:
 		bool use_xr = false;
 
 		Size2i internal_size;
+		// What the renderer settled on after the fallbacks above it, which is not necessarily
+		// what the viewport asked for: a DLSS request lands on FSR 2 wherever DLSS is
+		// unavailable, MetalFX on FSR, and so on. Debug overlays need the answer rather than the
+		// request.
+		RSE::ViewportScaling3DMode effective_scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR;
 		Size2i size;
 		uint32_t view_count;
 		RID camera;
@@ -297,6 +302,10 @@ public:
 	virtual void viewport_set_debug_draw(RID p_viewport, RSE::ViewportDebugDraw p_draw);
 
 	void viewport_set_measure_render_time(RID p_viewport, bool p_enable);
+	Size2i viewport_get_internal_size(RID p_viewport) const;
+	RSE::ViewportScaling3DMode viewport_get_effective_scaling_3d_mode(RID p_viewport) const;
+	String viewport_get_upscaler_status(RID p_viewport) const;
+
 	float viewport_get_measured_render_time_cpu(RID p_viewport) const;
 	float viewport_get_measured_render_time_gpu(RID p_viewport) const;
 

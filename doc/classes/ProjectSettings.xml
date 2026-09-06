@@ -2863,6 +2863,12 @@
 			[b]Note:[/b] [Control] nodes are snapped to the nearest pixel by default. This is controlled by [member gui/common/snap_controls_to_pixels].
 			[b]Note:[/b] It is not recommended to use this setting together with [member rendering/2d/snap/snap_2d_transforms_to_pixel], as movement may appear even less smooth. Prefer only enabling that setting instead.
 		</member>
+		<member name="rendering/anti_aliasing/quality/dlss_preset" type="int" setter="" getter="" default="0" keywords="dlss, upscaling, preset, model">
+			The DL model DLSS super resolution uses, overriding the one the runtime would pick. Only has an effect on a viewport whose 3D scaling mode is [constant Viewport.SCALING_3D_MODE_DLSS] and where DLSS is actually available; it is read every frame, so it can be changed without a restart.
+			[code]Default[/code] leaves the choice to the runtime, which NVIDIA documents as preset K for DLAA, Quality and Balanced, M for Performance and L for Ultra Performance. Those defaults can change with a driver or model update.
+			Presets J and K are the transformer models: K is the higher quality of the two and costs more, J trades a little extra flicker for slightly less ghosting. L and M are sharper and more stable again, L being the more expensive; they are what the runtime already chooses for the two fastest modes.
+			[b]Note:[/b] The SDK enumerates sixteen preset slots but only these select a model. Presets A through D were removed, E and F are deprecated, and G, H, I, N and O are documented as reverting to default behavior, so none of them are offered here.
+		</member>
 		<member name="rendering/anti_aliasing/quality/msaa_2d" type="int" setter="" getter="" default="0">
 			Sets the number of multisample antialiasing (MSAA) samples to use for 2D/Canvas rendering (as a power of two). MSAA is used to reduce aliasing around the edges of polygons. A higher MSAA value results in smoother edges but can be significantly slower on some hardware, especially integrated graphics due to their limited memory bandwidth. This has no effect on shader-induced aliasing or texture aliasing.
 			[b]Note:[/b] MSAA is only supported in the Forward+ and Mobile rendering methods, not Compatibility.

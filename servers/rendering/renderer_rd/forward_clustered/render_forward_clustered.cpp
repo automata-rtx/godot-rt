@@ -2895,6 +2895,11 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				params.internal_size = rb->get_internal_size();
 				params.target_size = rb->get_target_size();
 				params.scale = float(rb->get_internal_size().width) / float(MAX(rb->get_target_size().width, 1));
+				// Live: changing the preset re-sends the DLSS options on the next frame. The
+				// enum is contiguous from Default, so the setting maps straight onto it, and
+				// anything out of range falls back to letting the runtime choose.
+				const int preset_setting = GLOBAL_GET_CACHED(int, "rendering/anti_aliasing/quality/dlss_preset");
+				params.preset = (preset_setting > 0 && preset_setting < StreamlineVK::PRESET_MAX) ? StreamlineVK::Preset(preset_setting) : StreamlineVK::PRESET_DEFAULT;
 				params.color = rb->get_internal_texture(v);
 				params.depth = rb->get_depth_texture(v);
 				params.velocity = rb->get_velocity_buffer(false, v);

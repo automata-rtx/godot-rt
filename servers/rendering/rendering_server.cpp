@@ -2915,6 +2915,9 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("viewport_set_debug_draw", "viewport", "draw"), &RenderingServer::viewport_set_debug_draw);
 
 	ClassDB::bind_method(D_METHOD("viewport_set_measure_render_time", "viewport", "enable"), &RenderingServer::viewport_set_measure_render_time);
+	ClassDB::bind_method(D_METHOD("viewport_get_internal_size", "viewport"), &RenderingServer::viewport_get_internal_size);
+	ClassDB::bind_method(D_METHOD("viewport_get_effective_scaling_3d_mode", "viewport"), &RenderingServer::viewport_get_effective_scaling_3d_mode);
+	ClassDB::bind_method(D_METHOD("viewport_get_upscaler_status", "viewport"), &RenderingServer::viewport_get_upscaler_status);
 	ClassDB::bind_method(D_METHOD("viewport_get_measured_render_time_cpu", "viewport"), &RenderingServer::viewport_get_measured_render_time_cpu);
 
 	ClassDB::bind_method(D_METHOD("viewport_get_measured_render_time_gpu", "viewport"), &RenderingServer::viewport_get_measured_render_time_gpu);

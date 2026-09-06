@@ -301,6 +301,66 @@ sl::Extent to_sl_extent(const StreamlineVK::Texture &p_texture) {
 	return extent;
 }
 
+sl::DLSSPreset to_sl_preset(StreamlineVK::Preset p_preset) {
+	switch (p_preset) {
+		case StreamlineVK::PRESET_J:
+			return sl::DLSSPreset::ePresetJ;
+		case StreamlineVK::PRESET_K:
+			return sl::DLSSPreset::ePresetK;
+		case StreamlineVK::PRESET_L:
+			return sl::DLSSPreset::ePresetL;
+		case StreamlineVK::PRESET_M:
+			return sl::DLSSPreset::ePresetM;
+		default:
+			return sl::DLSSPreset::eDefault;
+	}
+}
+
+const char *preset_letter(StreamlineVK::Preset p_preset) {
+	switch (p_preset) {
+		case StreamlineVK::PRESET_J:
+			return "J";
+		case StreamlineVK::PRESET_K:
+			return "K";
+		case StreamlineVK::PRESET_L:
+			return "L";
+		case StreamlineVK::PRESET_M:
+			return "M";
+		default:
+			return "";
+	}
+}
+
+// What the SDK documents each mode falling back to when no preset is forced. This is read off the
+// `DLSSPreset` enum's own comments rather than out of the runtime, because nothing reports the
+// choice back; the enum also warns that the default "may or may not change after an OTA", so
+// anything shown from this table has to be labeled as the documented default and not as fact.
+const char *documented_default_letter(StreamlineVK::Quality p_quality) {
+	switch (p_quality) {
+		case StreamlineVK::QUALITY_MAX_PERFORMANCE:
+			return "M";
+		case StreamlineVK::QUALITY_ULTRA_PERFORMANCE:
+			return "L";
+		default:
+			return "K"; // DLAA, Quality and Balanced.
+	}
+}
+
+const char *quality_name(StreamlineVK::Quality p_quality) {
+	switch (p_quality) {
+		case StreamlineVK::QUALITY_MAX_QUALITY:
+			return "Quality";
+		case StreamlineVK::QUALITY_BALANCED:
+			return "Balanced";
+		case StreamlineVK::QUALITY_MAX_PERFORMANCE:
+			return "Performance";
+		case StreamlineVK::QUALITY_ULTRA_PERFORMANCE:
+			return "Ultra Performance";
+		default:
+			return "DLAA";
+	}
+}
+
 } // namespace
 
 // Everything that would drag a Vulkan or Streamline type into the header lives here.
@@ -357,6 +417,7 @@ struct StreamlineVK::Internal {
 	struct SuperResolutionState {
 		Size2i output_size;
 		Quality quality = QUALITY_DLAA;
+		Preset preset = PRESET_DEFAULT;
 		bool auto_exposure = false;
 		bool configured = false;
 	};
@@ -879,7 +940,32 @@ void StreamlineVK::_set_constants(uint32_t p_viewport, const CameraConstants &p_
 	internal->set_constants(constants, *internal->frame, sl::ViewportHandle(p_viewport));
 }
 
-bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t p_viewport, const Size2i &p_output_size, Quality p_quality, const CameraConstants &p_camera, const UpscaleInputs &p_inputs) {
+String StreamlineVK::super_resolution_preset_description(uint32_t p_viewport) const {
+	ERR_FAIL_NULL_V(internal, String());
+	const Internal::SuperResolutionState *state = internal->super_resolution.getptr(p_viewport);
+	if (state == nullptr || !state->configured) {
+		return String();
+	}
+	if (state->preset != PRESET_DEFAULT) {
+		// Forced by the project, so this one is fact: it is exactly what was handed to the runtime.
+		return String(preset_letter(state->preset));
+	}
+	// Nothing reads the active model back. `DLSSState` carries only a VRAM estimate, and every NGX
+	// preset parameter is a write-only hint, so the honest answer for a viewport on the default is
+	// the preset the SDK documents for its mode -- said as such.
+	return vformat("%s (documented default)", documented_default_letter(state->quality));
+}
+
+String StreamlineVK::super_resolution_mode_name(uint32_t p_viewport) const {
+	ERR_FAIL_NULL_V(internal, String());
+	const Internal::SuperResolutionState *state = internal->super_resolution.getptr(p_viewport);
+	if (state == nullptr || !state->configured) {
+		return String();
+	}
+	return String(quality_name(state->quality));
+}
+
+bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t p_viewport, const Size2i &p_output_size, Quality p_quality, Preset p_preset, const CameraConstants &p_camera, const UpscaleInputs &p_inputs) {
 	ERR_FAIL_NULL_V(internal, false);
 	if (!is_supported(FEATURE_DLSS_SUPER_RESOLUTION) || internal->frame == nullptr || internal->dlss_set_options == nullptr) {
 		return false;
@@ -888,7 +974,7 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 
 	const bool auto_exposure = !p_inputs.exposure.is_valid();
 	Internal::SuperResolutionState &state = internal->super_resolution[p_viewport];
-	if (!state.configured || state.output_size != p_output_size || state.quality != p_quality || state.auto_exposure != auto_exposure) {
+	if (!state.configured || state.output_size != p_output_size || state.quality != p_quality || state.preset != p_preset || state.auto_exposure != auto_exposure) {
 		sl::DLSSOptions options;
 		switch (p_quality) {
 			case QUALITY_DLAA:
@@ -913,6 +999,16 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 		// upscaling, so DLSS is being handed pre-tonemap colour.
 		options.colorBuffersHDR = sl::Boolean::eTrue;
 		options.useAutoExposure = auto_exposure ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+		// Set on every mode rather than only the active one: the mode follows the viewport's 3D
+		// scale, so it changes under the project's feet, and a preset that only applied to
+		// whichever mode happened to be selected when it was set would be a confusing knob.
+		const sl::DLSSPreset preset = to_sl_preset(p_preset);
+		options.dlaaPreset = preset;
+		options.qualityPreset = preset;
+		options.balancedPreset = preset;
+		options.performancePreset = preset;
+		options.ultraPerformancePreset = preset;
+		options.ultraQualityPreset = preset;
 
 		const sl::Result result = internal->dlss_set_options(sl::ViewportHandle(p_viewport), options);
 		if (result != sl::Result::eOk) {
@@ -922,6 +1018,7 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 
 		state.output_size = p_output_size;
 		state.quality = p_quality;
+		state.preset = p_preset;
 		state.auto_exposure = auto_exposure;
 		state.configured = true;
 	}

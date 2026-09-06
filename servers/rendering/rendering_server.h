@@ -617,6 +617,15 @@ public:
 
 	virtual void viewport_set_debug_draw(RID p_viewport, RSE::ViewportDebugDraw p_draw) = 0;
 
+	// The resolution the 3D scene was actually rendered at, and the scaling mode the renderer
+	// actually used -- neither of which need match what was requested, since an unavailable
+	// upscaler silently falls back.
+	virtual Size2i viewport_get_internal_size(RID p_viewport) const = 0;
+	virtual RSE::ViewportScaling3DMode viewport_get_effective_scaling_3d_mode(RID p_viewport) const = 0;
+	// Debug only: how the active upscaler is configured, in words. The wording is not stable and
+	// nothing should be parsed out of it.
+	virtual String viewport_get_upscaler_status(RID p_viewport) const = 0;
+
 	virtual void viewport_set_measure_render_time(RID p_viewport, bool p_enable) = 0;
 	virtual double viewport_get_measured_render_time_cpu(RID p_viewport) const = 0;
 	virtual double viewport_get_measured_render_time_gpu(RID p_viewport) const = 0;

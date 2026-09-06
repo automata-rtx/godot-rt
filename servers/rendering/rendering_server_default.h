@@ -807,6 +807,9 @@ public:
 	FUNC2(viewport_set_debug_draw, RID, RSE::ViewportDebugDraw)
 
 	FUNC2(viewport_set_measure_render_time, RID, bool)
+	FUNC1RC(Size2i, viewport_get_internal_size, RID)
+	FUNC1RC(RSE::ViewportScaling3DMode, viewport_get_effective_scaling_3d_mode, RID)
+	FUNC1RC(String, viewport_get_upscaler_status, RID)
 	FUNC1RC(double, viewport_get_measured_render_time_cpu, RID)
 	FUNC1RC(double, viewport_get_measured_render_time_gpu, RID)
 	FUNC1RC(RID, viewport_find_from_screen_attachment, DisplayServerEnums::WindowID)

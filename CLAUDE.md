@@ -167,6 +167,15 @@ answering anything about upscaling, frame generation or the Vulkan loader.
   fails to create one and renders blank. It is left out of `featuresToLoad` there. DLSS super
   resolution registers no hooks and is unaffected. A game that presents more than one window is
   still unhandled.
+- **`rendering/anti_aliasing/quality/dlss_preset` forces a DL model** (Default, J, K, L, M — the
+  other eleven SDK slots are removed, deprecated, or revert to default). Live, and applied to every
+  quality mode at once. **Which model is actually running cannot be read back**: `DLSSState` carries
+  only a VRAM estimate and the NGX preset parameters are write-only hints, so on Default the editor
+  overlay reports the preset the SDK header documents for the mode and labels it as such.
+- **View → View Information shows the DLSS resolutions, scale and preset** when DLSS is the
+  upscaler that actually ran. It reads `viewport_get_internal_size` and
+  `viewport_get_effective_scaling_3d_mode`, which report what the renderer did rather than what the
+  viewport asked for — a DLSS request silently becomes FSR 2 wherever DLSS cannot run.
 - **DLSS needs the velocity buffer pre-filled with camera motion**, which is why
   `MotionVectorsStore` is no longer MetalFX-only. Godot clears that buffer to `(-1, -1)` meaning
   "nothing wrote here" and FSR2 decodes the sentinel inside its own patched shader; DLSS reads it

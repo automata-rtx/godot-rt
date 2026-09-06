@@ -317,6 +317,7 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 			}
 
 			p_viewport->internal_size = Size2(render_width, render_height);
+			p_viewport->effective_scaling_3d_mode = scaling_3d_mode;
 			p_viewport->jitter_phase_count = jitter_phase_count;
 
 			// At resolution scales lower than 1.0, use negative texture mipmap bias
@@ -1617,6 +1618,27 @@ void RendererViewport::viewport_set_measure_render_time(RID p_viewport, bool p_e
 	ERR_FAIL_NULL(viewport);
 
 	viewport->measure_render_time = p_enable;
+}
+
+Size2i RendererViewport::viewport_get_internal_size(RID p_viewport) const {
+	const Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL_V(viewport, Size2i());
+	return viewport->internal_size;
+}
+
+RSE::ViewportScaling3DMode RendererViewport::viewport_get_effective_scaling_3d_mode(RID p_viewport) const {
+	const Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL_V(viewport, RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR);
+	return viewport->effective_scaling_3d_mode;
+}
+
+String RendererViewport::viewport_get_upscaler_status(RID p_viewport) const {
+	const Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL_V(viewport, String());
+	if (viewport->render_buffers.is_null()) {
+		return String();
+	}
+	return RSG::scene->debug_get_upscaler_status(viewport->render_buffers);
 }
 
 float RendererViewport::viewport_get_measured_render_time_cpu(RID p_viewport) const {

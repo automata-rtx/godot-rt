@@ -4150,6 +4150,20 @@
 				[b]Note:[/b] The equivalent node is [Viewport].
 			</description>
 		</method>
+		<method name="viewport_get_effective_scaling_3d_mode" qualifiers="const">
+			<return type="int" enum="RenderingServer.ViewportScaling3DMode" />
+			<param index="0" name="viewport" type="RID" />
+			<description>
+				Returns the 3D scaling mode the renderer actually used for [param viewport], which is not necessarily the one it was asked for: an upscaler that is unavailable on the current renderer, driver or hardware silently falls back to another one. For example, a viewport set to [constant VIEWPORT_SCALING_3D_MODE_DLSS] reports [constant VIEWPORT_SCALING_3D_MODE_FSR2] wherever DLSS cannot run.
+			</description>
+		</method>
+		<method name="viewport_get_internal_size" qualifiers="const">
+			<return type="Vector2i" />
+			<param index="0" name="viewport" type="RID" />
+			<description>
+				Returns the resolution the 3D scene was rendered at for [param viewport], before upscaling. With 3D scaling disabled this matches the viewport's own size; with an upscaler active it is the smaller size the scene was drawn at and the upscaler's input resolution.
+			</description>
+		</method>
 		<method name="viewport_get_measured_render_time_cpu" qualifiers="const">
 			<return type="float" />
 			<param index="0" name="viewport" type="RID" />
@@ -4217,6 +4231,13 @@
 			<param index="1" name="canvas" type="RID" />
 			<description>
 				Detaches a viewport from a canvas.
+			</description>
+		</method>
+		<method name="viewport_get_upscaler_status" qualifiers="const">
+			<return type="String" />
+			<param index="0" name="viewport" type="RID" />
+			<description>
+				Returns a human-readable description of how the temporal upscaler running on [param viewport] is configured, or an empty string if none is running. Intended for debug overlays only: the wording is not stable between engine versions and nothing should be parsed out of it.
 			</description>
 		</method>
 		<method name="viewport_set_active">

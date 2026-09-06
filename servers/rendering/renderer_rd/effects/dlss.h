@@ -52,6 +52,7 @@ class DLSSEffect {
 		uint32_t viewport = 0;
 		Size2i output_size;
 		StreamlineVK::Quality quality = StreamlineVK::QUALITY_DLAA;
+		StreamlineVK::Preset preset = StreamlineVK::PRESET_DEFAULT;
 		StreamlineVK::CameraConstants camera;
 		StreamlineVK::UpscaleInputs inputs;
 	};
@@ -67,6 +68,7 @@ public:
 		Size2i internal_size;
 		Size2i target_size;
 		float scale = 1.0f;
+		StreamlineVK::Preset preset = StreamlineVK::PRESET_DEFAULT;
 
 		RID color;
 		RID depth;

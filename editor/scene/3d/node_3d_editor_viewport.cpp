@@ -3713,7 +3713,12 @@ void Node3DEditorViewport::_notification(int p_what) {
 			}
 
 			if (show_info) {
-				const String viewport_size = vformat(U"%d × %d", viewport->get_size().x * viewport->get_scaling_3d_scale(), viewport->get_size().y * viewport->get_scaling_3d_scale());
+				// Asked of the renderer rather than recomputed here: an upscaler that could not run
+				// falls back silently, and the scale the viewport was set to is then not the scale
+				// the scene was drawn at.
+				const RID viewport_rid = viewport->get_viewport_rid();
+				const Size2i internal_size = RS::get_singleton()->viewport_get_internal_size(viewport_rid);
+				const String viewport_size = vformat(U"%d \u00d7 %d", internal_size.x, internal_size.y);
 				String text;
 				text += vformat(TTR("X: %s"), rtos(current_camera->get_position().x).pad_decimals(1)) + "\n";
 				text += vformat(TTR("Y: %s"), rtos(current_camera->get_position().y).pad_decimals(1)) + "\n";
@@ -3722,12 +3727,25 @@ void Node3DEditorViewport::_notification(int p_what) {
 				text += vformat(
 						TTR("Size: %s (%.1fMP)") + "\n",
 						viewport_size,
-						viewport->get_size().x * viewport->get_size().y * Math::pow(viewport->get_scaling_3d_scale(), 2) * 0.000001);
+						double(internal_size.x) * double(internal_size.y) * 0.000001);
 
 				text += "\n";
 				text += vformat(TTR("Objects: %d"), viewport->get_render_info(Viewport::RENDER_INFO_TYPE_VISIBLE, Viewport::RENDER_INFO_OBJECTS_IN_FRAME)) + "\n";
 				text += vformat(TTR("Primitives: %d"), viewport->get_render_info(Viewport::RENDER_INFO_TYPE_VISIBLE, Viewport::RENDER_INFO_PRIMITIVES_IN_FRAME)) + "\n";
 				text += vformat(TTR("Draw Calls: %d"), viewport->get_render_info(Viewport::RENDER_INFO_TYPE_VISIBLE, Viewport::RENDER_INFO_DRAW_CALLS_IN_FRAME));
+
+				// Only when DLSS is the upscaler that actually ran, which is not the same as the
+				// one the viewport asked for.
+				if (RS::get_singleton()->viewport_get_effective_scaling_3d_mode(viewport_rid) == RSE::VIEWPORT_SCALING_3D_MODE_DLSS) {
+					const Size2i output_size = viewport->get_size();
+					const int percent = int(Math::round(100.0 * double(internal_size.x) / double(MAX(output_size.x, 1))));
+					text += "\n\n";
+					text += vformat(TTR("DLSS: %s \u2192 %s (%d%%)"), viewport_size, vformat(U"%d \u00d7 %d", output_size.x, output_size.y), percent) + "\n";
+					const String upscaler_status = RS::get_singleton()->viewport_get_upscaler_status(viewport_rid);
+					if (!upscaler_status.is_empty()) {
+						text += upscaler_status;
+					}
+				}
 
 				info_label->set_text(text);
 			}

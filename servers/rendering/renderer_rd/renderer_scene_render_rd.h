@@ -368,6 +368,8 @@ public:
 	virtual void update() override;
 
 	virtual void set_debug_draw_mode(RSE::ViewportDebugDraw p_debug_draw) override;
+
+	virtual String debug_get_upscaler_status(const Ref<RenderSceneBuffers> &p_render_buffers) const override;
 	_FORCE_INLINE_ RSE::ViewportDebugDraw get_debug_draw_mode() const {
 		return debug_draw;
 	}

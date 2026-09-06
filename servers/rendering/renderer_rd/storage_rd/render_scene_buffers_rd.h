@@ -250,6 +250,9 @@ public:
 	// Whether a handle was ever claimed, so a viewport that has never touched Streamline can be
 	// skipped without claiming one.
 	bool has_streamline_viewport() const { return streamline_viewport != 0; }
+	// Like `get_streamline_viewport` but never claims a handle, so a read-only caller such as a
+	// debug overlay cannot make a viewport look like it touched Streamline when it did not.
+	uint32_t get_claimed_streamline_viewport(uint32_t p_view) const { return streamline_viewport == 0 ? 0 : streamline_viewport + p_view; }
 #endif
 	_FORCE_INLINE_ Size2i get_internal_size() const { return internal_size; }
 	_FORCE_INLINE_ Size2i get_target_size() const { return target_size; }

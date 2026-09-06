@@ -398,5 +398,10 @@ public:
 	virtual void material_set_use_debanding(bool p_enable) = 0;
 
 	virtual void update() = 0;
+	// Debug only: how the upscaler is configured for these buffers, or an empty string when the
+	// renderer has nothing to say. Lives here rather than on RenderSceneBuffers because only the
+	// renderer knows which upscaler ran.
+	virtual String debug_get_upscaler_status(const Ref<RenderSceneBuffers> &p_render_buffers) const { return String(); }
+
 	virtual ~RendererSceneRender() {}
 };
