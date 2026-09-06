@@ -4,10 +4,12 @@ DLSS super resolution and DLSS frame generation, on Vulkan, on Windows. This is 
 description of what the engine does; `EVALUATION.md` beside it is the design note that preceded
 it and is now historical.
 
-**Nothing here has been run on hardware.** Every claim below is either read out of the Streamline
-SDK's headers and guides or out of this engine's own code. The build compiles; whether DLSS
-produces a correct image, and whether the constants handed to it are right in sign and scale, is
-unverified. Section 8 lists the specific things to check first.
+**No DLSS frame has been produced on hardware yet.** The load path is confirmed on an RTX 5090
+running Vulkan: the interposer loads, its signature is accepted, `slInit` succeeds and Reflex
+reports itself available. Past that, every claim below is read out of the Streamline SDK's headers
+and guides or out of this engine's own code — whether DLSS produces a correct image, and whether
+the constants handed to it are right in sign and scale, is unverified. Section 8 lists the specific
+things to check first.
 
 ---
 
@@ -50,6 +52,15 @@ supports once the graphics device exists. A missing interposer, a rejected signa
 `rendering/streamline/verbose_logging` raises Streamline's *own* log level, which only takes effect
 after `slInit` succeeds. It is for diagnosing a feature that loaded and then misbehaved, not for
 finding out why nothing loaded.
+
+Streamline is handed an identity at `slInit`: `rendering/streamline/project_id`, or a GUID built
+into the engine when that setting is empty. The fallback is not decoration. NGX accepts either an
+application id NVIDIA issued for the title or a project GUID paired with an engine name and
+version, and given neither it turns itself off — `slInit` still succeeds, the interposer still
+loads, and then every NGX-backed feature, which is every DLSS feature, reports
+`eErrorFeatureNotSupported`, while Reflex goes on working because it runs through NVAPI instead.
+Set the project id to the GUID NVIDIA issues you if you have one; that is what selects the
+per-title tuning they ship over the air.
 
 The interposer is refused unless the operating system trusts its Authenticode signature *and*
 the signer is NVIDIA Corporation. Without that check, dropping a hostile `sl.interposer.dll`
@@ -219,7 +230,9 @@ In roughly the order a failure would be easiest to diagnose:
    then errors, the message says whether the file was missing, unsigned, or rejected by `slInit`.
 2. **Feature support.** Once the device exists, startup lists the available features and warns
    individually about each unavailable one with the result code, which is what separates "this GPU
-   cannot" from "the plugin DLL is missing".
+   cannot" from "the plugin DLL is missing". Every DLSS feature unavailable *while Reflex is
+   available* is a third thing again: that pattern is NGX declining to initialize, so look at the
+   identity in section 1 before the files.
 3. **Super resolution produces an image at all.** A black or garbage output points at the
    resource tags — format, layout, extent — before it points at the constants.
 4. **Ghosting or smearing under camera motion** points at the motion vectors: first the sign of

@@ -3579,7 +3579,7 @@
 			[b]Note:[/b] On Vulkan, Streamline cannot pace generated frames against vertical sync itself. Force V-Sync from the graphics driver's control panel to get a tear-free result.
 		</member>
 		<member name="rendering/streamline/project_id" type="String" setter="" getter="" default="&quot;&quot;">
-			GUID issued by NVIDIA for this application. Without one, Streamline identifies the application by engine name and version instead, which is enough for development but not for the per-title tuning NVIDIA ships over the air.
+			GUID issued by NVIDIA for this application. Leaving this empty falls back to a GUID built into the engine rather than to no identity at all, because NGX disables itself when it is given neither an NVIDIA-issued application ID nor a project GUID. Setting your own is what selects the per-title tuning NVIDIA ships over the air.
 		</member>
 		<member name="rendering/streamline/verbose_logging" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], Streamline writes verbose logs to the user data directory. Only useful when diagnosing why a feature refuses to start.

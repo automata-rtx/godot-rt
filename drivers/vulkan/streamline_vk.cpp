@@ -89,6 +89,10 @@ String StreamlineVK::get_unavailability_reason() {
 
 namespace {
 
+// Identifies this engine to NGX when a project has not been given its own id by NVIDIA. Any
+// stable GUID satisfies the requirement; what matters is that one is present at all.
+constexpr const char *DEFAULT_PROJECT_ID = "b7f4c9a2-3e18-4d6b-91c5-0a7e2d84f36b";
+
 // Godot's `Projection` stores columns and multiplies as `M * v`; Streamline's `float4x4` stores
 // rows and multiplies as `v * M`. Those two conventions are transposes of each other *and*
 // transposes in storage, so the two cancel and a column copies straight into a row.
@@ -491,7 +495,18 @@ bool StreamlineVK::_load(const String &p_directory) {
 	internal->plugin_path = p_directory.replace("/", "\\").utf16();
 	internal->plugin_paths[0] = reinterpret_cast<const wchar_t *>(internal->plugin_path.get_data());
 	internal->log_path = OS::get_singleton()->get_user_data_dir().replace("/", "\\").utf16();
-	internal->project_id = String(GLOBAL_GET("rendering/streamline/project_id")).utf8();
+	// NGX will not initialize without an identity, and it accepts only two forms: an
+	// NVIDIA-issued application id, or a project GUID paired with an engine name and version.
+	// `slInit` takes an empty project id happily and the failure surfaces much later and
+	// somewhere else -- sl.common logs "NGX based features will be disabled" and every
+	// NGX-backed feature, which is every DLSS feature, reports eErrorFeatureNotSupported while
+	// Reflex keeps working because it goes through NVAPI instead. So a default is shipped rather
+	// than left to the project to discover.
+	String project_id = GLOBAL_GET("rendering/streamline/project_id");
+	if (project_id.is_empty()) {
+		project_id = DEFAULT_PROJECT_ID;
+	}
+	internal->project_id = project_id.utf8();
 
 	// Reflex and PCL are always requested: frame generation refuses to run without Reflex, and
 	// PCL carries the latency markers Reflex paces against.
@@ -516,7 +531,7 @@ bool StreamlineVK::_load(const String &p_directory) {
 	preferences.numFeaturesToLoad = sizeof(features) / sizeof(features[0]);
 	preferences.engine = sl::EngineType::eCustom;
 	preferences.engineVersion = GODOT_VERSION_FULL_CONFIG;
-	preferences.projectId = internal->project_id.length() > 0 ? internal->project_id.get_data() : nullptr;
+	preferences.projectId = internal->project_id.get_data();
 	// Without this, `slGetFeatureRequirements` and the create-device proxy would both assume D3D12.
 	preferences.renderAPI = sl::RenderAPI::eVulkan;
 
@@ -564,9 +579,10 @@ String StreamlineVK::_requirements_hint(Feature p_feature) {
 	if (requirements.osVersionRequired && requirements.osVersionDetected < requirements.osVersionRequired) {
 		notes.push_back(vformat("needs OS %s, found %s", String(requirements.osVersionRequired.toStr().c_str()), String(requirements.osVersionDetected.toStr().c_str())));
 	}
-	if (requirements.flags & sl::FeatureRequirementFlags::eHardwareSchedulingRequired) {
-		notes.push_back("needs Hardware-accelerated GPU Scheduling turned on in Windows graphics settings");
-	}
+	// Deliberately not reported here: `eHardwareSchedulingRequired` says the feature *requires*
+	// GPU Scheduling, not that this machine has it off. Mentioning it unconditionally told
+	// people to change a setting that was already correct. `eErrorOSDisabledHWS` is the code
+	// that means it is actually off, and it says so on its own.
 	if (!(requirements.flags & sl::FeatureRequirementFlags::eVulkanSupported)) {
 		notes.push_back("is not supported on Vulkan by this Streamline build");
 	}

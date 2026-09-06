@@ -170,8 +170,10 @@ answering anything about upscaling, frame generation or the Vulkan loader.
   driver control panel.
 - **Streamline 2.12.0 does not ship XeSS.** Adding it means integrating Intel's SDK directly, not
   adding a Streamline feature id.
-- **None of it has been run on hardware.** Section 8 of the integration document lists what to
-  check first and in what order.
+- **Nothing has rendered a DLSS frame yet.** The load path is confirmed on an RTX 5090 — the
+  interposer loads, the signature check passes, `slInit` succeeds and Reflex reports available —
+  but no image has come out of super resolution or frame generation. Section 8 of the integration
+  document lists what to check first and in what order.
 
 ## Working in this repo
 
