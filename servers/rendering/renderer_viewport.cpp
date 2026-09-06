@@ -204,6 +204,23 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 #endif
 			}
 
+			// A temporal upscaler reconstructs detail by accumulating jittered frames and
+			// reprojecting the previous one. A viewport that draws once and then stops has no
+			// previous frame and never will, so every one of them runs on absent history: the
+			// first frame is all it gets, and it is the frame being read back. That is a
+			// disocclusion everywhere, which shows up as invented pixels along silhouettes.
+			//
+			// Falling back to bilinear rather than to another upscaler, because the ladder's usual
+			// destination -- FSR 2 -- is temporal too and has exactly the same problem.
+			if (scaling_type == RSE::VIEWPORT_SCALING_3D_TYPE_TEMPORAL &&
+					(p_viewport->update_mode == RSE::VIEWPORT_UPDATE_ONCE || p_viewport->update_mode == RSE::VIEWPORT_UPDATE_DISABLED)) {
+				WARN_PRINT_ONCE(vformat("Temporal 3D scaling needs a viewport that keeps drawing, and this one is set to update %s, so it has no frame history to reconstruct from. Falling back to bilinear scaling. (Viewport RID %d.)",
+						p_viewport->update_mode == RSE::VIEWPORT_UPDATE_ONCE ? "once" : "never",
+						int64_t(p_viewport->self.get_id())));
+				scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_BILINEAR;
+				scaling_type = RSE::scaling_3d_mode_type(scaling_3d_mode);
+			}
+
 			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL && !RD::get_singleton()->has_feature(RD::SUPPORTS_METALFX_TEMPORAL)) {
 				if (RD::get_singleton()->has_feature(RD::SUPPORTS_METALFX_SPATIAL)) {
 					// Prefer MetalFX spatial if it is supported, which will be much more efficient than FSR2,

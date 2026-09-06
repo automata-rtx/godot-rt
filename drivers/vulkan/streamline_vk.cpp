@@ -441,6 +441,9 @@ struct StreamlineVK::Internal {
 	// rather than loaded, so this decides both whether frame generation can run at all and
 	// whether asking about its support would be meaningful.
 	bool frame_generation_requested = false;
+	// Mirrors rendering/streamline/verbose_logging, read once at load: the evaluate path runs on
+	// the render thread inside a driver callback and must not touch ProjectSettings there.
+	bool verbose_logging = false;
 	bool device_ready = false;
 	bool reflex_running = false;
 
@@ -632,6 +635,7 @@ bool StreamlineVK::_load(const String &p_directory) {
 	const uint32_t feature_count = internal->frame_generation_requested ? 4 : 3;
 
 	const bool verbose_logging = GLOBAL_GET("rendering/streamline/verbose_logging");
+	internal->verbose_logging = verbose_logging;
 
 	sl::Preferences preferences;
 	preferences.showConsole = false;
@@ -1058,6 +1062,17 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 		state.preset = p_preset;
 		state.auto_exposure = auto_exposure;
 		state.configured = true;
+	}
+
+	if (internal->verbose_logging) {
+		// One line per evaluate, naming the viewport handle it is for. Which viewport a Streamline
+		// call belongs to is otherwise invisible from outside, which turns any question about one
+		// viewport's upscaling reaching another into guesswork.
+		const char *letter = preset_letter(p_preset);
+		print_line(vformat("Streamline: DLSS evaluate on viewport %d, %dx%d -> %dx%d, %s, preset %s.",
+				int(p_viewport), p_inputs.color.size.width, p_inputs.color.size.height,
+				p_output_size.width, p_output_size.height, quality_name(p_quality),
+				letter[0] == 0 ? "default" : letter));
 	}
 
 	_set_constants(p_viewport, p_camera);
