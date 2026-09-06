@@ -132,6 +132,26 @@ upscaled colour buffer the engine already allocates for FSR2.
 
 ## 4. Frame generation
 
+**It is not loaded in the editor at all.** `sl.dlss_g` is the one plugin that hooks
+`vkCreateSwapchainKHR`, and the interposer returns a before-hook's error verbatim without ever
+reaching the driver, so a swapchain DLSS-G declines is a swapchain that does not get created. It
+attaches to whichever swapchain it is offered and expects an application to have one; the editor is
+a multi-window program where every context menu and menu-bar dropdown is an OS window with its own
+swapchain, and it presents its own interface rather than a game frame, so it could never run frame
+generation anyway. Leaving `kFeatureDLSS_G` out of `slInit`'s `featuresToLoad` frees the plugin on
+discovery and takes its hooks with it. Exported games still request it; `Engine::is_editor_hint()`
+is compiled to a constant `false` in a release template.
+
+Two things this rules out, both verified against the SDK source rather than assumed. The
+`PreferenceFlags::eUseManualHooking` flag does **not** suppress this — it is read only by
+`slUpgradeInterface` and sl.common's D3D12 pipeline restore, and the Vulkan wrapper hands out its
+proxies unconditionally; the DLSS-G guide's "unless manual hooking is used" is about the DXGI
+factory proxy, and its own worked example for the multiple-swapchain case reaches for
+`slSetFeatureLoaded` instead. And a game that presents more than one window is still unhandled:
+`RenderingDeviceDriverVulkan` batches every window's swapchain into a single `vkQueuePresentKHR`,
+so there is no per-window native/proxy split to route around it.
+
+
 One switch for the whole application, not a per-viewport setting, because it takes over the swap
 chain. It runs nowhere in the frame the engine records: the interpolation happens inside the
 present hook the interposer installed, long after the command buffer has been submitted. All the
@@ -246,6 +266,19 @@ In roughly the order a failure would be easiest to diagnose:
    common refusals are Reflex not running and the output resolution being too low.
 8. **Interface smearing across generated frames** is the known UI alpha gap in section 4, not a
    bug in the hudless copy.
+
+Signatures worth recognizing:
+
+- **`Couldn't create Vulkan swapchain (VkResult error -3)` repeating at frame rate**, with windows
+  that render blank, is a Streamline plugin vetoing swapchain creation — not a driver fault.
+  `VK_ERROR_INITIALIZATION_FAILED` arrives from a before-hook, and only `sl.dlss_g` registers one.
+  Each retry also pays a full `_flush_and_stall_for_all_frames()`, so it is expensive as well as
+  noisy.
+- **Every DLSS feature unavailable while Reflex is available** is NGX declining to initialize; see
+  the identity note in section 1.
+- Streamline's own log is warnings and errors by default now, written to `sl.log` in the project's
+  user data directory. It is the only place Streamline's side of a refusal is recorded, and it is
+  worth reading before forming a theory from the engine's own messages.
 
 Two structural limits that would show up as puzzling behavior rather than an error:
 

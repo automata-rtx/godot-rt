@@ -32,6 +32,7 @@
 
 #ifdef STREAMLINE_ENABLED
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/error/error_macros.h"
 #include "core/io/file_access.h"
@@ -342,6 +343,10 @@ struct StreamlineVK::Internal {
 	const wchar_t *plugin_paths[1] = {};
 
 	bool supported[FEATURE_MAX] = {};
+	// Whether sl.dlss_g was named in `featuresToLoad`. A feature left out of that list is freed
+	// rather than loaded, so this decides both whether frame generation can run at all and
+	// whether asking about its support would be meaningful.
+	bool frame_generation_requested = false;
 	bool device_ready = false;
 	bool reflex_running = false;
 
@@ -515,25 +520,49 @@ bool StreamlineVK::_load(const String &p_directory) {
 
 	// Reflex and PCL are always requested: frame generation refuses to run without Reflex, and
 	// PCL carries the latency markers Reflex paces against.
-	const sl::Feature features[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL };
+	//
+	// Frame generation is the exception, and the reason is the swapchain. sl.dlss_g is the only
+	// plugin that hooks `vkCreateSwapchainKHR`, and the interposer returns a before-hook's error
+	// verbatim without ever calling the driver -- so a swapchain the plugin declines is a
+	// swapchain that does not exist. DLSS-G attaches to whichever swapchain it is offered and
+	// expects the application to have one, but the editor is a multi-window program in which every
+	// context menu and menu bar dropdown is an OS window with a swapchain of its own. It also can
+	// never run frame generation, because the image it presents is the editor's own interface
+	// rather than a game frame. Loading the plugin there buys nothing and costs every popup in the
+	// program. `featuresToLoad` is the documented way to say so: a feature left out of it is freed
+	// on discovery rather than loaded, and its hooks go with it.
+	internal->frame_generation_requested = !Engine::get_singleton()->is_editor_hint();
+
+	const sl::Feature features[] = { sl::kFeatureDLSS, sl::kFeatureReflex, sl::kFeaturePCL, sl::kFeatureDLSS_G };
+	const uint32_t feature_count = internal->frame_generation_requested ? 4 : 3;
 
 	const bool verbose_logging = GLOBAL_GET("rendering/streamline/verbose_logging");
 
 	sl::Preferences preferences;
 	preferences.showConsole = false;
-	preferences.logLevel = verbose_logging ? sl::LogLevel::eVerbose : sl::LogLevel::eOff;
+	// Not `eOff`: that drops Streamline's own warnings and errors before they are even formatted,
+	// which is how the reason a feature refused something gets lost. `eDefault` is warnings and
+	// errors only and they land in sl.log beside the project's user data, which is where to look
+	// when a feature loads and then misbehaves.
+	preferences.logLevel = verbose_logging ? sl::LogLevel::eVerbose : sl::LogLevel::eDefault;
 	preferences.pathsToPlugins = internal->plugin_paths;
 	preferences.numPathsToPlugins = 1;
 	preferences.pathToLogsAndData = reinterpret_cast<const wchar_t *>(internal->log_path.get_data());
-	// `eUseManualHooking` is what makes the interposer hand out proxies through
-	// `vkGetInstanceProcAddr` instead of assuming it replaced the Vulkan loader outright.
+	// `eUseManualHooking` does nothing on Vulkan. The interposer reads it only in
+	// `slUpgradeInterface` and in sl.common's D3D12 pipeline restore; the Vulkan wrapper hands out
+	// its proxies unconditionally. In particular it does NOT stop DLSS-G attaching to every
+	// swapchain, which the DLSS-G guide's "unless manual hooking is used" reads like a promise of
+	// -- that sentence is about the DXGI factory proxy, and the guide's own worked example for the
+	// multiple-swapchain case uses `slSetFeatureLoaded` instead. On Vulkan the only levers are
+	// which features are requested above and that call. The flag stays because it describes how
+	// this engine attaches and because clearing it only re-arms D3D paths.
 	preferences.flags = sl::PreferenceFlags::eDisableCLStateTracking |
 			sl::PreferenceFlags::eUseManualHooking |
 			sl::PreferenceFlags::eUseFrameBasedResourceTagging |
 			sl::PreferenceFlags::eAllowOTA |
 			sl::PreferenceFlags::eLoadDownloadedPlugins;
 	preferences.featuresToLoad = features;
-	preferences.numFeaturesToLoad = sizeof(features) / sizeof(features[0]);
+	preferences.numFeaturesToLoad = feature_count;
 	preferences.engine = sl::EngineType::eCustom;
 	preferences.engineVersion = GODOT_VERSION_FULL_CONFIG;
 	preferences.projectId = internal->project_id.get_data();
@@ -636,6 +665,15 @@ void StreamlineVK::set_physical_device(uint64_t p_physical_device) {
 	Vector<String> available;
 	for (uint32_t i = 0; i < FEATURE_MAX; i++) {
 		const Feature feature = Feature(i);
+		if (feature == FEATURE_DLSS_FRAME_GENERATION && !internal->frame_generation_requested) {
+			// Never asked for in this process, so never loaded. Asking anyway answers
+			// `eErrorFeatureMissing` rather than anything that reads as "declined", because the
+			// plugin's config is cached on discovery and only then is it freed for not having been
+			// requested -- and the warning below would go on to name two DLL files that are
+			// already sitting in the directory it points at.
+			internal->supported[i] = false;
+			continue;
+		}
 		const sl::Result result = internal->is_feature_supported(to_sl_feature(feature), adapter);
 		internal->supported[i] = result == sl::Result::eOk;
 		if (internal->supported[i]) {
@@ -655,6 +693,9 @@ void StreamlineVK::set_physical_device(uint64_t p_physical_device) {
 		}
 	}
 	print_line(available.is_empty() ? String("Streamline: no features are available on this device.") : vformat("Streamline: available features are %s.", String(", ").join(available)));
+	if (!internal->frame_generation_requested) {
+		print_line("Streamline: DLSS frame generation is not loaded in the editor, where it would take over the swapchain of every window including menus and popups.");
+	}
 
 	internal->resolve_feature(internal->dlss_set_options, sl::kFeatureDLSS, "slDLSSSetOptions");
 	internal->resolve_feature(internal->dlssg_set_options, sl::kFeatureDLSS_G, "slDLSSGSetOptions");

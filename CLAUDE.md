@@ -161,6 +161,12 @@ answering anything about upscaling, frame generation or the Vulkan loader.
 - **No SDK binaries are vendored** — only the headers, under `thirdparty/streamline/`. The
   runtime is loaded from `rendering/streamline/binary_path` and refused unless the OS trusts its
   signature and the signer is NVIDIA, so a self-built Streamline will not load.
+- **Frame generation's plugin is not even loaded in the editor.** `sl.dlss_g` hooks
+  `vkCreateSwapchainKHR` and the interposer returns a declined hook's error without calling the
+  driver, so with it loaded every editor popup -- each one an OS window with its own swapchain --
+  fails to create one and renders blank. It is left out of `featuresToLoad` there. DLSS super
+  resolution registers no hooks and is unaffected. A game that presents more than one window is
+  still unhandled.
 - **Frame generation refuses rather than half-applies**: never in the editor, never in stereo,
   never on a viewport no window presents, and never without motion vectors (which means a
   temporal upscaler or TAA must be running). It provides hudless colour but **not UI alpha**,
