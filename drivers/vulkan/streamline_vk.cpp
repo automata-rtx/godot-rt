@@ -78,6 +78,14 @@ GODOT_CLANG_WARNING_POP
 GODOT_GCC_WARNING_POP
 
 StreamlineVK *StreamlineVK::singleton = nullptr;
+String StreamlineVK::unavailability_reason;
+
+String StreamlineVK::get_unavailability_reason() {
+	if (unavailability_reason.is_empty()) {
+		return "the reason was not recorded";
+	}
+	return unavailability_reason;
+}
 
 namespace {
 
@@ -345,6 +353,7 @@ uint64_t StreamlineVK::initialize() {
 
 	const bool enabled = GLOBAL_GET("rendering/streamline/enabled");
 	if (!enabled) {
+		unavailability_reason = "the rendering/streamline/enabled project setting is off (it takes a restart)";
 		return 0;
 	}
 
@@ -374,6 +383,9 @@ uint64_t StreamlineVK::initialize() {
 	}
 
 	singleton = instance;
+	// Overwritten by set_physical_device() once the adapter can be asked. Until then this is the
+	// honest answer: the runtime is up but nothing has been queried yet.
+	unavailability_reason = "the graphics device had not finished initializing when it was asked";
 	return uint64_t(uintptr_t(instance->internal->vk_get_instance_proc_addr));
 }
 
@@ -391,6 +403,7 @@ bool StreamlineVK::_load(const String &p_directory) {
 	const String interposer = p_directory.path_join("sl.interposer.dll");
 
 	if (!FileAccess::exists(interposer)) {
+		unavailability_reason = vformat("'%s' does not exist; put sl.interposer.dll and the sl.*.dll plugins there, or point rendering/streamline/binary_path at the directory that holds them", interposer);
 		ERR_PRINT(vformat("Streamline: '%s' does not exist. Put sl.interposer.dll and the sl.*.dll plugins in that directory, or point rendering/streamline/binary_path at the one that holds them.", interposer));
 		return false;
 	}
@@ -401,12 +414,14 @@ bool StreamlineVK::_load(const String &p_directory) {
 	// to take over the Vulkan loader for the whole process.
 	const Char16String interposer_utf16 = interposer.replace("/", "\\").utf16();
 	if (!verify_nvidia_signature(reinterpret_cast<const wchar_t *>(interposer_utf16.get_data()))) {
+		unavailability_reason = vformat("'%s' is not signed by NVIDIA, so it was refused; use the binaries from an NVIDIA Streamline release", interposer);
 		ERR_PRINT(vformat("Streamline: '%s' is not signed by NVIDIA and will not be loaded. Use the binaries from an NVIDIA Streamline release.", interposer));
 		return false;
 	}
 
 	internal->module = LoadLibraryW(reinterpret_cast<LPCWSTR>(interposer_utf16.get_data()));
 	if (internal->module == nullptr) {
+		unavailability_reason = vformat("'%s' could not be loaded (Windows error %d)", interposer, int(GetLastError()));
 		ERR_PRINT(vformat("Streamline: '%s' could not be loaded (error %d).", interposer, int(GetLastError())));
 		return false;
 	}
@@ -431,6 +446,7 @@ bool StreamlineVK::_load(const String &p_directory) {
 	// is the whole of the hooking: no engine call site changes.
 	internal->vk_get_instance_proc_addr = reinterpret_cast<void *>(GetProcAddress(internal->module, "vkGetInstanceProcAddr"));
 	if (internal->vk_get_instance_proc_addr == nullptr) {
+		unavailability_reason = "sl.interposer.dll does not export 'vkGetInstanceProcAddr', so it cannot proxy Vulkan";
 		ERR_PRINT("Streamline: sl.interposer.dll does not export 'vkGetInstanceProcAddr'; it cannot proxy Vulkan.");
 		return false;
 	}
@@ -469,6 +485,7 @@ bool StreamlineVK::_load(const String &p_directory) {
 
 	const sl::Result result = internal->init(preferences, sl::kSDKVersion);
 	if (result != sl::Result::eOk) {
+		unavailability_reason = vformat("slInit failed (%s)", sl::getResultAsStr(result));
 		ERR_PRINT(vformat("Streamline: slInit failed (%s).", sl::getResultAsStr(result)));
 		return false;
 	}
@@ -569,7 +586,11 @@ void StreamlineVK::set_physical_device(uint64_t p_physical_device) {
 			// Named individually rather than summarized: the result code is the only thing that
 			// separates "this GPU cannot" from "the plugin DLL is missing", and they need
 			// different fixes.
-			WARN_PRINT(vformat("Streamline: %s is unavailable (%s).%s", feature_name(feature), sl::getResultAsStr(result), _requirements_hint(feature)));
+			const String detail = vformat("%s reported %s.%s", feature_name(feature), sl::getResultAsStr(result), _requirements_hint(feature));
+			if (feature == FEATURE_DLSS_SUPER_RESOLUTION) {
+				unavailability_reason = detail;
+			}
+			WARN_PRINT("Streamline: " + detail);
 		}
 	}
 	print_line(available.is_empty() ? String("Streamline: no features are available on this device.") : vformat("Streamline: available features are %s.", String(", ").join(available)));
@@ -582,6 +603,9 @@ void StreamlineVK::set_physical_device(uint64_t p_physical_device) {
 	internal->resolve_feature(internal->pcl_set_marker, sl::kFeaturePCL, "slPCLSetMarker");
 
 	internal->device_ready = true;
+	if (internal->supported[FEATURE_DLSS_SUPER_RESOLUTION]) {
+		unavailability_reason = String();
+	}
 
 	// Reflex is switched on for the whole process rather than per viewport: it paces the CPU
 	// against the GPU, which is not a per-view idea, and frame generation refuses to start

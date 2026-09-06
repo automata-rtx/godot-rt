@@ -187,16 +187,17 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 				scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_FSR2;
 				scaling_type = RSE::scaling_3d_mode_type(scaling_3d_mode);
 #ifdef STREAMLINE_ENABLED
-				if (StreamlineVK::get_singleton() != nullptr) {
-					WARN_PRINT_ONCE("DLSS is unavailable on this device: the Streamline runtime loaded, but reported no DLSS support. Falling back to FSR 2 scaling.");
-				} else if (OS::get_singleton()->get_current_rendering_driver_name() != "vulkan") {
-					// Checked before blaming the setting: Streamline is loaded from the Vulkan
-					// context driver, so on any other driver that code never runs and enabling
-					// the setting would change nothing. New Windows projects default to d3d12,
-					// which makes this the likelier of the two.
+				if (OS::get_singleton()->get_current_rendering_driver_name() != "vulkan") {
+					// Checked first: Streamline is loaded from the Vulkan context driver, so on
+					// any other driver none of it runs and no Streamline setting changes that.
+					// New Windows projects are created on d3d12, which makes this the common case
+					// rather than an exotic one.
 					WARN_PRINT_ONCE(vformat("DLSS needs the Vulkan rendering driver, but this process is using '%s'. Set rendering/rendering_device/driver.windows to \"vulkan\" and restart. Falling back to FSR 2 scaling.", OS::get_singleton()->get_current_rendering_driver_name()));
 				} else {
-					WARN_PRINT_ONCE("DLSS needs the Streamline runtime, which is not loaded. Turn on rendering/streamline/enabled and restart; once it is on, startup reports why loading failed. Falling back to FSR 2 scaling.");
+					// The reason was recorded during startup rather than printed there: the
+					// editor has no print handler that early, so a message would have reached
+					// only stdout. Reporting it here puts it where it can actually be read.
+					WARN_PRINT_ONCE(vformat("DLSS is unavailable because %s. Falling back to FSR 2 scaling.", StreamlineVK::get_unavailability_reason()));
 				}
 #else
 				WARN_PRINT_ONCE("DLSS needs a Windows build using the Vulkan rendering driver. Falling back to FSR 2 scaling.");

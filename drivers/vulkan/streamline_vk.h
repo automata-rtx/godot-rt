@@ -147,6 +147,15 @@ public:
 	static void finalize();
 	static StreamlineVK *get_singleton() { return singleton; }
 
+	// Why DLSS is not available, in a sentence, recorded wherever that is decided.
+	//
+	// It has to be recorded rather than printed: all of this happens inside `Main::setup2()`,
+	// and the editor does not install a print handler until `EditorNode` is constructed in
+	// `Main::start()`. Anything printed in between reaches stdout and nothing else, which is
+	// invisible to anyone who launched the editor from a file manager. Reporting it from the
+	// point of use instead puts it where the reader is already looking.
+	static String get_unavailability_reason();
+
 	// Called once the physical device exists; until then no feature can be queried, because
 	// support depends on the adapter.
 	void set_physical_device(uint64_t p_physical_device);
@@ -197,6 +206,7 @@ private:
 	void _free_hudless(uint32_t p_viewport);
 
 	static StreamlineVK *singleton;
+	static String unavailability_reason;
 
 	struct Internal;
 	Internal *internal = nullptr;
