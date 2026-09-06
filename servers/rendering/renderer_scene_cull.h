@@ -1407,6 +1407,7 @@ public:
 
 	/* Misc */
 	PASS1(set_debug_draw_mode, RSE::ViewportDebugDraw)
+	PASS1RC(String, debug_get_upscaler_status, const Ref<RenderSceneBuffers> &)
 
 	PASS1(decals_set_filter, RSE::DecalFilter)
 	PASS1(light_projectors_set_filter, RSE::LightProjectorFilter)
