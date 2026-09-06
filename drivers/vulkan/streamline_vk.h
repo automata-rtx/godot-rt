@@ -193,6 +193,7 @@ public:
 
 private:
 	void _set_constants(uint32_t p_viewport, const CameraConstants &p_camera);
+	String _requirements_hint(Feature p_feature);
 	void _free_hudless(uint32_t p_viewport);
 
 	static StreamlineVK *singleton;

@@ -273,6 +273,7 @@ struct StreamlineVK::Internal {
 	PFun_slFreeResources *free_resources = nullptr;
 	PFun_slGetNewFrameToken *get_new_frame_token = nullptr;
 	PFun_slGetFeatureFunction *get_feature_function = nullptr;
+	PFun_slGetFeatureRequirements *get_feature_requirements = nullptr;
 
 	// Feature entry points. `slGetFeatureFunction` needs a device, so these are resolved once
 	// the physical device is known rather than at load time.
@@ -419,7 +420,8 @@ bool StreamlineVK::_load(const String &p_directory) {
 			internal->resolve(internal->evaluate_feature, "slEvaluateFeature") &&
 			internal->resolve(internal->free_resources, "slFreeResources") &&
 			internal->resolve(internal->get_new_frame_token, "slGetNewFrameToken") &&
-			internal->resolve(internal->get_feature_function, "slGetFeatureFunction");
+			internal->resolve(internal->get_feature_function, "slGetFeatureFunction") &&
+			internal->resolve(internal->get_feature_requirements, "slGetFeatureRequirements");
 	if (!resolved) {
 		return false;
 	}
@@ -485,6 +487,41 @@ void StreamlineVK::_unload() {
 	}
 }
 
+String StreamlineVK::_requirements_hint(Feature p_feature) {
+	// The result code says which class of problem it is; this says which specific thing fell
+	// short. Streamline tracks the versions it detected against the ones the feature needs, plus
+	// the two machine-level settings people most often have switched off, so a refusal can be
+	// reported as a number to compare rather than an enumerator to look up.
+	if (internal->get_feature_requirements == nullptr) {
+		return String();
+	}
+
+	sl::FeatureRequirements requirements;
+	if (internal->get_feature_requirements(to_sl_feature(p_feature), requirements) != sl::Result::eOk) {
+		// The usual reason this fails is that the feature's plugin never loaded, which the result
+		// code above already conveys.
+		return String();
+	}
+
+	Vector<String> notes;
+	if (requirements.driverVersionRequired && requirements.driverVersionDetected < requirements.driverVersionRequired) {
+		notes.push_back(vformat("needs driver %s, found %s", String(requirements.driverVersionRequired.toStr().c_str()), String(requirements.driverVersionDetected.toStr().c_str())));
+	}
+	if (requirements.osVersionRequired && requirements.osVersionDetected < requirements.osVersionRequired) {
+		notes.push_back(vformat("needs OS %s, found %s", String(requirements.osVersionRequired.toStr().c_str()), String(requirements.osVersionDetected.toStr().c_str())));
+	}
+	if (requirements.flags & sl::FeatureRequirementFlags::eHardwareSchedulingRequired) {
+		notes.push_back("needs Hardware-accelerated GPU Scheduling turned on in Windows graphics settings");
+	}
+	if (!(requirements.flags & sl::FeatureRequirementFlags::eVulkanSupported)) {
+		notes.push_back("is not supported on Vulkan by this Streamline build");
+	}
+	if (notes.is_empty()) {
+		return String();
+	}
+	return vformat(" It %s.", String("; and ").join(notes));
+}
+
 void StreamlineVK::set_physical_device(uint64_t p_physical_device) {
 	ERR_FAIL_NULL(internal);
 	if (internal->device_ready) {
@@ -507,7 +544,7 @@ void StreamlineVK::set_physical_device(uint64_t p_physical_device) {
 			// Named individually rather than summarized: the result code is the only thing that
 			// separates "this GPU cannot" from "the plugin DLL is missing", and they need
 			// different fixes.
-			WARN_PRINT(vformat("Streamline: %s is unavailable (%s).", feature_name(feature), sl::getResultAsStr(result)));
+			WARN_PRINT(vformat("Streamline: %s is unavailable (%s).%s", feature_name(feature), sl::getResultAsStr(result), _requirements_hint(feature)));
 		}
 	}
 	print_line(available.is_empty() ? String("Streamline: no features are available on this device.") : vformat("Streamline: available features are %s.", String(", ").join(available)));
