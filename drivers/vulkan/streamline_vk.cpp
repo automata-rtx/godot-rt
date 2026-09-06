@@ -134,6 +134,39 @@ const char *feature_name(StreamlineVK::Feature p_feature) {
 	}
 }
 
+// The files a feature is loaded from. DLSS and frame generation each need TWO: the Streamline
+// plugin and, separately, the NGX model that does the actual work. Reflex needs neither, which is
+// why a directory holding only the sl.*.dll files leaves Reflex working and DLSS reporting
+// nothing -- the single most confusing way for this to be set up wrong.
+const char *feature_files(StreamlineVK::Feature p_feature) {
+	switch (p_feature) {
+		case StreamlineVK::FEATURE_DLSS_SUPER_RESOLUTION:
+			return "sl.dlss.dll and nvngx_dlss.dll";
+		case StreamlineVK::FEATURE_DLSS_FRAME_GENERATION:
+			return "sl.dlss_g.dll and nvngx_dlssg.dll";
+		case StreamlineVK::FEATURE_REFLEX:
+			return "sl.reflex.dll and sl.pcl.dll";
+		default:
+			return "";
+	}
+}
+
+// Whether the result points at the feature's own files rather than at the machine.
+bool result_blames_the_files(sl::Result p_result) {
+	switch (p_result) {
+		case sl::Result::eErrorFeatureMissing:
+		case sl::Result::eErrorFeatureNotSupported:
+		case sl::Result::eErrorFeatureFailedToLoad:
+		case sl::Result::eErrorFeatureMissingDependency:
+		case sl::Result::eErrorNoSupportedAdapterFound:
+		case sl::Result::eErrorNGXFailed:
+		case sl::Result::eErrorNoPlugins:
+			return true;
+		default:
+			return false;
+	}
+}
+
 sl::Resource to_sl_resource(const StreamlineVK::Texture &p_texture) {
 	sl::Resource resource(sl::ResourceType::eTex2d, reinterpret_cast<void *>(uintptr_t(p_texture.image)), nullptr, reinterpret_cast<void *>(uintptr_t(p_texture.view)), p_texture.layout);
 	resource.width = uint32_t(p_texture.size.width);
@@ -294,6 +327,9 @@ struct StreamlineVK::Internal {
 
 	void *vk_get_instance_proc_addr = nullptr;
 
+	// The directory in readable form, for messages that have to name it.
+	String plugin_directory;
+
 	// slInit keeps a copy of the Preferences struct but not of the strings it points at, so
 	// these have to live as long as the runtime does.
 	Char16String plugin_path;
@@ -451,6 +487,7 @@ bool StreamlineVK::_load(const String &p_directory) {
 		return false;
 	}
 
+	internal->plugin_directory = p_directory;
 	internal->plugin_path = p_directory.replace("/", "\\").utf16();
 	internal->plugin_paths[0] = reinterpret_cast<const wchar_t *>(internal->plugin_path.get_data());
 	internal->log_path = OS::get_singleton()->get_user_data_dir().replace("/", "\\").utf16();
@@ -586,7 +623,10 @@ void StreamlineVK::set_physical_device(uint64_t p_physical_device) {
 			// Named individually rather than summarized: the result code is the only thing that
 			// separates "this GPU cannot" from "the plugin DLL is missing", and they need
 			// different fixes.
-			const String detail = vformat("%s reported %s.%s", feature_name(feature), sl::getResultAsStr(result), _requirements_hint(feature));
+			String detail = vformat("%s reported %s.%s", feature_name(feature), sl::getResultAsStr(result), _requirements_hint(feature));
+			if (result_blames_the_files(result)) {
+				detail += vformat(" It is loaded from %s, both of which must be in '%s'.", feature_files(feature), internal->plugin_directory);
+			}
 			if (feature == FEATURE_DLSS_SUPER_RESOLUTION) {
 				unavailability_reason = detail;
 			}

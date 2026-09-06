@@ -16,8 +16,21 @@ unverified. Section 8 lists the specific things to check first.
 1. Download a release from <https://github.com/NVIDIA-RTX/Streamline/releases>. The engine
    vendors the SDK's headers but none of its binaries: the frame generation plugin is closed
    source, and the rest is loaded at run time.
-2. Put `sl.interposer.dll` and the `sl.*.dll` plugins in one directory. Next to the executable is
-   the default and is where an exported game's own libraries end up.
+2. Put the binaries in one directory. Next to the executable is the default and is where an
+   exported game's own libraries end up. **Each DLSS feature needs two files, not one** — the
+   Streamline plugin and, separately, the NGX model that does the work:
+
+   | For | Files |
+   | --- | --- |
+   | Always | `sl.interposer.dll`, `sl.common.dll` |
+   | Super resolution | `sl.dlss.dll`, `nvngx_dlss.dll` |
+   | Frame generation | `sl.dlss_g.dll`, `nvngx_dlssg.dll` |
+   | Reflex (pulled in by frame generation) | `sl.reflex.dll`, `sl.pcl.dll` |
+
+   The `nvngx_*.dll` files live apart from the `sl.*.dll` ones in the SDK tree, and releases carry
+   both a production and a `development/` copy of each. Copying only the `sl.*.dll` files leaves
+   Reflex working and DLSS reporting itself unavailable, which is the most confusing way to get
+   this wrong.
 3. Make sure the project is on the **Vulkan** rendering driver:
    `rendering/rendering_device/driver.windows` must be `"vulkan"`. This is worth checking rather
    than assuming — the editor writes `"d3d12"` into every project it creates, and Streamline is
