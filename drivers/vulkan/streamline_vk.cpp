@@ -411,7 +411,12 @@ uint64_t StreamlineVK::initialize() {
 	// setting is off by default, so reaching this line means the user asked for Streamline: if it
 	// then fails to arrive, saying so is not noise, and needing a command-line flag to find out
 	// would make the failure undiagnosable from the editor.
-	print_line(vformat("Streamline: enabled, loading from '%s'.", directory));
+	// The engine's own commit goes on this line too. Everything this integration reports afterwards
+	// is read back as warning text and source line numbers, and neither means anything without
+	// knowing which binary produced them -- a fix has already been judged against a stale build once
+	// because there was no way to tell two builds apart from the output.
+	const String build_hash = String(GODOT_VERSION_HASH);
+	print_line(vformat("Streamline: enabled, loading from '%s' (engine build %s).", directory, build_hash.is_empty() ? String("unknown") : build_hash.substr(0, 9)));
 
 	StreamlineVK *instance = memnew(StreamlineVK);
 	instance->internal = memnew(Internal);
