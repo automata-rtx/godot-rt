@@ -148,6 +148,11 @@ The fork also carries a Vulkan Streamline integration: **DLSS super resolution**
 `rendering/streamline/frame_generation`. Read **`docs/streamline/INTEGRATION.md`** before
 answering anything about upscaling, frame generation or the Vulkan loader.
 
+- **Needs the Vulkan rendering driver, which new projects do not get.** `EditorNode::get_initial_settings()`
+  writes `rendering/rendering_device/driver.windows = "d3d12"` into every project the editor
+  creates, and Streamline is loaded from the Vulkan context driver — so on a default new project
+  none of it runs, whatever the settings say. This is the first thing to check when DLSS reports
+  itself unavailable.
 - **Off by default, and Windows only.** `rendering/streamline/enabled` is restart-required
   because it replaces the process's Vulkan entry-point loader with the interposer's: volk is
   initialized with `vkGetInstanceProcAddr` from `sl.interposer.dll`, so `vkCreateInstance`,

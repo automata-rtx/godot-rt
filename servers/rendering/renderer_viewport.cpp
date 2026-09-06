@@ -189,6 +189,12 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 #ifdef STREAMLINE_ENABLED
 				if (StreamlineVK::get_singleton() != nullptr) {
 					WARN_PRINT_ONCE("DLSS is unavailable on this device: the Streamline runtime loaded, but reported no DLSS support. Falling back to FSR 2 scaling.");
+				} else if (OS::get_singleton()->get_current_rendering_driver_name() != "vulkan") {
+					// Checked before blaming the setting: Streamline is loaded from the Vulkan
+					// context driver, so on any other driver that code never runs and enabling
+					// the setting would change nothing. New Windows projects default to d3d12,
+					// which makes this the likelier of the two.
+					WARN_PRINT_ONCE(vformat("DLSS needs the Vulkan rendering driver, but this process is using '%s'. Set rendering/rendering_device/driver.windows to \"vulkan\" and restart. Falling back to FSR 2 scaling.", OS::get_singleton()->get_current_rendering_driver_name()));
 				} else {
 					WARN_PRINT_ONCE("DLSS needs the Streamline runtime, which is not loaded. Turn on rendering/streamline/enabled and restart; once it is on, startup reports why loading failed. Falling back to FSR 2 scaling.");
 				}

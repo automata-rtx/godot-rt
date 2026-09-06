@@ -533,6 +533,31 @@ void StreamlineVK::set_physical_device(uint64_t p_physical_device) {
 	sl::AdapterInfo adapter;
 	adapter.vkPhysicalDevice = reinterpret_cast<void *>(uintptr_t(p_physical_device));
 
+	// The LUID is what actually reaches the plugin's own per-adapter test. Without it
+	// `slIsFeatureSupported` returns early -- `if (!ctx->isSupported || !adapterInfo.deviceLUID)
+	// return Result::eOk;` -- and the only surviving adapter gate is "is any adapter on this
+	// machine supported", which on a mixed-vendor machine answers about a GPU we are not
+	// rendering on. Kept alive for the whole loop below, since Streamline reads through it.
+	uint8_t device_luid[VK_LUID_SIZE] = {};
+	if (vkGetPhysicalDeviceProperties2 != nullptr) {
+		VkPhysicalDeviceIDProperties id_properties = {};
+		id_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+
+		VkPhysicalDeviceProperties2 properties = {};
+		properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+		properties.pNext = &id_properties;
+
+		vkGetPhysicalDeviceProperties2(VkPhysicalDevice(uintptr_t(p_physical_device)), &properties);
+		if (id_properties.deviceLUIDValid) {
+			memcpy(device_luid, id_properties.deviceLUID, VK_LUID_SIZE);
+			adapter.deviceLUID = device_luid;
+			adapter.deviceLUIDSizeInBytes = VK_LUID_SIZE;
+		}
+	}
+	if (adapter.deviceLUID == nullptr) {
+		WARN_PRINT("Streamline: this device reports no LUID, so feature support is answered for the machine rather than for this GPU.");
+	}
+
 	Vector<String> available;
 	for (uint32_t i = 0; i < FEATURE_MAX; i++) {
 		const Feature feature = Feature(i);

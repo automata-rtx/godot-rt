@@ -18,9 +18,14 @@ unverified. Section 8 lists the specific things to check first.
    source, and the rest is loaded at run time.
 2. Put `sl.interposer.dll` and the `sl.*.dll` plugins in one directory. Next to the executable is
    the default and is where an exported game's own libraries end up.
-3. Turn on `rendering/streamline/enabled` and restart. If the binaries are elsewhere, point
+3. Make sure the project is on the **Vulkan** rendering driver:
+   `rendering/rendering_device/driver.windows` must be `"vulkan"`. This is worth checking rather
+   than assuming — the editor writes `"d3d12"` into every project it creates, and Streamline is
+   loaded from the Vulkan context driver, so on D3D12 none of it runs and no amount of enabling
+   will change that.
+4. Turn on `rendering/streamline/enabled` and restart. If the binaries are elsewhere, point
    `rendering/streamline/binary_path` at the directory first.
-4. For super resolution, set the viewport's 3D scaling mode to **DLSS** and its 3D scale to the
+5. For super resolution, set the viewport's 3D scaling mode to **DLSS** and its 3D scale to the
    quality you want. For frame generation, turn on `rendering/streamline/frame_generation`.
 
 Startup reports what happened in the editor's Output panel and the debugger, at normal severity —

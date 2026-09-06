@@ -1915,7 +1915,7 @@ ProjectSettings::ProjectSettings() {
 	// `binary_path` if they are there at all. Enabling this replaces the process's Vulkan
 	// entry-point loader with the interposer's, which is why it takes a restart -- and why it
 	// stays off by default even in a build that has the headers.
-	GLOBAL_DEF_RST(PropertyInfo(Variant::BOOL, "rendering/streamline/enabled"), false);
+	GLOBAL_DEF_RST_BASIC(PropertyInfo(Variant::BOOL, "rendering/streamline/enabled"), false);
 	// Directory holding sl.interposer.dll and the sl.*.dll plugins. Empty means the directory
 	// the executable is in, which is where an exported game's own libraries sit.
 	GLOBAL_DEF_RST(PropertyInfo(Variant::STRING, "rendering/streamline/binary_path", PROPERTY_HINT_GLOBAL_DIR), "");
@@ -1927,7 +1927,7 @@ ProjectSettings::ProjectSettings() {
 	// DLSS frame generation. Unlike super resolution, which is a viewport scaling mode, this is
 	// one switch for the whole application: it takes over the swap chain. It never runs in the
 	// editor, where the presented image is the editor's own interface.
-	GLOBAL_DEF(PropertyInfo(Variant::BOOL, "rendering/streamline/frame_generation"), false);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::BOOL, "rendering/streamline/frame_generation"), false);
 
 	GLOBAL_DEF_RST("rendering/rendering_device/d3d12/max_resource_descriptors", 65536);
 	custom_prop_info["rendering/rendering_device/d3d12/max_resource_descriptors"] = PropertyInfo(Variant::INT, "rendering/rendering_device/d3d12/max_resource_descriptors", PROPERTY_HINT_RANGE, "512,1000000");
