@@ -1,0 +1,48 @@
+; Engine configuration file for the shadow validation rigs.
+;
+; Every setting here is load-bearing for the measurement, not taste:
+;
+;   msaa_3d = 0            the caster mask and the depth pre-pass are what the
+;                          march reads, and MSAA changes both. It is also what
+;                          the fork's own target project runs.
+;   screen_space_aa = 0    SMAA or FXAA would blur the very edge being measured.
+;   raytraced_shadows      on, including directional: the REFERENCE capture needs
+;                          the blades traced. Requires ray query hardware; under
+;                          lavapipe it warns and falls back to shadow maps, which
+;                          is still a valid reference for the screen space
+;                          comparison but is NOT a test of the raytraced path.
+;   samples_per_light = 1  and the denoiser OFF: a filtered, accumulated shadow
+;                          is not deterministic frame to frame and cannot be
+;                          differenced against a fixed baseline.
+;   angular distance       the rigs set light_angular_distance = 0 in code. This
+;                          fork defaults it to 0.25 degrees, and a penumbra blurs
+;                          the edge under measurement.
+config_version=5
+
+[application]
+config/name="Shadow validation"
+run/main_scene="res://field.tscn"
+config/features=PackedStringArray("4.5", "Forward Plus")
+
+[display]
+window/size/viewport_width=1600
+window/size/viewport_height=900
+
+[rendering]
+renderer/rendering_method="forward_plus"
+anti_aliasing/quality/msaa_3d=0
+anti_aliasing/quality/screen_space_aa=0
+lights_and_shadows/screen_space_shadows/enabled=false
+lights_and_shadows/screen_space_shadows/quality=1
+lights_and_shadows/screen_space_shadows/surface_thickness=0.005
+lights_and_shadows/screen_space_shadows/bilinear_threshold=0.02
+lights_and_shadows/screen_space_shadows/contrast=4.0
+lights_and_shadows/screen_space_shadows/hardness=1.0
+lights_and_shadows/screen_space_shadows/strength=1.0
+lights_and_shadows/screen_space_shadows/restrict_casters=false
+lights_and_shadows/directional_shadow/size=4096
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=0
+lights_and_shadows/raytraced_shadows/enabled=true
+lights_and_shadows/raytraced_shadows/directional/enabled=true
+lights_and_shadows/raytraced_shadows/samples_per_light=1
+lights_and_shadows/raytraced_shadows/denoiser/enabled=false
