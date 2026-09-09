@@ -842,6 +842,12 @@ solid it is, so this stands in for that. Too high and everything casts a thick s
 behind it; too low and shadows thin out. Move it in multiples of two, and move `bilinear_threshold`
 in the same direction.
 
+It is tempting to scale it with the occluder's real depth — 1 cm blades rather than 4 mm ones look
+like they want 0.010 rather than the default, and measured over a whole frame they appear to. They do
+not: raising it trades a near-field shadow that the march cannot reach the end of against a far-field
+one that is already too wide, and the global average of those two errors reads as a match. Measured
+per distance band the default wins. See the screen space section of `docs/rt_shadows/FINDINGS.md`.
+
 `contrast` is not a third darkness knob. It only widens the window around an exact depth match, and
 it saturates: taking it from 4 to 16 moved shadow mass by 12% and per-pixel darkness by 4%.
 

@@ -637,6 +637,78 @@ outright. On fifteen thousand overlapping thin blades, which is close to the wor
 there is none: the shadows read as clean directional streaks, and against the traced render beside
 them the difference is coverage, not noise.
 
+### Checked again on chunky blades, which is the size a game actually scatters
+
+The rig above uses 2.2 cm x 4 mm blades, which are nearly razor thin. A game wanting visual density
+without millions of primitives scatters something far fatter, so the whole comparison was rebuilt at
+1.0 x 1.5 cm cross section, 25 cm tall (90-110% per instance), 4,504 of them on pale dry soil with
+ambient at 0.16, which puts lit-to-shadowed contrast at about 7.6x so a shadow is legible by eye.
+
+| | shadow mass vs trace | shadow darkness vs trace |
+| --- | --- | --- |
+| `hardness` 0 (Bend) | 0.512 | 0.681 |
+| `hardness` 1, thickness 0.005 | 0.779 | **0.978** |
+| `hardness` 1, thickness 0.010 | 1.101 | 0.972 |
+| `hardness` 1, thickness 0.0025 | 0.573 | 0.978 |
+
+The default still lands: shadow darkness within 2% of the trace. And `hardness` 0 comes in at 0.681,
+close to the 0.75 that one bucket of four predicts -- so the mechanism reads the same at 25x the
+blade cross-section area.
+
+**Thickness looked like it wanted retuning and does not.** At 1.0 cm of blade depth, 0.010 gives a
+near perfect global mass of 1.101 against 0.779 for the default, and 0.005 was calibrated on blades
+4 mm deep, so scaling it with the occluder looks obviously right. Stratifying by distance shows it is
+two errors canceling:
+
+| band | blade depth in px | mass, t=0.005 | mass, t=0.010 |
+| --- | --- | --- | --- |
+| 0.5-0.9 m | 12.3 | 0.397 | 0.528 |
+| 1.9-2.7 m | 3.8 | 1.080 | 1.525 |
+| 3.8-5.2 m | 1.9 | 1.494 | 2.162 |
+
+Near the camera every variant undershoots, because a 25 cm blade at 0.7 m throws a shadow longer than
+the High tier's 96 pixel march and the tail is simply not reached. Far away every variant overshoots,
+because the fixed one pixel of rasterization overshoot is proportionally huge on a blade 1.9 px deep.
+Thickness widens everything, so it trades the near error against the far one; a global average over a
+frame whose near bands carry most of the mass then reads as a match. By mean per-band error the
+default 0.005 is the best of the three (0.23 against 0.38 for 0.010). **Keep 0.005.** Reach for 0.010
+only when the camera sits close and the foreground dominates, knowing it is compensating truncation
+with excess width rather than matching the trace.
+
+Shadow DARKNESS, unlike mass, is flat across the frame: 0.91 to 0.97 for `hardness` 1 and 0.60 to
+0.72 for `hardness` 0, at every distance. A prediction that the hardness deficit would vary within
+one frame -- weaker where the blade is 12 px deep, stronger where it is 1.5 px -- was measured and is
+wrong. The deficit is set by how many march samples land inside the depth window, which the blade's
+screen footprint does not determine. The size dependence is a threshold rather than a gradient: the
+sub-pixel blades of the thin rig gave 0.335, and everything at or above about 1.5 px saturates at the
+one-bucket 0.75.
+
+### Where the two techniques disagree, drawn rather than summarized
+
+Scoring `hardness` 1 against the trace pixel by pixel: 42.9% of shadowed pixels agree, 36.9% are
+shadow only the trace found, 20.3% only the march found. The trace-only share concentrates on one
+side of the frame, which suggests occluders off the screen edge on the sun side -- something a march
+over the depth buffer cannot ever find.
+
+Tested rather than asserted, by mirroring the sun's azimuth from +52 to -52 degrees. The asymmetry
+does flip, from 2.14x right-heavy to 1.09x left-heavy, so shadow direction drives it. But 1.09 is far
+weaker than 2.14, so off-screen occluders are **part** of the trace-only share and not all of it; the
+rest is the near-field march truncation above, plus a fixed blade layout that is not itself
+left-right symmetric.
+
+### Two traps in the measurement rig, both of which produced plausible wrong pictures
+
+`Transform3D.scaled()` is a LEFT multiply -- `Basis::scale` multiplies the basis rows -- so it scales
+along the PARENT axes. Applied after a tilt, as `t.rotated(...).scaled(...)`, it shears a leaning
+blade into a parallelepiped and shifts its lean by about a degree. Use `scaled_local`. Corrected, the
+numbers moved by less than 0.3% because the error applies identically to every capture, but the
+geometry being compared was not the geometry intended.
+
+The raytraced reference has a ceiling. `MAX_RT_CASTERS` is 65536 (`renderer_scene_cull.cpp:3530`) and
+one MultiMesh instance is one caster, so a field denser than that stops casting into the reference.
+It does warn (`WARN_PRINT_ONCE`, same file, line 3710) rather than failing silently, but a warning in
+a render log is easy to miss and the resulting reference looks entirely plausible.
+
 ### What is left is one pixel of rasterization, and it is a floor
 
 With `hardness` at 1.0, lowering `surface_thickness` tightens the shadow to 1.386x the traced area
