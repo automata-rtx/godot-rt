@@ -99,9 +99,15 @@ shared float depth_data[READ_COUNT * WAVE_SIZE];
 shared bool lds_early_out;
 
 bool early_out_pixel(float p_depth) {
-	// The hook the original leaves for a custom test. Nothing more is wanted
-	// here: the raytraced shadow mask cannot be consulted, because it is written
-	// after this pass runs.
+	// The hook the original leaves for a custom test, culling the sky and
+	// anything else outside the light's depth range.
+	//
+	// Bend suggest also skipping pixels an existing shadow pass already found
+	// occluded, and the raytraced shadow mask IS available here -- it is written
+	// earlier in _pre_opaque_render than this pass. It is deliberately not read:
+	// this pass has to work with raytraced shadows switched off, and binding a
+	// mask that may not exist to buy a partial early-out is not worth the second
+	// code path.
 	return p_depth >= params.depth_bounds.y || p_depth <= params.depth_bounds.x;
 }
 

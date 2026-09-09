@@ -85,6 +85,16 @@ float rt_shadow_lookup(float p_slot) {
 // the wrong place.
 float sss_shadow_lookup() {
 	ivec2 coord = ivec2(gl_FragCoord.xy);
+	// texelFetch ignores the sampler's clamp by definition, so an out of range
+	// read is invalid rather than clamped -- zero under image robustness, and
+	// undefined without it. Zero here means fully shadowed, so a mask that was
+	// never written would put the sun out rather than leave it alone. A light is
+	// only given a strength when its mask really was written, which makes this
+	// unreachable; it is here because the failure it guards is total darkness and
+	// the guard is one comparison against a value the driver already has.
+	if (any(greaterThanEqual(coord, textureSize(sampler2D(sss_shadow_mask, SAMPLER_NEAREST_CLAMP), 0)))) {
+		return 1.0;
+	}
 	return texelFetch(sampler2D(sss_shadow_mask, SAMPLER_NEAREST_CLAMP), coord, 0).r;
 }
 #endif // !USING_MOBILE_RENDERER

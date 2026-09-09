@@ -30,9 +30,9 @@
 
 #include "screen_space_shadows.h"
 
-#include "thirdparty/bend_sss/bend_sss_cpu.h"
-
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
+
+#include <thirdparty/bend_sss/bend_sss_cpu.h>
 
 using namespace RendererRD;
 

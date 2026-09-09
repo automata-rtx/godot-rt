@@ -826,13 +826,19 @@ private:
 
 	bool _ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_denoise, RendererRD::RTShadows::Buffers &r_buffers);
 
-	// Whether the screen space shadow pass will run this frame. Deliberately does
-	// NOT consult the light: it is asked before the light buffer for the pass has
-	// been filled, because it decides whether to force the depth pre-pass on and
-	// that decision is made ahead of _pre_opaque_render. Forcing a pre-pass for a
-	// scene that turns out to have no shadow casting sun costs a pre-pass; not
-	// forcing one would mean marching last frame's depth.
-	bool _using_screen_space_shadows();
+	// Whether the screen space shadow pass will run for this render. The single
+	// predicate for the whole feature: the depth pre-pass forcing, the light
+	// buffer's sss_strength and the dispatch all ask it, so none of them can
+	// disagree with the others -- and a light marked with a strength whose mask
+	// was never written is not a missing shadow but a black one, because the
+	// fallback bound in its place is 4x4 and the lookup reads past it.
+	//
+	// Deliberately does NOT consult the light. It is asked before the light
+	// buffer for the pass has been filled, because the depth pre-pass decision is
+	// made ahead of _pre_opaque_render. Forcing a pre-pass for a scene that turns
+	// out to have no shadow casting sun costs a pre-pass; not forcing one would
+	// mean marching last frame's depth.
+	bool _using_screen_space_shadows(const RenderDataRD *p_render_data);
 	RID _ensure_screen_space_shadow_mask(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size);
 	void _render_screen_space_shadows(RenderDataRD *p_render_data, Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size);
 	void _pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer);

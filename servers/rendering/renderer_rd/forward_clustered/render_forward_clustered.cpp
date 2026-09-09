@@ -1743,10 +1743,28 @@ bool RenderForwardClustered::_ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD>
 			r_buffers.raw_hit_distance.is_valid();
 }
 
-bool RenderForwardClustered::_using_screen_space_shadows() {
+bool RenderForwardClustered::_using_screen_space_shadows(const RenderDataRD *p_render_data) {
 	if (!GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/screen_space_shadows/enabled")) {
 		return false;
 	}
+	if (p_render_data == nullptr || !p_render_data->reflection_probe.is_null()) {
+		// A probe render has no render buffers of its own to hold a mask, and its
+		// camera is not the one any mask was written for.
+		return false;
+	}
+
+	Ref<RenderSceneBuffersRD> rb = p_render_data->render_buffers;
+	if (rb.is_null()) {
+		return false;
+	}
+	if (rb->get_view_count() > 1) {
+		// Stereo would need a dispatch and a mask per eye, and the depth texture is
+		// a 2D array the pass's sampler2D cannot even be handed. Warn rather than
+		// fail silently, because the setting is on and nothing will come of it.
+		WARN_PRINT_ONCE("Screen space shadows are not supported for multiview rendering yet.");
+		return false;
+	}
+
 	// Builds the effect on first use, and answers null forever after if it cannot
 	// be built on this device.
 	return get_screen_space_shadows() != nullptr;
@@ -1990,7 +2008,11 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 	if (p_render_data->reflection_probe.is_null() && rb.is_valid() && rb->get_view_count() > 1 && is_raytracing_scene_available()) {
 		WARN_PRINT_ONCE("Raytraced shadows are not supported for multiview rendering yet; shadow maps are used instead.");
 	}
-	light_storage->update_light_buffers(p_render_data, *p_render_data->lights, p_render_data->scene_data->cam_transform, p_render_data->shadow_atlas, using_shadows, using_raytraced_shadows, directional_light_count, positional_light_count, p_render_data->directional_light_soft_shadows);
+	// The same question the dispatch below asks, for the same reason the
+	// raytraced one is asked here: a light must not be marked as carrying a
+	// screen space shadow unless a mask is genuinely written for it this pass.
+	const bool using_screen_space_shadows = _using_screen_space_shadows(p_render_data);
+	light_storage->update_light_buffers(p_render_data, *p_render_data->lights, p_render_data->scene_data->cam_transform, p_render_data->shadow_atlas, using_shadows, using_raytraced_shadows, using_screen_space_shadows, directional_light_count, positional_light_count, p_render_data->directional_light_soft_shadows);
 	texture_storage->update_decal_buffer(*p_render_data->decals, p_render_data->scene_data->cam_transform);
 
 	p_render_data->directional_light_count = directional_light_count;
@@ -2081,7 +2103,7 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 	// shader, taking the darker of the two rather than multiplying them, since
 	// any occluder that is both in the structure and on screen is otherwise
 	// counted twice.
-	if (rb_data.is_valid()) {
+	if (rb_data.is_valid() && using_screen_space_shadows) {
 		_render_screen_space_shadows(p_render_data, rb, rb->get_internal_size());
 	}
 
@@ -2544,7 +2566,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	// traced. Force it on rather than silently reading an unwritten buffer.
 	// Screen space shadows march the pre-pass depth buffer, so like raytraced
 	// shadows they need one to exist and, under MSAA, to have been resolved.
-	const bool using_screen_space_shadows = _using_screen_space_shadows();
+	const bool using_screen_space_shadows = _using_screen_space_shadows(p_render_data);
 	bool force_depth_pre_pass = scene_state.used_opaque_stencil || is_raytracing_scene_available() || using_screen_space_shadows;
 	bool depth_pre_pass = (force_depth_pre_pass || bool(GLOBAL_GET_CACHED(bool, "rendering/driver/depth_prepass/enable"))) && depth_framebuffer.is_valid();
 

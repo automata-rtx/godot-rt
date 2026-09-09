@@ -799,7 +799,9 @@ raytraced shadow while drawing nothing.
 
 Also: **Forward+ only, single view only, one directional light.** The mask has one channel, so there
 is room for exactly one light and the sun is what it is for. A second `DirectionalLight3D` gets
-nothing.
+nothing. Under multiview the pass declines and warns once rather than running: stereo would need a
+dispatch and a mask per eye, and the depth buffer is a 2D array its sampler cannot be handed.
+Reflection probe renders decline too, having no render buffers of their own to hold a mask.
 
 ### 10.4 Tuning
 

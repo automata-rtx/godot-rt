@@ -908,7 +908,7 @@ bool LightStorage::light_instance_has_raytraced_shadow(RID p_light_instance) con
 	return light_instance != nullptr && light_instance->raytraced_shadow;
 }
 
-void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, bool p_use_raytraced_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows) {
+void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, bool p_use_raytraced_shadows, bool p_use_screen_space_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows) {
 	ForwardIDStorage *forward_id_storage = ForwardIDStorage::get_singleton();
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
 
@@ -933,10 +933,16 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 	area_light_count = 0;
 
 	// Screen space shadows go to the first directional light that is actually
-	// casting one, on the same terms as the raytraced mask: a pass with no
-	// shadows, a reflection probe among them, gets none.
+	// casting one, on the same terms as the raytraced mask: the caller decides
+	// whether a mask will really be written for this pass, because it is the only
+	// code that knows the view count and whether this is a reflection probe.
+	//
+	// Marking a light whose mask is then never written is not a missing shadow,
+	// it is a black one: the fallback bound in the mask's place is a 4x4 white
+	// texture and the lookup texelFetches at gl_FragCoord, so every pixel past
+	// the fourth reads an invalid texel and the sun goes out.
 	sss_light = SSSLight();
-	const bool sss_available = p_using_shadows && GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/screen_space_shadows/enabled");
+	const bool sss_available = p_using_shadows && p_use_screen_space_shadows;
 	const float sss_strength = sss_available ? CLAMP(float(GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/strength")), 0.0f, 1.0f) : 0.0f;
 
 	r_directional_light_soft_shadows = false;
