@@ -974,10 +974,14 @@ shadow when this is on. Today a leaf card casts a correctly cut-out contact shad
 raytraced shadow is the whole quad (section 2); afterwards it keeps only the quad. Author foliage
 with `cast_shadow = Off` as well if that matters.
 
-It also costs one more attachment. Turning it on switches the depth pre-pass to a variant that
-writes an extra `R8_UNORM` target at internal resolution, plus the scene shader variant that fills
-it. That is small, but it is not free, and it is the reason this is a setting rather than always-on
-behavior.
+It costs one more attachment, and one thing worse than that. Turning it on switches the depth
+pre-pass to a variant that writes an extra `R8_UNORM` target at internal resolution, plus the scene
+shader variant that fills it. The attachment is small. The variant is **not precompiled**: the
+pipeline pre-warm tracks `use_normal_and_roughness`, `use_voxelgi` and `use_sdfgi` and has no bit for
+this pass mode, so every material compiles its pre-pass pipeline the first time it is drawn with the
+setting on. That is a hitch on first sight of new geometry, not a per-frame cost, and it is a
+shortcoming of the implementation rather than of the idea — but it is there today, and it is the
+main reason to leave this off unless a scene actually benefits.
 
 Set `debug_view` to **Caster Mask** to see which pixels are allowed to cast: white is a caster, and
 with the restriction off it is white everywhere.
