@@ -123,8 +123,9 @@ buffer. Read section 10 of **`docs/rt_shadows/FORK_GUIDE.md`** before answering 
   only.
 - **One light, Forward+, single view.** The mask has one channel. A second `DirectionalLight3D` gets
   nothing, and this is not a per-light property: `LightStorage` picks the light and marks it with
-  `DirectionalLightData::sss_strength`. Multiview and reflection probe renders decline the pass, the
-  first with a one-time warning. A light is marked ONLY when a mask is genuinely written for it that
+  `DirectionalLightData::sss_strength`. Multiview, reflection probe and **orthographic** renders
+  decline the pass, the first and last with a one-time warning -- an orthographic projection gives a
+  direction vector a clip `w` of exactly zero, and the march takes its direction from that sign. A light is marked ONLY when a mask is genuinely written for it that
   pass -- marking one whose mask never arrives puts the sun out rather than leaving it alone, because
   the fallback bound in the mask's place is a 4x4 texture the lookup reads past.
 - **It only shadows from occluders on screen and in front, and shadow length is bounded in PIXELS**

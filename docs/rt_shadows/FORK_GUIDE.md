@@ -803,6 +803,18 @@ nothing. Under multiview the pass declines and warns once rather than running: s
 dispatch and a mask per eye, and the depth buffer is a 2D array its sampler cannot be handed.
 Reflection probe renders decline too, having no render buffers of their own to hold a mask.
 
+**Orthographic cameras also decline**, including the editor's Top/Front/Side views. Bend's dispatch
+builder takes the march direction from the sign of the light's clip `w`, and `set_orthogonal` leaves
+`columns[2][3]` at zero -- the very element `Projection::is_orthogonal()` tests and the one `xform()`
+builds `w` from -- so a direction vector projects to `w` of exactly zero. Bend then reads that single
+zero two ways that disagree: it clamps the magnitude up to `+FP_limit` when it places the light's
+screen coordinate, putting it on the side the sun really is, but tests the raw value for the sign,
+where `0 > 0` is false and yields "behind the camera". A sun in front and a sun behind produce
+byte-identical output. Forcing the sign would fix that half and leave the other wrong, because the
+march divides each stored depth by its distance along the ray to make the light's rays parallel --
+which is what a perspective projection needs and an orthographic one, whose rays are already
+parallel and whose depth is linear, does not.
+
 ### 10.4 Tuning
 
 Start with `surface_thickness`. A depth buffer records one surface per pixel and says nothing about

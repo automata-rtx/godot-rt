@@ -134,6 +134,16 @@ bool ScreenSpaceShadows::render(RID p_depth_texture, RID p_output, const Size2i 
 		return false;
 	}
 
+	// Ahead of every remaining early return, not just before the dispatches.
+	// Two reasons. The early-out means a rejected pixel is a pixel no dispatch
+	// writes, so the target has to start from a known value rather than whatever
+	// the last frame left in it. And a frame that bails out below must not leave
+	// the previous frame's shadows standing while the light is still marked as
+	// carrying them -- the caller cannot tell the difference, because it has
+	// already written sss_strength by the time this runs. White is fully lit,
+	// which is the safe direction to fail in both cases.
+	RD::get_singleton()->texture_clear(p_output, Color(1, 1, 1, 1), 0, 1, 0, 1);
+
 	const Quality quality = CLAMP(p_settings.quality, QUALITY_LOW, Quality(QUALITY_MAX - 1));
 
 	// The march runs from each pixel TOWARD the light, so the point it converges
@@ -177,11 +187,6 @@ bool ScreenSpaceShadows::render(RID p_depth_texture, RID p_output, const Size2i 
 	if (dispatch_list.DispatchCount <= 0) {
 		return false;
 	}
-
-	// Every pixel the early-out rejects is a pixel no dispatch writes, so the
-	// target has to start from a known value rather than whatever the last frame
-	// left in it. White is fully lit, which is the safe direction to fail.
-	RD::get_singleton()->texture_clear(p_output, Color(1, 1, 1, 1), 0, 1, 0, 1);
 
 	LocalVector<RD::Uniform> uniforms;
 	{

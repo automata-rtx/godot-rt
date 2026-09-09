@@ -1765,6 +1765,31 @@ bool RenderForwardClustered::_using_screen_space_shadows(const RenderDataRD *p_r
 		return false;
 	}
 
+	if (p_render_data->scene_data != nullptr && p_render_data->scene_data->cam_projection.is_orthogonal()) {
+		// Bend's dispatch builder takes the march direction from the SIGN of the
+		// light's clip w, and an orthographic projection has a (0, 0, 0, 1) w row
+		// -- Projection::set_orthogonal never touches columns[2][3], which is the
+		// element Projection::is_orthogonal() tests and the one xform() builds w
+		// from -- so a direction vector comes out with w exactly 0.
+		//
+		// Bend then reads that single zero two ways that disagree: it clamps the
+		// magnitude up to +FP_limit when it places the light's screen coordinate,
+		// which puts it on the side the sun really is, but tests the raw value for
+		// the sign, where `0 > 0` is false and yields -1, meaning "behind the
+		// camera". The coordinate then says march toward the sun while the sign
+		// says march away from it, and a sun in front produces byte-identical
+		// output to a sun behind.
+		//
+		// Forcing the sign would fix that half and still leave the pass wrong: the
+		// march divides every stored depth by its distance along the ray to make
+		// light's rays parallel, which is what a perspective projection needs and
+		// an orthographic one, whose rays are already parallel and whose depth is
+		// linear, does not. Declining is the honest answer until someone can test
+		// an orthographic implementation against a reference.
+		WARN_PRINT_ONCE("Screen space shadows are not supported for orthographic cameras.");
+		return false;
+	}
+
 	// Builds the effect on first use, and answers null forever after if it cannot
 	// be built on this device.
 	return get_screen_space_shadows() != nullptr;
