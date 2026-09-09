@@ -1457,6 +1457,711 @@ The prefilter's linearization and the gather's UV-to-view do handle it.
 
 ---
 
+### 19. Screen space contact shadow for the sun
+
+A contact shadow for one `DirectionalLight3D`, marched over the depth pre-pass buffer, for geometry
+that is deliberately absent from the acceleration structure. Independent of stages 2--14: it needs no
+ray query, no TLAS and no light slot, it can be enabled with raytraced shadows switched off, and it
+can be ported on its own. What it does need is a depth pre-pass, which is why it forces one.
+
+**Files:**
+
+- `thirdparty/bend_sss/bend_sss_cpu.h` and `LICENSE.txt` -- Bend Studio's dispatch list builder,
+  vendored with no changes but the line endings and trailing whitespace this repository normalizes.
+  Header only, so no `SCsub` entry; it needs an entry in `thirdparty/README.md` and one in
+  `COPYRIGHT.txt` that covers the ported shader as well (`COPYRIGHT.txt` lists both paths under one
+  `Files:` stanza).
+- `servers/rendering/renderer_rd/shaders/effects/screen_space_shadow.glsl` -- the march, a port of
+  Bend's HLSL. Picked up by the `Glob("*.glsl")` in `shaders/effects/SCsub`; nothing to register.
+- `servers/rendering/renderer_rd/effects/screen_space_shadows.{h,cpp}` -- the pass driver.
+- Hooks: `renderer_scene_render_rd.{h,cpp}` (`get_screen_space_shadows`, and the `memdelete` in
+  `~RendererSceneRenderRD`), `forward_clustered/render_forward_clustered.{h,cpp}`,
+  `forward_mobile/render_forward_mobile.cpp`, `storage_rd/light_storage.{h,cpp}`,
+  `shaders/light_data_inc.glsl`, `shaders/scene_forward_lights_inc.glsl`,
+  `shaders/forward_clustered/scene_forward_clustered_inc.glsl` and `scene_forward_clustered.glsl`,
+  `core/config/project_settings.cpp`, `doc/classes/ProjectSettings.xml`.
+
+**Done when:** `docs/rt_shadows/shadow_validation/run.sh field_thin` -- 15,000 grass blades at
+`cast_shadow = Off` under a 26 degree sun, scored in linear light against a render of the same field
+put back into the acceleration structure -- reports `hardness` 1 at 1.149 of the trace's darkness for
+0.830 of its mass over 0.722 of its area, and `hardness` 0 at 0.864 / 0.468 / 0.541, against a
+reference of 132,257 shadowed pixels removing 0.1044 per pixel. `run.sh field` and `run.sh probe`
+have their own targets in that directory's README. Run with `--verbose`: **no pixel of any variant
+may be lighter than the frame with the pass off**, which is the check that the composition can only
+darken.
+
+- **One predicate answers for the whole feature, and it is asked twice per frame.**
+  `RenderForwardClustered::_using_screen_space_shadows` is consulted in `_render_scene` to build
+  `force_depth_pre_pass`, and again in `_pre_opaque_render`, which runs later in the same function,
+  to decide both what `update_light_buffers` is told and whether `_render_screen_space_shadows` runs.
+  The first site is reached before the light buffers exist, so **the predicate must not consult the
+  light**: it tests the project setting, the reflection probe, the render buffers, the view count,
+  the projection and whether the effect could be built, and nothing else. Give it a term only the
+  second site can evaluate -- "is there a shadow casting sun" -- and the two answers disagree, the
+  pre-pass is not forced, and the march reads a depth buffer that was never written this frame. The
+  cost of the honest version is a forced pre-pass for a scene that turns out to have no sun.
+
+- **Enabling it forces the depth pre-pass on and forces its MSAA resolve.** Exactly two variables in
+  `RenderForwardClustered::_render_scene`, both of which already carry a term for raytraced shadows:
+  `force_depth_pre_pass` (`scene_state.used_opaque_stencil || is_raytracing_scene_available() ||
+  using_screen_space_shadows`) and, inside the `if (depth_pre_pass)` block, `finish_depth`, whose
+  `else if (finish_depth)` branch is what calls `resolve_effects->resolve_depth` into
+  `rb->get_depth_texture()`. Miss the first and the setting does nothing at all in a project that has
+  not turned the pre-pass on by hand. Miss the second and the feature works with MSAA off and
+  produces nothing, or last frame's shadows, with MSAA on -- which reads as an MSAA bug rather than a
+  missing term. This is the one feature in the fork that forces both with raytracing off, so neither
+  term can be folded into `is_raytracing_scene_available()`.
+
+- **The pass runs from `_pre_opaque_render`, after `update_light_buffers` and beside the raytraced
+  block rather than inside it.** `_render_screen_space_shadows` reads
+  `LightStorage::get_sss_light()`, which `update_light_buffers` fills a few lines above; put the call
+  before it and `light.valid` is always false and the mask is never written. The dispatch site is
+  `if (rb_data.is_valid() && using_screen_space_shadows)` -- `rb_data` is what actually excludes probe
+  renders, and the predicate is the belt over it. It is deliberately not gated on
+  `is_raytracing_scene_available()`.
+
+- **`update_light_buffers` gains two parameters, and the mobile renderer calls it too.** The
+  signature in `light_storage.h` is `..., bool p_using_shadows, bool p_use_raytraced_shadows, bool
+  p_use_screen_space_shadows, ...`, and `RenderForwardMobile::_render_scene` passes `false, false`
+  for the last two. Forget that call site and the build fails; insert the new argument in the wrong
+  position and `using_shadows` silently lands in the raytraced slot instead.
+
+- **`_ensure_screen_space_shadow_mask` creates the target and clears it white on creation.**
+  `RB_SCOPE_SCREEN_SPACE_SHADOWS` / `RB_TEX_SCREEN_SPACE_SHADOW_MASK`, `R8_UNORM` at the render
+  buffer's **internal** size, one layer, usage `SAMPLING | STORAGE | CAN_COPY_TO | CAN_COPY_FROM` --
+  and `ScreenSpaceShadows::is_target_format_supported()` queries the first three. `CAN_COPY_TO` is
+  what the two `texture_clear` calls need; a storage-only texture fails the clear, not the dispatch.
+  White is fully lit. A fresh image holds nothing in particular, and the mask darkens the sun
+  wherever it is read, so an uncleared one is a screen of arbitrary darkness on the frame the buffers
+  are reconfigured. Keep this clear **and** the one inside `render()`: they cover different frames.
+
+- **A light is marked with `sss_strength` only when a mask is genuinely written for it that pass.**
+  In `LightStorage::update_light_buffers`, `sss_available = p_using_shadows &&
+  p_use_screen_space_shadows`, where the second term is the caller's predicate above; the strength
+  itself comes from `screen_space_shadows/strength` clamped to 0--1. The first directional light with
+  `light->shadow` set and a non-zero strength takes it: `sss_light.valid`, `sss_light.direction` and
+  `light_data.sss_strength` are written together, and every other directional light keeps
+  `sss_strength = 0.0`. That single float is the whole of how the forward shader learns which light
+  the one-channel mask belongs to; there is no companion index texture as there is for the raytraced
+  mask. **Marking a light whose mask never arrives is not a missing shadow, it is a black one.**
+  Binding 39 falls back to `DEFAULT_RD_TEXTURE_WHITE`, which is 4x4, and `sss_shadow_lookup`
+  `texelFetch`es at `gl_FragCoord` -- past the fourth pixel that is an out of range fetch, which
+  returns zero under image robustness and is undefined without it. Zero is fully shadowed, so the sun
+  goes out across the frame. The lookup carries a `textureSize` guard returning 1.0 in that case;
+  since the fallback is opaque white, the guard turns that failure into no contact shadow anywhere
+  rather than a dark screen. Keep the guard, and keep the invariant that makes it unreachable.
+
+- **Setting `strength` to 0 turns the pass off rather than running it and multiplying by zero.** No
+  light is selected, so `_render_screen_space_shadows` returns at `!light.valid` and never enters
+  `render()`. The mask therefore keeps whatever it last held, which is harmless precisely because no
+  light is marked to read it -- the "must not leave last frame's shadows standing" invariant below
+  belongs to the returns *inside* `render()`, where a light already is marked. The pre-pass is still
+  forced, because the predicate cannot see the strength.
+
+- **`DirectionalLightData` gains a whole `vec4`, not a spare float.** `sss_strength` plus
+  `pad_sss[3]` in `light_storage.h` and `sss_strength` plus `pad_sss0..2` in `light_data_inc.glsl`,
+  placed after `volumetric_fog_energy` and before `shadow_bias`. The fields ahead of it sum to
+  exactly 80 bytes, so `sss_strength` opens a fresh 16 byte slot and the three pads close it: the
+  `vec4` array that follows needs its alignment, and adding one bare float shifts every shadow matrix
+  in the struct by four bytes on one side only. The three pads are real slack -- a third consumer
+  takes one of them without changing `sizeof`. `light_data_inc.glsl` is included by
+  `forward_clustered/scene_forward_clustered_inc.glsl`,
+  `forward_mobile/scene_forward_mobile_inc.glsl`, `environment/volumetric_fog.glsl` and
+  `environment/volumetric_fog_process.glsl`, so the edit reaches all four; keeping the `vec4` intact
+  is what stops the fog shaders reading shifted shadow matrices.
+
+- **`sss_strength` is also the name of Godot's own subsurface scattering local** in
+  `scene_forward_clustered.glsl` and `scene_forward_mobile.glsl`, and the symbol appears in
+  `material.cpp`, `shader_types.cpp` and the GLES3 shaders for that reason. Grepping it to find this
+  seam returns mostly false hits; the ones that matter are qualified,
+  `directional_lights.data[i].sss_strength`.
+
+- **The direction handed to the pass is view space, and the projection is projection-only.**
+  `update_light_buffers` builds a directional light's `direction` as
+  `inverse_transform.basis.xform(light_transform.basis.xform(Vector3(0, 0, 1))).normalized()` -- the
+  light basis's **+Z**, pointing back toward the light, where omni and spot lights store -Z, then
+  taken into view space and normalized. `SSSLight::direction` is a copy of it, and
+  `ScreenSpaceShadows::render` takes it as `p_light_direction_view` and passes it through with no
+  negation, because the march runs from each pixel toward the light and the point it converges on is
+  the light's vanishing point. Bend's own comment above `BuildDispatchList` asks for `float4(light,
+  0) * ViewProjectionMatrix`; follow that literally with a world-space direction and the corrected
+  camera projection and the result is plausible-looking and wrong. The invariant is written out on
+  `LightStorage::SSSLight` -- copy it. Negate the vector and the shadows radiate away from the sun
+  instead of toward it, which reads as a lighting setup rather than a bug.
+
+- **The projection handed in must be `scene_data->get_cam_projection()`**, the corrected and
+  **jittered** one the depth buffer was rasterized with, not the raw `cam_projection` member. The raw
+  one puts the light's screen position up to half a pixel out every frame and the whole shadow field
+  crawls with the TAA jitter.
+
+- **Two coordinate conventions the port had to invert, both of which fail silently.**
+  1. **Clip Y handedness.** `Bend::BuildDispatchList` maps clip Y to a pixel row with
+     `* -0.5f + 0.5f`, which is right for a clip space whose `+1` is the top row. Godot's corrected
+     projection already negates Y (`Projection::set_depth_correction` sets `m[5] = -1` under
+     `flip_y`, against a positive height Vulkan viewport), so its `-1` is the top row and applying
+     Bend's negation as well flips the light to its own vertical mirror. The fix is in
+     `ScreenSpaceShadows::render`: build `light_projection` with `-light_clip.y` and leave the
+     vendored file alone. It is exactly equivalent, because that is the only place Y is read. **When
+     it is wrong the pass still runs and still draws shadows** -- they point away from the sun's
+     vertical mirror image, so on a high sun they read as a low one; the Wave Index debug view makes
+     it obvious, its pattern converging on a point mirrored about the screen's horizontal center
+     line.
+  2. **The signedness of the wave offset.** In `compute_wavefront_extents`,
+     `ivec2 xy = ivec2(gl_WorkGroupID.yz) * WAVE_SIZE + params.wave_offset;`. `gl_WorkGroupID` is a
+     `uvec3` and `WaveOffset_Shader` is routinely negative -- Bend writes `-bounds[2]` and
+     `-bounds[3]` for two of the four quadrants around the light. The cast to signed has to happen
+     before the add, or the sum is computed unsigned and wraps, and **the two quadrants left of and
+     above the light fill with garbage** in a pattern that looks like a wrong light coordinate rather
+     than an integer one. The two quadrants below and right of the light staying correct is the tell.
+
+- **Which renders decline, and which of them warn.** `_using_screen_space_shadows` returns false, in
+  order, for: the project setting off (silent); a reflection probe render or absent render buffers
+  (silent -- a probe has no buffers of its own to hold a mask, and its camera is not the one any mask
+  was written for); `rb->get_view_count() > 1` (**warns once** -- stereo needs a dispatch and a mask
+  per eye, and the depth buffer is a 2D array the pass's `sampler2D` cannot be handed); an
+  orthographic camera (**warns once**, see below); and an effect that could not be built (the
+  constructor has already printed why, except for the `_render_buffers_can_be_storage()` case, which
+  is silent and unreachable in Forward+). The two warnings exist because the setting is on and
+  nothing will come of it.
+
+- **Orthographic declines because a clip `w` of exactly zero is read two ways that disagree.**
+  `Projection::set_orthogonal` leaves `columns[2][3]` at the 0 its opening `set_identity()` wrote --
+  the element `Projection::is_orthogonal()` tests and the one `xform()` builds `w` from -- so a
+  direction vector, which goes in with `w = 0`, comes out with `w` exactly zero. `BuildDispatchList`
+  clamps the magnitude up to `+FP_limit` when it places `LightCoordinate_Shader[0..1]`, putting the
+  light on the side the sun really is, but takes the march direction from
+  `inLightProjection[3] > 0 ? 1 : -1`, where `0 > 0` is false and yields -1, meaning "behind the
+  camera". The coordinate says march toward the sun and the sign says march away from it, and a sun
+  in front produces byte-identical output to a sun behind. Forcing the sign fixes that half and
+  leaves the rest wrong: the march divides every stored depth by its distance along the ray
+  (`stored_depth = (shadowing_depth[i] - light_coordinate.z) / sample_distance[i]`) to make the
+  light's rays parallel, which is what a perspective projection needs and an orthographic one, whose
+  rays are already parallel and whose depth is linear, does not. Declining is the honest answer, and
+  it is why the editor's Top/Front/Side views show no contact shadow.
+
+- **The effect is built on first use and its failure is sticky.**
+  `RendererSceneRenderRD::get_screen_space_shadows` sets `screen_space_shadows_unavailable = true`
+  before constructing and clears it only on success, so a device that cannot run the pass is not
+  retried every frame. Four things can fail in the constructor, each with its own message: `R8_UNORM`
+  not usable as a storage image (not in Vulkan's guaranteed set without
+  `shaderStorageImageExtendedFormats`, and widening the format to four times the bandwidth silently
+  is worse than saying so), a shader variant that will not compile (the in-code note names the
+  subgroup vote as the likely cause -- fine on every Vulkan 1.1 device, and the comment asserts the
+  D3D12 backend's SPIR-V to DXIL path does not handle it), pipeline creation, and **the border
+  sampler**. The build is not done in the constructor because the feature is off by default and
+  compiles three variants. `~RendererSceneRenderRD` must `memdelete(screen_space_shadows)`, and
+  `~ScreenSpaceShadows` frees `depth_sampler` and `shader_version` -- the latter frees the pipelines
+  built from it.
+
+- **One compiled variant per quality tier, and the sample count cannot be a uniform.** The sample
+  loops are unrolled and the shared array is sized from the count
+  (`READ_COUNT = SAMPLE_COUNT / WAVE_SIZE + 2`), so the tiers arrive as version defines: 32/60/96
+  samples with 5/8/12 fade-out samples. `HARD_SHADOW_SAMPLES` stays at Bend's 4 in every tier -- it
+  is what grounds a blade against the surface it stands on and is the last thing to trade for speed.
+  `WAVE_SIZE` is 64 and is the shader's `local_size_x`, a **workgroup** size rather than a hardware
+  wave size: on a 32-wide device the workgroup spans several hardware waves, which is what the
+  `lds_early_out` path with its two `memoryBarrierShared(); barrier();` pairs exists for. Reduce it
+  to `gl_SubgroupSize` and the wavefront geometry no longer matches what the CPU builder laid out.
+
+- **Push constant: 76 bytes, in this order.** `light_coordinate[4]`, `wave_offset[2]`,
+  `screen_size[2]`, `inv_depth_texture_size[2]`, `depth_bounds[2]`, `surface_thickness`,
+  `bilinear_threshold`, `shadow_contrast`, `far_depth_value`, `near_depth_value`, `flags`,
+  `hardness`, with a `static_assert` on the size. The GLSL block is `layout(push_constant, std430)`
+  and the C++ struct is plain, with no `alignas`: the agreement comes from that grouping putting
+  every `vec2`/`ivec2` on an 8 byte boundary, so reordering the trailing scalars for readability
+  keeps `sizeof == 76` and breaks the alignment silently. Add a row for it to the push constant table
+  in the reference section; the size rule and the way to read a block's reflected size are stated
+  there. The consequence of a mismatch is worth restating because this pass fails into a value that
+  looks intentional: under `DEBUG_ENABLED` RenderingDevice rejects the push and then refuses the
+  dispatch for having none, so the mask keeps the white it was cleared to and **the feature reads as
+  "the setting does nothing"** -- in the editor, where it is fatal, and not in a release build, where
+  neither check is compiled. `wave_offset` is the only field that changes between dispatches;
+  everything else, including `light_coordinate`, is the same for all of them.
+
+- **The dispatch loop.** `BuildDispatchList` is given the negated-Y clip vector, the viewport size,
+  and full screen **inclusive** bounds (`{0, 0}` to `{p_size.x - 1, p_size.y - 1}`); a directional
+  light has no on-screen volume to bound, and bounding it would cost dispatches without saving any
+  because the shader reads and writes up to `2 * WAVE_SIZE` pixels outside whatever it is given. It
+  returns at most 8 dispatches. `compute_list_begin()` / `compute_list_end()` wrap the whole loop with
+  one pipeline bind and one uniform set bind outside it; each iteration sets `wave_offset` and
+  dispatches `dispatch.WaveCount[0..2]` -- **`compute_list_dispatch`, not
+  `compute_list_dispatch_threads`**. `WaveCount[0]` is `inWaveSize` workgroups, which is how the
+  wavefronts step along their rays; dividing it by the local size runs a sixty-fourth of the work and
+  produces a thin wedge of shadow near the light and nothing else. The dispatches write disjoint
+  pixels and read only the depth buffer, so they need no barrier between them -- splitting the loop
+  into one compute list per dispatch puts those barriers back.
+
+- **The output is cleared to white ahead of every *remaining* early return in `render()`.** Two
+  returns precede the clear -- an invalid effect or a null depth or output texture, and a
+  non-positive size -- and everything after it clears first: the degenerate direction, and a dispatch
+  list that came back empty. Two reasons for the placement: the early-out means a rejected pixel is a
+  pixel no dispatch writes, so the target must start from a known value rather than last frame's; and
+  a frame that bails out after the clear must not leave the previous frame's shadows standing while
+  the light is already marked with a strength, which the caller cannot detect because
+  `update_light_buffers` ran first.
+
+- **The depth sampler is point-filtered on all three filters and clamped to a transparent black
+  border, not to the edge.** The march reads off screen on purpose and those reads have to come back
+  as "nothing here". Under this renderer's reverse-Z, red reading back as 0.0 is the far plane, which
+  is exactly that. `SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE` instead smears the border texel outward and
+  **produces shadows that stream in from the sides of the screen**, strongest where the frame edge
+  cuts through geometry.
+
+- **Reverse-Z is expressed entirely in two push constant fields.** `far_depth_value = 0.0`,
+  `near_depth_value = 1.0`, and the shader derives its `z_sign` from their relationship; nothing else
+  in the port assumes a direction. `depth_bounds` is `(0, 1)`, which is what makes the early-out cull
+  the sky -- those pixels sit exactly at the far value. The early-out is on, and Bend's suggestion to
+  also skip pixels an existing shadow pass already found occluded is deliberately not taken: the
+  raytraced mask is available at this point in `_pre_opaque_render`, but this pass has to work with
+  raytraced shadows off, and a second code path is not worth a partial early-out.
+
+- **`surface_thickness` is floored at `1e-6` in the driver**, not only ranged in the project setting.
+  It is the divisor in the shader's `depth_scale` (`min(sample_distance[0] + direction, 1.0 /
+  params.surface_thickness) * sample_distance[0] / depth_thickness_scale[0]`), so a zero is a
+  divide-by-zero across the whole frame. The setting's range starts at 0.0001; the floor is the guard
+  against `ProjectSettings.set_setting()`, which the range does not constrain.
+
+- **`hardness` is the fork's own control and is not part of Bend's technique.** The bulk of the march
+  accumulates into four buckets by `shadow_value[i & 3] = min(...)`, and Bend average the four, so a
+  pixel needs four samples' worth of agreement before it is fully shadowed. That is the right call
+  when a stray sample is likelier than a genuine one, and it is why only the first
+  `HARD_SHADOW_SAMPLES` are trusted alone. Grass inverts the assumption: a blade narrower than the
+  march's one-pixel sample spacing **is** a one-sample occluder, and neither `surface_thickness` nor
+  `contrast` can close the gap -- thickness buys darkness only by widening the shadow until it is
+  visibly too wide, and contrast saturates. The final combination is
+  `mix(dot(shadow_value, vec4(0.25)), min(min(x, y), min(z, w)), hardness)` followed by
+  `min(hard_shadow, result)`: `0.0` is Bend's behavior exactly, the default `1.0` takes the darkest
+  of the four, and it costs three `min()` for the whole march. Measured against the trace it moves
+  darkness 2.1x while moving area 5%, so it and `surface_thickness` are independent -- hardness sets
+  how dark, thickness sets how wide. Score both in linear light; every ratio in this area was first
+  published from gamma-space differences and had to be re-derived.
+
+- **The composition is `min()`, and where it sits in the directional loop matters.** In
+  `scene_forward_clustered.glsl`, immediately after the `} // shadows` brace that closes both the
+  mask path and the cascade path, and **before** the `if (rt_shadowed || shadow_opacity > 0.001)`
+  tail:
+
+      if (directional_lights.data[i].sss_strength > 0.0 && RT_MASK_ANSWERS_HERE) {
+          shadow = min(shadow, mix(1.0, sss_shadow_lookup(), directional_lights.data[i].sss_strength));
+      }
+
+  `min()` rather than a multiply because an occluder that is both in the acceleration structure and
+  on screen is described by **both** terms -- a wall shadows the grass in front of it through the
+  raytraced mask, and the same wall is in the depth buffer this marches -- so multiplying darkens
+  those pixels twice. Taking the darker answer leaves them alone and still lets the screen space term
+  shadow what the structure has never heard of. Placement is the other half: put it after the tail
+  and a baked shadowmask's replace/overlay branch overwrites it, and the `USE_VERTEX_LIGHTING` apply
+  never sees it. `RT_MASK_ANSWERS_HERE` applies unchanged -- this mask is marched over the pre-pass
+  depth too, so it describes exactly the fragments that pre-pass contains and a genuinely
+  alpha-blended fragment must not read it.
+
+- **`sss_shadow_lookup()` goes in `scene_forward_lights_inc.glsl`, inside the `#ifndef
+  USING_MOBILE_RENDERER` block**, for the same reason as `rt_shadow_lookup()` in stage 4: it reads
+  `gl_FragCoord`, which the vertex stage that includes `scene_forward_clustered_inc.glsl` does not
+  have, and that file is shared with the mobile renderer. The mask is stored **linearly**, unlike the
+  raytraced mask's square root: this is a contact term whose interesting range is the whole of zero
+  to one rather than a visibility that is mostly one, so the sqrt trick would spend its eight bits in
+  the wrong place. Squaring it here silently lightens every contact shadow.
+
+- **Binding 39 in `RENDER_PASS_UNIFORM_SET`.** Appended after the raytraced mask and index of stage
+  4, declared as `texture2D sss_shadow_mask` in `scene_forward_clustered_inc.glsl` **inside the
+  `#else` half of that file's `#ifdef MODE_RENDER_SDF`**, next to 37 and 38 -- not at file scope,
+  where the SDF variant would then declare a binding it has no uniform for. Plain 2D in every
+  variant, multiview included, because the pass is single view. As with 37 and 38 it must be added on
+  **every** path through `_setup_render_pass_uniform_set`, including reflection probe and
+  no-render-buffer renders, defaulting to `DEFAULT_RD_TEXTURE_WHITE`. A path that skips it fails the
+  uniform set validation for the whole pass rather than for this feature.
+
+- **`#include <thirdparty/bend_sss/bend_sss_cpu.h>` -- angle brackets, and placed after the engine
+  includes** in `screen_space_shadows.cpp`. `validate-includes` and `clang-format` want different
+  things here and are satisfied only by meeting both conventions at once; getting it wrong broke the
+  build once.
+
+- **`debug_view` is how to bring the pass up, and each mode answers one question.** All three
+  suppress the early-out, so they paint the sky as well and the pattern covers the frame; all three
+  are written into the mask rather than over the screen, so read them on a sunlit surface with
+  `strength` at 1.0.
+  - **Wave Index** (`fract(float(gl_WorkGroupID.x) / float(WAVE_SIZE))`) draws the compute wavefront
+    layout, which must fan out from the sun's screen position and track it as the camera turns. This
+    is the first one to reach for: if the pattern converges on the wrong point, the light's projected
+    coordinate is wrong -- the Y negation, the direction sign, or the wrong projection -- and nothing
+    else is worth tuning.
+  - **Thread Index** (`float(gl_LocalInvocationID.x) / float(WAVE_SIZE)`) is a ramp along the 64
+    threads of one workgroup, which are laid out along a single light ray. It shows the ray direction
+    itself, which is what separates a light-coordinate error from a wave-offset error.
+  - **Edge Mask** paints white where the two depths of a bilinear pair differ by more than
+    `depth_thickness_scale[i] * bilinear_threshold` and black elsewhere, which is the only sane way
+    to tune that threshold.
+  Scale `bilinear_threshold` whenever `surface_thickness` is scaled, in the same direction.
+
+- **The settings, all under `rendering/lights_and_shadows/screen_space_shadows/` in
+  `project_settings.cpp`, are all live.** `enabled` (bool, false), `quality`
+  (enum Low/Medium/High, 1), `strength` (float, 1.0), `surface_thickness` (float, 0.005),
+  `bilinear_threshold` (float, 0.02), `contrast` (float, 4.0, raised to at least 1.0 in the driver),
+  `hardness` (float, 1.0, clamped 0--1), `ignore_edge_pixels` (bool, false), `debug_view` (enum, 0).
+  Unlike the raytraced master flag of stage 1, `enabled` is `GLOBAL_DEF_BASIC` and **not**
+  restart-required and must not be marked so: it is read through `GLOBAL_GET_CACHED` every frame and
+  the effect is built lazily, so it takes effect the next frame. `enabled` is read in
+  `_using_screen_space_shadows` and `strength` in `update_light_buffers`; the other seven are read in
+  `_render_screen_space_shadows`. Leave `ignore_edge_pixels` off: it thins genuine shadows at
+  silhouettes, which is exactly the geometry the feature serves.
+
+- **Run `godot --headless --doctool .` and commit the result**, per stage 17 -- nine new
+  `ProjectSettings` members, sorted by name by the tool.
+
+- Stage 20 adds, on top of this: a third uniform (`binding = 2`, the caster mask) and its white
+  fallback; two flag bits (`FLAG_RESTRICT_CASTERS`, `FLAG_DEBUG_CASTER_MASK`); a fourth `debug_view`
+  entry, Caster Mask, which must join the early-out suppression list beside the other three or the
+  visualization is culled out of the sky; the `may_cast[]` array in the shader; the
+  `restrict_casters` project setting and its doc member; `_using_restricted_sss_casters` with its
+  MSAA decline; `PASS_MODE_DEPTH_NORMAL_ROUGHNESS_SSS_CASTER` and the advanced shader group it
+  enables; `RB_TEX_SSS_CASTER` and `ensure_sss_caster_texture`; and `set_screen_space_shadow_caster`
+  across `renderer_geometry_instance.{h,cpp}`, `renderer_scene_cull.cpp` and
+  `rasterizer_scene_dummy.h`. None of that changes the push constant's size or layout, and before it
+  is applied the shader's `may_cast[i]` is uniformly true and every surface casts.
+
+---
+
+### 20. Restricting what casts a screen space shadow
+
+Make only geometry the raytracing acceleration structure will **not** hold cast a screen space
+contact shadow, by writing one byte per pixel during the depth pre-pass and consulting it at the
+march's caster reads.
+
+**Files:**
+
+- `core/config/project_settings.cpp` -- the `restrict_casters` `GLOBAL_DEF`, and `Caster Mask`
+  appended to the `debug_view` `PROPERTY_HINT_ENUM` string.
+- `doc/classes/ProjectSettings.xml` -- the `restrict_casters` member and the extra sentence on
+  `debug_view`. Generate it with `godot --headless --doctool .` (stage 17); no surviving CI job
+  catches a stale one.
+- `docs/rt_shadows/FORK_GUIDE.md` -- section 10.6 and its row in the screen space settings table.
+- `servers/rendering/renderer_scene_cull.cpp` -- `_is_screen_space_shadow_caster()` and its three
+  call sites.
+- `servers/rendering/renderer_geometry_instance.{h,cpp}` --
+  `RenderGeometryInstance::set_screen_space_shadow_caster()`,
+  `RenderGeometryInstanceBase::Data::screen_space_shadow_caster`.
+- `servers/rendering/dummy/rasterizer_scene_dummy.h` --
+  `GeometryInstanceDummy::set_screen_space_shadow_caster()`.
+- `servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.{h,cpp}` --
+  `RB_TEX_SSS_CASTER`, `ensure_sss_caster_texture()`, `DEPTH_FB_ROUGHNESS_SSS_CASTER`,
+  `PASS_MODE_DEPTH_NORMAL_ROUGHNESS_SSS_CASTER`, `INSTANCE_DATA_FLAG_SSS_CASTER`,
+  `_using_restricted_sss_casters()`.
+- `servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.{h,cpp}` --
+  `SHADER_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_SSS_CASTER`,
+  `PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_SSS_CASTER`, and the renumbered
+  `SHADER_VERSION_COLOR_PASS`.
+- `servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered{,_inc}.glsl` --
+  `MODE_RENDER_SSS_CASTER`, `INSTANCE_FLAGS_SSS_CASTER`.
+- `servers/rendering/renderer_rd/effects/screen_space_shadows.{h,cpp}` -- the `p_caster_mask`
+  parameter of `render()`, `FLAG_RESTRICT_CASTERS`, `FLAG_DEBUG_CASTER_MASK`,
+  `DEBUG_VIEW_CASTER_MASK`, and a new `#include
+  "servers/rendering/renderer_rd/storage_rd/texture_storage.h"` for the white default texture --
+  without it the file does not compile.
+- `servers/rendering/renderer_rd/shaders/effects/screen_space_shadow.glsl` -- `caster_mask_texture`
+  and the `may_cast` array.
+
+**Done when:** with a grass `MultiMesh` at `cast_shadow = Off` on a ground plane under a raytraced
+sun, `restrict_casters` on and `debug_view = Caster Mask`, the grass reads white and the ground
+reads black, and the run prints no null-pipeline errors from `ShaderData::_create_pipeline`. The
+rendered frame difference is **not** the test: on the grass-on-a-plane rigs in
+`docs/rt_shadows/shadow_validation/` the toggle moves a single pixel, because the only structure
+geometry there is a flat plane and a flat plane cannot occlude itself from a 38 degree sun
+(`shadow_validation/README.md`).
+
+**It ships off, and a port must not flip it.** `GLOBAL_DEF(".../restrict_casters", false)`. That is
+a settled decision, not work in flight: `surface_thickness` and `hardness` were calibrated with
+every opaque pixel casting, and the restriction moves the quantity they were tuned against. The
+reason and the one experiment that would justify a different default are in section 10.6 of
+`docs/rt_shadows/FORK_GUIDE.md`.
+
+**Why it is a correctness change and not an optimization.** The screen space term and the light's
+own shadow are combined with `min()` (stage 19). Everything in the acceleration structure already
+has an exact traced shadow from the same light, so for those pixels the screen space term can only
+ever darken *past* the traced answer -- its near-field truncation and its one pixel of rasterization
+overshoot both push one way, and `min()` keeps whichever is darker. On grass the screen space term
+is the best answer available. On a wall it is a wrong dark smudge laid over a right one.
+
+**The predicate, and the invariant nothing enforces.** `_is_screen_space_shadow_caster()` is a
+file-scope `static _FORCE_INLINE_` helper near the top of `renderer_scene_cull.cpp`. It is three
+tests and it is the **exact complement** of `CullRTCasters::operator()` inside
+`RendererSceneCull::_render_scene`:
+
+- `p_instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_OFF`, or
+- `base_type` is neither `RSE::INSTANCE_MESH` nor `RSE::INSTANCE_MULTIMESH`, or
+- the `InstanceGeometryData` is null or `!geom->can_cast_shadows`.
+
+Any one of those true means the structure rejects the instance, so it is a screen space caster.
+
+- **The two must be kept in step by hand.** Each carries a comment naming the other; nothing checks
+  them. Drift is silent and one-directional in its damage: an instance the structure rejects but the
+  predicate misses casts *no* shadow at all once the restriction is on -- no traced one because it
+  is not in the structure, no contact one because the mask says it may not cast. It does not warn,
+  does not appear in `GODOT_RT_DEBUG` output, and reads as geometry that has simply lost its shadow.
+- `CullRTCasters` additionally rejects `!instance->visible`, a null `base`, and repeats via
+  `instance->rt_caster_pass`. The predicate deliberately omits all three: an invisible instance
+  rasterizes no pre-pass pixel, and the pass counter is per-query bookkeeping rather than an
+  eligibility test. Adding them changes nothing; omitting the *first three* does.
+- **`can_cast_shadows` is the engine's own answer**, computed in `_update_dirty_instance` from
+  `material_casts_shadows()` over every surface plus the material overlay. This is what puts
+  alpha-scissor foliage on the wrong side of the line -- see the cost below.
+
+**Three call sites, all required.** The flag is pushed at the instance, never polled:
+
+1. `instance_set_base()`, beside the other `geometry_instance->set_*` calls, where the geometry
+   instance is first created. Miss it and a newly instanced object carries whatever the default is
+   until something else dirties it.
+2. `instance_geometry_set_cast_shadows_setting()`, beside the existing
+   `set_cast_double_sided_shadows()` call. This is the one that matters at runtime: setting
+   `GeometryInstance3D.cast_shadow = Off` on a grass field is exactly how this feature is meant to
+   be authored, and a field switched off during play must start casting in the same frame.
+3. `_update_dirty_instance()`, after `geom->shadow_caster_surface_mask` and
+   `geom->material_is_animated` are stored. **Place it outside the `if (can_cast_shadows !=
+   geom->can_cast_shadows)` guard above it.** Inside that guard it only runs when the answer
+   changes, and a material swap that leaves `can_cast_shadows` alone can still be the first time
+   this instance's flag is ever computed.
+
+**Instance level on purpose.** The predicate does not see the per-surface
+`shadow_caster_surface_mask`, per-element multimesh culling, light range, or the BLAS budget. All of
+those make the structure hold *less* than the instance-level test assumes, so ignoring them can only
+**over-include** -- a pixel that describes itself in both terms, which `min()` absorbs by
+construction. Only under-inclusion loses a shadow, and this never under-includes. A port that
+"improves" the predicate by consulting the per-surface mask starts under-including and starts losing
+shadows.
+
+**Getting the flag to the GPU.**
+
+- `set_screen_space_shadow_caster(bool)` is a **pure virtual** on `RenderGeometryInstance`.
+  `RenderGeometryInstanceBase` implements it, so Forward+, Mobile and GLES3 inherit it;
+  `GeometryInstanceDummy` derives `RenderGeometryInstance` directly and needs its own empty override
+  or the dummy rasterizer fails to build as an abstract class, with an error naming a class this
+  stage otherwise never touches. It is on the "Shared interfaces this fork widens" table for that
+  reason.
+- **The base implementation must call `_mark_dirty()`.** It writes
+  `data->screen_space_shadow_caster` and nothing else reads that field until
+  `_geometry_instance_update` rebuilds `base_flags`. Without the dirty mark the value sits in `data`
+  forever, `INSTANCE_DATA_FLAG_SSS_CASTER` is never set, the mask comes back zero everywhere, and
+  with the setting on **the screen space shadow disappears from the whole frame**. It compiles, it
+  runs, and it reads as the setting breaking the feature rather than as a missing line.
+- `INSTANCE_DATA_FLAG_SSS_CASTER = 1 << 0` in `RenderForwardClustered`'s instance flag enum; bits 0
+  and 1 were free in the enum this fork inherited, and the rest of it starts at `1 << 2`. It is set
+  in `_geometry_instance_update` **after** `ginstance->base_flags = 0`, in `base_flags` rather than
+  the per-frame flags, so an instance's caster status costs no CPU work per frame. That is the
+  point: this geometry was taken out of the structure precisely to stop paying a per-frame CPU cost
+  for it. `_fill_render_list` seeds `flags` from `base_flags`, stores it in `flags_cache`, and
+  `_fill_instance_data` copies that to `instance_data.flags`, so the flag arrives whatever pass mode
+  the pre-pass ends up in.
+- Mirror it as `INSTANCE_FLAGS_SSS_CASTER (1 << 0)` in `scene_forward_clustered_inc.glsl`, read by
+  `scene_forward_clustered.glsl` under `MODE_RENDER_SSS_CASTER` to write `sss_caster_output_buffer`.
+  The two enums are matched only by a comment.
+
+**The pre-pass attachment.**
+
+- `ensure_sss_caster_texture()` creates `RB_TEX_SSS_CASTER` (`SNAME("sss_caster")`) as
+  **`RD::DATA_FORMAT_R8_UNORM`**, usage `SAMPLING | COLOR_ATTACHMENT | CAN_COPY_FROM`, at the
+  buffers' internal size (`create_texture`'s default size). **There is deliberately no MSAA twin**
+  -- see the refusals below. `get_sss_caster()` beside it is an unused accessor; it has no caller
+  and a port can leave it out.
+- Note the name. `sss` throughout this feature means *screen space shadow*, not subsurface
+  scattering, and it collides with Godot's own SSS naming in the same files (`get_specular` carries
+  subsurface scatter in its alpha; `DirectionalLightData::sss_strength` is this fork's screen space
+  shadow marker). Do not wire either into the other.
+- `DEPTH_FB_ROUGHNESS_SSS_CASTER` in `get_depth_fb()` builds depth + normal/roughness + caster,
+  three attachments, and selects the MSAA normal/roughness twin exactly as the other cases do. Since
+  there is no MSAA caster texture to pair with it, a port that drops the MSAA refusal below hands
+  `RenderingDevice` a framebuffer mixing sample counts and it is rejected outright: *"if an
+  attachment is marked as multisample, all of them should be multisample and use the same number of
+  samples."* That is the second, harder reason the MSAA refusal is a refusal.
+- `PASS_MODE_DEPTH_NORMAL_ROUGHNESS_SSS_CASTER` needs three additions, and each is a different
+  failure if missed:
+  - a `case` in `_render_list()` that instantiates `_render_list_template<>` for it. Its `default:`
+    is a comment and nothing else, so a missing case is a pre-pass that draws nothing, with no
+    message;
+  - a `case` in `_render_list_template()` setting `pipeline_key.version`, with `ERR_FAIL_COND_MSG`
+    on `view_count > 1` -- there is no multiview twin, and the screen space pass declines stereo
+    anyway;
+  - two `depth_pass_clear` entries in the `switch` on `depth_pass_mode`, one per color attachment.
+    Zero means "not a caster", so the sky and any pixel the pre-pass does not draw cannot cast.
+- The fourth site, `_fill_render_list()`'s dynamic-instance condition, is **dead code kept for
+  symmetry** and a port can skip it without losing anything. `_fill_render_list` is never called
+  with any `PASS_MODE_DEPTH_NORMAL_ROUGHNESS*` mode: its call sites pass `PASS_MODE_COLOR` (the main
+  list), `PASS_MODE_SHADOW*`, `PASS_MODE_DEPTH_MATERIAL` and `PASS_MODE_SDF`. The depth pre-pass
+  reuses `render_list[RENDER_LIST_OPAQUE]`, filled under `PASS_MODE_COLOR`, which the condition
+  already covers -- as it does for the existing `PASS_MODE_DEPTH_NORMAL_ROUGHNESS` and
+  `..._VOXEL_GI` terms beside it.
+- **Ordering of the `depth_pass_mode` chain matters.** `using_voxelgi` is tested first and wins; the
+  restricted branch comes next, before `is_raytracing_scene_available()`. Put the restricted branch
+  after the raytracing branch and it is unreachable, the mask is never written, and the setting
+  reads as doing nothing. The VoxelGI precedence is structural rather than a preference:
+  `sss_caster_output_buffer` and `voxel_gi_buffer` are both `layout(location = 1)` under
+  `MODE_RENDER_NORMAL_ROUGHNESS` in `scene_forward_clustered.glsl` and no variant defines both.
+- **That precedence leaves a hole this stage does not close, and a port should know it is inheriting
+  it.** `_using_restricted_sss_casters()` does not test `using_voxelgi`, so on a frame where a
+  VoxelGI is in view the pre-pass writes no mask while `_render_screen_space_shadows` still binds
+  `RB_TEX_SSS_CASTER` -- it guards only on `has_texture()`, and the texture persists once any
+  earlier frame created it. The result is the **previous** frame's mask applied to this frame's
+  depth, which reads as contact shadows lagging or sticking to the wrong surfaces as the camera
+  moves; only on a run where a VoxelGI is in view from the first frame is the restriction merely
+  inert. The comment beside that bind claims the two cannot disagree, which is true of the setting
+  and of the sun and not of VoxelGI. Closing it means either adding `!using_voxelgi` to
+  `_using_restricted_sss_casters()` or binding the mask only when the pass mode that actually ran
+  wrote one.
+
+**The shader group, and the bug that reads as "the setting does nothing".** The variant is pushed
+with group `SHADER_GROUP_ADVANCED` and `default_enabled` false, last in the depth block of
+`SceneShaderForwardClustered::init()`, after the `base_define` the loop prepends:
+
+    "\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_NORMAL_ROUGHNESS\n#define
+    MODE_RENDER_SSS_CASTER\n"
+
+**A disabled group is not an error condition.** `ShaderRD::_allocate_placeholders` fills every
+variant of a disabled group with `RD::shader_create_placeholder()` -- a valid RID with no stages. So
+`get_shader_variant()` returns non-null, `ShaderData::_create_pipeline` gets past its
+`ERR_FAIL_COND(shader_rid.is_null())`, `render_pipeline_create` fails, and the only engine-side
+message is the bare `ERR_FAIL_COND(pipeline.is_null())` on the next line, which says nothing about
+shader groups. In `_render_list_template` the pipeline lookup returns null, the ubershader retry
+hits the same placeholder (both copies of the variant sit in the same group), `pipeline_valid` stays
+false, and every surface is skipped. **The entire depth pre-pass draws nothing** -- no depth, no
+normal/roughness, no caster mask -- and the march reads a cleared depth buffer.
+
+The fix is one line, in `_render_scene`, inside the same branch that selects the pass mode:
+
+    scene_shader.enable_advanced_shader_group(p_render_data->scene_data->view_count > 1);
+
+This was hit for real during implementation. Enable the group where the pass mode is chosen, not at
+init: enabling it unconditionally compiles the whole advanced set for every project.
+
+**The variant numbering invariant.** `ShaderVersion`'s constants are not an enum -- they are the
+**indices at which `init()` pushes each `VariantDefine`**, and the depth block is pushed twice, once
+per value of `ubershader`. The invariant is:
+
+> `SHADER_VERSION_COLOR_PASS` must equal the number of depth variants pushed per iteration of the
+ubershader loop.
+
+Adding this variant made that ten, so `SHADER_VERSION_COLOR_PASS` went from 9 to 10. Two things in
+`_get_shader_version()` depend on it: `ubershader_base = SHADER_VERSION_COLOR_PASS`, and the color
+pass index `SHADER_VERSION_COLOR_PASS * 2 + shader_flags`.
+
+**A violation produces no error of any kind.** With ten depth variants pushed and the constant left
+at 9, every index stays inside the array (`VERTEX_INPUT_MASKS_SIZE` is derived from the same
+constant, so it shrinks in step), the lookup succeeds, and the wrong shader is bound: every
+ubershader depth request is shifted down one slot -- version 0 lands on the non-ubershader variant
+at index 9, and every higher version lands on the previous ubershader depth variant -- while every
+color pass index is shifted down two, so the first two land *inside* the ubershader depth block and
+get a `MODE_RENDER_DEPTH` shader bound for a color draw. There is no assert, no validation message,
+and no clue pointing at the constant. Push the new variant **last** in the depth block and bump the
+constant in the same edit.
+
+`PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_SSS_CASTER` goes in `PipelineVersion`
+before `PIPELINE_VERSION_COLOR_PASS`; that enum is hashed rather than packed, so its ordering is
+free, but it needs a `case` in `_get_shader_version()` **and** in `_create_pipeline()`'s blend state
+switch, where it shares `blend_state_depth_normal_roughness_giprobe` -- `create_disabled(2)`, two
+color attachments, which is what this pass has as well. Fall through to the one-attachment state and
+pipeline creation fails against the render pass, silently, through the same null-pipeline path as
+above.
+
+**The pipelines for this pass mode are not precompiled, and that is the feature's real cost.** The
+pre-warm bitfield `GlobalPipelineData` carries `use_normal_and_roughness`, `use_voxelgi` and
+`use_sdfgi` and has no bit for this pass mode; the test that sets `use_normal_and_roughness` names
+`PASS_MODE_DEPTH_NORMAL_ROUGHNESS` only, and `_mesh_compile_pipelines_for_surface` has no block for
+the new pipeline version. `_get_depth_framebuffer_format_for_pipeline(p_can_be_storage, p_samples,
+p_normal_roughness, p_voxelgi)` has no parameter that would produce this framebuffer format either,
+and the VoxelGI format cannot stand in for it -- an `R8_UNORM` second attachment is not the VoxelGI
+`R32UI` one. So with the setting on, every material compiles its pre-pass pipeline the first time it
+is drawn: `get_pipeline` misses, the specialized request is queued, the ubershader retry is compiled
+with `p_wait_for_compilation` true and stalls the render thread. It is a hitch on first sight of new
+geometry rather than a per-frame cost, and it is a shortcoming of the implementation rather than of
+the idea, but it is there today and it is a large part of why the setting ships off. A port either
+reproduces it knowingly or adds the bit, the compile block and the framebuffer format parameter.
+
+**The march.**
+
+- `layout(set = 0, binding = 2) uniform sampler2D caster_mask_texture` in
+  `screen_space_shadow.glsl`, bound in `ScreenSpaceShadows::render()` with the **same
+  `depth_sampler`** the depth texture uses: nearest, `CLAMP_TO_BORDER`, transparent-black border.
+  Sharing it is deliberate -- an off-screen mask read returns 0, "not a caster", which agrees with
+  the off-screen depth read returning the far plane, "no occluder". A repeat or clamp-to-edge
+  sampler here casts from the screen's edge texels.
+- When no mask is bound, the uniform takes `DEFAULT_RD_TEXTURE_WHITE` and `FLAG_RESTRICT_CASTERS` is
+  left clear, so the shader's `!has_flag(FLAG_RESTRICT_CASTERS) ||` short-circuits and no fetch
+  happens at all. Unlike the shadow mask, the 4x4 default is safe at any size here because the read
+  is a normalized `textureLod` rather than a `texelFetch`.
+- **Only the caster side is restricted.** In the read loop, `may_cast[i]` is fetched at the same
+  coordinate as `depths.x`. `sampling_depth[]` and `depth_thickness_scale[]` describe the
+  **receiver** and must keep coming from the full depth buffer. Point either at the mask and
+  `depth_thickness_scale` is zero on every non-caster pixel, which divides by zero in `depth_scale`
+  and makes `early_out_pixel()` reject every non-caster: grass self-shadows and the ground it stands
+  on receives nothing.
+- The restriction itself is one select at the shared-memory store, because `depth_data` already
+  encodes "cannot shadow" as a value -- `1e10`, the same sentinel the `i != 0` overshoot case
+  writes:
+
+      depth_data[(i * WAVE_SIZE) + int(gl_LocalInvocationID.x)] = may_cast[i] ? stored_depth : 1e10;
+
+  Nothing new crosses the barrier and the wavefront layout is unchanged.
+- `FLAG_RESTRICT_CASTERS = 1 << 7` and `FLAG_DEBUG_CASTER_MASK = 1 << 8` must match
+  `ScreenSpaceShadows::Flags` in `screen_space_shadows.h` bit for bit; the two lists are matched by
+  nothing but their order.
+- **Add `FLAG_DEBUG_CASTER_MASK` to the early-out exclusion**, beside `FLAG_DEBUG_WAVE_INDEX |
+  FLAG_DEBUG_THREAD_INDEX | FLAG_DEBUG_EDGE_MASK`. Miss it and the debug view is blank exactly where
+  a wave votes to leave, which is most of the sky and most of the shadowed ground -- the view then
+  looks broken while the feature works.
+
+**Two deliberate refusals.** `_using_restricted_sss_casters()` gates the whole thing, testing in
+this order: the project setting, `_using_screen_space_shadows()` (so the pass's own refusals --
+reflection probe, multiview, orthographic -- carry through), the sun, then MSAA. In both refusals
+**the screen space pass still runs, unrestricted, exactly as before** -- neither is a fallback to a
+degraded path.
+
+- **It requires the SUN to be raytraced -- `is_raytraced_directional_available()` -- not merely that
+  a structure exists.** The premise of the restriction is that anything it stops casting already
+  casts a correct traced shadow *from this light*. With `raytraced_shadows/directional/enabled` off,
+  the structure holds only geometry gathered near raytraced lamps and the sun is on a demoted
+  cascade, so restricting would take the contact shadow away from geometry receiving none from
+  anywhere else. Gate on `is_raytracing_scene_available()` instead and a scene with one raytraced
+  lamp and a shadow-mapped sun loses its grass shadows.
+- **It declines under MSAA, with `WARN_PRINT_ONCE`.** The caster flag would have to be resolved with
+  the depth's own `best_index` sample; averaging it or OR-ing it casts from a depth belonging to a
+  surface that was never a caster, and that shows up only as shadows at silhouettes with nothing
+  above them -- the one artifact nobody looks for on foliage. The framebuffer sample-count mismatch
+  above makes it a hard refusal rather than a judgment call. The MSAA resolve branch in
+  `_render_scene` lists the new pass mode alongside the other two, which is unreachable today; leave
+  it, but do not read it as MSAA support.
+
+**The predicate is called twice per frame**, once to pick the pass mode and once in
+`_render_screen_space_shadows` to decide whether to bind the mask. The two agree on the sun because
+`raytraced_shadows/directional/enabled` is snapshotted once per frame in
+`RaytracingScene::update_frame_settings()` (`renderer_rd/environment/rt_scene.cpp`) rather than read
+live. Make that a live read and within one frame you can write a mask nothing binds, or bind a mask
+nothing wrote. They do **not** agree on VoxelGI; see the pass mode chain above.
+
+**Both calls also happen before it is known whether any light needs the pass.** The pass mode is
+chosen during `_render_scene`, while whether a directional light is actually casting is only settled
+in `_render_screen_space_shadows` from `LightStorage::get_sss_light().valid`. So a scene with the
+setting on and no shadow-casting sun still pays the `R8` attachment, the extra pre-pass target and
+the advanced-group compile for nothing. This is the same tradeoff as the forced depth pre-pass in
+stage 19, and worth stating because the CPU-side flag really is free while the GPU-side attachment
+is not.
+
+**The one real cost to authors.** **Alpha-scissor materials pass `casts_shadows()`**, so
+`can_cast_shadows` is true, so they are in the acceleration structure, so they stop casting a screen
+space shadow when this is on. Today a leaf card casts a correctly cut-out contact shadow while its
+traced shadow is the whole quad (the cutout is ignored by the trace -- stage 9); afterwards it keeps
+only the quad. This is a regression for the exact content the feature was built for, and nothing
+surfaces it: the shadow does not vanish, it coarsens. It is called out in the class reference for
+`restrict_casters` and in the fork guide, and the answer for authors is to set `cast_shadow = Off`
+on the foliage as well, which puts it back in the screen space set.
+
+**Debug view.** `DEBUG_VIEW_CASTER_MASK` is appended **after** `DEBUG_VIEW_WAVE_INDEX` in the
+`DebugView` enum, and `Caster Mask` appended last to the `debug_view` project setting's
+`PROPERTY_HINT_ENUM` string. The setting is read as an int, `CLAMP`ed to `DEBUG_VIEW_MAX - 1` and
+cast, so the hint string is positional: append to one list and not the other and every value from
+that point on names a different view than the inspector says. The view draws white where a pixel's
+surface may cast; with the restriction off it is white everywhere, which is the correct answer
+rather than a broken one.
+
+---
+
 ## Shared interfaces this fork widens
 
 Every entry here is a member added to an interface the engine implements more than once, so a port
@@ -1729,7 +2434,7 @@ format Godot revises between versions. Check these first.
 | `RD::AccelerationStructureGeometry` / `blas_build` | Still carries `vertex_buffer`/`offset`/`stride`/`count`/`format` plus index fields, and `blas_build` is still a full in-place rebuild with no refit. |
 | Mesh vertex layout | Positions still a contiguous `float32x3` block at offset 0 ahead of the attribute block; compressed decode still `pos * aabb.size + aabb.position`. |
 | `MeshInstance::Surface` (`vertex_buffer[2]`, `current_buffer`, `last_change`) | `last_change` still set on **every** surface `update_mesh_instances()` dispatches, not only on a buffer flip. |
-| `LightData` / `DirectionalLightData` trailing `pad[2]` | Still unclaimed padding. If upstream took it, find new space and keep `sizeof` identical. Note this fork has already spent the only slack in `DirectionalLightData`: it appends a whole `vec4` for `sss_strength`, so a third consumer needs another one rather than a spare float. |
+| `LightData` / `DirectionalLightData` trailing `pad[2]` | Still unclaimed padding. If upstream took it, find new space and keep `sizeof` identical. This fork appended a whole `vec4` for `sss_strength` rather than a bare float, because the `vec4` array after it needs its 16 byte alignment and one loose float shifts every shadow matrix by four bytes on one side only. Three of those four slots are still free -- `pad_sss[3]` in `light_storage.h`, `pad_sss0..2` in `light_data_inc.glsl` -- so a third consumer can take one without changing `sizeof`. |
 | `RENDER_PASS_UNIFORM_SET` bindings 37/38/39 | Find the new highest binding; renumber C++ and GLSL in lockstep. 37 and 38 are the raytraced mask and its light index, 39 the screen space shadow mask. |
 | `_setup_render_pass_uniform_set` | Bindings added on every path, including probe and no-render-buffer renders. |
 | `update_light_buffers` | Every early-out preserves both invariants: `rt_slot < RT_SLOT_NONE` iff the light has a channel this frame, `shadow_map_opacity > 0.001` iff an atlas rect or cascade was actually written. |

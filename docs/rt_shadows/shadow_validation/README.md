@@ -151,15 +151,15 @@ linear; the sRGB column of `--srgb` is in `FINDINGS.md` beside them.
 
 | | darkness | mass | area |
 | --- | --- | --- | --- |
-| `hardness` 0 | 0.793 | 0.594 | 0.740 |
-| `hardness` 1 (default) | 1.049 | 0.832 | 0.792 |
+| `hardness` 0 | 0.802 | 0.594 | 0.740 |
+| `hardness` 1 (default) | 1.052 | 0.832 | 0.792 |
 
 `./run.sh field_thin` — trace removes 0.1044 per px over 132,257 px:
 
 | | darkness | mass | area |
 | --- | --- | --- | --- |
-| `hardness` 0 | 0.792 | 0.468 | 0.541 |
-| `hardness` 1 (default) | 1.142 | 0.830 | 0.722 |
+| `hardness` 0 | 0.864 | 0.468 | 0.541 |
+| `hardness` 1 (default) | 1.149 | 0.830 | 0.722 |
 
 `./run.sh opacity` — every exponent `1.00`, and the shadow-map control at ratio `0.500`.
 
