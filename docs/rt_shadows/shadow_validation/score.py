@@ -112,8 +112,7 @@ def score(out_dir, space, verbose=False):
     rsel = ref > th
     r_mass, r_dark, r_area = ref.sum(), ref[rsel].mean(), int(rsel.sum())
 
-    print("%-8s  reference: %d px shadowed, %.4g removed per px"
-          % (space.upper(), r_area, r_dark))
+    print("%-8s  reference: %d px shadowed, %.4g removed per px" % (space.upper(), r_area, r_dark))
     print("  %-26s %9s %9s %9s" % ("variant", "darkness", "mass", "area"))
     rows = {}
     for name in _variants(out_dir):
@@ -194,8 +193,10 @@ def overlay(out_dir, variant, path):
     Image.fromarray(vis).save(path)
     a, o_rt, o_ss = int((ref & sh).sum()), int((ref & ~sh).sum()), int((sh & ~ref).sum())
     t = max(a + o_rt + o_ss, 1)
-    print("\n%s: agree %.1f%%   trace only %.1f%%   march only %.1f%%  -> %s"
-          % (variant, 100.0 * a / t, 100.0 * o_rt / t, 100.0 * o_ss / t, path))
+    print(
+        "\n%s: agree %.1f%%   trace only %.1f%%   march only %.1f%%  -> %s"
+        % (variant, 100.0 * a / t, 100.0 * o_rt / t, 100.0 * o_ss / t, path)
+    )
 
 
 def main():
@@ -205,8 +206,14 @@ def main():
     ap.add_argument("--bands", action="store_true", help="stratify mass by distance from the camera")
     ap.add_argument("--overlay", metavar="PNG", help="draw the disagreement map for the first variant")
     ap.add_argument("--verbose", action="store_true", help="also count lightened pixels, which must be zero")
-    ap.add_argument("--camera", nargs=3, type=float, metavar=("HEIGHT", "PITCH", "VFOV"),
-                    default=[CAM_H, CAM_PITCH, CAM_VFOV], help="framing for --bands (default: field.gd's)")
+    ap.add_argument(
+        "--camera",
+        nargs=3,
+        type=float,
+        metavar=("HEIGHT", "PITCH", "VFOV"),
+        default=[CAM_H, CAM_PITCH, CAM_VFOV],
+        help="framing for --bands (default: field.gd's)",
+    )
     a = ap.parse_args()
 
     for need in ("a_off.png", "b_rt.png"):

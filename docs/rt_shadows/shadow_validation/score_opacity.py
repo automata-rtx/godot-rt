@@ -57,10 +57,14 @@ def main():
     mhalf = np.clip(none - load(out_dir, "map_050"), 0.0, None)
     rm = mhalf[msel].mean() / mfull[msel].mean()
     km = np.log(max(rm, 1e-9)) / np.log(0.5)
-    print("\n  CONTROL, shadow map: ratio %.3f, exponent %.2f -- %s"
-          % (rm, km, "sound" if abs(km - 1.0) < 0.08 else "MEASUREMENT AT FAULT, fix it before reading the above"))
-    print("  raytraced path: %s (exponent 1 = applied once, 2 = applied twice)"
-          % ("LINEAR" if worst < 0.08 else "NOT LINEAR, worst exponent off by %.2f" % worst))
+    print(
+        "\n  CONTROL, shadow map: ratio %.3f, exponent %.2f -- %s"
+        % (rm, km, "sound" if abs(km - 1.0) < 0.08 else "MEASUREMENT AT FAULT, fix it before reading the above")
+    )
+    print(
+        "  raytraced path: %s (exponent 1 = applied once, 2 = applied twice)"
+        % ("LINEAR" if worst < 0.08 else "NOT LINEAR, worst exponent off by %.2f" % worst)
+    )
 
 
 if __name__ == "__main__":
