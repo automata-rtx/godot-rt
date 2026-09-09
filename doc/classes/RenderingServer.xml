@@ -4225,19 +4225,19 @@
 				[b]Warning:[/b] Calling this from any thread other than the rendering thread will be detrimental to performance.
 			</description>
 		</method>
+		<method name="viewport_get_upscaler_status" qualifiers="const">
+			<return type="String" />
+			<param index="0" name="viewport" type="RID" />
+			<description>
+				Returns a human-readable description of how the temporal upscaler running on [param viewport] is configured, or an empty string if none is running. Intended for debug overlays only: the wording is not stable between engine versions and nothing should be parsed out of it.
+			</description>
+		</method>
 		<method name="viewport_remove_canvas">
 			<return type="void" />
 			<param index="0" name="viewport" type="RID" />
 			<param index="1" name="canvas" type="RID" />
 			<description>
 				Detaches a viewport from a canvas.
-			</description>
-		</method>
-		<method name="viewport_get_upscaler_status" qualifiers="const">
-			<return type="String" />
-			<param index="0" name="viewport" type="RID" />
-			<description>
-				Returns a human-readable description of how the temporal upscaler running on [param viewport] is configured, or an empty string if none is running. Intended for debug overlays only: the wording is not stable between engine versions and nothing should be parsed out of it.
 			</description>
 		</method>
 		<method name="viewport_set_active">

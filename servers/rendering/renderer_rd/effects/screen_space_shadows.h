@@ -104,6 +104,12 @@ public:
 		// Boost applied to the transition in and out of shadow. Values below one
 		// are meaningless; the shader clamps the result either way.
 		float contrast = 4.0f;
+		// How much a single depth sample may shadow a pixel on its own. Zero is
+		// Bend's own behavior, which needs four samples' worth of evidence and
+		// therefore under-darkens anything thinner than the march's one pixel
+		// sample spacing -- grass blades above all. One shadows from a single
+		// sample, which is what matches a traced shadow of the same blades.
+		float hardness = 1.0f;
 		// Whether a detected edge is excluded from casting. Off by default, and it
 		// should probably stay off for foliage: Bend note that it thins otherwise
 		// valid shadows exactly at foliage edges, which is the geometry this pass
@@ -165,8 +171,9 @@ private:
 
 		float near_depth_value;
 		uint32_t flags;
+		float hardness;
 	};
-	static_assert(sizeof(PushConstant) == 72, "PushConstant must match screen_space_shadow.glsl");
+	static_assert(sizeof(PushConstant) == 76, "PushConstant must match screen_space_shadow.glsl");
 
 	// Must match the FLAG_ defines in screen_space_shadow.glsl.
 	enum Flags : uint32_t {

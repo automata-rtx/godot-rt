@@ -817,10 +817,27 @@ parallel and whose depth is linear, does not.
 
 ### 10.4 Tuning
 
-Start with `surface_thickness`. A depth buffer records one surface per pixel and says nothing about
-how solid it is, so this stands in for that. Too high and everything casts a thick shadow onto what
-is behind it; too low and shadows thin out. Move it in multiples of two, and move
-`bilinear_threshold` in the same direction.
+Two knobs, and they do different jobs. **`hardness` sets how dark the shadow is; `surface_thickness`
+sets how wide it is.** Reach for them in that order, because until this fork added the first one
+there was no way to darken a thin occluder's shadow except by widening it.
+
+`hardness` is how much a single depth sample may shadow a pixel on its own. Bend accumulate the
+march into four buckets and average them, so a pixel needs four samples' worth of agreement before
+it is fully shadowed — which is the right call when a stray sample is likelier than a real
+one-sample occluder, and is why only the first few samples of the march are trusted alone. Grass
+inverts the assumption: a blade narrower than the march's one-pixel sample spacing *is* a one-sample
+occluder, so the average caps its shadow at about a quarter strength no matter what else is tuned.
+`hardness` blends between the average and the minimum of the same four buckets. **0.0 is Bend's
+original behavior exactly; the default of 1.0 lets any single sample shadow**, which is what matches
+a trace of the same blades. Turn it down if a scene speckles.
+
+`surface_thickness` is next. A depth buffer records one surface per pixel and says nothing about how
+solid it is, so this stands in for that. Too high and everything casts a thick shadow onto what is
+behind it; too low and shadows thin out. Move it in multiples of two, and move `bilinear_threshold`
+in the same direction.
+
+`contrast` is not a third darkness knob. It only widens the window around an exact depth match, and
+it saturates: taking it from 4 to 16 moved shadow mass by 12% and per-pixel darkness by 4%.
 
 Leave `ignore_edge_pixels` off. It helps where large flat surfaces at grazing angles produce spurious
 edges along themselves, but it thins genuine shadows at silhouettes — foliage most of all, which is

@@ -3326,6 +3326,10 @@
 			Being screen space, it can only shadow from occluders that are on screen and in front of the receiver, and the length of a shadow is bounded in pixels by [member rendering/lights_and_shadows/screen_space_shadows/quality] rather than in world units. Neither limitation can be tuned away. Forward+ only, single view only, and perspective cameras only -- an orthographic camera declines the effect with a warning, which includes the editor's orthogonal views.
 			Enabling this forces the depth pre-pass on, and forces it to be resolved under MSAA, since that buffer is what the shadow is marched over.
 		</member>
+		<member name="rendering/lights_and_shadows/screen_space_shadows/hardness" type="float" setter="" getter="" default="1.0">
+			How much a single depth sample may darken a pixel on its own. The march accumulates into four buckets and averages them, so at [code]0.0[/code] a pixel needs four samples' worth of agreement before it is fully shadowed. That under-darkens any occluder narrower than the march's one pixel sample spacing -- a grass blade casts roughly a quarter of the shadow a ray trace of the same blade gives. At [code]1.0[/code] the four buckets are combined by taking the darkest instead, so a single sample shadows fully.
+			Use this rather than [member rendering/lights_and_shadows/screen_space_shadows/surface_thickness] to make thin shadows read more strongly: thickness buys darkness only by widening the shadow, while this leaves its size alone. Lower it if a scene speckles.
+		</member>
 		<member name="rendering/lights_and_shadows/screen_space_shadows/ignore_edge_pixels" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], a pixel the edge detect flags does not cast a screen space shadow at all. This helps where a large flat surface seen at a grazing angle produces spurious edges along itself, but it also thins genuine shadows at silhouettes, foliage most of all -- which is the geometry this feature usually exists to serve, so leaving this [code]false[/code] is normally right.
 		</member>

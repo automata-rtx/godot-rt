@@ -544,3 +544,84 @@ ever does need fixing, the minimal change is to clear **only** the history meta 
 the transition back: zeroed meta alone makes the depth comparison fail for every tap, which rejects
 the stale history without touching anything else. Clearing the whole scope would also take out the
 mask, the index and the hit distance, which are needed every frame.
+
+## Screen space shadows
+
+### The shadow was a third as dark, and neither thickness nor contrast could fix it
+
+Measured against this fork's own raytraced shadow, which is the useful reference here: the same
+prisms, the same sun, one render with them in the acceleration structure and one with them out of it
+and the screen space pass on. Twenty upright prisms 2.2 cm across and 4 mm deep, 90 cm tall, on open
+ground at about 7.7 m, hard sun (`light_angular_distance = 0`), denoiser off, no MSAA, lavapipe.
+
+Two numbers, because a thresholded width quantizes to 2 or 3 px at this scale and cannot resolve a
+tuning step. **Shadow mass** is the total luminance the shadow removes from the ground, summed;
+dividing it by the shadowed area gives **darkening per shadowed pixel**, which separates a shadow
+that is the wrong size from one that is the wrong darkness.
+
+At Bend's defaults the screen space shadow was **35.5 per pixel against the trace's 105.8, spread
+over 1.48x the area**. So it was not too thick, which is what it looks like: it was too *faint*,
+across too many pixels.
+
+Two knobs looked like they should fix it and neither does.
+
+- `contrast` saturates almost immediately. Swept 4, 6, 8, 12, 16 in one run, shadow mass moved 0.537
+  to 0.599 of that run's trace and per-pixel darkening moved 35.0 to 36.4 -- 12% and 4% for a
+  fourfold change. It only widens the window around an exact depth match; it cannot make a sample
+  that did hit count for more.
+- `surface_thickness` buys darkness only by buying width. Raising it from 0.005 to 0.012 brought
+  mass to 1.115 of the trace, but the median shadow was then 2.5x the traced width. Mass and width
+  could not both be matched, at any value.
+
+Three controls were also ruled out as explanations before the cause was found. The sun's azimuth
+does not matter: sweeping it 0, 35, 60 and 90 degrees moved per-pixel darkening only 0.335 to 0.414
+of the trace, so this is not the degenerate case of a sun nearly behind the camera. Occluder size
+does not fix it: a 30 cm and an 80 cm square post still only reached 0.60 and 0.53. And it is not a
+cap somewhere in the composition, because the darkest screen space pixels do reach the trace's
+value -- on the 80 cm post the distribution is bimodal, p90 at 104.7 against the trace's 105.8 and
+p50 at 37.7.
+
+### The cause is Bend's four accumulators, and the fix is a knob they do not have
+
+The march accumulates into `shadow_value[i & 3]` and finishes with `dot(shadow_value, 0.25)`. That is
+deliberate: it takes four samples' worth of agreement to fully shadow a pixel, so one stray sample
+cannot, and it is why only the first `HARD_SHADOW_SAMPLES` of the march are trusted on their own.
+
+Grass inverts the assumption the design rests on. Samples are one pixel apart along the ray, and a
+blade narrower than that *is* a one-sample occluder — so one bucket reaches zero, three stay at one,
+and the pixel comes out at 0.75, a quarter shadow. The bimodal distribution above is exactly this:
+full strength where the occluder is thick enough along the ray to fill all four buckets, quantized
+to a quarter or a half everywhere else.
+
+`hardness` blends `dot(shadow_value, 0.25)` against `min` of the same four buckets, which is the same
+test with the evidence requirement dropped to one sample. It costs three `min()` for the whole
+march. Swept against the trace, prisms as above, `surface_thickness` at Bend's 0.005:
+
+| `hardness` | darkening per px vs trace | shadow mass vs trace | area vs trace |
+| --- | --- | --- | --- |
+| 0.00 (Bend) | 0.335 | 0.497 | 1.48 |
+| 0.25 | 0.431 | 0.660 | 1.53 |
+| 0.50 | 0.547 | 0.850 | 1.55 |
+| 0.75 | 0.696 | 1.089 | 1.57 |
+| 1.00 | **0.923** | 1.448 | 1.57 |
+
+The point is not only that 1.0 lands on the trace's darkness. It is that **darkness moved 2.8x while
+area moved 6%**, so `hardness` and `surface_thickness` are finally separable: one sets how dark, the
+other how wide. Before this there was one knob for both and no setting of it was right.
+
+### What is left is one pixel of rasterization, and it is a floor
+
+With `hardness` at 1.0, lowering `surface_thickness` tightens the shadow to 1.386x the traced area
+and then stops: 0.0025, 0.0015 and 0.001 all give 1.386 to 1.388, and the median width sits at 3 px
+against the trace's 2 px throughout.
+
+That last pixel is not tunable and should not be chased. The screen space caster is the depth
+buffer, so it is the blade's *rasterized* footprint, quantized to whole pixels — a blade covering
+2.4 px lights three pixel centers and all three cast at full width, while the trace intersects the
+real triangle. It is a fixed one pixel of overshoot, not a proportional error, so it matters at
+2 px of shadow and disappears at 20.
+
+`surface_thickness` was left at Bend's 0.005 rather than moved to 0.0025. The gain is real but small
+(1.57x to 1.39x of traced area) and thickness is a fraction of the depth remaining to the far plane,
+so the right value is scene-scale dependent in a way `hardness` is not — 0.0025 measured *worse* than
+0.005 on 12 cm quads in the same rig, overcorrecting them to 0.86 of the traced width.

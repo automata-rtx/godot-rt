@@ -1845,6 +1845,7 @@ void RenderForwardClustered::_render_screen_space_shadows(RenderDataRD *p_render
 	settings.surface_thickness = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/surface_thickness");
 	settings.bilinear_threshold = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/bilinear_threshold");
 	settings.contrast = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/contrast");
+	settings.hardness = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/hardness");
 	settings.ignore_edge_pixels = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/screen_space_shadows/ignore_edge_pixels");
 	settings.debug_view = RendererRD::ScreenSpaceShadows::DebugView(
 			CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/screen_space_shadows/debug_view"),

@@ -228,6 +228,7 @@ bool ScreenSpaceShadows::render(RID p_depth_texture, RID p_output, const Size2i 
 	push_constant.surface_thickness = MAX(p_settings.surface_thickness, 0.000001f);
 	push_constant.bilinear_threshold = p_settings.bilinear_threshold;
 	push_constant.shadow_contrast = MAX(p_settings.contrast, 1.0f);
+	push_constant.hardness = CLAMP(p_settings.hardness, 0.0f, 1.0f);
 
 	uint32_t flags = FLAG_USE_EARLY_OUT;
 	if (p_settings.ignore_edge_pixels) {

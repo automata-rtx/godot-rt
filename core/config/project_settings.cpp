@@ -1925,6 +1925,14 @@ ProjectSettings::ProjectSettings() {
 	// edge and interpolation is suppressed. Tune it with the Edge Mask debug view.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/bilinear_threshold", PROPERTY_HINT_RANGE, "0.001,0.2,0.001"), 0.02);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/contrast", PROPERTY_HINT_RANGE, "1,8,0.1"), 4.0);
+	// How much a single depth sample may shadow a pixel on its own. Bend average
+	// four accumulators, so a pixel needs four samples' worth of evidence before
+	// it is fully shadowed, which under-darkens any occluder thinner than the
+	// march's one pixel sample spacing -- a grass blade casts about a quarter of
+	// the shadow a trace of the same blade gives. Zero is that original
+	// behavior; one drops the requirement to a single sample, and is what
+	// matches a traced shadow of the same geometry.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/hardness", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0);
 	// Whether a detected edge is excluded from casting. Off, and for foliage it
 	// should probably stay off: it thins otherwise valid shadows exactly at
 	// foliage silhouettes. Worth trying on scenes that are mostly large flat

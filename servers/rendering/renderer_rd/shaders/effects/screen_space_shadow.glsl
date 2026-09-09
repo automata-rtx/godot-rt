@@ -80,6 +80,8 @@ layout(push_constant, std430) uniform Params {
 
 	float near_depth_value;
 	uint flags;
+	// How much a single bulk sample may shadow on its own. See the blend below.
+	float hardness;
 }
 params;
 
@@ -325,8 +327,8 @@ void main() {
 		hard_shadow = min(hard_shadow, depth_delta);
 	}
 
-	// The bulk, averaged in groups of four so that no single sample can fully
-	// shadow the pixel.
+	// The bulk, accumulated in groups of four. Averaging those four is what stops
+	// any single sample from fully shadowing the pixel; see the blend at the end.
 	for (i = HARD_SHADOW_SAMPLES; i < SAMPLE_COUNT - FADE_OUT_SAMPLES; i++) {
 		float depth_delta = abs(start_depth - depth_data[sample_index + i] * depth_scale);
 		shadow_value[i & 3] = min(shadow_value[i & 3], depth_delta);
@@ -344,7 +346,26 @@ void main() {
 	shadow_value = clamp(shadow_value * params.shadow_contrast + (1.0 - params.shadow_contrast), 0.0, 1.0);
 	hard_shadow = clamp(hard_shadow * params.shadow_contrast + (1.0 - params.shadow_contrast), 0.0, 1.0);
 
-	float result = dot(shadow_value, vec4(0.25));
+	// Bend average the four accumulators, so a pixel needs four samples' worth of
+	// evidence before it is fully shadowed. That is the right call when a stray
+	// sample is likelier than a genuine one-sample occluder, and it is why only
+	// the first HARD_SHADOW_SAMPLES are allowed to shadow on their own.
+	//
+	// Grass inverts the assumption. A blade narrower than the march's one pixel
+	// spacing IS a one-sample occluder, so averaging caps its shadow at a quarter
+	// strength however the rest is tuned -- measured against this fork's raytraced
+	// shadow of the same blades, the screen space shadow came back a third as dark
+	// spread over one and a half times the area, and neither surface_thickness nor
+	// shadow_contrast could close it: thickness buys darkness only by widening the
+	// window until the shadow is visibly too wide, and contrast saturates.
+	//
+	// Taking the minimum of the four instead is the same test with the evidence
+	// requirement dropped back to one sample. hardness blends between them, so
+	// zero is Bend's original behavior exactly and one shadows from any single
+	// sample. It costs three min() for the whole march.
+	float result = mix(dot(shadow_value, vec4(0.25)),
+			min(min(shadow_value.x, shadow_value.y), min(shadow_value.z, shadow_value.w)),
+			params.hardness);
 	result = min(hard_shadow, result);
 
 	if (has_flag(FLAG_DEBUG_EDGE_MASK)) {
