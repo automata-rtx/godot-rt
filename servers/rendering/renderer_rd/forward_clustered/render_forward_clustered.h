@@ -63,6 +63,10 @@
 #define RB_TEX_RT_HISTORY_INDEX SNAME("rt_history_index")
 #define RB_TEX_RT_HISTORY_META SNAME("rt_history_meta")
 #define RB_TEX_RT_HISTORY_LENGTH SNAME("rt_history_length")
+// Screen space shadows keep one single channel mask, in their own scope so a
+// resize tears it down without disturbing anything else.
+#define RB_SCOPE_SCREEN_SPACE_SHADOWS SNAME("screen_space_shadows")
+#define RB_TEX_SCREEN_SPACE_SHADOW_MASK SNAME("sss_mask")
 #define RB_TEX_NORMAL_ROUGHNESS_MSAA SNAME("normal_roughness_msaa")
 #define RB_TEX_VOXEL_GI SNAME("voxel_gi")
 #define RB_TEX_VOXEL_GI_MSAA SNAME("voxel_gi_msaa")
@@ -821,6 +825,16 @@ private:
 	RID rt_shadow_index_fallback;
 
 	bool _ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size, bool p_denoise, RendererRD::RTShadows::Buffers &r_buffers);
+
+	// Whether the screen space shadow pass will run this frame. Deliberately does
+	// NOT consult the light: it is asked before the light buffer for the pass has
+	// been filled, because it decides whether to force the depth pre-pass on and
+	// that decision is made ahead of _pre_opaque_render. Forcing a pre-pass for a
+	// scene that turns out to have no shadow casting sun costs a pre-pass; not
+	// forcing one would mean marching last frame's depth.
+	bool _using_screen_space_shadows();
+	RID _ensure_screen_space_shadow_mask(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size);
+	void _render_screen_space_shadows(RenderDataRD *p_render_data, Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size);
 	void _pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer);
 	void _process_sss(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection &p_camera);
 

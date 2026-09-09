@@ -3311,6 +3311,34 @@
 			A soft shadow costs more than a hard one even at one ray per light, because neighboring pixels aim their rays at different points on the emitter and diverge through the acceleration structure, and because the penumbra the trace measures is what opens the denoiser's spatial filter. At [code]0.0[/code] the filter closes entirely and the trace stops looking for the closest occluder, since that distance only ever sizes a penumbra.
 			This reaches the trace only. Every light keeps the size it was authored with, so raising this again restores exactly that, and nothing else that reads the size is affected: a [DirectionalLight3D] still draws the same sun disk in a [ProceduralSkyMaterial], a light that fell back to a shadow map keeps its own soft filtering, and [LightmapGI] bakes are unchanged.
 		</member>
+		<member name="rendering/lights_and_shadows/screen_space_shadows/bilinear_threshold" type="float" setter="" getter="" default="0.02">
+			How far two neighboring depth samples may differ, as a fraction of the depth remaining between them and the far plane, before the pair is treated as an edge and depth interpolation is suppressed there. Set [member rendering/lights_and_shadows/screen_space_shadows/debug_view] to [code]Edge Mask[/code] to see where edges are being found while tuning this. Scale it in step with [member rendering/lights_and_shadows/screen_space_shadows/surface_thickness].
+		</member>
+		<member name="rendering/lights_and_shadows/screen_space_shadows/contrast" type="float" setter="" getter="" default="4.0">
+			Boost applied to the transition in and out of a screen space shadow. Higher values let a sample that does not exactly match the shaded pixel's depth still cast a full shadow, which hardens the shadow's edge.
+		</member>
+		<member name="rendering/lights_and_shadows/screen_space_shadows/debug_view" type="int" setter="" getter="" default="0">
+			Replaces the screen space shadow with one of its intermediate values, for tuning and for diagnosing an integration that is producing nonsense. [code]Edge Mask[/code] shows where the edge detect is firing, which is what [member rendering/lights_and_shadows/screen_space_shadows/bilinear_threshold] controls. [code]Wave Index[/code] draws the layout of the compute wavefronts, which should fan out from the sun's position on screen; if it does not, the light's projected coordinate is wrong and nothing else will be worth tuning.
+		</member>
+		<member name="rendering/lights_and_shadows/screen_space_shadows/enabled" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], the first shadow-casting [DirectionalLight3D] also casts a screen space contact shadow, marched over the depth pre-pass buffer.
+			This is not an alternative to that light's own shadow. It is laid over it, taking whichever of the two is darker, and it exists for geometry that is deliberately absent from the raytracing acceleration structure and therefore casts nothing into the raytraced shadow mask. Dense foliage is the case it is meant for: thousands of grass blades cost far more to keep in the structure than to draw, so they are removed from it with [member GeometryInstance3D.cast_shadow] and their contact shadows come from here instead.
+			Being screen space, it can only shadow from occluders that are on screen and in front of the receiver, and the length of a shadow is bounded in pixels by [member rendering/lights_and_shadows/screen_space_shadows/quality] rather than in world units. Neither limitation can be tuned away. Forward+ only, and single view only.
+			Enabling this forces the depth pre-pass on, and forces it to be resolved under MSAA, since that buffer is what the shadow is marched over.
+		</member>
+		<member name="rendering/lights_and_shadows/screen_space_shadows/ignore_edge_pixels" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], a pixel the edge detect flags does not cast a screen space shadow at all. This helps where a large flat surface seen at a grazing angle produces spurious edges along itself, but it also thins genuine shadows at silhouettes, foliage most of all -- which is the geometry this feature usually exists to serve, so leaving this [code]false[/code] is normally right.
+		</member>
+		<member name="rendering/lights_and_shadows/screen_space_shadows/quality" type="int" setter="" getter="" default="1">
+			How many depth samples each pixel marches: [code]Low[/code] is 32, [code]Medium[/code] 60, [code]High[/code] 96. This sets the cost and, equally, the longest shadow the effect can draw, because the march advances one pixel per sample. A shadow that reaches the end of its samples is faded out over the last few rather than cut off.
+		</member>
+		<member name="rendering/lights_and_shadows/screen_space_shadows/strength" type="float" setter="" getter="" default="1.0">
+			How much of the screen space shadow term is applied, from [code]0.0[/code] for none to [code]1.0[/code] for all of it. Use this to blend back a contact shadow that reads too strongly against the light's own shadow; it does not change what the effect costs.
+		</member>
+		<member name="rendering/lights_and_shadows/screen_space_shadows/surface_thickness" type="float" setter="" getter="" default="0.005">
+			The thickness every pixel is assumed to have when it casts a screen space shadow, as a fraction of the depth remaining between it and the far plane. A depth buffer records one surface per pixel and says nothing about how solid it is, so this is what stands in for that.
+			Too high reads as everything casting a thick shadow onto whatever is behind it; too low and shadows thin out or disappear. Tune it in multiples of two, and move [member rendering/lights_and_shadows/screen_space_shadows/bilinear_threshold] in the same direction.
+		</member>
 		<member name="rendering/lights_and_shadows/tighter_shadow_caster_culling" type="bool" setter="" getter="" default="true">
 			If [code]true[/code], items that cannot cast shadows into the view frustum will not be rendered into shadow maps.
 			This can increase performance.

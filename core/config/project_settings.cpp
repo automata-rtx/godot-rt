@@ -1902,6 +1902,40 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode", PROPERTY_HINT_ENUM, "Keep Authored,Orthogonal,2 Splits"), 2);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size", PROPERTY_HINT_RANGE, "0,4096"), 1024);
 
+	// Screen space shadows for the sun, marched over the depth pre-pass buffer.
+	// Every setting here is live.
+	//
+	// This is not an alternative to the shadow the sun already casts; it is a
+	// contact shadow laid over it, for geometry that is deliberately absent from
+	// the ray tracing acceleration structure and so casts nothing into the mask.
+	// Grass is the case it exists for.
+	GLOBAL_DEF_BASIC("rendering/lights_and_shadows/screen_space_shadows/enabled", false);
+	// Sample count, which sets both the cost and the maximum shadow length in
+	// PIXELS. Low is 32 samples, Medium 60, High 96.
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/screen_space_shadows/quality", PROPERTY_HINT_ENUM, "Low,Medium,High"), 1);
+	// How much of the term is applied. Not a quality knob -- the shadow is fully
+	// resolved either way -- but the way to blend a contact shadow that reads too
+	// strongly against the sun's own.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/strength", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0);
+	// Assumed thickness of a pixel for casting, as a fraction of the non-linear
+	// depth left between it and the far plane. Scale in multiples of two, and
+	// scale bilinear_threshold along with it.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/surface_thickness", PROPERTY_HINT_RANGE, "0.0001,0.1,0.0001"), 0.005);
+	// How far two neighboring depths may differ before the pair counts as an
+	// edge and interpolation is suppressed. Tune it with the Edge Mask debug view.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/bilinear_threshold", PROPERTY_HINT_RANGE, "0.001,0.2,0.001"), 0.02);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/contrast", PROPERTY_HINT_RANGE, "1,8,0.1"), 4.0);
+	// Whether a detected edge is excluded from casting. Off, and for foliage it
+	// should probably stay off: it thins otherwise valid shadows exactly at
+	// foliage silhouettes. Worth trying on scenes that are mostly large flat
+	// surfaces seen at grazing angles, where the edge detect misfires along them.
+	GLOBAL_DEF("rendering/lights_and_shadows/screen_space_shadows/ignore_edge_pixels", false);
+	// Bend's own visualizations, and the intended way to bring this pass up on
+	// new hardware. Wave Index first: it draws the wavefront layout, which should
+	// converge on the sun's screen position, and does not if the light coordinate
+	// is wrong.
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/screen_space_shadows/debug_view", PROPERTY_HINT_ENUM, "Disabled,Edge Mask,Thread Index,Wave Index"), 0);
+
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/block_size_kb", PROPERTY_HINT_RANGE, "4,2048,1,or_greater"), 256);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/max_size_mb", PROPERTY_HINT_RANGE, "1,1024,1,or_greater"), 128);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/texture_upload_region_size_px", PROPERTY_HINT_RANGE, "1,256,1,or_greater"), 64);

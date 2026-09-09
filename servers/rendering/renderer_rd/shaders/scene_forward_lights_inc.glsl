@@ -74,6 +74,19 @@ float rt_shadow_lookup(float p_slot) {
 	// is the least visible way to run out of room.
 	return 1.0;
 }
+
+// Screen space contact shadow visibility for the one directional light the
+// screen space pass ran for. Lives here for the same reason rt_shadow_lookup
+// does: it reads gl_FragCoord, which the vertex stage does not have.
+//
+// Unlike the raytraced mask this is stored linearly. It is a contact term whose
+// interesting range is the whole zero to one, not a visibility that is mostly
+// one, so the sqrt trick the raytraced mask uses would spend its eight bits in
+// the wrong place.
+float sss_shadow_lookup() {
+	ivec2 coord = ivec2(gl_FragCoord.xy);
+	return texelFetch(sampler2D(sss_shadow_mask, SAMPLER_NEAREST_CLAMP), coord, 0).r;
+}
 #endif // !USING_MOBILE_RENDERER
 
 half D_GGX(half NoH, half roughness, hvec3 n, hvec3 h) {

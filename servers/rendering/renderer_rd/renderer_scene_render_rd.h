@@ -38,6 +38,7 @@
 #include "servers/rendering/renderer_rd/effects/luminance.h"
 #include "servers/rendering/renderer_rd/effects/resolve.h"
 #include "servers/rendering/renderer_rd/effects/rt_shadows.h"
+#include "servers/rendering/renderer_rd/effects/screen_space_shadows.h"
 #include "servers/rendering/renderer_rd/effects/smaa.h"
 #include "servers/rendering/renderer_rd/effects/tone_mapper.h"
 #include "servers/rendering/renderer_rd/effects/vrs.h"
@@ -67,6 +68,10 @@ protected:
 	RendererRD::DebugEffects *debug_effects = nullptr;
 	RendererRD::RaytracingScene *raytracing_scene = nullptr;
 	RendererRD::RTShadows *rt_shadows = nullptr;
+	RendererRD::ScreenSpaceShadows *screen_space_shadows = nullptr;
+	// Set once the effect has been tried and could not be built, so that a device
+	// which cannot run it does not recompile three shader variants every frame.
+	bool screen_space_shadows_unavailable = false;
 	RendererRD::Luminance *luminance = nullptr;
 	RendererRD::SMAA *smaa = nullptr;
 	RendererRD::ToneMapper *tone_mapper = nullptr;
@@ -270,6 +275,11 @@ public:
 	virtual RaytracedScatterMode get_raytraced_scatter_mode() const override;
 	virtual float get_raytraced_scatter_distance() const override;
 	virtual bool is_raytracing_scene_available() const override;
+
+	// The screen space shadow effect, built on first use and only where it can
+	// run. Returns null when the feature cannot be used on this device, which the
+	// caller must treat as "do not run the pass" rather than as an error.
+	RendererRD::ScreenSpaceShadows *get_screen_space_shadows();
 	virtual bool is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const override;
 	virtual bool is_raytracing_debug_enabled() const override;
 	virtual void update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances) override;

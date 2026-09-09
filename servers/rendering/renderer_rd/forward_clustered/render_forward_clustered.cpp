@@ -1743,6 +1743,79 @@ bool RenderForwardClustered::_ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD>
 			r_buffers.raw_hit_distance.is_valid();
 }
 
+bool RenderForwardClustered::_using_screen_space_shadows() {
+	if (!GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/screen_space_shadows/enabled")) {
+		return false;
+	}
+	// Builds the effect on first use, and answers null forever after if it cannot
+	// be built on this device.
+	return get_screen_space_shadows() != nullptr;
+}
+
+RID RenderForwardClustered::_ensure_screen_space_shadow_mask(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size) {
+	if (p_render_buffers.is_null()) {
+		return RID();
+	}
+
+	if (!p_render_buffers->has_texture(RB_SCOPE_SCREEN_SPACE_SHADOWS, RB_TEX_SCREEN_SPACE_SHADOW_MASK)) {
+		const uint32_t usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT |
+				RD::TEXTURE_USAGE_CAN_COPY_TO_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+		p_render_buffers->create_texture(RB_SCOPE_SCREEN_SPACE_SHADOWS, RB_TEX_SCREEN_SPACE_SHADOW_MASK,
+				RendererRD::ScreenSpaceShadows::get_target_format(), usage, RD::TEXTURE_SAMPLES_1, p_size, 1);
+		// A fresh image holds nothing in particular, and white is the value that
+		// reads as fully lit. The pass clears it itself every frame it runs, but a
+		// frame where it does not run must not show whatever was in memory.
+		RD::get_singleton()->texture_clear(
+				p_render_buffers->get_texture(RB_SCOPE_SCREEN_SPACE_SHADOWS, RB_TEX_SCREEN_SPACE_SHADOW_MASK),
+				Color(1, 1, 1, 1), 0, 1, 0, 1);
+	}
+
+	return p_render_buffers->get_texture(RB_SCOPE_SCREEN_SPACE_SHADOWS, RB_TEX_SCREEN_SPACE_SHADOW_MASK);
+}
+
+void RenderForwardClustered::_render_screen_space_shadows(RenderDataRD *p_render_data, Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size) {
+	RendererRD::ScreenSpaceShadows *effect = get_screen_space_shadows();
+	if (effect == nullptr) {
+		return;
+	}
+
+	// Filled by update_light_buffers() a few lines above this call. Invalid means
+	// no directional light in this pass is casting, so there is nothing to march
+	// toward and the mask stays at the fully lit value it was created with.
+	const RendererRD::LightStorage::SSSLight &light = RendererRD::LightStorage::get_singleton()->get_sss_light();
+	if (!light.valid) {
+		return;
+	}
+
+	RID mask = _ensure_screen_space_shadow_mask(p_render_buffers, p_size);
+	if (mask.is_null()) {
+		return;
+	}
+
+	RENDER_TIMESTAMP("Screen Space Shadows");
+	RD::get_singleton()->draw_command_begin_label("Screen Space Shadows");
+
+	RendererRD::ScreenSpaceShadows::Settings settings;
+	settings.quality = RendererRD::ScreenSpaceShadows::Quality(
+			CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/screen_space_shadows/quality"),
+					0, int(RendererRD::ScreenSpaceShadows::QUALITY_MAX) - 1));
+	settings.surface_thickness = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/surface_thickness");
+	settings.bilinear_threshold = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/bilinear_threshold");
+	settings.contrast = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/contrast");
+	settings.ignore_edge_pixels = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/screen_space_shadows/ignore_edge_pixels");
+	settings.debug_view = RendererRD::ScreenSpaceShadows::DebugView(
+			CLAMP(GLOBAL_GET_CACHED(int, "rendering/lights_and_shadows/screen_space_shadows/debug_view"),
+					0, int(RendererRD::ScreenSpaceShadows::DEBUG_VIEW_MAX) - 1));
+
+	// The corrected, jittered projection, which is the one the depth buffer was
+	// rasterized with. Anything else puts the light's screen position in the
+	// wrong place by up to half a pixel every frame and makes the shadow crawl.
+	effect->render(p_render_buffers->get_depth_texture(), mask, p_size,
+			p_render_data->scene_data->get_cam_projection(), light.direction, settings);
+
+	RD::get_singleton()->draw_command_end_label();
+}
+
 void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer) {
 	// Render shadows while GI is rendering, due to how barriers are handled, this should happen at the same time
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
@@ -1999,6 +2072,17 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 
 			RD::get_singleton()->draw_command_end_label();
 		}
+	}
+
+	// Screen space shadows. Separate from the block above on purpose: this runs
+	// whether or not raytraced shadows do, because the geometry it exists to
+	// shadow is geometry that was deliberately kept out of the acceleration
+	// structure. Where both run they are combined per pixel in the forward
+	// shader, taking the darker of the two rather than multiplying them, since
+	// any occluder that is both in the structure and on screen is otherwise
+	// counted twice.
+	if (rb_data.is_valid()) {
+		_render_screen_space_shadows(p_render_data, rb, rb->get_internal_size());
 	}
 
 	if (current_cluster_builder) {
@@ -2458,7 +2542,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	// Raytraced shadows reconstruct world position from the depth buffer, so the
 	// depth pre-pass has to have run and been resolved before the shadow mask is
 	// traced. Force it on rather than silently reading an unwritten buffer.
-	bool force_depth_pre_pass = scene_state.used_opaque_stencil || is_raytracing_scene_available();
+	// Screen space shadows march the pre-pass depth buffer, so like raytraced
+	// shadows they need one to exist and, under MSAA, to have been resolved.
+	const bool using_screen_space_shadows = _using_screen_space_shadows();
+	bool force_depth_pre_pass = scene_state.used_opaque_stencil || is_raytracing_scene_available() || using_screen_space_shadows;
 	bool depth_pre_pass = (force_depth_pre_pass || bool(GLOBAL_GET_CACHED(bool, "rendering/driver/depth_prepass/enable"))) && depth_framebuffer.is_valid();
 
 	SceneShaderForwardClustered::ShaderSpecialization base_specialization = scene_shader.default_specialization;
@@ -2487,7 +2574,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 		// Raytraced shadows sample the resolved depth buffer, so it must be resolved
 		// under MSAA as well.
-		bool finish_depth = using_ssao || using_ssil || using_sdfgi || using_voxelgi || ce_pre_opaque_resolved_depth || ce_post_opaque_resolved_depth || is_raytracing_scene_available();
+		bool finish_depth = using_ssao || using_ssil || using_sdfgi || using_voxelgi || ce_pre_opaque_resolved_depth || ce_post_opaque_resolved_depth || is_raytracing_scene_available() || using_screen_space_shadows;
 		RenderListParameters render_list_params(render_list[RENDER_LIST_OPAQUE].elements.ptr(), render_list[RENDER_LIST_OPAQUE].element_info.ptr(), render_list[RENDER_LIST_OPAQUE].elements.size(), reverse_cull, depth_pass_mode, 0, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization);
 		_render_list_with_draw_list(&render_list_params, depth_framebuffer, RD::DrawFlags(needs_pre_resolve ? RD::DRAW_DEFAULT_ALL : RD::DRAW_CLEAR_ALL), depth_pass_clear, 0.0f, 0u, p_render_data->render_region);
 
@@ -4217,6 +4304,23 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 			index = rb->get_texture(RB_SCOPE_RT_SHADOWS, RB_TEX_RT_SHADOW_INDEX);
 		}
 		RID texture = index.is_valid() ? index : rt_shadow_index_fallback;
+		u.append_id(texture);
+		uniforms.push_back(u);
+	}
+
+	{
+		// Screen space shadow mask, one channel for the single directional light
+		// the pass runs for. White is fully lit, which is what every path that
+		// builds this set without a mask gets.
+		RD::Uniform u;
+		u.binding = 39;
+		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+
+		RID mask;
+		if (rb.is_valid() && rb->has_texture(RB_SCOPE_SCREEN_SPACE_SHADOWS, RB_TEX_SCREEN_SPACE_SHADOW_MASK)) {
+			mask = rb->get_texture(RB_SCOPE_SCREEN_SPACE_SHADOWS, RB_TEX_SCREEN_SPACE_SHADOW_MASK);
+		}
+		RID texture = mask.is_valid() ? mask : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_WHITE);
 		u.append_id(texture);
 		uniforms.push_back(u);
 	}

@@ -215,6 +215,23 @@ private:
 	// light that keeps its slot keeps the denoiser history that goes with it.
 	uint32_t rt_slots_assigned_this_frame = 0;
 
+public:
+	// The one directional light the screen space shadow pass runs for this frame.
+	// Screen space shadows are deliberately not a per light feature: the mask is
+	// a single channel, so there is room for exactly one, and the sun is what it
+	// is for.
+	struct SSSLight {
+		bool valid = false;
+		// View space, pointing TOWARD the light -- the same vector that goes into
+		// DirectionalLightData::direction, which for a directional light is built
+		// from the light basis's +Z rather than its -Z.
+		Vector3 direction;
+		float strength = 1.0f;
+	};
+
+private:
+	SSSLight sss_light;
+
 	uint32_t _rt_slot_acquire(LightInstance *p_light_instance, uint64_t p_frame);
 	void _rt_light_store(uint32_t p_slot, const RTShadows::LightParams &p_light);
 	void _rt_slot_release(LightInstance *p_light_instance);
@@ -272,6 +289,11 @@ private:
 		float shadow_map_opacity;
 		uint32_t bake_mode;
 		float volumetric_fog_energy;
+		// How much of the screen space shadow term applies to this light, and the
+		// only thing that tells the forward shader which light the single channel
+		// screen space mask describes. Zero on every other directional light.
+		float sss_strength;
+		float pad_sss[3];
 		float shadow_bias[4];
 		float shadow_normal_bias[4];
 		float shadow_transmittance_bias[4];
@@ -551,6 +573,11 @@ public:
 	// light slot. Filled by update_light_buffers().
 	const LocalVector<RTShadows::LightParams> &get_rt_lights() const { return rt_lights; }
 	uint32_t get_rt_slots_assigned() const { return rt_slots_assigned_this_frame; }
+
+	// Which directional light, if any, the screen space shadow pass should run
+	// for. Filled by update_light_buffers() alongside the light buffer itself, so
+	// it describes the pass that was last set up.
+	const SSSLight &get_sss_light() const { return sss_light; }
 
 	static LightStorage *get_singleton();
 

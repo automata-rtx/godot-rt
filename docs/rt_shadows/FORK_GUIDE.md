@@ -744,3 +744,102 @@ Under `rendering/environment/ssao/ground_truth/`.
 | `shaders/effects/gtao_gather.glsl` | The march and the bitmask resolve. |
 | `shaders/effects/gtao_filter.glsl` | A separable plane-aware denoise, run across then down at gather resolution, then a bilateral upsample into the shared occlusion buffer. |
 | `render_forward_clustered.cpp` | `_use_gtao`, `_ensure_gtao_buffers`, `_process_gtao`, and the branch that skips the legacy depth downsample when this is the only screen space effect running. |
+
+---
+
+## 10. Screen space shadows for the sun
+
+Off by default. `rendering/lights_and_shadows/screen_space_shadows/enabled` makes the first
+shadow-casting `DirectionalLight3D` also cast a screen-space contact shadow, marched over the depth
+pre-pass buffer.
+
+This is **not** an alternative to that light's own shadow, raytraced or cascaded. It is laid over it,
+and the two are combined by taking whichever is darker.
+
+### 10.1 What it is for
+
+Geometry that is deliberately absent from the acceleration structure. Dense foliage is the case: a
+field of grass costs far more to keep in the structure than to draw, because the caster gather walks
+every element of a `MultiMesh` every frame on the render thread and pushes a TLAS record for each
+one. Taking it out with `GeometryInstance3D.cast_shadow = Off` removes all of that per-blade CPU
+cost — and removes its shadow with it. This gives the shadow back, at a fixed screen-space GPU cost
+and no CPU cost at all.
+
+The grass still *receives* the raytraced shadow as it always did; `cast_shadow` governs only casting.
+
+### 10.2 Why min() and not a multiply
+
+An occluder that is both in the acceleration structure and on screen is described by **both** terms.
+A wall shadows the grass in front of it through the raytraced mask, and the same wall is in the
+depth buffer the screen-space march reads. Multiplying would darken those pixels twice. Taking the
+darker of the two leaves them alone and still lets the screen-space term shadow what the structure
+has never heard of, which is the whole point.
+
+The error that remains is bounded by construction: the march reaches `SAMPLE_COUNT` **pixels**, which
+is the contact region, and that is exactly where the sun's penumbra is narrowest — at the fork's
+default `light_angular_distance` of 0.25°, a penumbra is about 4 mm at 1 m and 4 cm at 10 m. The two
+techniques substantially agree over the range where they overlap. Raising the quality tier widens
+that overlap into the region where the penumbra has genuinely opened up, so a grass pixel under a
+wall can end up with a harder shadow edge than the terrain beside it.
+
+### 10.3 What it cannot do
+
+Neither of these is tunable, and neither is a bug:
+
+- **It shadows only from occluders that are on screen and in front.** Grass just above the top of
+  the viewport casts nothing, so shadows appear as the camera turns toward their caster.
+- **Shadow length is bounded in pixels, not world units.** A low sun wants shadows far longer than
+  any affordable sample count reaches. The last few samples of each tier fade out so the shadow ends
+  rather than being cut off, but it does end.
+
+Where a long or off-screen grass shadow matters — grass on the ground at distance, a raking sunrise —
+the complement is a second `MultiMeshInstance3D` of a few hundred low-poly clump proxies set to
+`SHADOWS_ONLY`. The caster gather rejects only `SHADOW_CASTING_SETTING_OFF`, so proxies cast a real
+raytraced shadow while drawing nothing.
+
+Also: **Forward+ only, single view only, one directional light.** The mask has one channel, so there
+is room for exactly one light and the sun is what it is for. A second `DirectionalLight3D` gets
+nothing.
+
+### 10.4 Tuning
+
+Start with `surface_thickness`. A depth buffer records one surface per pixel and says nothing about
+how solid it is, so this stands in for that. Too high and everything casts a thick shadow onto what
+is behind it; too low and shadows thin out. Move it in multiples of two, and move
+`bilinear_threshold` in the same direction.
+
+Leave `ignore_edge_pixels` off. It helps where large flat surfaces at grazing angles produce spurious
+edges along themselves, but it thins genuine shadows at silhouettes — foliage most of all, which is
+the geometry this exists to serve.
+
+`debug_view` is the way to bring the pass up rather than guess at it. **Wave Index** first: it draws
+the compute wavefront layout, which should fan out from the sun's position on screen. If it does not,
+the light's projected coordinate is wrong and nothing else is worth tuning. **Edge Mask** shows where
+the edge detect is firing, which is what `bilinear_threshold` controls.
+
+Measure with MSAA off as the control. A resolved MSAA depth at a blade silhouette is an average or a
+least-frequent sample, not a real surface depth, and thin geometry is the worst case for it.
+
+### 10.5 Where it lives
+
+The technique is Bend Studio's, Apache-2.0. The CPU half — which decides how many dispatches a light
+needs and what wave offset each gets — is vendored with only the line endings and trailing
+whitespace this repository normalizes; the shader is a port to RD GLSL.
+
+| File | What it holds |
+| --- | --- |
+| `thirdparty/bend_sss/bend_sss_cpu.h` | Bend's dispatch list builder. No code changes, only whitespace normalization. |
+| `shaders/effects/screen_space_shadow.glsl` | The march. A port of Bend's HLSL, with the deviations it forced listed in its header. |
+| `servers/rendering/renderer_rd/effects/screen_space_shadows.{h,cpp}` | The pass driver: pipelines, the border sampler, the light projection, and the dispatch loop. |
+| `render_forward_clustered.cpp` | `_using_screen_space_shadows`, `_ensure_screen_space_shadow_mask`, `_render_screen_space_shadows`, and set 1 binding 39. |
+| `light_storage.{h,cpp}` | `SSSLight`, which picks the light, and `DirectionalLightData::sss_strength`, which tells the shader which one it picked. |
+| `scene_forward_lights_inc.glsl` | `sss_shadow_lookup()`. |
+
+Two things worth knowing about the port, because both fail silently and plausibly:
+
+- Bend maps clip Y to a pixel row with `* -0.5 + 0.5`, which assumes a clip space whose `+1` is the
+  top row. Godot's projection already negates Y, so the input Y is negated on the way in instead.
+  Getting this wrong puts the sun at its own vertical mirror.
+- `gl_WorkGroupID` is unsigned and the wave offset is routinely negative, so the cast to signed has
+  to happen before the add. Without it the quadrants left of and above the light fill with garbage —
+  which looks like a light-coordinate bug rather than an integer one.

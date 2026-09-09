@@ -107,6 +107,38 @@ nothing for them.
   capped at 1024 — for every directional light, not only raytraced ones. Both are configurable
   under `raytraced_shadows/directional/demoted_shadow_*`.
 
+## Screen space shadows for the sun
+
+Off by default. `rendering/lights_and_shadows/screen_space_shadows/enabled` gives the first
+shadow-casting `DirectionalLight3D` a screen-space contact shadow, marched over the depth pre-pass
+buffer. Read section 10 of **`docs/rt_shadows/FORK_GUIDE.md`** before answering anything about it.
+
+- **It is not an alternative to that light's own shadow.** It is laid over it and the two are
+  combined with `min()`, not a multiply, because an occluder that is both in the acceleration
+  structure and on screen is described by both terms and multiplying darkens it twice.
+- **It exists for geometry deliberately kept out of the acceleration structure.** Grass is the case:
+  the caster gather walks every element of a `MultiMesh` every frame on the render thread, so a
+  field of blades is removed with `GeometryInstance3D.cast_shadow = Off` and gets its contact shadow
+  from here instead. The grass still *receives* raytraced shadows -- `cast_shadow` governs casting
+  only.
+- **One light, Forward+, single view.** The mask has one channel. A second `DirectionalLight3D` gets
+  nothing, and this is not a per-light property: `LightStorage` picks the light and marks it with
+  `DirectionalLightData::sss_strength`.
+- **It only shadows from occluders on screen and in front, and shadow length is bounded in PIXELS**
+  by the quality tier, not in world units. So grass above the top of the viewport casts nothing, and
+  a low sun wants shadows longer than any tier reaches. Neither is tunable. The complement for those
+  cases is a few hundred low-poly clump proxies set to `SHADOWS_ONLY`, which still cast raytraced
+  shadows while drawing nothing.
+- **Enabling it forces the depth pre-pass on and forces its MSAA resolve**, the same way raytraced
+  shadows do, because that buffer is what it marches.
+- `debug_view` is how to bring it up, not guesswork: **Wave Index** draws the compute wavefront
+  layout, which must fan out from the sun's screen position, and does not if the light's projected
+  coordinate is wrong. **Edge Mask** is for tuning `bilinear_threshold`.
+- Leave `ignore_edge_pixels` off for foliage. It thins genuine shadows at silhouettes, which is
+  exactly the geometry the feature serves.
+- The technique is Bend Studio's (Apache-2.0). `thirdparty/bend_sss/bend_sss_cpu.h` is vendored
+  with no code changes; `shaders/effects/screen_space_shadow.glsl` is a port of their HLSL.
+
 ## Ambient occlusion is two estimators now
 
 `Environment.ssao_method` and `rendering/environment/ssao/method` choose between the Intel point

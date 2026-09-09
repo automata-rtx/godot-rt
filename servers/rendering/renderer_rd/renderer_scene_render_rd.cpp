@@ -2020,6 +2020,10 @@ void RendererSceneRenderRD::init() {
 	if (raytracing_scene->is_available()) {
 		rt_shadows = memnew(RendererRD::RTShadows);
 	}
+	// Screen space shadows. Built lazily rather than here: its constructor
+	// compiles three shader variants and creates their pipelines, and the feature
+	// is off by default, so a project that never enables it should not pay for
+	// them. It also needs storage images, which the low end path does not have.
 	luminance = memnew(RendererRD::Luminance(!can_use_storage));
 	smaa = memnew(RendererRD::SMAA);
 	tone_mapper = memnew(RendererRD::ToneMapper(!can_use_storage));
@@ -2035,6 +2039,38 @@ void RendererSceneRenderRD::init() {
 	resolve_effects = memnew(RendererRD::Resolve(!can_use_storage));
 }
 
+RendererRD::ScreenSpaceShadows *RendererSceneRenderRD::get_screen_space_shadows() {
+	if (screen_space_shadows != nullptr) {
+		return screen_space_shadows;
+	}
+	if (screen_space_shadows_unavailable) {
+		return nullptr;
+	}
+
+	// First use. Building it compiles three shader variants and creates their
+	// pipelines, which is why it does not happen in the constructor: the feature
+	// is off by default and a project that never turns it on should not pay for
+	// them.
+	screen_space_shadows_unavailable = true;
+	if (!_render_buffers_can_be_storage()) {
+		// The pass writes its mask through a storage image; there is no raster
+		// fallback and there does not need to be, since this renderer is the only
+		// consumer.
+		return nullptr;
+	}
+
+	RendererRD::ScreenSpaceShadows *effect = memnew(RendererRD::ScreenSpaceShadows);
+	if (!effect->is_valid()) {
+		// The constructor has already said why.
+		memdelete(effect);
+		return nullptr;
+	}
+
+	screen_space_shadows = effect;
+	screen_space_shadows_unavailable = false;
+	return screen_space_shadows;
+}
+
 RendererSceneRenderRD::~RendererSceneRenderRD() {
 	memdelete(forward_id_storage);
 
@@ -2043,6 +2079,9 @@ RendererSceneRenderRD::~RendererSceneRenderRD() {
 	memdelete(debug_effects);
 	if (rt_shadows) {
 		memdelete(rt_shadows);
+	}
+	if (screen_space_shadows) {
+		memdelete(screen_space_shadows);
 	}
 	if (raytracing_scene) {
 		memdelete(raytracing_scene);

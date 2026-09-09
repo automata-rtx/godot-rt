@@ -2613,6 +2613,24 @@ void fragment_shader(in SceneData scene_data) {
 #undef BIAS_FUNC
 				} // shadows
 
+				// Screen space contact shadow, for the one directional light the
+				// screen space pass ran for. Applied here so that both the raytraced
+				// and the cascade path have finished and everything downstream --
+				// the shadowmask hand off, vertex lighting, the packing into shadow0
+				// -- sees the combined term.
+				//
+				// min() rather than a multiply. An occluder that is both in the
+				// acceleration structure and on screen is described by both terms,
+				// and multiplying would darken it twice; taking the darker answer
+				// leaves those pixels alone and still lets the screen space term
+				// shadow what the structure has never heard of, which is the whole
+				// point of it. RT_MASK_ANSWERS_HERE applies unchanged: this mask is
+				// marched over the depth pre-pass too, so it describes exactly the
+				// fragments that pre-pass contains.
+				if (directional_lights.data[i].sss_strength > 0.0 && RT_MASK_ANSWERS_HERE) {
+					shadow = min(shadow, mix(1.0, sss_shadow_lookup(), directional_lights.data[i].sss_strength));
+				}
+
 				// Runs for both paths. The hand off to a baked shadowmask is about
 				// where the sun stops being computed, not about how it was computed,
 				// so a raytraced sun has to reach it too.

@@ -83,6 +83,13 @@ struct DirectionalLightData {
 	float shadow_map_opacity; // for the consumers that sample the cascades, not the mask
 	uint bake_mode;
 	float volumetric_fog_energy;
+	// How much of the screen space shadow term applies to this light. Zero for
+	// every light but the one the screen space pass ran for, which is how the
+	// forward shader knows which of them the single channel mask belongs to.
+	float sss_strength;
+	float pad_sss0;
+	float pad_sss1;
+	float pad_sss2;
 	vec4 shadow_bias;
 	vec4 shadow_normal_bias;
 	vec4 shadow_transmittance_bias;

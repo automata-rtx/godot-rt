@@ -492,6 +492,12 @@ layout(set = 1, binding = 36) uniform texture2D ssr_mip_level_buffer;
 layout(set = 1, binding = 37) uniform texture2D rt_shadow_mask;
 layout(set = 1, binding = 38) uniform utexture2D rt_shadow_index;
 
+// Screen space shadow mask, one channel, for the single directional light the
+// screen space pass ran for. Which light that is comes from the light's own
+// sss_strength being non-zero, so no companion index is needed. Also 2D in every
+// variant: the pass is single view.
+layout(set = 1, binding = 39) uniform texture2D sss_shadow_mask;
+
 // rt_shadow_lookup(), which samples the mask above, lives in
 // scene_forward_lights_inc.glsl because it reads gl_FragCoord. This file is
 // included by the vertex stage as well, where that builtin does not exist.

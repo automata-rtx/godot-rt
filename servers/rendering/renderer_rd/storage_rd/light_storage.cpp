@@ -932,6 +932,13 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 	rt_slots_assigned_this_frame = 0;
 	area_light_count = 0;
 
+	// Screen space shadows go to the first directional light that is actually
+	// casting one, on the same terms as the raytraced mask: a pass with no
+	// shadows, a reflection probe among them, gets none.
+	sss_light = SSSLight();
+	const bool sss_available = p_using_shadows && GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/screen_space_shadows/enabled");
+	const float sss_strength = sss_available ? CLAMP(float(GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/strength")), 0.0f, 1.0f) : 0.0f;
+
 	r_directional_light_soft_shadows = false;
 
 	for (int i = 0; i < (int)p_lights.size(); i++) {
@@ -958,6 +965,18 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 				light_data.direction[0] = direction.x;
 				light_data.direction[1] = direction.y;
 				light_data.direction[2] = direction.z;
+
+				// Screen space shadows apply to exactly one directional light,
+				// because the mask they write has one channel. This is what tells the
+				// forward shader which light that is: every other directional light
+				// keeps a strength of zero and never reads the mask.
+				light_data.sss_strength = 0.0f;
+				if (sss_available && !sss_light.valid && light->shadow && sss_strength > 0.0f) {
+					sss_light.valid = true;
+					sss_light.direction = direction;
+					sss_light.strength = sss_strength;
+					light_data.sss_strength = sss_strength;
+				}
 
 				float sign = light->negative ? -1 : 1;
 
