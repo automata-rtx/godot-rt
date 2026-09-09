@@ -609,6 +609,34 @@ The point is not only that 1.0 lands on the trace's darkness. It is that **darkn
 area moved 6%**, so `hardness` and `surface_thickness` are finally separable: one sets how dark, the
 other how wide. Before this there was one knob for both and no setting of it was right.
 
+### Confirmed on a real field, which is also where the default comes from
+
+The prism rig is twenty well separated blades chosen so a shadow can be measured. The case the
+feature exists for is fifteen thousand of them, so it was rendered too: 15,000 prism blades on a
+ground plane, `cast_shadow = Off`, sun at 26 degrees elevation and 38 degrees off the camera axis,
+against a fourth render with the blades put *into* the acceleration structure as the reference.
+
+| render | shadowed px | px lightened | darkening per px | mass vs reference |
+| --- | --- | --- | --- | --- |
+| `hardness` 0 (Bend) | 96,149 | 0 | 28.2 | 0.368 |
+| `hardness` 1 | 98,980 | 0 | **55.9** | 0.751 |
+| raytraced reference | 132,565 | 0 | 55.6 | 1.000 |
+
+Per-pixel darkness lands on the trace: 55.9 against 55.6. What is still missing is **area**, not
+darkness -- 99k shadowed pixels against the trace's 133k. That gap is the documented screen space
+limit rather than anything tunable: an occluder off the top of the frame, or further along the ray
+than the tier's sample count reaches, cannot be found by a march over the depth buffer. It is the
+case the `SHADOWS_ONLY` clump proxies in section 10.3 of the guide exist for.
+
+Zero pixels lightened in any of the three, which is the check that the `min()` composition is doing
+what it claims: this pass can only ever darken.
+
+This render is also why the default is 1.0 rather than something more cautious. The obvious risk of
+dropping the evidence requirement to one sample is speckle -- a stray sample now shadows a pixel
+outright. On fifteen thousand overlapping thin blades, which is close to the worst case for it,
+there is none: the shadows read as clean directional streaks, and against the traced render beside
+them the difference is coverage, not noise.
+
 ### What is left is one pixel of rasterization, and it is a floor
 
 With `hardness` at 1.0, lowering `surface_thickness` tightens the shadow to 1.386x the traced area

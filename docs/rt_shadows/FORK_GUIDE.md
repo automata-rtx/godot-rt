@@ -829,7 +829,13 @@ inverts the assumption: a blade narrower than the march's one-pixel sample spaci
 occluder, so the average caps its shadow at about a quarter strength no matter what else is tuned.
 `hardness` blends between the average and the minimum of the same four buckets. **0.0 is Bend's
 original behavior exactly; the default of 1.0 lets any single sample shadow**, which is what matches
-a trace of the same blades. Turn it down if a scene speckles.
+a trace of the same blades. Turn it down if a scene speckles — though on a field of fifteen thousand
+overlapping blades, close to the worst case for it, nothing did.
+
+What 1.0 does *not* recover is shadow **area**. On that field it darkens each shadowed pixel by 55.9
+against the traced reference's 55.6, but covers 99k pixels to the trace's 133k. The missing third is
+occluders off the top of the frame or further along the ray than the tier reaches, which no march
+over a depth buffer can find; that is what the `SHADOWS_ONLY` clump proxies in 10.3 are for.
 
 `surface_thickness` is next. A depth buffer records one surface per pixel and says nothing about how
 solid it is, so this stands in for that. Too high and everything casts a thick shadow onto what is
