@@ -547,7 +547,34 @@ mask, the index and the hit distance, which are needed every frame.
 
 ## Screen space shadows
 
-### The shadow was a third as dark, and neither thickness nor contrast could fix it
+### Every ratio in this section was first measured in the wrong space
+
+A PNG is sRGB encoded. Differencing two of them measures gamma space rather than light, so a
+shadow's darkness relative to a reference read off that difference is not the ratio of light the
+two shadows remove. Every number in this section was first taken that way. They have been
+re-derived by decoding each capture to linear before differencing, and the corrected values are
+what appears below.
+
+The rigs were re-rendered rather than recomputed from old files, and the scoring was run in both
+spaces so the old number and the new one come from the same pixels. The prism hardness sweep
+reproduces to three decimals in the old space, 105.8 and 35.5 included, as does the azimuth sweep;
+the chunky-blade table reproduces to within 0.005. The contrast sweep and the two square posts do
+not reproduce exactly, because their rig parameters were not recorded and had to be reconstructed --
+their numbers below are fresh measurements rather than corrections of the old ones, and the
+conclusion each supported is unchanged. So the harness was never at fault and the renders were never
+wrong; only the arithmetic applied to them was.
+
+Gamma compresses the dark end, so every ratio against the trace came out **lower** than the truth:
+the technique consistently looked further from the reference than it is. What survives unchanged:
+`hardness` 1 is the right default, `surface_thickness` 0.005 is the right default, and `hardness`
+moves darkness while barely moving area. What does not survive is one piece of numerology, retracted
+where it stood.
+
+The measurement that caught it was unrelated -- a `shadow_opacity` probe whose shadow-map control
+must be exactly linear and read 0.336. A control missing a value it cannot miss is the measurement
+failing, not the code.
+
+### The shadow was under half as dark, and neither thickness nor contrast could fix it
 
 Measured against this fork's own raytraced shadow, which is the useful reference here: the same
 prisms, the same sun, one render with them in the acceleration structure and one with them out of it
@@ -559,27 +586,28 @@ tuning step. **Shadow mass** is the total luminance the shadow removes from the 
 dividing it by the shadowed area gives **darkening per shadowed pixel**, which separates a shadow
 that is the wrong size from one that is the wrong darkness.
 
-At Bend's defaults the screen space shadow was **35.5 per pixel against the trace's 105.8, spread
-over 1.48x the area**. So it was not too thick, which is what it looks like: it was too *faint*,
-across too many pixels.
+At Bend's defaults the screen space shadow removed **0.445 of the light per pixel that the trace
+did, spread over 1.49x the area**. So it was not too thick, which is what it looks like: it was too
+*faint*, across too many pixels. (In the gamma space this was first measured in, 35.5 per pixel
+against the trace's 105.8 -- a ratio of 0.335.)
 
 Two knobs looked like they should fix it and neither does.
 
-- `contrast` saturates almost immediately. Swept 4, 6, 8, 12, 16 in one run, shadow mass moved 0.537
-  to 0.599 of that run's trace and per-pixel darkening moved 35.0 to 36.4 -- 12% and 4% for a
+- `contrast` saturates almost immediately. Swept 4, 6, 8, 12, 16 in one run, shadow mass moved 0.664
+  to 0.734 of that run's trace and per-pixel darkening moved 0.445 to 0.466 of it -- 11% and 5% for a
   fourfold change. It only widens the window around an exact depth match; it cannot make a sample
   that did hit count for more.
-- `surface_thickness` buys darkness only by buying width. Raising it from 0.005 to 0.012 brought
-  mass to 1.115 of the trace, but the median shadow was then 2.5x the traced width. Mass and width
-  could not both be matched, at any value.
+- `surface_thickness` buys darkness only by buying width. Raising it from 0.005 to 0.012 took mass
+  past the trace to 1.347, but the shadow then covered 2.4x the traced area while still reading only
+  0.545 as dark per pixel. Mass and width could not both be matched, at any value.
 
 Three controls were also ruled out as explanations before the cause was found. The sun's azimuth
-does not matter: sweeping it 0, 35, 60 and 90 degrees moved per-pixel darkening only 0.335 to 0.414
+does not matter: sweeping it 0, 35, 60 and 90 degrees moved per-pixel darkening only 0.445 to 0.532
 of the trace, so this is not the degenerate case of a sun nearly behind the camera. Occluder size
-does not fix it: a 30 cm and an 80 cm square post still only reached 0.60 and 0.53. And it is not a
+does not fix it: a 30 cm and an 80 cm square post still only reached 0.596 and 0.571. And it is not a
 cap somewhere in the composition, because the darkest screen space pixels do reach the trace's
-value -- on the 80 cm post the distribution is bimodal, p90 at 104.7 against the trace's 105.8 and
-p50 at 37.7.
+value -- on the 80 cm post the distribution is bimodal, with p90 at 0.991 of the trace's per-pixel
+darkening and p50 at 0.501.
 
 ### The cause is Bend's four accumulators, and the fix is a knob they do not have
 
@@ -599,14 +627,14 @@ march. Swept against the trace, prisms as above, `surface_thickness` at Bend's 0
 
 | `hardness` | darkening per px vs trace | shadow mass vs trace | area vs trace |
 | --- | --- | --- | --- |
-| 0.00 (Bend) | 0.335 | 0.497 | 1.48 |
-| 0.25 | 0.431 | 0.660 | 1.53 |
-| 0.50 | 0.547 | 0.850 | 1.55 |
-| 0.75 | 0.696 | 1.089 | 1.57 |
-| 1.00 | **0.923** | 1.448 | 1.57 |
+| 0.00 (Bend) | 0.445 | 0.664 | 1.49 |
+| 0.25 | 0.563 | 0.867 | 1.54 |
+| 0.50 | 0.685 | 1.069 | 1.56 |
+| 0.75 | 0.812 | 1.273 | 1.57 |
+| 1.00 | **0.939** | 1.477 | 1.57 |
 
-The point is not only that 1.0 lands on the trace's darkness. It is that **darkness moved 2.8x while
-area moved 6%**, so `hardness` and `surface_thickness` are finally separable: one sets how dark, the
+The point is not only that 1.0 lands on the trace's darkness. It is that **darkness moved 2.1x while
+area moved 5%**, so `hardness` and `surface_thickness` are finally separable: one sets how dark, the
 other how wide. Before this there was one knob for both and no setting of it was right.
 
 ### Confirmed on a real field, which is also where the default comes from
@@ -616,17 +644,23 @@ feature exists for is fifteen thousand of them, so it was rendered too: 15,000 p
 ground plane, `cast_shadow = Off`, sun at 26 degrees elevation and 38 degrees off the camera axis,
 against a fourth render with the blades put *into* the acceleration structure as the reference.
 
-| render | shadowed px | px lightened | darkening per px | mass vs reference |
+| render | shadowed px | px lightened | darkening per px vs trace | mass vs trace |
 | --- | --- | --- | --- | --- |
-| `hardness` 0 (Bend) | 96,149 | 0 | 28.2 | 0.368 |
-| `hardness` 1 | 98,980 | 0 | **55.9** | 0.751 |
-| raytraced reference | 132,565 | 0 | 55.6 | 1.000 |
+| `hardness` 0 (Bend) | 71,599 | 0 | 0.864 | 0.468 |
+| `hardness` 1 | 95,517 | 0 | **1.149** | 0.830 |
+| raytraced reference | 132,257 | 0 | 1.000 | 1.000 |
 
-Per-pixel darkness lands on the trace: 55.9 against 55.6. What is still missing is **area**, not
-darkness -- 99k shadowed pixels against the trace's 133k. That gap is the documented screen space
-limit rather than anything tunable: an occluder off the top of the frame, or further along the ray
-than the tier's sample count reaches, cannot be found by a march over the depth buffer. It is the
-case the `SHADOWS_ONLY` clump proxies in section 10.3 of the guide exist for.
+Per-pixel darkness reaches the trace and passes it, by 15% on blades this thin. What is still
+missing is **area**, not darkness -- 96k shadowed pixels against the trace's 132k. That gap is the
+documented screen space limit rather than anything tunable: an occluder off the top of the frame, or
+further along the ray than the tier's sample count reaches, cannot be found by a march over the
+depth buffer. It is the case the `SHADOWS_ONLY` clump proxies in section 10.3 of the guide exist
+for.
+
+Overshooting darkness while undershooting area is the shape to expect from a `min()` composition
+that can only darken: where the march does find the occluder it commits fully, and where it does
+not there is nothing at all. It is why mass, not darkness, is the number to tune `surface_thickness`
+against.
 
 Zero pixels lightened in any of the three, which is the check that the `min()` composition is doing
 what it claims: this pass can only ever darken.
@@ -646,47 +680,59 @@ ambient at 0.16, which puts lit-to-shadowed contrast at about 7.6x so a shadow i
 
 | | shadow mass vs trace | shadow darkness vs trace |
 | --- | --- | --- |
-| `hardness` 0 (Bend) | 0.512 | 0.681 |
-| `hardness` 1, thickness 0.005 | 0.779 | **0.978** |
-| `hardness` 1, thickness 0.010 | 1.101 | 0.972 |
-| `hardness` 1, thickness 0.0025 | 0.573 | 0.978 |
+| `hardness` 0 (Bend) | 0.594 | 0.802 |
+| `hardness` 1, thickness 0.005 | 0.832 | **1.052** |
+| `hardness` 1, thickness 0.010 | 1.177 | 1.051 |
+| `hardness` 1, thickness 0.0025 | 0.609 | 1.043 |
 
-The default still lands: shadow darkness within 2% of the trace. And `hardness` 0 comes in at 0.681,
-close to the 0.75 that one bucket of four predicts -- so the mechanism reads the same at 25x the
-blade cross-section area.
+The default still lands: shadow darkness within 5% of the trace, against 15% over on the thin rig,
+so the fatter the blade the closer `hardness` 1 sits to the reference. `hardness` 0 is 20% short
+here and 14% short there.
 
-**Thickness looked like it wanted retuning and does not.** At 1.0 cm of blade depth, 0.010 gives a
-near perfect global mass of 1.101 against 0.779 for the default, and 0.005 was calibrated on blades
-4 mm deep, so scaling it with the occluder looks obviously right. Stratifying by distance shows it is
-two errors canceling:
+**Retracted:** the gamma-space version of this table read 0.681 for `hardness` 0, and it was
+published alongside the observation that one filled bucket of four predicts a quarter shadow, near
+enough. That was arithmetic between two different spaces and the agreement was a coincidence of the
+encoding. In linear the same measurement is 0.802 and supports no such reading. The quarter-shadow
+mechanism is still what the shader does -- it is visible in the bimodal distribution above, which is
+a shape rather than a ratio -- but no measured number in this document confirms the figure, and none
+is claimed to.
+
+**Thickness looked like it wanted retuning and does not.** At 1.0 cm of blade depth, 0.010 lands
+global mass at 1.177 against 0.832 for the default, and 0.005 was calibrated on blades 4 mm deep, so
+scaling it with the occluder looks obviously right. Stratifying by distance shows it is two errors
+canceling:
 
 | band | blade depth in px | mass, t=0.005 | mass, t=0.010 |
 | --- | --- | --- | --- |
-| 0.5-0.9 m | 12.3 | 0.397 | 0.528 |
-| 1.9-2.7 m | 3.8 | 1.080 | 1.525 |
-| 3.8-5.2 m | 1.9 | 1.494 | 2.162 |
+| 0.5-0.9 m | 12.3 | 0.410 | 0.548 |
+| 1.9-2.7 m | 3.8 | 1.102 | 1.554 |
+| 3.8-5.2 m | 1.9 | 1.522 | 2.182 |
 
 Near the camera every variant undershoots, because a 25 cm blade at 0.7 m throws a shadow longer than
 the High tier's 96 pixel march and the tail is simply not reached. Far away every variant overshoots,
 because the fixed one pixel of rasterization overshoot is proportionally huge on a blade 1.9 px deep.
 Thickness widens everything, so it trades the near error against the far one; a global average over a
-frame whose near bands carry most of the mass then reads as a match. By mean per-band error the
-default 0.005 is the best of the three (0.23 against 0.38 for 0.010). **Keep 0.005.** Reach for 0.010
-only when the camera sits close and the foreground dominates, knowing it is compensating truncation
-with excess width rather than matching the trace.
+frame whose near bands carry most of the mass then reads as a match. Mean absolute per-band mass
+error puts 0.010 clearly last at 0.61, with 0.005 at 0.32 and 0.0025 at 0.31 -- a tie between the two
+lower values rather than a win for the default. Global mass breaks that tie decisively the other way:
+0.832 for 0.005 against 0.609 for 0.0025. **Keep 0.005.** Reach for 0.010 only when the camera sits
+close and the foreground dominates, knowing it is compensating truncation with excess width rather
+than matching the trace.
 
-Shadow DARKNESS, unlike mass, is flat across the frame: 0.91 to 0.97 for `hardness` 1 and 0.60 to
-0.72 for `hardness` 0, at every distance. A prediction that the hardness deficit would vary within
+Shadow DARKNESS, unlike mass, is flat across the frame: 0.93 to 1.01 for `hardness` 1 and 0.67 to
+0.79 for `hardness` 0, at every distance. A prediction that the hardness deficit would vary within
 one frame -- weaker where the blade is 12 px deep, stronger where it is 1.5 px -- was measured and is
 wrong. The deficit is set by how many march samples land inside the depth window, which the blade's
-screen footprint does not determine. The size dependence is a threshold rather than a gradient: the
-sub-pixel blades of the thin rig gave 0.335, and everything at or above about 1.5 px saturates at the
-one-bucket 0.75.
+screen footprint does not determine. The size dependence is a threshold rather than a gradient
+somewhere below one pixel of blade depth, and above it `hardness` 0 sits flat at about 0.8 of the
+trace whatever the blade's screen footprint.
 
 ### Where the two techniques disagree, drawn rather than summarized
 
 Scoring `hardness` 1 against the trace pixel by pixel: 42.9% of shadowed pixels agree, 36.9% are
-shadow only the trace found, 20.3% only the march found. The trace-only share concentrates on one
+shadow only the trace found, 20.3% only the march found. This one is a thresholded classification
+rather than a ratio, so it barely notices the space it is measured in -- redone in linear it is
+42.8 / 37.2 / 20.0. Quoted here as measured, unchanged. The trace-only share concentrates on one
 side of the frame, which suggests occluders off the screen edge on the sun side -- something a march
 over the depth buffer cannot ever find.
 

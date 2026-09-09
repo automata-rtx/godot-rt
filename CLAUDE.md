@@ -124,12 +124,14 @@ buffer. Read section 10 of **`docs/rt_shadows/FORK_GUIDE.md`** before answering 
 - **`hardness` is the knob for a shadow that reads too faint, not `surface_thickness`.** Bend average
   the march into four buckets, so a pixel needs four samples' worth of agreement before it is fully
   shadowed -- and samples are one pixel apart, so a grass blade narrower than that casts about a
-  quarter of the shadow a trace of the same blade gives. Measured: 35.5 darkening per pixel against
-  the raytraced path's 105.8, over 1.5x the area. `hardness` blends that average against the minimum
-  of the same four buckets; `0.0` is Bend's behavior exactly and the default `1.0` matches the
-  trace. It moves darkness 2.8x while moving area 6%, so it and `surface_thickness` are independent:
-  hardness sets how dark, thickness sets how wide. `contrast` is neither -- it saturates, moving mass
-  12% across its whole range. See the screen space section of `docs/rt_shadows/FINDINGS.md`.
+  fraction of the shadow a trace of the same blade gives. Measured in linear light: 0.445 of the
+  raytraced path's darkening per pixel, over 1.5x the area. `hardness` blends that average against
+  the minimum of the same four buckets; `0.0` is Bend's behavior exactly and the default `1.0`
+  matches the trace. It moves darkness 2.1x while moving area 5%, so it and `surface_thickness` are
+  independent: hardness sets how dark, thickness sets how wide. `contrast` is neither -- it
+  saturates. **Score these captures in linear light, never off the sRGB PNG values**; every ratio in
+  that section was first published from gamma-space differences and had to be re-derived. See the
+  screen space section of `docs/rt_shadows/FINDINGS.md`.
 - **One light, Forward+, single view.** The mask has one channel. A second `DirectionalLight3D` gets
   nothing, and this is not a per-light property: `LightStorage` picks the light and marks it with
   `DirectionalLightData::sss_strength`. Multiview, reflection probe and **orthographic** renders
