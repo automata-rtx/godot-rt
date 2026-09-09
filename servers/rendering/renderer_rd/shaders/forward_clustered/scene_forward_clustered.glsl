@@ -2430,8 +2430,28 @@ void fragment_shader(in SceneData scene_data) {
 				if (directional_lights.data[i].rt_slot < RT_SLOT_NONE && RT_MASK_ANSWERS_HERE) {
 					rt_shadowed = true;
 					if (directional_lights.data[i].shadow_opacity > 0.001) {
+						// Raw visibility, deliberately not faded by shadow_opacity here.
+						// The cascade path below does not fade either; both leave it to
+						// the single mix() the second directional loop performs on the
+						// unpacked byte. Fading here as well applied it twice, which is
+						// invisible at the default opacity of 1.0 -- mix(1, s, 1) is s --
+						// and wrong below it, a shadowed pixel losing light as opacity
+						// SQUARED. Measured in linear light: at 0.5 a raytraced sun took
+						// away 0.25 of the light its full shadow does where a shadow
+						// mapped one took away 0.50.
+						//
+						// Under vertex lighting that second loop is compiled out and the
+						// fade is lost, but it is lost for the cascade path in exactly
+						// the same way, so the two still agree.
+						//
+						// Raw is also what everything between here and the pack wants:
+						// the screen space min() below and the shadowmask crossfade both
+						// take a raw operand, and were comparing it against a lightened
+						// one for as long as the fade happened here.
+						//
+						// The guard stays: an opacity of zero has no shadow worth looking
+						// up, and skipping the lookup leaves the fragment lit.
 						shadow = rt_shadow_lookup(directional_lights.data[i].rt_slot);
-						shadow = mix(1.0, shadow, directional_lights.data[i].shadow_opacity);
 					}
 				}
 
