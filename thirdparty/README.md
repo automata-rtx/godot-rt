@@ -93,6 +93,31 @@ Patches:
 - `0006-explicit-includes.patch` ([GH-111557](https://github.com/godotengine/godot/pull/111557))
 
 
+## bend_sss
+
+- Upstream: Bend Studio, https://www.bendstudio.com (see the header of `bend_sss_cpu.h`)
+- Version: unrecorded; the vendored file carries no version and was extracted in 2023
+- License: Apache-2.0
+
+**The upstream URL and revision were not recorded when this was vendored**, and are
+stated here as unknown rather than guessed. Anyone re-syncing it should find the
+current source, record the exact revision in this entry, and diff before replacing.
+
+The CPU half of Bend Studio's screen space shadow technique: it builds the list
+of compute dispatches a light needs and the wave offset each one gets. Extracted
+with no code changes -- only the line endings and trailing whitespace this
+repository normalizes.
+
+The GPU half is not vendored as a file. Bend's HLSL was ported to RD GLSL as
+`servers/rendering/renderer_rd/shaders/effects/screen_space_shadow.glsl`, which
+carries the deviations the port forced in its own header and adds one control
+(`hardness`) that Bend's original does not have.
+
+Files extracted from upstream source:
+
+- `bend_sss_cpu.h`
+- `LICENSE.txt`
+
 ## brotli
 
 - Upstream: https://github.com/google/brotli

@@ -123,9 +123,10 @@ buffer. Read section 10 of **`docs/rt_shadows/FORK_GUIDE.md`** before answering 
   only.
 - **`hardness` is the knob for a shadow that reads too faint, not `surface_thickness`.** Bend average
   the march into four buckets, so a pixel needs four samples' worth of agreement before it is fully
-  shadowed -- and samples are one pixel apart, so a grass blade narrower than that casts about a
-  fraction of the shadow a trace of the same blade gives. Measured in linear light: 0.445 of the
-  raytraced path's darkening per pixel, over 1.5x the area. `hardness` blends that average against
+  shadowed -- and samples are one pixel apart, so a grass blade narrower than that casts well short
+  of the shadow a trace of the same blade gives. Measured in linear light: 0.445 of the raytraced
+  path's darkening per pixel on separated prisms, over 1.5x the area, rising to about 0.80 on a
+  dense field where blades shadow each other. `hardness` blends that average against
   the minimum of the same four buckets; `0.0` is Bend's behavior exactly and the default `1.0`
   matches the trace. It moves darkness 2.1x while moving area 5%, so it and `surface_thickness` are
   independent: hardness sets how dark, thickness sets how wide. `contrast` is neither -- it
@@ -261,11 +262,47 @@ answering anything about upscaling, frame generation or the Vulkan loader.
   the motion vector and depth conventions it assumes, and what to check first on hardware.
 - `docs/streamline/EVALUATION.md` — the design note that preceded it. **Historical.** Some of its
   decisions were taken differently.
+- `docs/rt_shadows/ao_validation/` and `docs/rt_shadows/shadow_validation/` — the two measurement
+  harnesses. Each has its own README. Every published number came from one of them, and a claim
+  about occlusion or shadow quality that did not is an opinion.
 
-Set `GODOT_RT_DEBUG=1` to print per-frame acceleration structure and shadow mask diagnostics.
+## Building and validating
+
+The owner builds through GitHub Actions, not locally, so a local build here exists only to test a
+change before pushing.
+
+```
+scons platform=linuxbsd target=editor dev_build=no debug_symbols=no -j4   # ~90 s incremental
+```
+
+The binary lands at `bin/godot.linuxbsd.editor.x86_64` and is gitignored.
+
+**Rendering is validated under Xvfb plus lavapipe**, which is byte-for-byte deterministic: two
+consecutive runs of the same binary and scene differ by zero pixels, so a difference of a few
+hundred pixels is a real change rather than noise. `docs/rt_shadows/shadow_validation/run.sh` does
+the whole dance; `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json` is the part that matters.
+
+**lavapipe DOES run the raytraced path** — it advertises ray query support and the fork takes it.
+It prints `OpTypeRayQueryKHR is not supported yet.` once at startup; that comes from the Mesa stack,
+not the engine, and does not stop the trace. Verify with `GODOT_RT_DEBUG=1`, which prints per-frame
+acceleration structure and shadow mask diagnostics — a line reading `pre_opaque: ... rt_lights=1
+new_slots=1 tlas=1` is the mask being written. What software rendering cannot tell you is **cost**;
+every timing under it is meaningless.
+
+**Score renders in linear light, never off the sRGB PNG values.** A PNG is sRGB encoded, so
+differencing two of them measures gamma space rather than light. Every screen space shadow ratio
+was first published from gamma-space differences and had to be re-derived. Decode with
+`a <= 0.04045 ? a/12.92 : ((a+0.055)/1.055)**2.4` first — or just use the harnesses, which do.
+
+Two traps that each cost a run: `pkill -f <pattern>` matches the running script's own command line
+and kills it, so kill by explicit PID; and a GDScript parse error makes Godot open a window and sit
+there until the timeout rather than exiting, so parse-check headlessly with `--check-only` first.
 
 CI was narrowed to Windows only, which dropped the checks that ran on Linux — the `--doctool` class
 reference check and the GDExtension API compatibility check. (Unit tests still run: the Windows
 job runs `--test`.) **If you add or
 change a bound property, run `godot --headless --doctool .` yourself and commit the result**;
-nothing else will catch it.
+nothing else will catch it. Static checks run `codespell`, which rejects
+British spellings. The -our, -re and -ise endings have each failed a build here; write US English in
+prose and comments. Note that codespell rewrites in place, so it will also "correct" a sentence
+that quotes a British spelling as an example.

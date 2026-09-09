@@ -570,9 +570,11 @@ the technique consistently looked further from the reference than it is. What su
 moves darkness while barely moving area. What does not survive is one piece of numerology, retracted
 where it stood.
 
-The measurement that caught it was unrelated -- a `shadow_opacity` probe whose shadow-map control
-must be exactly linear and read 0.336. A control missing a value it cannot miss is the measurement
-failing, not the code.
+The measurement that caught it was unrelated. A `shadow_opacity` probe carried a control on the
+shadow MAP path, which this fork does not touch and which applies the fade exactly once, so at an
+opacity of 0.5 it must read **exactly 0.500**. It read 0.336. A control missing a value it cannot
+miss is the measurement failing, not the code -- and the same probe is now
+`shadow_validation/opacity.gd`, so the check is a command rather than a memory.
 
 ### The shadow was under half as dark, and neither thickness nor contrast could fix it
 

@@ -49,8 +49,13 @@ import sys
 import numpy as np
 from PIL import Image
 
-# The 8-bit code below which a difference is called no shadow. 8/255 in both
-# spaces, so the same physical threshold in each rather than the same number.
+# The difference below which a pixel is called unshadowed. Deliberately the same
+# NUMBER in both spaces -- 8 of 255 -- and therefore NOT the same amount of light:
+# 8/255 of linear range is a far smaller physical difference than 8 sRGB codes are
+# down in the dark end. That is fine because the threshold only ever selects which
+# pixels to count, and both spaces are scored against a reference selected the
+# same way, but it does mean the two spaces count slightly different pixel sets
+# and their `area` columns are not directly comparable.
 THRESH_SRGB = 8.0
 THRESH_LINEAR = 8.0 / 255.0
 

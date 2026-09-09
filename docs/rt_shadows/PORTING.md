@@ -977,13 +977,33 @@ cascade map's uniform 0/1/1 -- the traced sun's penumbra grows with the gap it c
 
   | Block | Condition | Body |
   | --- | --- | --- |
-  | mask | `rt_slot < RT_SLOT_NONE && RT_MASK_ANSWERS_HERE` | set `rt_shadowed = true`; then, only if `shadow_opacity > 0.001`, sample the mask and `mix(1.0, shadow, shadow_opacity)` |
+  | mask | `rt_slot < RT_SLOT_NONE && RT_MASK_ANSWERS_HERE` | set `rt_shadowed = true`; then, only if `shadow_opacity > 0.001`, sample the mask. Hand over RAW visibility -- do NOT fade it here |
   | cascades | `!rt_shadowed && shadow_map_opacity > 0.001` | upstream's chain unchanged, with the `#undef` of the loop's own per-cascade bias macro (`BIAS_FUNC`, which offsets the shading position along the light and the geometric normal) moved inside it |
   | tail | `rt_shadowed \|\| shadow_opacity > 0.001` | the lightmap shadowmask branches, the fade, and the vertex-lighting apply |
 
   `RT_SLOT_NONE` is `255.0` and the slot is a float in the light record, so that is a float compare.
   `RT_MASK_ANSWERS_HERE` is the stage 15 macro, constant-`true` wherever the material writes
   pre-pass depth.
+
+- **The mask arm hands over raw visibility, and applying `shadow_opacity` there is a bug.** The
+  second directional loop already applies it, unconditionally, to whatever byte the first loop
+  packed; the cascade chain knows this and hands over raw visibility too. This fork shipped the
+  extra `mix()` for several months. It is invisible at the default opacity of 1.0, because
+  `mix(1, s, 1)` is `s`, and wrong at every value below it -- the light a shadowed pixel loses goes
+  as opacity SQUARED. Measured in linear light before the fix, a raytraced sun took away 0.25 of its
+  full-shadow light at an opacity of 0.5 where a shadow-mapped one took away 0.50.
+
+  Two consumers sitting between the lookup and the pack want the raw value for the same reason: the
+  screen space contact shadow is combined with `min()`, and the lightmap shadowmask crossfade blends
+  against a raw `shadowmask`. Fading early hands both of them an operand in the wrong space.
+
+  Under `USE_VERTEX_LIGHTING` the second loop is compiled out entirely, so that path ends up
+  ignoring `shadow_opacity` -- but it already does so for the cascade chain, upstream included, and
+  the two agreeing is worth more than the raytraced path alone being right. Omni and spot keep their
+  own `mix()` and must not be changed to match: they compute and consume the value inside one
+  function, with no pack and unpack, so theirs is the only application.
+  `shadow_validation/opacity.gd` in the docs tree is the regression test -- it fits the exponent of
+  `lost(o)/lost(1) = o^k` and must read 1.00, with a shadow-map control that must read 0.500.
 
 - **The mask arm is chosen on the slot alone, never on `shadow_opacity`.** `rt_shadowed` means "the
   mask is this light's answer here", not "the mask shadowed this fragment". A sun that holds a slot
@@ -1000,10 +1020,16 @@ cascade map's uniform 0/1/1 -- the traced sun's penumbra grows with the gap it c
 
   - The two lightmap arms, REPLACE and OVERLAY, keep their `smoothstep(fade_from, fade_to,
     vertex.z)` unguarded and run for both paths. Both end at the baked `shadowmask` rather than at
-    fully lit, and the trace knows nothing about a shadowmask. OVERLAY's inner term does also fade
-    the dynamic shadow toward 1.0, so under a raytraced sun it applies the fade twice; that is left
-    alone because both applications converge on the same `shadowmask` and the error is confined to
-    the fade window, where it only brings the handover on a little early.
+    fully lit, and the trace knows nothing about a shadowmask.
+
+    **This is a known defect, reproduced deliberately so that a port matches the shipped engine
+    rather than diverging from it.** The trace has already faded its own visibility to lit across
+    this identical window, which is exactly why the plain arm below is guarded with `!rt_shadowed`,
+    so under a raytraced sun these two arms fade the dynamic term a second time and a lightmapped
+    surface mid-window reads lighter than the cascade path does. It is confined to the fade window
+    and reachable only with `USE_LIGHTMAP` plus a shadowmask plus a raytraced sun, which is why it
+    has not been fixed. If you fix it, guard both arms' dynamic term the same way the plain arm is
+    guarded, and fix it in the engine rather than only in the port.
   - The plain arm's `mix(shadow, 1.0, smoothstep(...))` must be wrapped in `if (!rt_shadowed)`. The
     trace has already applied it, over the negation of these same two numbers, and it must: the
     thing that has to be continuous is the mask, which the denoiser filters and reprojects. Running
@@ -1688,7 +1714,7 @@ format Godot revises between versions. Check these first.
 | `_setup_render_pass_uniform_set` | Bindings added on every path, including probe and no-render-buffer renders. |
 | `update_light_buffers` | Every early-out preserves both invariants: `rt_slot < RT_SLOT_NONE` iff the light has a channel this frame, `shadow_map_opacity > 0.001` iff an atlas rect or cascade was actually written. |
 | `_pre_opaque_render` dispatch site | Depth is resolved before it; the trace is fed `scene_data->get_cam_projection()`, not the raw member. |
-| Directional loop in `scene_forward_clustered.glsl` | Re-derive the three-way split by hand: upstream's single `shadow_opacity` block becomes a mask block, a cascade block gated on `shadow_map_opacity`, and a shared tail gated on `rt_shadowed \|\| shadow_opacity`. The lightmap shadowmask branches and the vertex-lighting apply run on both paths; the plain fade smoothstep runs only on the non-raytraced one, because the trace already baked it. |
+| Directional loop in `scene_forward_clustered.glsl` | Re-derive the three-way split by hand: upstream's single `shadow_opacity` block becomes a mask block, a cascade block gated on `shadow_map_opacity`, and a shared tail gated on `rt_shadowed \|\| shadow_opacity`. The lightmap shadowmask branches and the vertex-lighting apply run on both paths; the plain fade smoothstep runs only on the non-raytraced one, because the trace already baked it. **The mask block must hand over RAW visibility**: the second loop applies `shadow_opacity` to the unpacked byte for both paths, and fading in the first loop as well squares it. |
 | Fog `Params` UBO / `ParamsUBO` | `cam_position` at the identical offset on both sides. |
 | Fog `ShaderGroup` enum | The four device-capability groups still contiguous and first; `+ SHADER_GROUP_BASE_RAYTRACED` silently maps wrong if a fifth is inserted. |
 | `_get_fog_process_variant` | Still `device_group * VOLUMETRIC_FOG_PROCESS_SHADER_MAX + idx`, and the push order matches the enum position-for-position. |

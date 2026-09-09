@@ -1,12 +1,17 @@
 # The godot-rt fork: what it changes and how to use it
 
-This engine is Godot 4.8-dev with two additions to the Forward+ renderer: hardware ray-traced
-shadows, and a second ambient occlusion estimator. Everything else about Godot is unchanged, so
-ordinary Godot knowledge applies — except in the places listed here, where it will actively
-mislead you.
+This engine is Godot 4.8-dev with three additions to the Forward+ renderer: hardware ray-traced
+shadows, a second ambient occlusion estimator, and a screen space contact shadow for the sun.
+Everything else about Godot is unchanged, so ordinary Godot knowledge applies — except in the
+places listed here, where it will actively mislead you.
 
-Sections 1 to 8 are the shadows. Section 9 is the occlusion; the two are independent and either
-can be used without the other.
+Sections 1 to 8 are the raytraced shadows. Section 9 is the occlusion. Section 10 is the screen
+space contact shadow, which is a separate feature with its own setting and works whether or not
+raytraced shadows are on. All three are independent; any can be used without the others.
+
+A fourth addition, an NVIDIA Streamline integration giving DLSS super resolution and frame
+generation, is Windows-only, off by default, and documented separately in
+`docs/streamline/INTEGRATION.md` rather than here.
 
 This document is self-contained and describes what the fork IS. If you are working in a **game
 project** that uses this engine rather than in the engine repository, copy this file (or the parts
@@ -234,7 +239,7 @@ denoiser. If a shadow looks wrong, that is the axis to move along.
 | Subsurface transmittance | **Known gap.** Falls back to the material's own transmittance depth for any raytraced light. `shadow_map_enabled` restores it. |
 | Volumetric fog, raytraced `OmniLight3D`/`SpotLight3D` | Lit, but casts no light shafts. `shadow_map_enabled` restores it. |
 | Volumetric fog, raytraced `DirectionalLight3D` | **Works.** The fog traces its own ray per froxel. Note that ray is culled by the light's `cull_mask`, not its `shadow_caster_mask` — an inconsistency with the surface path. |
-| Alpha-blended surfaces | **Receive no shadow** from a raytraced light by default. They cannot read the mask -- it holds one answer per pixel, belonging to the opaque surface behind the glass. `shadow_map_enabled` restores it, because the alpha pass then falls through to the map. Alpha-to-coverage and `depth_prepass_alpha` materials write pre-pass depth and are shadowed from the mask normally. |
+| Alpha-blended surfaces | **Receive no shadow** from a raytraced light by default. They cannot read the mask -- it holds one answer per pixel, belonging to the opaque surface behind the glass. `shadow_map_enabled` restores it, because the alpha pass then falls through to the map. Alpha-to-coverage and `depth_prepass_alpha` materials write pre-pass depth and are shadowed from the mask normally. The same gate governs the screen space contact shadow of section 10, so an alpha-blended surface receives none of that either, and `shadow_map_enabled` does **not** buy that one back -- there is no map for it to fall through to. |
 | Materials with `depth_draw_never` or `depth_test_disabled` | Cast a raytraced shadow where vanilla casts none, and never receive one. |
 | Light projectors | Unaffected. |
 | SDFGI, VoxelGI, LightmapGI, decals | Unaffected by the raytraced path itself — but see the note on lightmap bake times below. |
@@ -542,6 +547,28 @@ anything else.
   not among them — the Windows job runs `--test` itself.
   If you change a bound property, run `godot --headless --doctool .` yourself and commit the result.
 
+Three more were found while fixing the raytraced `shadow_opacity` double-apply, and left alone
+deliberately. All three live in the directional light loop in `scene_forward_clustered.glsl`, all
+three are narrow, and none is a regression — they were shipped, not introduced. They are recorded
+because nothing else would surface them:
+
+- **A lightmapped surface under a raytraced sun fades its dynamic shadow twice.** The shadowmask
+  REPLACE and OVERLAY arms apply `smoothstep(fade_from, fade_to, vertex.z)` unconditionally, but the
+  trace has already faded its own visibility to lit across that identical window — which is exactly
+  why the non-lightmap arm beneath them is guarded with `if (!rt_shadowed)`. So mid-window such a
+  surface reads lighter than the cascade path would make it. Confined to the fade window, and
+  reachable only with `LightmapGI` plus a baked shadowmask plus a raytraced sun.
+- **`shadow_opacity` is ignored entirely under `render_mode vertex_lighting`.** The second
+  directional loop, which is the single place the fade is applied, is compiled out on that path.
+  This is upstream Godot's behavior for the cascade path too, so the fork now matches it rather than
+  being the only path that honored it. One line applying the fade once before the vertex-light
+  multiply would fix both at once.
+- **A vertex-lit fragment can keep a contact shadow from a sun whose `shadow_opacity` is zero.** A
+  sun is granted a mask slot regardless of opacity, so `rt_shadowed` is true, the screen space term
+  is folded in by `min()`, and on the vertex-lighting path there is no second loop to multiply it
+  away. Needs vertex lighting, a raytraced sun, `shadow_opacity` at exactly zero, and screen space
+  shadows on.
+
 ---
 
 ## 9. Ambient occlusion
@@ -765,6 +792,12 @@ one. Taking it out with `GeometryInstance3D.cast_shadow = Off` removes all of th
 cost — and removes its shadow with it. This gives the shadow back, at a fixed screen-space GPU cost
 and no CPU cost at all.
 
+**That GPU cost has not been measured on hardware.** It is fixed with respect to scene complexity —
+the pass is a compute march over the depth buffer and does not care how many blades produced it —
+and it scales with resolution and with the `quality` tier's sample count. But unlike the occlusion
+passes in section 9, no millisecond figure exists for it, on a 5090 or on anything else. Treat the
+absence as an absence: measure it before budgeting for it.
+
 The grass still *receives* the raytraced shadow as it always did; `cast_shadow` governs only casting.
 
 ### 10.2 Why min() and not a multiply
@@ -815,7 +848,27 @@ march divides each stored depth by its distance along the ray to make the light'
 which is what a perspective projection needs and an orthographic one, whose rays are already
 parallel and whose depth is linear, does not.
 
-### 10.4 Tuning
+### 10.4 The settings
+
+All under `rendering/lights_and_shadows/screen_space_shadows/`, all live except where noted. Four
+of them are Bend Studio's own values, kept; `hardness` is not part of their technique at all.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `enabled` | `false` | Turns the pass on. **Also forces the depth pre-pass on and forces its MSAA resolve**, because that buffer is what the shadow is marched over. |
+| `quality` | `Medium` | March length, in **samples and therefore in pixels**: Low 32, Medium 60, High 96. Not a world-space distance — see 10.3. |
+| `strength` | `1.0` | How dark a fully shadowed pixel goes. This fork's addition, not Bend's. For a shadow of the wrong darkness reach for `hardness` first. |
+| `hardness` | `1.0` | How much one depth sample may darken a pixel alone. **Not Bend's**: they always average, which is `0.0` here. See 10.5. |
+| `surface_thickness` | `0.005` | How solid the depth buffer's one surface per pixel is assumed to be. Bend's recommended starting value. See 10.5. |
+| `bilinear_threshold` | `0.02` | Edge detect sensitivity. Bend's value; scale it with `surface_thickness`. |
+| `contrast` | `4.0` | Widens the window around an exact depth match. Bend's value. **Not a darkness knob** — it saturates. |
+| `ignore_edge_pixels` | `false` | Stops a pixel the edge detect flags from casting. Bend suggest trying it for striated flat surfaces; leave it off for foliage. |
+| `restrict_casters` | `false` | Only geometry outside the acceleration structure casts. See 10.6. |
+| `debug_view` | `Disabled` | `Edge Mask`, `Thread Index`, `Wave Index`, `Caster Mask`. See 10.7. |
+
+There is no per-light property. The pass picks one `DirectionalLight3D` — see 10.1.
+
+### 10.5 Tuning
 
 Two knobs, and they do different jobs. **`hardness` sets how dark the shadow is; `surface_thickness`
 sets how wide it is.** Reach for them in that order, because until this fork added the first one
@@ -826,7 +879,11 @@ march into four buckets and average them, so a pixel needs four samples' worth o
 it is fully shadowed — which is the right call when a stray sample is likelier than a real
 one-sample occluder, and is why only the first few samples of the march are trusted alone. Grass
 inverts the assumption: a blade narrower than the march's one-pixel sample spacing *is* a one-sample
-occluder, so the average caps its shadow at about a quarter strength no matter what else is tuned.
+occluder, so the average holds its shadow well short of the trace's no matter what else is tuned.
+Measured in linear light, Bend's default reaches 0.445 of the trace's per-pixel darkening on
+separated prisms and about 0.80 on a dense field. (An earlier version of this line said "about a
+quarter", from a prediction that one filled bucket of four gives a quarter shadow. No measurement
+supports that figure; see the retraction in the screen space section of `FINDINGS.md`.)
 `hardness` blends between the average and the minimum of the same four buckets. **0.0 is Bend's
 original behavior exactly; the default of 1.0 lets any single sample shadow**, which is what matches
 a trace of the same blades. Turn it down if a scene speckles — though on a field of fifteen thousand
@@ -854,7 +911,7 @@ one that is already too wide, and the global average of those two errors reads a
 per distance band the default wins. See the screen space section of `docs/rt_shadows/FINDINGS.md`.
 
 `contrast` is not a third darkness knob. It only widens the window around an exact depth match, and
-it saturates: taking it from 4 to 16 moved shadow mass by 12% and per-pixel darkness by 4%.
+it saturates: taking it from 4 to 16 moved shadow mass by 11% and per-pixel darkness by 5%.
 
 Leave `ignore_edge_pixels` off. It helps where large flat surfaces at grazing angles produce spurious
 edges along themselves, but it thins genuine shadows at silhouettes — foliage most of all, which is
@@ -868,16 +925,17 @@ the edge detect is firing, which is what `bilinear_threshold` controls.
 Measure with MSAA off as the control. A resolved MSAA depth at a blade silhouette is an average or a
 least-frequent sample, not a real surface depth, and thin geometry is the worst case for it.
 
-### 10.5 Restricting what casts
+### 10.6 Restricting what casts
 
 `rendering/lights_and_shadows/screen_space_shadows/restrict_casters` makes only geometry the
-raytracing acceleration structure will **not** hold cast a screen space shadow. **Off by default**
-while the tuning is re-measured against it; the machinery is in place and the setting is live.
+raytracing acceleration structure will **not** hold cast a screen space shadow. The machinery is
+complete and the setting is live. It is **off by default, and that is a settled decision rather than
+work in flight** -- see "Why it ships off" at the end of this section.
 
 The argument for it is not only cost. Everything in the structure already casts an exact raytraced
 shadow from the same light, and because the two terms are combined by taking whichever is darker,
 the screen space term's own error — the near-field truncation and the one-pixel overshoot in
-section 10.4 — can only ever darken such a pixel *past* the traced answer. On grass that term is the
+section 10.5 — can only ever darken such a pixel *past* the traced answer. On grass that term is the
 best answer available. On a wall it is a wrong dark smudge over a right answer.
 
 **Nothing needs authoring.** The set is derived from the same tests the caster gather makes, so an
@@ -898,10 +956,38 @@ shadow when this is on. Today a leaf card casts a correctly cut-out contact shad
 raytraced shadow is the whole quad (section 2); afterwards it keeps only the quad. Author foliage
 with `cast_shadow = Off` as well if that matters.
 
+It also costs one more attachment. Turning it on switches the depth pre-pass to a variant that
+writes an extra `R8_UNORM` target at internal resolution, plus the scene shader variant that fills
+it. That is small, but it is not free, and it is the reason this is a setting rather than always-on
+behavior.
+
 Set `debug_view` to **Caster Mask** to see which pixels are allowed to cast: white is a caster, and
 with the restriction off it is white everywhere.
 
-### 10.6 Where it lives
+**Why it ships off.** Both `surface_thickness` and `hardness` were calibrated against a measurement
+in which *every* opaque pixel cast, so their defaults describe the unrestricted pass. Turning the
+restriction on changes which surfaces cast and therefore moves the very quantity they were tuned to
+match, and a default that ships with a tuning derived under different conditions is worse than a
+default that is off.
+
+Flipping it honestly needs one specific experiment, which **has not been run**:
+
+1. A scene with real props among the grass -- rocks, posts, a wall -- left at `cast_shadow = On` so
+   they are in the acceleration structure and the A/B has genuinely redundant casters to remove.
+   The rigs in `docs/rt_shadows/shadow_validation/` are all grass on an empty plane, where the only
+   structure geometry is a flat ground plane, and a flat plane cannot occlude itself from a 38
+   degree sun. On those rigs the toggle changes the frame by a single pixel, which is correct and
+   tells you nothing.
+2. `surface_thickness` and `hardness` re-derived on **both** sides of the toggle, against the
+   raytraced reference, in linear light.
+3. The default flipped only if the restricted side wins with its own tuning.
+
+Until then, turn it on per project if the scene is mostly structure geometry with a little foliage,
+and measure rather than assume. This is not a stub or a half-feature: the machinery is finished,
+tested and documented, and the only thing missing is the evidence that a different default would be
+better for everyone.
+
+### 10.7 Where it lives
 
 The technique is Bend Studio's, Apache-2.0. The CPU half — which decides how many dispatches a light
 needs and what wave offset each gets — is vendored with only the line endings and trailing
