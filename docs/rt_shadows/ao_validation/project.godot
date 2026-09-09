@@ -1,0 +1,31 @@
+; Engine configuration file for the ground truth occlusion harness.
+;
+; The estimator is NOT pinned here. main.gd reads AO_METHOD and sets it before
+; building the Environment, because scoring the two estimators against each
+; other needs both in one session and a project file can only hold one answer.
+;
+; Everything else is load-bearing for the measurement:
+;
+;   msaa_3d = 0            occlusion is computed from the depth buffer, and MSAA
+;                          changes it.
+;   screen_space_aa = 0    would blur the silhouettes the estimator is judged on.
+;   half_size = false      full resolution by default, so the score measures the
+;                          estimator rather than the upsample. Set
+;                          rendering/environment/ssao/half_size to score the
+;                          shipped half resolution path and its shading rate.
+config_version=5
+
+[application]
+config/name="Ground truth occlusion validation"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.5", "Forward Plus")
+
+[display]
+window/size/viewport_width=1024
+window/size/viewport_height=1024
+
+[rendering]
+renderer/rendering_method="forward_plus"
+anti_aliasing/quality/msaa_3d=0
+anti_aliasing/quality/screen_space_aa=0
+environment/ssao/half_size=false

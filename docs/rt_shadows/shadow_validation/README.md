@@ -73,6 +73,21 @@ a run silently stops reproducing — it happened while this directory was being 
 across, which is what a *width* measurement needs; it does not give the same numbers as the default
 and is not a substitute for it.
 
+
+## Getting a binary
+
+`run.sh` looks for `bin/godot.linuxbsd.editor.x86_64` at the repository root, or wherever
+`GODOT_BIN` points. The binary is gitignored, so a fresh clone has none. Build one with:
+
+```
+scons platform=linuxbsd target=editor dev_build=no debug_symbols=no -j$(nproc)
+```
+
+The project's own builds come from GitHub Actions rather than from a local toolchain.
+`.github/workflows/linux_builds.yml` still exists and carries `workflow_dispatch`, so a Linux binary
+and the class-reference check can both be had from the Actions tab on demand, even though the
+default push only runs the Windows jobs.
+
 ## Running it
 
 ```

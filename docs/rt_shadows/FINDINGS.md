@@ -752,10 +752,15 @@ blade into a parallelepiped and shifts its lean by about a degree. Use `scaled_l
 numbers moved by less than 0.3% because the error applies identically to every capture, but the
 geometry being compared was not the geometry intended.
 
-The raytraced reference has a ceiling. `MAX_RT_CASTERS` is 65536 (`renderer_scene_cull.cpp:3530`) and
-one MultiMesh instance is one caster, so a field denser than that stops casting into the reference.
-It does warn (`WARN_PRINT_ONCE`, same file, line 3710) rather than failing silently, but a warning in
-a render log is easy to miss and the resulting reference looks entirely plausible.
+The raytraced reference has two ceilings, both 65536, and only one of them warns. `MAX_RT_CASTERS`
+bounds the gather at 65536 caster instances (`renderer_scene_cull.cpp`, search the constant rather
+than trusting a line number) and does warn, once, with `WARN_PRINT_ONCE` — but a warning in a render
+log is easy to miss and the resulting reference looks entirely plausible. The structure update then
+bounds the TLAS at 65536 entries, one per *surface* rather than per instance
+(`renderer_rd/environment/rt_scene.cpp`, the bare `>= 65536` test), and that one breaks out of the
+loop silently. A field of multi-surface meshes reaches it first. One MultiMesh instance is one
+caster and one surface, so a single-surface blade field hits the warning limit; anything else may
+not.
 
 ### What is left is one pixel of rasterization, and it is a floor
 

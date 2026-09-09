@@ -178,7 +178,15 @@ is handled correctly.
 that is a feature, and it is why shadows do not pop as you turn. It also means the acceleration
 structure holds more than what is on screen. Casters are gathered from each light's own volume; the
 sun, having no range, uses the visible frustum cut off at the shadow distance and swept toward the
-light by `caster_distance_scale`. Above 65,536 gathered casters the rest are dropped with a warning.
+light by `caster_distance_scale`.
+
+There are **two** ceilings of 65,536, and the one a real scene hits first is the silent one. The
+gather stops at 65,536 caster *instances* and warns once. The structure update then stops at 65,536
+TLAS entries, which is one per *surface* rather than one per instance, and says nothing at all — it
+simply breaks out of the loop and whatever came after casts no shadow that frame. A scene of
+multi-surface meshes reaches that second limit at a fraction of the instance count, so a shadow can
+go missing with nothing in the log. If shadows vanish in a dense scene and the caster warning has
+not fired, this is the first thing to suspect.
 
 ### Masks behave differently
 
@@ -884,6 +892,11 @@ Measured in linear light, Bend's default reaches 0.445 of the trace's per-pixel 
 separated prisms and about 0.80 on a dense field. (An earlier version of this line said "about a
 quarter", from a prediction that one filled bucket of four gives a quarter shadow. No measurement
 supports that figure; see the retraction in the screen space section of `FINDINGS.md`.)
+`docs/rt_shadows/shadow_validation/` is the harness these numbers came from, and its README lists
+the values a change must not move. Do not tune this by screenshot: the pass overshoots darkness while
+undershooting area, so an eye judging "too dark" or "too light" is reading one of those and not the
+other.
+
 `hardness` blends between the average and the minimum of the same four buckets. **0.0 is Bend's
 original behavior exactly; the default of 1.0 lets any single sample shadow**, which is what matches
 a trace of the same blades. Turn it down if a scene speckles — though on a field of fifteen thousand

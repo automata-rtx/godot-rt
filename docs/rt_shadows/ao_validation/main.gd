@@ -73,6 +73,16 @@ const CAM_FOV := 75.0
 var frames := 0
 
 func _ready() -> void:
+	# Which estimator, chosen here rather than in project.godot, because the two
+	# have to be scored against each other in one session and a project file can
+	# only hold one answer. Read BEFORE the Environment is built: the unity
+	# intensity below depends on it.
+	if OS.get_environment("AO_METHOD") != "":
+		ProjectSettings.set_setting("rendering/environment/ssao/method",
+				int(OS.get_environment("AO_METHOD")))
+	print("AOREF method=%d (0 legacy, 1 ground truth)" % int(
+			ProjectSettings.get_setting("rendering/environment/ssao/method", 0)))
+
 	var scene_name := OS.get_environment("AO_SCENE")
 	var boxes: Array = SOLID_BOXES
 	var cam_cfg: Array = SOLID_CAM

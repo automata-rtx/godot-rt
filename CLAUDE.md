@@ -133,6 +133,10 @@ buffer. Read section 10 of **`docs/rt_shadows/FORK_GUIDE.md`** before answering 
   saturates. **Score these captures in linear light, never off the sRGB PNG values**; every ratio in
   that section was first published from gamma-space differences and had to be re-derived. See the
   screen space section of `docs/rt_shadows/FINDINGS.md`.
+- **Do not tune it by screenshot.** `docs/rt_shadows/shadow_validation/` renders the same scene with
+  and without the pass and scores it against a raytraced reference; its README lists the numbers a
+  change must not move. The pass overshoots darkness while undershooting area, so an eye judging
+  "too dark" is reading one of those and not the other.
 - **One light, Forward+, single view.** The mask has one channel. A second `DirectionalLight3D` gets
   nothing, and this is not a per-light property: `LightStorage` picks the light and marks it with
   `DirectionalLightData::sss_strength`. Multiview, reflection probe and **orthographic** renders
@@ -300,7 +304,9 @@ there until the timeout rather than exiting, so parse-check headlessly with `--c
 
 CI was narrowed to Windows only, which dropped the checks that ran on Linux — the `--doctool` class
 reference check and the GDExtension API compatibility check. (Unit tests still run: the Windows
-job runs `--test`.) **If you add or
+job runs `--test`.) `.github/workflows/linux_builds.yml` was **not deleted** and still carries
+`workflow_dispatch`, so those checks can be run on demand from the Actions tab without restoring
+them to every push. **If you add or
 change a bound property, run `godot --headless --doctool .` yourself and commit the result**;
 nothing else will catch it. Static checks run `codespell`, which rejects
 British spellings. The -our, -re and -ise endings have each failed a build here; write US English in

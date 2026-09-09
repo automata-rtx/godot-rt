@@ -46,19 +46,55 @@ with `AO_INTENSITY` and `AO_POWER` set to the values a project actually uses to 
 player sees. `ao_compare.py` prints the fraction of the frame below one 8-bit code alongside the
 error columns, because a clipping transfer looks fine on every average and terrible on screen.
 
+## Getting a binary
+
+`run.sh` looks for `bin/godot.linuxbsd.editor.x86_64` at the repository root, or wherever
+`GODOT_BIN` points. The binary is gitignored, so a fresh clone has none. Build one with:
+
+```
+scons platform=linuxbsd target=editor dev_build=no debug_symbols=no -j$(nproc)
+```
+
+The project's own builds come from GitHub Actions rather than a local toolchain.
+`.github/workflows/linux_builds.yml` still exists and carries `workflow_dispatch`, so a Linux binary
+can be had from the Actions tab on demand even though the default push runs only the Windows jobs.
+
 ## Running it
+
+```
+./run.sh room gtao          # the room scene, ground truth estimator
+./run.sh room legacy        # the same scene, the estimator Godot has always shipped
+./run.sh "" gtao            # the default solid-boxes scene
+```
+
+Each run writes `noao.png` and `ao.png` into `out/<scene>_<method>/` under Xvfb and lavapipe, which
+is byte-for-byte deterministic. **The estimator is chosen per run rather than in `project.godot`**,
+because scoring the two against each other needs both in one session and a project file can hold
+only one answer; `main.gd` reads `AO_METHOD` before it builds the `Environment`, which matters
+because the unity intensity depends on which estimator is active.
+
+Then the references and the comparison, which are CPU traces and slower, so `run.sh` does not run
+them for you:
 
 ```
 python3 ao_truth.py 1.0 truth.npz                 # reference A, real geometry
 python3 ao_screen_truth.py 1.0 0.3 screen.npz     # reference B, radius and thickness
-python3 ao_compare.py truth.npz noao.png gtao=with_ao.png
+python3 ao_compare.py truth.npz out/room_gtao/noao.png gtao=out/room_gtao/ao.png
 ```
 
-Renders come from a project holding `main.gd` and `main.tscn`, with `RT_TEST_OUT` set to the output
-path and `AO_OFF=1` for the divisor. `AO_SCENE`, `AO_RADIUS`, `AO_INTENSITY` and `AO_POWER` are the
-other knobs. The viewport size belongs to the scene, so `main.gd` sets it.
+`AO_SCENE`, `AO_RADIUS`, `AO_INTENSITY` and `AO_POWER` are the other knobs, passed through by
+`run.sh` from the environment. The viewport size belongs to the scene, so `main.gd` sets it.
 Set `AO_DIST_RADIUS` on either tracer to give every shading point the depth-scaled radius the
 shipped default uses instead of a fixed world radius.
+
+As a smoke test rather than a score: on the `room` scene the ground truth estimator comes back at a
+mean visibility of about 0.94 with a minimum near 0.26, and the legacy one at about 0.98 with a
+minimum near 0.77. Those are not targets -- the targets are in section 9 of `FORK_GUIDE.md` and come
+from `ao_compare.py` against a traced reference -- but if a run produces two nearly identical
+captures, or an `ao.png` no darker than its `noao.png`, something is wrong before any scoring starts.
+
+The equivalent harness for shadows is `docs/rt_shadows/shadow_validation/`, which carries a "numbers
+to reproduce" table this one does not yet have.
 
 ## gtao_sim.py
 
