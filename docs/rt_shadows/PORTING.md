@@ -1476,6 +1476,7 @@ recipe should not leave you to rediscover.
 | `renderer_scene_render.h` | `environment_set_ssao_method` / `_get_`, and the `RaytracingInstance` record | non-virtual | forwards to `RendererEnvironmentStorage` |
 | `storage/environment_storage.h` | `environment_set_ssao_method` / `_get_` | non-virtual | the storage itself |
 | `rendering_device.h` | `acceleration_structure_is_valid` | non-virtual | the device |
+| `renderer_geometry_instance.h` | `set_screen_space_shadow_caster` | pure virtual | every `RenderGeometryInstance`: the forward-clustered one, the mobile one and the dummy. The base implementation must call `_mark_dirty()`, or the flag never reaches instance data and the caster mask comes back empty with nothing to indicate why. |
 
 The defaulted virtuals are deliberate: a renderer that has no raytraced shadows should not have to
 say so four times. The pure ones are the opposite call -- they change behavior a backend cannot
@@ -1512,6 +1513,24 @@ system working.
 | `directional/scatter_distance` | float | `25.0` | 0–500, or greater |
 | `directional/demoted_shadow_mode` | int | `2` | Keep Authored, Orthogonal, **2 Splits** |
 | `directional/demoted_shadow_size` | int | `1024` | 0–4096; `0` leaves the request alone |
+
+### Project settings -- `rendering/lights_and_shadows/screen_space_shadows/`
+
+All live. Four defaults are Bend Studio's own values, kept as they were; two are measured results
+belonging to this fork and would be wrong if taken from Bend's sample.
+
+| Setting | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | forces the depth pre-pass on and forces its MSAA resolve |
+| `quality` | int | `1` | Low, **Medium**, High -- 32, 60 and 96 samples, which is the march length in PIXELS |
+| `strength` | float | `1.0` | hint `0–1`; this fork's, not Bend's. Reaches the shader as `DirectionalLightData::sss_strength` |
+| `surface_thickness` | float | `0.005` | hint `0.0001–0.1`. Bend's recommended starting value, and **measured** to be right at two blade sizes -- do not scale it with the occluder, see FINDINGS |
+| `bilinear_threshold` | float | `0.02` | hint `0.001–0.2`. Bend's; scale it with `surface_thickness` |
+| `contrast` | float | `4.0` | hint `1–8`. Bend's. Not a darkness control -- it saturates |
+| `hardness` | float | `1.0` | hint `0–1`. **Not Bend's at all**: their shader always averages the four accumulators, which is `0.0` here. `1.0` is a measured result and taking `0.0` from the upstream sample gives about half the trace's shadow |
+| `restrict_casters` | bool | `false` | **ships off deliberately; do not flip it during a port.** The reason and the experiment that would justify it are in FORK_GUIDE section 10.6 |
+| `ignore_edge_pixels` | bool | `false` | Bend suggest trying it; off here because it thins genuine shadows at silhouettes |
+| `debug_view` | int | `0` | Disabled, Edge Mask, Thread Index, Wave Index, Caster Mask |
 
 ### Project settings -- `rendering/environment/ssao/`
 
@@ -1570,6 +1589,7 @@ Compile-time, and each is load-bearing for the reason given.
 | `MAX_BLAS_BUILD_TRIANGLES_PER_FRAME` | 1 << 20 | the other half of that budget |
 | `MAX_RT_CASTERS` | 65536 | gather ceiling, warns and drops past it |
 | TLAS instance ceiling | 65536 | a second, separate ceiling on caster SURFACES rather than casters, tested as a bare literal in the structure update and silent when it is hit -- a scene of multi-surface meshes reaches it first |
+| `SHADER_VERSION_COLOR_PASS` | 10 | **an invariant, not a value.** It must equal the number of depth versions declared above it in `scene_shader_forward_clustered.h`, because the color pipeline index is `SHADER_VERSION_COLOR_PASS * 2 + shader_flags` and the depth loop pushes each depth version twice, once per ubershader. The caster mask variant was inserted as version 9 and pushed this from 9 to 10. A newer Godot adding its own depth version -- an ordinary thing for it to do -- silently mis-indexes every color pipeline, and the symptom is wrong or missing geometry rather than an error. |
 | `SECTOR_COUNT` | 32 | bits in the GTAO visibility mask, one uint |
 | `ANGLE_BIAS` | 0.03 | GTAO self-occlusion guard |
 | `DEPTH_MIP_COUNT` | 5 | levels in the GTAO depth pyramid |
@@ -1721,7 +1741,7 @@ format Godot revises between versions. Check these first.
 | `RB_SCOPE_SSAO` / `RB_FINAL` format and usage | Still `R8_UNORM` with sampling and storage, and still what the forward shader samples for occlusion. Both estimators write it; if upstream changes it, change both. |
 | `Environment::_validate_property` forward_plus branch | The `else` this fork added is still reachable, i.e. upstream has not put its own `return` in front of it. |
 | `re-spirv` `SpvIsSupported()` | Still excludes ray-query opcodes so those modules bail out rather than being miscompiled. Watch stderr for the "not supported yet" line. |
-| C++ push constant struct vs its GLSL block | Sizes match **exactly**, trailing padding included. The reflected size is the block's exact end, not rounded up to sixteen, so a pad on one side alone breaks it. RenderingDevice then rejects the whole push and refuses the dispatch -- but only under `DEBUG_ENABLED`, so this is fatal in the editor and invisible in a shipped game. The pass silently stops running and the frame shows whatever its target already held; in this fork that was an entirely black scene. Seven pairings, with the way to check them, above the assertions in `effects/rt_shadows.h`. |
+| C++ push constant struct vs its GLSL block | Sizes match **exactly**, trailing padding included. The reflected size is the block's exact end, not rounded up to sixteen, so a pad on one side alone breaks it. RenderingDevice then rejects the whole push and refuses the dispatch -- but only under `DEBUG_ENABLED`, so this is fatal in the editor and invisible in a shipped game. The pass silently stops running and the frame shows whatever its target already held; in this fork that was an entirely black scene. **Eight** pairings, spread across `effects/rt_shadows.h`, `effects/gtao.h`, `effects/screen_space_shadows.h` and `environment/rt_scene.h`. The registry listing all eight, and the way to read a block's reflected size, is the comment above the assertions in `effects/rt_shadows.h` -- keep it in step, since it is the only place they are gathered. |
 | Screen space shadow light selection | `update_light_buffers` still runs before `_pre_opaque_render` reads `get_sss_light()`, and still fills `DirectionalLightData::direction` for a directional light from the light basis's **+Z** (pointing toward the light), not the `-Z` omni and spot use. If upstream unifies those two, the march runs backwards and shadows radiate away from the sun. |
 | Screen space shadow depth availability | `force_depth_pre_pass` and `finish_depth` both still take a term for this feature. It marches the pre-pass depth buffer and, unlike raytraced shadows, can be enabled with raytracing off -- where nothing else would force either. |
 | Bend's Y convention | `Projection::set_depth_correction` still negates Y (`m[5] = -1` under `flip_y`) against a positive-height Vulkan viewport. The vendored dispatch builder applies D3D's `* -0.5 + 0.5`, so the effect negates clip Y on the way in. If upstream changes the viewport or the correction, this double negation flips and the sun lands at its vertical mirror. |
@@ -1736,7 +1756,38 @@ Vulkan) under Xvfb, rendering to PNG and comparing with a small Python script.
 
 Know what that distorts: lavapipe traverses the BVH on the CPU, so it **overstates** rasterization
 cost and **understates** the benefit of ray early-out. Treat its frame times as directional only.
-Image comparisons are trustworthy and reproducible to the byte.
+Image comparisons are trustworthy and reproducible to the byte -- two consecutive runs of the same
+binary and scene differ by zero pixels, so a difference of a few hundred pixels is a real change and
+not noise.
+
+lavapipe **does** run the raytraced path: it advertises ray query support and this fork takes it. It
+prints `OpTypeRayQueryKHR is not supported yet.` once at startup, which comes from the Mesa stack
+rather than the engine and does not stop the trace. `GODOT_RT_DEBUG=1` settles it either way -- a
+line reading `pre_opaque: ... rt_lights=1 new_slots=1 tlas=1` is the mask being written.
+
+**Score in linear light. This is the rule the whole fork's measurements rest on, and getting it
+wrong invalidated every published screen space shadow ratio once already.** A PNG is sRGB encoded,
+so differencing two of them measures gamma space rather than light, and a darkness ratio read off
+that difference is not the ratio of light the two images remove. Decode first:
+
+    a <= 0.04045 ? a / 12.92 : ((a + 0.055) / 1.055) ** 2.4
+
+The error is not obvious from the numbers it produces -- they look plausible and merely pessimistic.
+What caught it was a control that could not miss and did: a shadow-map path applying an opacity fade
+exactly once must read 0.500 at an opacity of 0.5, and it read 0.336. **Build a control with a known
+exact answer into any new measurement**, and disbelieve the measurement before the code when the
+control misses.
+
+Two harnesses do all of this already and are the place to start rather than a new script:
+
+| | What it scores | How |
+| --- | --- | --- |
+| `docs/rt_shadows/shadow_validation/` | the screen space contact shadow against a raytraced reference, and `shadow_opacity` linearity | `./run.sh field`, `./run.sh probe`, `./run.sh opacity` |
+| `docs/rt_shadows/ao_validation/` | the occlusion estimators against two CPU-traced references | `./run.sh room gtao`, then `ao_truth.py` and `ao_compare.py` |
+
+Each README carries the numbers a change must not move, and each pins its own quality tier, capture
+resolution and scene geometry rather than inheriting them -- which is how a run silently stops
+reproducing.
 
 The technique that settled most **denoiser** questions was **RMSE against a high-sample,
 denoiser-off render of the same scene** -- one sample plus denoiser versus sixteen-sample ground

@@ -248,6 +248,7 @@ private:
 	//   GTAO::GatherPushConstant    <-> effects/gtao_gather.glsl             (96)
 	//   GTAO::FilterPushConstant    <-> effects/gtao_filter.glsl             (80)
 	//   RaytracingScene::DequantizePushConstant <-> effects/rt_dequantize.glsl (32)
+	//   ScreenSpaceShadows::PushConstant <-> effects/screen_space_shadow.glsl (76)
 	//
 	// To read a block's reflected size, strip Godot's own two preamble lines
 	// first -- glslang cannot infer a stage from .glsl and chokes on #[compute]:

@@ -9,6 +9,25 @@ a scene costs.
 Before answering anything about lights, shadows, fog, or the renderer, read
 **`docs/rt_shadows/FORK_GUIDE.md`**. It is the authoritative description of this fork.
 
+## What this engine is for
+
+A single-player first-person shooter. Not a general-purpose engine release, so a tradeoff that suits
+this game is the right tradeoff even where a general one would differ. The profile is the missing
+premise under a lot of what follows:
+
+- **Two target machines**, and every measurement in the documentation was taken on one of them
+  rather than on arbitrary test hardware: an **RTX 5090 desktop at 3440x1440**, and a
+  **Ryzen 7 7840HS / Radeon 780M laptop**. When the docs single out `shading_rate` as the first knob
+  for weak hardware, the 780M is the hardware they mean.
+- **SMAA, not TAA.** This matters beyond antialiasing: Godot fills the velocity buffer only for a
+  viewport running a temporal upscaler or TAA, and DLSS frame generation refuses without motion
+  vectors. So frame generation here is reachable only on top of DLSS super resolution, which has
+  never produced an image -- the two open DLSS items are serially dependent.
+- **MSAA deliberately off.** So "measure with MSAA off as the control" is the shipping configuration
+  rather than a methodology note, and `restrict_casters` declining under MSAA is a non-issue here.
+- **Not VR.** Every multiview and stereo fallback in this fork is dead code for this project.
+- Builds come from **GitHub Actions**, not a local toolchain.
+
 ## Defaults that differ from vanilla Godot
 
 A `.tscn` only stores properties that differ from a freshly constructed node, so these are the
@@ -281,26 +300,26 @@ scons platform=linuxbsd target=editor dev_build=no debug_symbols=no -j4   # ~90 
 
 The binary lands at `bin/godot.linuxbsd.editor.x86_64` and is gitignored.
 
-**Rendering is validated under Xvfb plus lavapipe**, which is byte-for-byte deterministic: two
-consecutive runs of the same binary and scene differ by zero pixels, so a difference of a few
-hundred pixels is a real change rather than noise. `docs/rt_shadows/shadow_validation/run.sh` does
-the whole dance; `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json` is the part that matters.
+**Rendering is validated under Xvfb plus lavapipe**, which is byte-for-byte deterministic: two runs
+of the same binary and scene differ by zero pixels, so a difference of a few hundred pixels is a real
+change and not noise. Do not write a new script for it — `shadow_validation/run.sh` and
+`ao_validation/run.sh` already do the whole dance, and the traps that cost a run each
+(`pkill -f` matching the running script's own command line; a GDScript parse error leaving Godot
+sitting on a window until the timeout) are recorded as comments beside the code that trips on them.
+Details live in those two READMEs, which are the copies that get maintained.
 
-**lavapipe DOES run the raytraced path** — it advertises ray query support and the fork takes it.
-It prints `OpTypeRayQueryKHR is not supported yet.` once at startup; that comes from the Mesa stack,
-not the engine, and does not stop the trace. Verify with `GODOT_RT_DEBUG=1`, which prints per-frame
-acceleration structure and shadow mask diagnostics — a line reading `pre_opaque: ... rt_lights=1
-new_slots=1 tlas=1` is the mask being written. What software rendering cannot tell you is **cost**;
-every timing under it is meaningless.
+Three things about it are worth knowing before reading any output:
 
-**Score renders in linear light, never off the sRGB PNG values.** A PNG is sRGB encoded, so
-differencing two of them measures gamma space rather than light. Every screen space shadow ratio
-was first published from gamma-space differences and had to be re-derived. Decode with
-`a <= 0.04045 ? a/12.92 : ((a+0.055)/1.055)**2.4` first — or just use the harnesses, which do.
-
-Two traps that each cost a run: `pkill -f <pattern>` matches the running script's own command line
-and kills it, so kill by explicit PID; and a GDScript parse error makes Godot open a window and sit
-there until the timeout rather than exiting, so parse-check headlessly with `--check-only` first.
+- **Score in linear light, never off the sRGB PNG values.** A PNG is sRGB encoded, so differencing
+  two of them measures gamma space rather than light. Every screen space shadow ratio was first
+  published from gamma-space differences and had to be re-derived. Decode with
+  `a <= 0.04045 ? a/12.92 : ((a+0.055)/1.055)**2.4` first — or use the harnesses, which do.
+  `docs/rt_shadows/PORTING.md`, "How to verify a port", is the authoritative statement of this.
+- **lavapipe DOES run the raytraced path.** It advertises ray query support and the fork takes it.
+  It prints `OpTypeRayQueryKHR is not supported yet.` once at startup; that line comes from the Mesa
+  stack, not the engine, and does not stop the trace. `GODOT_RT_DEBUG=1` settles it — a line reading
+  `pre_opaque: ... rt_lights=1 new_slots=1 tlas=1` is the mask being written.
+- **It cannot tell you cost.** Every timing under software rendering is meaningless.
 
 CI was narrowed to Windows only, which dropped the checks that ran on Linux — the `--doctool` class
 reference check and the GDExtension API compatibility check. (Unit tests still run: the Windows

@@ -118,6 +118,15 @@ opacity rig can distinguish the raytraced branch from the shadow-map branch, whi
 if the mask were absent. This is worth knowing because the line reads exactly like the reference
 silently degrading, and believing it would make every "vs trace" ratio here look untrustworthy.
 
+**`restrict_casters` has no rig here, and the four that exist cannot give it one.** All of them are
+grass on an empty ground plane, so the only geometry in the acceleration structure is a flat plane,
+and a flat plane cannot occlude itself from a 38 degree sun. Toggling the setting on these scenes
+changes the frame by a single pixel -- which is correct, and tells you nothing. A rig that could
+settle it needs real props at `cast_shadow = On` -- rocks, posts, a wall -- standing among the
+grass, so there is genuinely redundant casting to remove; `field.gd` is the closest starting point.
+Do not conclude from a one-pixel difference that the toggle does nothing. Why the default is off,
+and what flipping it would take, is in section 10.6 of `FORK_GUIDE.md`.
+
 It says nothing about temporal behavior. The denoiser is off and every capture is a settled
 still frame, deliberately, because a filtered accumulating shadow is not deterministic frame to
 frame and cannot be differenced against a fixed baseline. Ghosting, flicker and denoiser convergence

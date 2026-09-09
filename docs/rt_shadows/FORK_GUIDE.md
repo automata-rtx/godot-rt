@@ -419,7 +419,12 @@ actually moves the picture:
   knob is `denoiser/spatial_passes`, because each pass is one more full resolution dispatch.
 - **Judge a denoiser change with the camera moving, not parked.** A converged static frame has no
   disocclusions, so the wide spatial passes are doing the least work they ever will and every
-  reduction in filter width looks free.
+  reduction in filter width looks free. There is **no rig for this**. Both harnesses capture settled
+  still frames with the denoiser off, deliberately, because a filtered accumulating shadow is not
+  deterministic frame to frame and cannot be differenced against a fixed baseline. So every temporal
+  claim in this document -- ghosting, convergence, and the blinking-light behavior under "The
+  four-light ceiling" -- comes from reading the code rather than from a measurement, unlike almost
+  everything else here. Weight them accordingly.
 
 All of these take effect on the next frame.
 

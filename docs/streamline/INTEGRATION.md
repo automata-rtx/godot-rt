@@ -300,6 +300,20 @@ is reusable as is.
 
 ## 8. What to check first on hardware
 
+**None of this can be checked from a Linux checkout.** Streamline is Windows-only and needs an
+NVIDIA GPU, so every step below wants a Windows binary on the machine that has one. The Windows job
+in `.github/workflows/runner.yml` is the route to that binary — this project builds through GitHub
+Actions rather than a local toolchain — and the artifact it uploads is what to test with. Reasoning
+about DLSS from the source alone is how a feature that has never rendered a frame accumulates
+confident, wrong documentation.
+
+**Check super resolution before frame generation, and not only because it is simpler.** Frame
+generation refuses without motion vectors, and the engine fills the velocity buffer only for a
+viewport running a temporal upscaler or TAA. This project uses SMAA and deliberately not TAA, so on
+it frame generation is reachable *only* on top of DLSS super resolution — which has itself never
+produced an image. The two open items are serially dependent: debugging frame generation first means
+debugging something structurally unreachable.
+
 In roughly the order a failure would be easiest to diagnose:
 
 1. **It loads.** Startup prints the directory it resolved and then confirms the version. If it

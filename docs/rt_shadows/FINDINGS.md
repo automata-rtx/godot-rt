@@ -163,10 +163,12 @@ the raytraced shadow block alone is 4.49 ms. That is a whole-block figure and no
 neither confirms nor refutes the forty to sixty five percent fixed share above. What it does do is
 warn against transplanting that share. If the fixed part really were dominated by full resolution
 bandwidth, a part with a small fraction of a 5090's bandwidth could not fit all five dispatches into
-1.43 ms at a comparable pixel count. Either the desktop solve over-estimated the fixed cost -- it
-leans on the "over 1000 fps with the effect off" figure this section already flags as the least
-certain of the three -- or the gather is a larger share on weak hardware than the desktop ratio
-implies.
+1.43 ms at a comparable pixel count. That was posed as a dilemma -- either the desktop solve
+over-estimated the fixed cost, leaning on the "over 1000 fps with the effect off" figure this
+section already flags as the least certain of the three, or the gather is a larger share on weak
+hardware than the desktop ratio implies. **The three rung solve below settles it: the first.** The
+780M figure needed no special explanation once the desktop fixed share came down from forty to
+sixty five percent to nine.
 
 Two captures settle it on any part, with no code change and no restart: read the block with
 `half_size` on and again with it off. Which pair applies depends on the shading rate, because
@@ -234,10 +236,15 @@ That 0.34 ms also splits the shadow block for the first time: trace 0.34, denois
 denoiser is 70% of the block and 23% of the whole GPU frame, and it costs 2.3 times the signal it
 is cleaning. It is the single largest lever in the frame.
 
-The old framerate derivation above survives contact with this: it predicted quarter resolution at
-roughly two thirds of full, which for a 1.12 ms full-resolution block puts quarter near 0.75 and the
-gap near 0.37, against the 0.3 it claimed. Consistent, and now the derivation can be retired in
-favor of the direct numbers.
+The framerate derivation has to be split in two to say what happened to it, because one half of it
+survived and the other did not. Its RATIO prediction survives contact with this: it predicted
+quarter resolution at roughly two thirds of full, which for a 1.12 ms full resolution block puts
+quarter near 0.75 and the gap near 0.37, against the 0.3 it claimed. Its SPLIT into fixed and
+variable cost does not, and the three rung solve refutes it outright -- forty to sixty five percent
+fixed against an actual nine. Both can be true at once: subtracting two nearly equal framerates
+gives a difference that is roughly right, while attributing that difference between two unknowns
+amplifies the error in the least certain of the three readings. Either way the derivation is retired
+in favor of the direct numbers; it is quoted here only so the failure mode stays on record.
 
 ### Shading a checkerboard beats shading a coarser grid
 
@@ -569,6 +576,12 @@ the technique consistently looked further from the reference than it is. What su
 `hardness` 1 is the right default, `surface_thickness` 0.005 is the right default, and `hardness`
 moves darkness while barely moving area. What does not survive is one piece of numerology, retracted
 where it stood.
+
+**It does not reach the ambient occlusion numbers.** That is the first thing to check on finding an
+error like this, and the answer here is no: `ao_validation/ao_compare.py` decodes to linear in its
+own `to_linear()` before it divides, `main.gd` renders under `TONE_MAPPER_LINEAR` with ambient light
+only, and the decode was present in the first commit that added the script. Nothing published for
+occlusion predates it.
 
 The measurement that caught it was unrelated. A `shadow_opacity` probe carried a control on the
 shadow MAP path, which this fork does not touch and which applies the fade exactly once, so at an
