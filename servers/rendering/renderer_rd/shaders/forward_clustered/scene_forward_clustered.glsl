@@ -1051,6 +1051,15 @@ layout(location = 0) out vec4 normal_roughness_output_buffer;
 layout(location = 1) out uvec2 voxel_gi_buffer;
 #endif
 
+#ifdef MODE_RENDER_SSS_CASTER
+// One byte saying whether this pixel's surface is geometry the raytracing
+// acceleration structure will not hold, and which therefore has to get its
+// shadow from the screen space march. Written in the depth pre-pass, so the
+// depth test has already decided which surface owns the pixel and a caster
+// hidden behind something else is not representable.
+layout(location = 1) out float sss_caster_output_buffer;
+#endif
+
 #endif //MODE_RENDER_NORMAL
 #else // RENDER DEPTH
 
@@ -3146,6 +3155,10 @@ void fragment_shader(in SceneData scene_data) {
 		normal_roughness_output_buffer.w = 1.0 - normal_roughness_output_buffer.w;
 	}
 	normal_roughness_output_buffer.w = normal_roughness_output_buffer.w;
+
+#ifdef MODE_RENDER_SSS_CASTER
+	sss_caster_output_buffer = float(bool(instances.data[instance_index].flags & INSTANCE_FLAGS_SSS_CASTER));
+#endif
 
 #ifdef MODE_RENDER_VOXEL_GI
 	if (bool(instances.data[instance_index].flags & INSTANCE_FLAGS_USE_VOXEL_GI)) { // process voxel_gi_instances

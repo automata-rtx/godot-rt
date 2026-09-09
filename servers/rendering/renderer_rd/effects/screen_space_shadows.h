@@ -87,6 +87,7 @@ public:
 		DEBUG_VIEW_EDGE_MASK,
 		DEBUG_VIEW_THREAD_INDEX,
 		DEBUG_VIEW_WAVE_INDEX,
+		DEBUG_VIEW_CASTER_MASK,
 		DEBUG_VIEW_MAX,
 	};
 
@@ -141,7 +142,10 @@ public:
 	// buffer was actually rasterized with, not the raw camera one.
 	//
 	// Returns false without touching p_output if there is nothing to do.
-	bool render(RID p_depth_texture, RID p_output, const Size2i &p_size,
+	// p_caster_mask may be null, which means every surface casts -- the behavior
+	// before the restriction existed. When it is valid it is one byte per pixel,
+	// non-zero where the pixel's surface is allowed to cast.
+	bool render(RID p_depth_texture, RID p_caster_mask, RID p_output, const Size2i &p_size,
 			const Projection &p_camera_projection, const Vector3 &p_light_direction_view,
 			const Settings &p_settings);
 
@@ -184,6 +188,8 @@ private:
 		FLAG_DEBUG_EDGE_MASK = 1 << 4,
 		FLAG_DEBUG_THREAD_INDEX = 1 << 5,
 		FLAG_DEBUG_WAVE_INDEX = 1 << 6,
+		FLAG_RESTRICT_CASTERS = 1 << 7,
+		FLAG_DEBUG_CASTER_MASK = 1 << 8,
 	};
 
 	ScreenSpaceShadowShaderRD shader;

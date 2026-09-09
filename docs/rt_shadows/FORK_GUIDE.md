@@ -863,7 +863,40 @@ the edge detect is firing, which is what `bilinear_threshold` controls.
 Measure with MSAA off as the control. A resolved MSAA depth at a blade silhouette is an average or a
 least-frequent sample, not a real surface depth, and thin geometry is the worst case for it.
 
-### 10.5 Where it lives
+### 10.5 Restricting what casts
+
+`rendering/lights_and_shadows/screen_space_shadows/restrict_casters` makes only geometry the
+raytracing acceleration structure will **not** hold cast a screen space shadow. **Off by default**
+while the tuning is re-measured against it; the machinery is in place and the setting is live.
+
+The argument for it is not only cost. Everything in the structure already casts an exact raytraced
+shadow from the same light, and because the two terms are combined by taking whichever is darker,
+the screen space term's own error — the near-field truncation and the one-pixel overshoot in
+section 10.4 — can only ever darken such a pixel *past* the traced answer. On grass that term is the
+best answer available. On a wall it is a wrong dark smudge over a right answer.
+
+**Nothing needs authoring.** The set is derived from the same tests the caster gather makes, so an
+instance casts a screen space shadow exactly when the structure rejects it: `cast_shadow` is `Off`,
+or it is not a mesh or multimesh, or its material cannot cast shadows. Grass set up the way this
+feature expects is already in the set. Opaque `GPUParticles3D` is too, which is right — the fork
+gives particles no raytraced shadow at all, so this is the only one they can have.
+
+It declines, leaving every surface casting, in two cases. Without a raytraced sun
+(`raytraced_shadows/directional/enabled`) the premise fails: the structure then holds only geometry
+near raytraced lamps, so restricting would take contact shadows away from geometry getting none from
+anywhere else. And under MSAA, with a warning, until the caster flag's resolve is written — it has
+to follow the depth's own `best_index` sample, and averaging or OR-ing it casts from a surface that
+was never a caster.
+
+One real cost. **Alpha-scissor foliage is in the structure**, so it stops casting a screen space
+shadow when this is on. Today a leaf card casts a correctly cut-out contact shadow while its
+raytraced shadow is the whole quad (section 2); afterwards it keeps only the quad. Author foliage
+with `cast_shadow = Off` as well if that matters.
+
+Set `debug_view` to **Caster Mask** to see which pixels are allowed to cast: white is a caster, and
+with the restriction off it is white everywhere.
+
+### 10.6 Where it lives
 
 The technique is Bend Studio's, Apache-2.0. The CPU half — which decides how many dispatches a light
 needs and what wave offset each gets — is vendored with only the line endings and trailing

@@ -134,6 +134,14 @@ void RenderGeometryInstanceBase::set_cast_double_sided_shadows(bool p_enable) {
 	_mark_dirty();
 }
 
+void RenderGeometryInstanceBase::set_screen_space_shadow_caster(bool p_enable) {
+	data->screen_space_shadow_caster = p_enable;
+
+	// Without this the flag sits in data and never reaches base_flags, because
+	// base_flags is only rebuilt when the instance is dirty.
+	_mark_dirty();
+}
+
 void RenderGeometryInstanceBase::reset_motion_vectors() {
 }
 

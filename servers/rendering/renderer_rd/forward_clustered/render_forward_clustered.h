@@ -70,6 +70,7 @@
 #define RB_TEX_NORMAL_ROUGHNESS_MSAA SNAME("normal_roughness_msaa")
 #define RB_TEX_VOXEL_GI SNAME("voxel_gi")
 #define RB_TEX_VOXEL_GI_MSAA SNAME("voxel_gi_msaa")
+#define RB_TEX_SSS_CASTER SNAME("sss_caster")
 
 // Ground truth occlusion keeps its own linear depth pyramid and gather targets.
 // The pyramid the other screen space effects build is deinterleaved, based at
@@ -143,7 +144,8 @@ public:
 		enum DepthFrameBufferType {
 			DEPTH_FB,
 			DEPTH_FB_ROUGHNESS,
-			DEPTH_FB_ROUGHNESS_VOXELGI
+			DEPTH_FB_ROUGHNESS_VOXELGI,
+			DEPTH_FB_ROUGHNESS_SSS_CASTER
 		};
 
 		RID render_sdfgi_uniform_set;
@@ -155,9 +157,11 @@ public:
 		RID get_specular_msaa(uint32_t p_layer) { return render_buffers->get_texture_slice(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SPECULAR_MSAA, p_layer, 0); }
 
 		void ensure_normal_roughness_texture();
+		void ensure_sss_caster_texture();
 		bool has_normal_roughness() const { return render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_NORMAL_ROUGHNESS); }
 		RID get_normal_roughness() const { return render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_NORMAL_ROUGHNESS); }
 		RID get_normal_roughness(uint32_t p_layer) { return render_buffers->get_texture_slice(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_NORMAL_ROUGHNESS, p_layer, 0); }
+		RID get_sss_caster(uint32_t p_layer) { return render_buffers->get_texture_slice(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSS_CASTER, p_layer, 0); }
 		RID get_normal_roughness_msaa() const { return render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_NORMAL_ROUGHNESS_MSAA); }
 		RID get_normal_roughness_msaa(uint32_t p_layer) { return render_buffers->get_texture_slice(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_NORMAL_ROUGHNESS_MSAA, p_layer, 0); }
 
@@ -229,6 +233,7 @@ private:
 		PASS_MODE_DEPTH,
 		PASS_MODE_DEPTH_NORMAL_ROUGHNESS,
 		PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI,
+		PASS_MODE_DEPTH_NORMAL_ROUGHNESS_SSS_CASTER,
 		PASS_MODE_DEPTH_MATERIAL,
 		PASS_MODE_SDF,
 		PASS_MODE_MAX
@@ -296,6 +301,10 @@ private:
 
 	// When changing any of these enums, remember to change the corresponding enums in the shader files as well.
 	enum {
+		// Bits 0 and 1 are free; the rest of this enum starts at 1 << 2.
+		// Set once in _geometry_instance_update rather than per frame, so an
+		// instance's caster status costs nothing to carry.
+		INSTANCE_DATA_FLAG_SSS_CASTER = 1 << 0,
 		INSTANCE_DATA_FLAG_MULTIMESH_INDIRECT = 1 << 2,
 		INSTANCE_DATA_FLAGS_DYNAMIC = 1 << 3,
 		INSTANCE_DATA_FLAGS_NON_UNIFORM_SCALE = 1 << 4,
@@ -839,6 +848,7 @@ private:
 	// out to have no shadow casting sun costs a pre-pass; not forcing one would
 	// mean marching last frame's depth.
 	bool _using_screen_space_shadows(const RenderDataRD *p_render_data);
+	bool _using_restricted_sss_casters(const RenderDataRD *p_render_data);
 	RID _ensure_screen_space_shadow_mask(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size);
 	void _render_screen_space_shadows(RenderDataRD *p_render_data, Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size);
 	void _pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer);

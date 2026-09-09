@@ -1933,6 +1933,10 @@ ProjectSettings::ProjectSettings() {
 	// behavior; one drops the requirement to a single sample, and is what
 	// matches a traced shadow of the same geometry.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/hardness", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0);
+	// Whether only geometry the raytracing acceleration structure will not hold
+	// may cast. Off for now: it changes which surfaces cast, and the surface
+	// thickness and hardness defaults were calibrated with every pixel casting.
+	GLOBAL_DEF("rendering/lights_and_shadows/screen_space_shadows/restrict_casters", false);
 	// Whether a detected edge is excluded from casting. Off, and for foliage it
 	// should probably stay off: it thins otherwise valid shadows exactly at
 	// foliage silhouettes. Worth trying on scenes that are mostly large flat
@@ -1942,7 +1946,7 @@ ProjectSettings::ProjectSettings() {
 	// new hardware. Wave Index first: it draws the wavefront layout, which should
 	// converge on the sun's screen position, and does not if the light coordinate
 	// is wrong.
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/screen_space_shadows/debug_view", PROPERTY_HINT_ENUM, "Disabled,Edge Mask,Thread Index,Wave Index"), 0);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/screen_space_shadows/debug_view", PROPERTY_HINT_ENUM, "Disabled,Edge Mask,Thread Index,Wave Index,Caster Mask"), 0);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/block_size_kb", PROPERTY_HINT_RANGE, "4,2048,1,or_greater"), 256);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/rendering_device/staging_buffer/max_size_mb", PROPERTY_HINT_RANGE, "1,1024,1,or_greater"), 128);

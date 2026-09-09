@@ -72,6 +72,20 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_normal_rou
 	}
 }
 
+void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_sss_caster_texture() {
+	ERR_FAIL_NULL(render_buffers);
+
+	if (!render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSS_CASTER)) {
+		// One byte per pixel, and no MSAA twin: the restriction declines under MSAA
+		// rather than resolve this alongside the depth, because the resolve has to
+		// pick the flag belonging to the depth's own best_index sample and getting
+		// that wrong shows up only as shadows at silhouettes with nothing above
+		// them. See _using_restricted_sss_casters.
+		render_buffers->create_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSS_CASTER, RD::DATA_FORMAT_R8_UNORM,
+				RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT);
+	}
+}
+
 void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_voxelgi() {
 	ERR_FAIL_NULL(render_buffers);
 
@@ -221,6 +235,15 @@ RID RenderForwardClustered::RenderBufferDataForwardClustered::get_depth_fb(Depth
 			RID normal_roughness_buffer = render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, use_msaa ? RB_TEX_NORMAL_ROUGHNESS_MSAA : RB_TEX_NORMAL_ROUGHNESS);
 
 			return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), depth, normal_roughness_buffer);
+		} break;
+		case DEPTH_FB_ROUGHNESS_SSS_CASTER: {
+			ensure_normal_roughness_texture();
+			ensure_sss_caster_texture();
+
+			RID normal_roughness_buffer = render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, use_msaa ? RB_TEX_NORMAL_ROUGHNESS_MSAA : RB_TEX_NORMAL_ROUGHNESS);
+			RID sss_caster_buffer = render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSS_CASTER);
+
+			return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), depth, normal_roughness_buffer, sss_caster_buffer);
 		} break;
 		case DEPTH_FB_ROUGHNESS_VOXELGI: {
 			ensure_normal_roughness_texture();
@@ -474,6 +497,12 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 			case PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI: {
 				pipeline_key.version = p_params->view_count > 1 ? SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_VOXEL_GI_MULTIVIEW : SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_VOXEL_GI;
 			} break;
+			case PASS_MODE_DEPTH_NORMAL_ROUGHNESS_SSS_CASTER: {
+				// No multiview twin: the screen space shadow pass declines stereo
+				// outright, so this pass mode is unreachable there.
+				ERR_FAIL_COND_MSG(p_params->view_count > 1, "Multiview not supported for the screen space shadow caster pass");
+				pipeline_key.version = SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_SSS_CASTER;
+			} break;
 			case PASS_MODE_DEPTH_MATERIAL: {
 				ERR_FAIL_COND_MSG(p_params->view_count > 1, "Multiview not supported for material pass");
 				pipeline_key.version = SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_MATERIAL;
@@ -665,6 +694,9 @@ void RenderForwardClustered::_render_list(RenderingDevice::DrawListID p_draw_lis
 		} break;
 		case PASS_MODE_DEPTH_NORMAL_ROUGHNESS: {
 			_render_list_template<PASS_MODE_DEPTH_NORMAL_ROUGHNESS>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
+		} break;
+		case PASS_MODE_DEPTH_NORMAL_ROUGHNESS_SSS_CASTER: {
+			_render_list_template<PASS_MODE_DEPTH_NORMAL_ROUGHNESS_SSS_CASTER>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
 		} break;
 		case PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI: {
 			_render_list_template<PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
@@ -1068,7 +1100,7 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 					inst->gi_offset_cache = 0xFFFFFFFF;
 				}
 			}
-			if (p_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS || p_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI || p_pass_mode == PASS_MODE_COLOR) {
+			if (p_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS || p_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI || p_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS_SSS_CASTER || p_pass_mode == PASS_MODE_COLOR) {
 				bool transform_changed = inst->transform_status == GeometryInstanceForwardClustered::TransformStatus::MOVED;
 				bool has_mesh_instance = inst->mesh_instance.is_valid();
 				bool uses_particles = inst->base_flags & INSTANCE_DATA_FLAG_PARTICLES;
@@ -1743,6 +1775,39 @@ bool RenderForwardClustered::_ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD>
 			r_buffers.raw_hit_distance.is_valid();
 }
 
+bool RenderForwardClustered::_using_restricted_sss_casters(const RenderDataRD *p_render_data) {
+	if (!GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/screen_space_shadows/restrict_casters")) {
+		return false;
+	}
+	if (!_using_screen_space_shadows(p_render_data)) {
+		return false;
+	}
+
+	// Gated on the SUN being raytraced, not merely on the structure existing. The
+	// premise of the restriction is that anything it stops casting already casts a
+	// correct raytraced shadow FROM THIS LIGHT. With directional raytracing off
+	// the structure holds only geometry near raytraced lamps and the sun is on a
+	// deliberately demoted cascade, so restricting would take a contact shadow
+	// away from geometry that is getting one from nowhere else.
+	if (!is_raytraced_directional_available()) {
+		return false;
+	}
+
+	Ref<RenderSceneBuffersRD> rb = p_render_data->render_buffers;
+	if (rb.is_valid() && rb->get_msaa_3d() != RSE::VIEWPORT_MSAA_DISABLED) {
+		// The caster flag would have to be resolved with the depth's own
+		// best_index sample; averaging it, or OR-ing it, casts from a depth
+		// belonging to a surface that was never a caster, and that shows up only as
+		// shadows at silhouettes with nothing above them. Until the resolve is
+		// written and checked, decline the restriction rather than guess -- the
+		// pass itself still runs, unrestricted, exactly as before.
+		WARN_PRINT_ONCE("Screen space shadow caster restriction is not supported with MSAA yet; every surface will cast.");
+		return false;
+	}
+
+	return true;
+}
+
 bool RenderForwardClustered::_using_screen_space_shadows(const RenderDataRD *p_render_data) {
 	if (!GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/screen_space_shadows/enabled")) {
 		return false;
@@ -1854,7 +1919,14 @@ void RenderForwardClustered::_render_screen_space_shadows(RenderDataRD *p_render
 	// The corrected, jittered projection, which is the one the depth buffer was
 	// rasterized with. Anything else puts the light's screen position in the
 	// wrong place by up to half a pixel every frame and makes the shadow crawl.
-	effect->render(p_render_buffers->get_depth_texture(), mask, p_size,
+	// Only bind a caster mask if the pre-pass actually wrote one this frame. The
+	// pass mode is chosen from the same predicate, so the two cannot disagree.
+	RID caster_mask;
+	if (_using_restricted_sss_casters(p_render_data) && p_render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSS_CASTER)) {
+		caster_mask = p_render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSS_CASTER);
+	}
+
+	effect->render(p_render_buffers->get_depth_texture(), caster_mask, mask, p_size,
 			p_render_data->scene_data->get_cam_projection(), light.direction, settings);
 
 	RD::get_singleton()->draw_command_end_label();
@@ -2397,6 +2469,14 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	if (!is_reflection_probe) {
 		if (using_voxelgi) {
 			depth_pass_mode = PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI;
+		} else if (_using_restricted_sss_casters(p_render_data)) {
+			// Same buffers as the plain normal/roughness pre-pass plus one byte per
+			// pixel saying whether this pixel's surface is a screen space caster.
+			depth_pass_mode = PASS_MODE_DEPTH_NORMAL_ROUGHNESS_SSS_CASTER;
+			// The variant lives in the advanced group, which is not enabled unless
+			// something asks for it. Without this every pipeline for the pass comes
+			// back null and the pre-pass silently draws nothing into the mask.
+			scene_shader.enable_advanced_shader_group(p_render_data->scene_data->view_count > 1);
 		} else if (is_raytracing_scene_available()) {
 			// Raytraced shadows want real normals rather than ones reconstructed
 			// from depth, both to offset ray origins and to stop the denoiser's
@@ -2423,6 +2503,11 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			} break;
 			case PASS_MODE_DEPTH_NORMAL_ROUGHNESS: {
 				depth_framebuffer = rb_data->get_depth_fb(RenderBufferDataForwardClustered::DEPTH_FB_ROUGHNESS);
+				depth_pass_clear.push_back(Color(0, 0, 0, 0));
+			} break;
+			case PASS_MODE_DEPTH_NORMAL_ROUGHNESS_SSS_CASTER: {
+				depth_framebuffer = rb_data->get_depth_fb(RenderBufferDataForwardClustered::DEPTH_FB_ROUGHNESS_SSS_CASTER);
+				depth_pass_clear.push_back(Color(0, 0, 0, 0));
 				depth_pass_clear.push_back(Color(0, 0, 0, 0));
 			} break;
 			case PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI: {
@@ -2631,7 +2716,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		if (use_msaa) {
 			RENDER_TIMESTAMP("Resolve Depth Pre-Pass (MSAA)");
 			RD::get_singleton()->draw_command_begin_label("Resolve Depth Pre-Pass (MSAA)");
-			if (depth_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS || depth_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI) {
+			if (depth_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS || depth_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI || depth_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS_SSS_CASTER) {
 				for (uint32_t v = 0; v < rb->get_view_count(); v++) {
 					resolve_effects->resolve_gi(rb->get_depth_msaa(v), rb_data->get_normal_roughness_msaa(v), using_voxelgi ? rb_data->get_voxelgi_msaa(v) : RID(), rb->get_depth_texture(v), rb_data->get_normal_roughness(v), using_voxelgi ? rb_data->get_voxelgi(v) : RID(), rb->get_internal_size(), texture_multisamples[msaa]);
 				}
@@ -5053,6 +5138,13 @@ void RenderForwardClustered::_geometry_instance_update(RenderGeometryInstance *p
 	//Fill push constant
 
 	ginstance->base_flags = 0;
+
+	// Persistent, so an instance's caster status costs nothing per frame. This is
+	// the whole point: the geometry this serves was taken out of the acceleration
+	// structure precisely to stop paying a per-frame CPU cost for it.
+	if (ginstance->data->screen_space_shadow_caster) {
+		ginstance->base_flags |= INSTANCE_DATA_FLAG_SSS_CASTER;
+	}
 
 	bool store_transform = true;
 	if (ginstance->data->base_type == RSE::INSTANCE_MULTIMESH) {

@@ -30,6 +30,7 @@
 
 #include "screen_space_shadows.h"
 
+#include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 
 #include <thirdparty/bend_sss/bend_sss_cpu.h>
@@ -124,7 +125,7 @@ bool ScreenSpaceShadows::is_target_format_supported() {
 			RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT);
 }
 
-bool ScreenSpaceShadows::render(RID p_depth_texture, RID p_output, const Size2i &p_size,
+bool ScreenSpaceShadows::render(RID p_depth_texture, RID p_caster_mask, RID p_output, const Size2i &p_size,
 		const Projection &p_camera_projection, const Vector3 &p_light_direction_view,
 		const ScreenSpaceShadows::Settings &p_settings) {
 	if (!valid || p_depth_texture.is_null() || p_output.is_null()) {
@@ -205,6 +206,20 @@ bool ScreenSpaceShadows::render(RID p_depth_texture, RID p_output, const Size2i 
 		uniforms.push_back(u);
 	}
 
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+		u.binding = 2;
+		u.append_id(depth_sampler);
+		// White is "may cast", so the 4x4 default reads as no restriction at all.
+		// Unlike the shadow mask this fallback is safe at any size: the shader
+		// samples it with a normalized coordinate through a sampler rather than
+		// with texelFetch, so an undersized texture clamps instead of reading out
+		// of range.
+		u.append_id(p_caster_mask.is_valid() ? p_caster_mask : RendererRD::TextureStorage::get_singleton()->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_WHITE));
+		uniforms.push_back(u);
+	}
+
 	RID compiled = shader.version_get_shader(shader_version, quality);
 	RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(compiled, 0, uniforms);
 
@@ -231,6 +246,12 @@ bool ScreenSpaceShadows::render(RID p_depth_texture, RID p_output, const Size2i 
 	push_constant.hardness = CLAMP(p_settings.hardness, 0.0f, 1.0f);
 
 	uint32_t flags = FLAG_USE_EARLY_OUT;
+	if (p_caster_mask.is_valid()) {
+		// Only meaningful with a real mask bound. Without one the shader would
+		// test the white fallback, which passes everywhere -- correct, but a fetch
+		// per read for an answer that is always yes.
+		flags |= FLAG_RESTRICT_CASTERS;
+	}
 	if (p_settings.ignore_edge_pixels) {
 		flags |= FLAG_IGNORE_EDGE_PIXELS;
 	}
@@ -240,6 +261,9 @@ bool ScreenSpaceShadows::render(RID p_depth_texture, RID p_output, const Size2i 
 		} break;
 		case DEBUG_VIEW_THREAD_INDEX: {
 			flags |= FLAG_DEBUG_THREAD_INDEX;
+		} break;
+		case DEBUG_VIEW_CASTER_MASK: {
+			flags |= FLAG_DEBUG_CASTER_MASK;
 		} break;
 		case DEBUG_VIEW_WAVE_INDEX: {
 			flags |= FLAG_DEBUG_WAVE_INDEX;

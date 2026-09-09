@@ -61,6 +61,11 @@ public:
 	virtual void set_lightmap_capture(const Color *p_sh9) = 0;
 	virtual void set_instance_shader_uniforms_offset(int32_t p_offset) = 0;
 	virtual void set_cast_double_sided_shadows(bool p_enable) = 0;
+	// Whether this instance is one the raytracing acceleration structure will not
+	// hold, and which therefore has to get its shadow from the screen space pass
+	// instead. Derived by the culler from the same tests the caster gather makes,
+	// not authored: see RendererSceneCull::_is_screen_space_shadow_caster.
+	virtual void set_screen_space_shadow_caster(bool p_enable) = 0;
 
 	virtual void reset_motion_vectors() = 0;
 
@@ -125,6 +130,7 @@ public:
 		bool use_baked_light = false;
 		bool use_dynamic_gi = false;
 		bool cast_double_sided_shadows = false;
+		bool screen_space_shadow_caster = false;
 		bool dirty_dependencies = false;
 
 		DependencyTracker dependency_tracker;
@@ -148,6 +154,7 @@ public:
 	virtual void set_use_dynamic_gi(bool p_enable) override;
 	virtual void set_instance_shader_uniforms_offset(int32_t p_offset) override;
 	virtual void set_cast_double_sided_shadows(bool p_enable) override;
+	virtual void set_screen_space_shadow_caster(bool p_enable) override;
 
 	virtual void reset_motion_vectors() override;
 

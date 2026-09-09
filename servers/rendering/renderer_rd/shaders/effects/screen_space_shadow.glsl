@@ -59,6 +59,13 @@ layout(set = 0, binding = 0) uniform sampler2D depth_texture;
 
 layout(r8, set = 0, binding = 1) uniform restrict writeonly image2D shadow_image;
 
+// One byte per pixel saying whether that pixel's surface is allowed to cast.
+// Written in the depth pre-pass, so it describes the surface the depth test
+// already chose. Bound to a 4x4 white fallback when the restriction is off,
+// which reads as 1.0 everywhere and lets everything cast -- exactly the
+// behavior without this feature.
+layout(set = 0, binding = 2) uniform sampler2D caster_mask_texture;
+
 layout(push_constant, std430) uniform Params {
 	// From BuildDispatchList: the light's pixel coordinate, its depth, and the
 	// sign of its clip space w.
@@ -92,6 +99,8 @@ params;
 #define FLAG_DEBUG_EDGE_MASK (1u << 4)
 #define FLAG_DEBUG_THREAD_INDEX (1u << 5)
 #define FLAG_DEBUG_WAVE_INDEX (1u << 6)
+#define FLAG_RESTRICT_CASTERS (1u << 7)
+#define FLAG_DEBUG_CASTER_MASK (1u << 8)
 
 bool has_flag(uint p_flag) {
 	return (params.flags & p_flag) != 0u;
@@ -174,6 +183,7 @@ void main() {
 
 	float sampling_depth[READ_COUNT];
 	float shadowing_depth[READ_COUNT];
+	bool may_cast[READ_COUNT];
 	float depth_thickness_scale[READ_COUNT];
 	float sample_distance[READ_COUNT];
 
@@ -206,6 +216,16 @@ void main() {
 
 		depths.x = textureLod(depth_texture, read_xy * params.inv_depth_texture_size, 0.0).r;
 		depths.y = textureLod(depth_texture, (read_xy + offset_xy) * params.inv_depth_texture_size, 0.0).r;
+
+		// Only the CASTER side is restricted. sampling_depth and
+		// depth_thickness_scale below describe the RECEIVER and must keep coming
+		// from the full depth buffer: pointing either at a restricted source makes
+		// depth_thickness_scale zero on every non-caster pixel, which divides by
+		// zero in depth_scale, and makes the early-out reject every non-caster --
+		// so grass would self shadow and the ground it stands on would receive
+		// nothing.
+		may_cast[i] = !has_flag(FLAG_RESTRICT_CASTERS) ||
+				textureLod(caster_mask_texture, read_xy * params.inv_depth_texture_size, 0.0).r > 0.5;
 
 		// Thickness and edge thresholds are fractions of the gap between this
 		// sample and the far plane, not of the whole depth range.
@@ -240,7 +260,7 @@ void main() {
 		pixel_xy += xy_delta * direction;
 	}
 
-	if (has_flag(FLAG_USE_EARLY_OUT) && !has_flag(FLAG_DEBUG_WAVE_INDEX | FLAG_DEBUG_THREAD_INDEX | FLAG_DEBUG_EDGE_MASK)) {
+	if (has_flag(FLAG_USE_EARLY_OUT) && !has_flag(FLAG_DEBUG_WAVE_INDEX | FLAG_DEBUG_THREAD_INDEX | FLAG_DEBUG_EDGE_MASK | FLAG_DEBUG_CASTER_MASK)) {
 		skip_pixel = early_out_pixel(sampling_depth[0]);
 
 		bool early_out = !subgroupAny(!skip_pixel);
@@ -284,7 +304,9 @@ void main() {
 			stored_depth = sample_distance[i] > 0.0 ? stored_depth : 1e10;
 		}
 
-		depth_data[(i * WAVE_SIZE) + int(gl_LocalInvocationID.x)] = stored_depth;
+		// The array already carries "cannot shadow" as a value, so the restriction
+		// costs a select rather than anything crossing the barrier.
+		depth_data[(i * WAVE_SIZE) + int(gl_LocalInvocationID.x)] = may_cast[i] ? stored_depth : 1e10;
 	}
 
 	memoryBarrierShared();
@@ -376,6 +398,12 @@ void main() {
 	}
 	if (has_flag(FLAG_DEBUG_WAVE_INDEX)) {
 		result = fract(float(gl_WorkGroupID.x) / float(WAVE_SIZE));
+	}
+	if (has_flag(FLAG_DEBUG_CASTER_MASK)) {
+		// Which pixels are allowed to cast. White is a caster. With the restriction
+		// off this is white everywhere, which is the correct answer rather than a
+		// broken one.
+		result = may_cast[0] ? 1.0 : 0.0;
 	}
 
 	// The original leans on an API where an out of range store is dropped. Being

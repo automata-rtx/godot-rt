@@ -118,6 +118,32 @@ void RendererSceneCull::camera_initialize(RID p_rid) {
 	camera_owner.initialize_rid(p_rid);
 }
 
+// The complement of the raytracing caster gather in _render_scene: an instance
+// is a screen space shadow caster exactly when the acceleration structure will
+// NOT hold it, so the screen space march is the only thing that can give it a
+// shadow.
+//
+// MUST be kept in step with CullRTCasters::operator(). Nothing enforces that,
+// and the failure is silent: an instance the structure rejects but this
+// predicate misses simply stops casting once the restriction is on.
+//
+// Deliberately instance-level, so it does not see the per-surface caster mask,
+// per-element multimesh culling, light range or the BLAS budget. All of those
+// only ever over-include -- a pixel that also casts a raytraced shadow
+// describing itself twice -- and the min() composition absorbs that by
+// construction. Only under-inclusion loses a shadow, and this never
+// under-includes.
+static _FORCE_INLINE_ bool _is_screen_space_shadow_caster(const RendererSceneCull::Instance *p_instance) {
+	if (p_instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_OFF) {
+		return true;
+	}
+	if (p_instance->base_type != RSE::INSTANCE_MESH && p_instance->base_type != RSE::INSTANCE_MULTIMESH) {
+		return true;
+	}
+	const RendererSceneCull::InstanceGeometryData *geom = static_cast<const RendererSceneCull::InstanceGeometryData *>(p_instance->base_data);
+	return geom == nullptr || !geom->can_cast_shadows;
+}
+
 void RendererSceneCull::camera_set_perspective(RID p_camera, float p_fovy_degrees, float p_z_near, float p_z_far) {
 	Camera *camera = camera_owner.get_or_null(p_camera);
 	ERR_FAIL_NULL(camera);
@@ -770,6 +796,7 @@ void RendererSceneCull::instance_set_base(RID p_instance, RID p_base) {
 				geom->geometry_instance->set_use_lightmap(RID(), instance->lightmap_uv_scale, instance->lightmap_slice_index);
 				geom->geometry_instance->set_instance_shader_uniforms_offset(instance->instance_uniforms.location());
 				geom->geometry_instance->set_cast_double_sided_shadows(instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_DOUBLE_SIDED);
+				geom->geometry_instance->set_screen_space_shadow_caster(_is_screen_space_shadow_caster(instance));
 				if (instance->lightmap_sh.size() == 9) {
 					geom->geometry_instance->set_lightmap_capture(instance->lightmap_sh.ptr());
 				}
@@ -1374,6 +1401,7 @@ void RendererSceneCull::instance_geometry_set_cast_shadows_setting(RID p_instanc
 		ERR_FAIL_NULL(geom->geometry_instance);
 
 		geom->geometry_instance->set_cast_double_sided_shadows(instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_DOUBLE_SIDED);
+		geom->geometry_instance->set_screen_space_shadow_caster(_is_screen_space_shadow_caster(instance));
 	}
 
 	_instance_queue_update(instance, false, true);
@@ -3617,6 +3645,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			rt_directional_bounds_scratch.push_back(volume);
 		}
 
+		// If you change any test in here, change _is_screen_space_shadow_caster at
+		// the top of this file to match: it is defined as the exact complement of
+		// this predicate, and nothing checks that they agree.
 		struct CullRTCasters {
 			LocalVector<Instance *> *result;
 			uint64_t pass;
@@ -4788,6 +4819,10 @@ void RendererSceneCull::_update_dirty_instance(Instance *p_instance) const {
 
 			geom->shadow_caster_surface_mask = caster_surface_mask;
 			geom->material_is_animated = is_animated;
+			// Outside the can_cast_shadows guard above on purpose: a material swap
+			// that leaves can_cast_shadows alone can still be the first time this
+			// instance's flag is computed.
+			geom->geometry_instance->set_screen_space_shadow_caster(_is_screen_space_shadow_caster(p_instance));
 
 			if (p_instance->instance_uniforms.materials_finish(p_instance->self)) {
 				geom->geometry_instance->set_instance_shader_uniforms_offset(p_instance->instance_uniforms.location());
