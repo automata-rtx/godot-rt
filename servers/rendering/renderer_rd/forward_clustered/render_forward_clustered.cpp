@@ -1793,6 +1793,23 @@ bool RenderForwardClustered::_using_restricted_sss_casters(const RenderDataRD *p
 		return false;
 	}
 
+	// A VoxelGI in the frame takes the pre-pass away: the depth pass mode chain
+	// gives PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI priority outright, so the
+	// caster variant never runs and nothing writes the mask. Declining here rather
+	// than there is what makes the two agree -- both the pass mode choice and the
+	// bind below ask this one predicate, so they cannot disagree. They did before:
+	// the mask texture is a named render buffer that lives until the buffers are
+	// reconfigured, and nothing clears it, so turning the camera toward a VoxelGI
+	// left the march reading a caster mask from whichever frame last wrote one.
+	//
+	// Reached only with restrict_casters on, the pass enabled and the sun
+	// raytraced, so the warning does not fire for the ordinary project that simply
+	// has a VoxelGI in it.
+	if (p_render_data->voxel_gi_instances != nullptr && p_render_data->voxel_gi_instances->size() > 0) {
+		WARN_PRINT_ONCE("Screen space shadow caster restriction is unavailable while a VoxelGI is visible; every surface will cast.");
+		return false;
+	}
+
 	Ref<RenderSceneBuffersRD> rb = p_render_data->render_buffers;
 	if (rb.is_valid() && rb->get_msaa_3d() != RSE::VIEWPORT_MSAA_DISABLED) {
 		// The caster flag would have to be resolved with the depth's own
@@ -1920,7 +1937,9 @@ void RenderForwardClustered::_render_screen_space_shadows(RenderDataRD *p_render
 	// rasterized with. Anything else puts the light's screen position in the
 	// wrong place by up to half a pixel every frame and makes the shadow crawl.
 	// Only bind a caster mask if the pre-pass actually wrote one this frame. The
-	// pass mode is chosen from the same predicate, so the two cannot disagree.
+	// pass mode is chosen from this same predicate, and every reason the pre-pass
+	// can lose its slot -- MSAA, a visible VoxelGI -- is inside it, so the two
+	// cannot disagree. Keep new reasons there rather than here.
 	RID caster_mask;
 	if (_using_restricted_sss_casters(p_render_data) && p_render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSS_CASTER)) {
 		caster_mask = p_render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSS_CASTER);
@@ -4425,9 +4444,13 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 	}
 
 	{
-		// Which raytraced light each channel of the mask carries. The default is
-		// an all-ones texture, which reads as "no light claims this channel" and
-		// leaves every light unshadowed.
+		// Which raytraced light each channel of the mask carries. The default is a
+		// 1x1 all-ones texture, which reads as "no light claims this channel" and
+		// leaves every light unshadowed -- but only AT PIXEL (0,0). texelFetch
+		// ignores the sampler's clamp, so everywhere else this fallback is an out
+		// of range read that returns zero or nothing at all. rt_shadow_lookup
+		// bounds-checks against textureSize for exactly that reason; the safety
+		// here is the guard in the shader, not the value in this texture.
 		RD::Uniform u;
 		u.binding = 38;
 		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;

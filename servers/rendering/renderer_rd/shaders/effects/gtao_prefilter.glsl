@@ -140,7 +140,14 @@ void main() {
 					tile_depth[src.y + 1][src.x + 1]);
 
 			ivec2 coord = (tile_origin >> level) + local;
-			ivec2 level_max = max((max_coord >> level), ivec2(0));
+			// The last valid index of mip L is max(1, W >> L) - 1, which is NOT
+			// (W - 1) >> L: the two differ whenever a dimension is not a multiple
+			// of 2^L, and the wrong one is larger, so the guard lets a thread store
+			// one texel past the end of the row. 3440x1440 is clean at every level,
+			// which is why this never showed on the desktop target; 1920x1080 is
+			// not -- 1080 is 67.5 texels at level 4, so the guard admits index 67
+			// where the mip holds 67 texels and ends at 66.
+			ivec2 level_max = max(params.screen_size >> level, ivec2(1)) - ivec2(1);
 			if (all(lessThanEqual(coord, level_max))) {
 				store_mip(level, coord, value);
 			}

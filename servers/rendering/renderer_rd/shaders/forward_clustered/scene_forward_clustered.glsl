@@ -2656,8 +2656,29 @@ void fragment_shader(in SceneData scene_data) {
 				// point of it. RT_MASK_ANSWERS_HERE applies unchanged: this mask is
 				// marched over the depth pre-pass too, so it describes exactly the
 				// fragments that pre-pass contains.
+				//
+				// The sun's distance fade, computed once for everything below it. On
+				// a raytraced sun the TRACE already applied exactly this smoothstep
+				// to the mask it wrote, using the negation of these same numbers, so
+				// that what the denoiser filters and reprojects stays continuous.
+				// That means `shadow` reaches the rest of this block in one of two
+				// states depending on the path, and every consumer has to account for
+				// it. Before this was audited only the no-lightmap arm did.
+				float sun_fade = smoothstep(directional_lights.data[i].fade_from, directional_lights.data[i].fade_to, vertex.z); //done with negative values for performance
+
 				if (directional_lights.data[i].sss_strength > 0.0 && RT_MASK_ANSWERS_HERE) {
-					shadow = min(shadow, mix(1.0, sss_shadow_lookup(), directional_lights.data[i].sss_strength));
+					float contact = mix(1.0, sss_shadow_lookup(), directional_lights.data[i].sss_strength);
+					// The cascade path fades the COMBINED term further down, contact
+					// shadow included. The raytraced path's fade is already inside
+					// `shadow` and that block is skipped, so without this the contact
+					// term alone would survive to the horizon at full strength on one
+					// path and fade out on the other. The march has no world space
+					// range limit of its own -- its reach is bounded in pixels by the
+					// quality tier -- so nothing else would ever bound it.
+					if (rt_shadowed) {
+						contact = mix(contact, 1.0, sun_fade);
+					}
+					shadow = min(shadow, contact);
 				}
 
 				// Runs for both paths. The hand off to a baked shadowmask is about
@@ -2666,9 +2687,24 @@ void fragment_shader(in SceneData scene_data) {
 				if (rt_shadowed || directional_lights.data[i].shadow_opacity > 0.001) {
 #ifdef USE_LIGHTMAP
 					if (shadowmask_mode == LIGHTMAP_SHADOWMASK_MODE_REPLACE) {
-						shadow = mix(shadow, shadowmask, smoothstep(directional_lights.data[i].fade_from, directional_lights.data[i].fade_to, vertex.z)); //done with negative values for performance
+						if (rt_shadowed) {
+							// `shadow` is already mix(raw, 1, sun_fade) and this branch
+							// wants mix(raw, shadowmask, sun_fade). The two differ by
+							// exactly sun_fade * (1 - shadowmask), so the repair needs
+							// no division and no recovery of the raw value: it just
+							// replaces the 1 the trace faded toward with shadowmask.
+							// Left alone this crossfades toward fully lit and then
+							// toward the bake, so ground that is shadowed in BOTH shows
+							// a lit band across the window -- 0.25 at its middle.
+							shadow = clamp(shadow - sun_fade * (1.0 - shadowmask), 0.0, 1.0);
+						} else {
+							shadow = mix(shadow, shadowmask, sun_fade);
+						}
 					} else if (shadowmask_mode == LIGHTMAP_SHADOWMASK_MODE_OVERLAY) {
-						shadow = shadowmask * mix(shadow, 1.0, smoothstep(directional_lights.data[i].fade_from, directional_lights.data[i].fade_to, vertex.z)); //done with negative values for performance
+						// Same reasoning: on a raytraced sun the mix() this branch
+						// would apply is already inside `shadow`, so applying it again
+						// only reaches fully lit sooner.
+						shadow = shadowmask * (rt_shadowed ? shadow : mix(shadow, 1.0, sun_fade));
 					} else {
 #endif
 						// Not applied to a raytraced sun: the trace already faded its
@@ -2677,7 +2713,7 @@ void fragment_shader(in SceneData scene_data) {
 						// filters and reprojects is continuous. Doing it twice would
 						// only reach the same 1.0 sooner.
 						if (!rt_shadowed) {
-							shadow = mix(shadow, 1.0, smoothstep(directional_lights.data[i].fade_from, directional_lights.data[i].fade_to, vertex.z)); //done with negative values for performance
+							shadow = mix(shadow, 1.0, sun_fade);
 						}
 #ifdef USE_LIGHTMAP
 					}

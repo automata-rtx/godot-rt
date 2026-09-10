@@ -50,6 +50,17 @@ float rt_shadow_lookup(float p_slot) {
 	// the few raytraced lights that actually reach it, and the index texture
 	// records which.
 	ivec2 coord = ivec2(gl_FragCoord.xy);
+	// Same hazard sss_shadow_lookup guards, and reachable the same way. When the
+	// render buffers hold no raytraced set these two bindings fall back to a 1x1
+	// index texture and the shared 4x4 white texture, and texelFetch ignores the
+	// sampler's clamp by definition -- so every pixel but the first few is an out
+	// of range read: zero under image robustness, undefined without it. A zero
+	// index makes the `slots.r == slot` test below true for slot 0, and a zero
+	// mask then reads as fully shadowed, so the failure is a light putting out
+	// its own shadow everywhere rather than losing it.
+	if (any(greaterThanEqual(coord, textureSize(usampler2D(rt_shadow_index, SAMPLER_NEAREST_CLAMP), 0)))) {
+		return 1.0;
+	}
 	uvec4 slots = texelFetch(usampler2D(rt_shadow_index, SAMPLER_NEAREST_CLAMP), coord, 0);
 	// The mask stores the square root of visibility, so that its eight bits per
 	// channel are spent where a shadow's detail is rather than spread evenly over
@@ -88,10 +99,11 @@ float sss_shadow_lookup() {
 	// texelFetch ignores the sampler's clamp by definition, so an out of range
 	// read is invalid rather than clamped -- zero under image robustness, and
 	// undefined without it. Zero here means fully shadowed, so a mask that was
-	// never written would put the sun out rather than leave it alone. A light is
-	// only given a strength when its mask really was written, which makes this
-	// unreachable; it is here because the failure it guards is total darkness and
-	// the guard is one comparison against a value the driver already has.
+	// never written would put the sun out rather than leave it alone. Marking a
+	// light only when its mask really was written is what keeps this from firing
+	// in the ordinary case -- but the guard is NOT dead code and must not be
+	// removed as such: the fallback bound in the mask's place is a 4x4 texture, so
+	// without it every pixel past the fourth column or row is an invalid fetch.
 	if (any(greaterThanEqual(coord, textureSize(sampler2D(sss_shadow_mask, SAMPLER_NEAREST_CLAMP), 0)))) {
 		return 1.0;
 	}

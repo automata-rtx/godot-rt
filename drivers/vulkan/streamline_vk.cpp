@@ -484,11 +484,21 @@ struct StreamlineVK::Internal {
 	template <typename T>
 	void resolve_feature(T *&r_function, sl::Feature p_feature, const char *p_name) {
 		void *function = nullptr;
-		if (get_feature_function != nullptr && get_feature_function(p_feature, p_name, function) == sl::Result::eOk) {
-			r_function = reinterpret_cast<T *>(function);
-		} else {
-			r_function = nullptr;
+		r_function = nullptr;
+		if (get_feature_function == nullptr) {
+			return;
 		}
+		// The result was previously collapsed into the null check and thrown away.
+		// A feature can be reported available by slIsFeatureSupported -- which only
+		// needs the adapter -- and still fail to hand over its entry points, and
+		// the consumer of a null pointer here just returns false. Name the entry
+		// point and the reason, or the failure has no symptom at all.
+		const sl::Result result = get_feature_function(p_feature, p_name, function);
+		if (result != sl::Result::eOk) {
+			WARN_PRINT(vformat("Streamline: could not resolve %s (%s). The feature will decline rather than run.", p_name, sl::getResultAsStr(result)));
+			return;
+		}
+		r_function = reinterpret_cast<T *>(function);
 	}
 };
 
@@ -815,7 +825,14 @@ void StreamlineVK::set_physical_device(uint64_t p_physical_device) {
 	if (internal->supported[FEATURE_REFLEX] && internal->reflex_set_options != nullptr) {
 		sl::ReflexOptions options;
 		options.mode = sl::ReflexMode::eLowLatency;
-		internal->reflex_running = internal->reflex_set_options(options) == sl::Result::eOk;
+		const sl::Result reflex_result = internal->reflex_set_options(options);
+		internal->reflex_running = reflex_result == sl::Result::eOk;
+		if (!internal->reflex_running) {
+			// Worth a line of its own: frame generation refuses to start unless
+			// Reflex is running, and that refusal is otherwise silent all the way
+			// up through DLSSFrameGeneration::update, which discards the bool.
+			WARN_PRINT(vformat("Streamline: Reflex did not start (%s), so DLSS frame generation will refuse.", sl::getResultAsStr(reflex_result)));
+		}
 	}
 }
 
@@ -847,7 +864,10 @@ void StreamlineVK::sleep() {
 	if (internal->frame == nullptr || !internal->reflex_running || internal->reflex_sleep == nullptr) {
 		return;
 	}
-	internal->reflex_sleep(*internal->frame);
+	const sl::Result sleep_result = internal->reflex_sleep(*internal->frame);
+	if (sleep_result != sl::Result::eOk) {
+		WARN_PRINT_ONCE(vformat("Streamline: slReflexSleep failed (%s).", sl::getResultAsStr(sleep_result)));
+	}
 }
 
 void StreamlineVK::set_marker(Marker p_marker) {
@@ -877,7 +897,10 @@ void StreamlineVK::set_marker(Marker p_marker) {
 			marker = sl::PCLMarker::ePresentEnd;
 			break;
 	}
-	internal->pcl_set_marker(marker, *internal->frame);
+	const sl::Result marker_result = internal->pcl_set_marker(marker, *internal->frame);
+	if (marker_result != sl::Result::eOk) {
+		WARN_PRINT_ONCE(vformat("Streamline: slPCLSetMarker failed (%s). Frame generation pacing depends on these markers.", sl::getResultAsStr(marker_result)));
+	}
 }
 
 StreamlineVK::Texture StreamlineVK::texture_from_rid(RID p_texture, TextureUse p_use) {
@@ -976,7 +999,13 @@ void StreamlineVK::_set_constants(uint32_t p_viewport, const CameraConstants &p_
 	constants.reset = p_camera.reset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 	constants.orthographicProjection = p_camera.orthographic ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
-	internal->set_constants(constants, *internal->frame, sl::ViewportHandle(p_viewport));
+	// Camera matrices, jitter and depth conventions. Every feature reads these,
+	// so a failure here is a wrong image rather than a missing one -- which is the
+	// hardest kind to attribute, and it was previously not reported at all.
+	const sl::Result constants_result = internal->set_constants(constants, *internal->frame, sl::ViewportHandle(p_viewport));
+	if (constants_result != sl::Result::eOk) {
+		ERR_PRINT_ONCE(vformat("Streamline: slSetConstants failed (%s).", sl::getResultAsStr(constants_result)));
+	}
 }
 
 String StreamlineVK::super_resolution_preset_description(uint32_t p_viewport) const {
@@ -1009,7 +1038,20 @@ String StreamlineVK::super_resolution_mode_name(uint32_t p_viewport) const {
 
 bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t p_viewport, const Size2i &p_output_size, Quality p_quality, Preset p_preset, bool p_upscale_alpha, const CameraConstants &p_camera, const UpscaleInputs &p_inputs) {
 	ERR_FAIL_NULL_V(internal, false);
-	if (!is_supported(FEATURE_DLSS_SUPER_RESOLUTION) || internal->frame == nullptr || internal->dlss_set_options == nullptr) {
+	// Split three ways deliberately. These are the three distinct reasons DLSS
+	// silently does not run, they are reached before the verbose logging below,
+	// and collapsing them into one return is what makes "DLSS is enabled and the
+	// image never changed" undiagnosable.
+	if (!is_supported(FEATURE_DLSS_SUPER_RESOLUTION)) {
+		WARN_PRINT_ONCE("Streamline: DLSS super resolution was requested but is not supported on this device, or the device is not ready.");
+		return false;
+	}
+	if (internal->frame == nullptr) {
+		WARN_PRINT_ONCE("Streamline: DLSS super resolution was requested but no frame token exists; slGetNewFrameToken has not produced one.");
+		return false;
+	}
+	if (internal->dlss_set_options == nullptr) {
+		WARN_PRINT_ONCE("Streamline: DLSS super resolution was requested but slDLSSSetOptions never resolved.");
 		return false;
 	}
 	ERR_FAIL_COND_V(!p_inputs.color.is_valid() || !p_inputs.depth.is_valid() || !p_inputs.motion_vectors.is_valid() || !p_inputs.output.is_valid(), false);
