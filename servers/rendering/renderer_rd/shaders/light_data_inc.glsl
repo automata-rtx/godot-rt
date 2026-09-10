@@ -87,9 +87,11 @@ struct DirectionalLightData {
 	// every light but the one the screen space pass ran for, which is how the
 	// forward shader knows which of them the single channel mask belongs to.
 	float sss_strength;
+	// shadow_caster_mask, OR-folded to eight bits. Not `mask` above, which is
+	// cull_mask at full width and is not what a ray query cull mask means.
+	uint rt_caster_mask;
 	float pad_sss0;
 	float pad_sss1;
-	float pad_sss2;
 	vec4 shadow_bias;
 	vec4 shadow_normal_bias;
 	vec4 shadow_transmittance_bias;

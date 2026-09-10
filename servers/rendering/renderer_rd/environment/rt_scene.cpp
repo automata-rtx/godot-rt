@@ -34,6 +34,7 @@
 #include "core/os/os.h"
 #include "core/string/print_string.h"
 #include "core/templates/hashfuncs.h"
+#include "servers/rendering/renderer_rd/effects/rt_shadows.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/rendering_server_globals.h"
@@ -651,12 +652,9 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 			RD::AccelerationStructureInstance rd_instance;
 			rd_instance.transform = instance.transform;
 			rd_instance.id = instance_scratch.size();
-			// The 8-bit instance mask is an OR-fold of Godot's 32-bit layer mask.
-			rd_instance.mask = uint8_t((instance.layer_mask & 0xFF) | ((instance.layer_mask >> 8) & 0xFF) |
-					((instance.layer_mask >> 16) & 0xFF) | ((instance.layer_mask >> 24) & 0xFF));
-			if (rd_instance.mask == 0) {
-				rd_instance.mask = 0xFF;
-			}
+			// Must fold exactly as the light side does, or a caster stops answering
+			// a light with no diagnostic. RTShadows::fold_layer_mask owns the rule.
+			rd_instance.mask = RTShadows::fold_layer_mask(instance.layer_mask);
 			// Shadow rays do not need triangle facing, and per-light reverse cull
 			// cannot be expressed on a shared TLAS, so culling is always disabled.
 			rd_instance.flags = RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT;

@@ -62,6 +62,22 @@ public:
 	// light's index as a float with 255 reserved to mean "not raytraced", so the
 	// indices have to stay below that.
 	static constexpr uint32_t MAX_RT_LIGHTS = 255;
+	// A ray query's instance mask is eight bits where Godot's layer masks are
+	// thirty-two, so both sides of every cull are OR-folded down. That is exact
+	// for the first eight render layers and conservative beyond them: a caster on
+	// layer 9 also answers a light that only asked for layer 1, which costs an
+	// extra ray test rather than a missing shadow. Zero folds to "everything",
+	// because a mask that excluded every layer would make the light cast nothing
+	// at all -- which is never what an unset mask means.
+	//
+	// Every producer of an 8-bit RT mask must come through here: the light side
+	// (LightStorage, for both lamps and suns) and the instance side
+	// (RaytracingScene's TLAS entries) have to agree, or a caster silently stops
+	// answering a light for reasons nothing reports.
+	static _FORCE_INLINE_ uint8_t fold_layer_mask(uint32_t p_mask) {
+		const uint32_t folded = (p_mask & 0xFF) | ((p_mask >> 8) & 0xFF) | ((p_mask >> 16) & 0xFF) | ((p_mask >> 24) & 0xFF);
+		return uint8_t(folded == 0 ? 0xFF : folded);
+	}
 	// Raytraced lights kept per pixel, one per channel of the mask. Must match
 	// LIGHTS_PER_PIXEL in rt_shadow_trace.glsl.
 	static constexpr uint32_t LIGHTS_PER_PIXEL = 4;

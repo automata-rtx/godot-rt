@@ -626,8 +626,21 @@ void main() {
 			// makes the gap look larger than it is, and a shadow that should be
 			// crisp gets filtered as though it were soft. Which of the two matters
 			// more depends on the hardware, so it is a setting.
+			// Both ends are pulled in by the bias, so a short ray can invert the
+			// interval: GL_EXT_ray_query requires tMin <= tMax and says nothing
+			// about what happens otherwise, so this is undefined rather than
+			// clamped, and this shader ships to two vendors. It is reachable
+			// without touching a slider -- light.bias is shadow_bias * 0.05, so
+			// the interval inverts below 1 cm from a default SpotLight3D and
+			// below 3 mm from a default OmniLight3D -- and again from above,
+			// because max_ray_distance shortens ray_length just before this.
+			// Clamp the NEAR end rather than the far one: pushing tMin down keeps
+			// close geometry traced, where raising tMax to meet tMin would give a
+			// degenerate interval that finds nothing while still paying for the
+			// traversal setup.
+			float ray_tmin = min(light.bias, ray_length * 0.5);
 			rayQueryInitializeEXT(ray_query, tlas, ray_flags,
-					light.mask, origin, light.bias, direction, ray_length - light.bias);
+					light.mask, origin, ray_tmin, direction, ray_length - ray_tmin);
 
 			// Every candidate is opaque, so traversal needs no help from us and
 			// commits its hit on its own; the loop is the form the specification

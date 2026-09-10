@@ -293,7 +293,12 @@ private:
 		// only thing that tells the forward shader which light the single channel
 		// screen space mask describes. Zero on every other directional light.
 		float sss_strength;
-		float pad_sss[3];
+		// The sun's shadow_caster_mask, already OR-folded to the eight bits a ray
+		// query cull mask carries. The fog's per-froxel sun ray needs it: `mask`
+		// above is cull_mask at full width, which is a different mask and which
+		// rayQueryInitializeEXT would silently truncate to its low byte.
+		uint32_t rt_caster_mask;
+		float pad_sss[2];
 		float shadow_bias[4];
 		float shadow_normal_bias[4];
 		float shadow_transmittance_bias[4];

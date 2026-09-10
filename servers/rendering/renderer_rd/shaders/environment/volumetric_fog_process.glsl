@@ -468,7 +468,7 @@ void main() {
 					rayQueryEXT ray_query;
 					rayQueryInitializeEXT(ray_query, tlas,
 							gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-							directional_lights.data[i].mask, world_pos, 0.01, ray_dir, ray_length);
+							directional_lights.data[i].rt_caster_mask, world_pos, 0.01, ray_dir, ray_length);
 					while (rayQueryProceedEXT(ray_query)) {
 					}
 

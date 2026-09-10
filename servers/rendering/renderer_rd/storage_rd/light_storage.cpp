@@ -1006,6 +1006,10 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 				light_data.specular = light->param[RSE::LIGHT_PARAM_SPECULAR];
 				light_data.volumetric_fog_energy = light->param[RSE::LIGHT_PARAM_VOLUMETRIC_FOG_ENERGY];
 				light_data.mask = light->cull_mask;
+				// Unconditional, beside its sibling. Writing this inside the
+				// raytraced block below would leave the previous light at this
+				// index owning the field on every frame that block is skipped.
+				light_data.rt_caster_mask = RTShadows::fold_layer_mask(light->shadow_caster_mask);
 
 				float size = light->param[RSE::LIGHT_PARAM_SIZE];
 
@@ -1127,7 +1131,18 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 				// otherwise inherit whatever slot sat at this index last frame and read
 				// another light's channel.
 				light_data.rt_slot = RT_SLOT_NONE;
-				if (rt_shadows_available && light_instance->raytraced_shadow) {
+				// The opacity test is load bearing, not an optimization. fade_from
+				// and fade_to are written only inside the `shadow_opacity > 0.001`
+				// guard above, and the block below reads both. A sun with
+				// shadow_enabled and shadow_opacity 0 still reaches here -- the
+				// raytraced_shadow flag bottoms out at _light_is_raytraced_shadow_candidate,
+				// which tests `shadow` and never the opacity -- so without this it
+				// reads whichever light held this index last frame, or, on the first
+				// frame, indeterminate memory: directional_lights is memnew_arr over a
+				// struct with no initializers, and that allocation is not zeroed.
+				// It then spends a mask slot and traces a full set of rays whose
+				// result the shader discards at its own opacity guard.
+				if (rt_shadows_available && light_instance->raytraced_shadow && light_data.shadow_opacity > 0.001) {
 					RTShadows::LightParams rt_light = {};
 					rt_light.light_type = RTShadows::LIGHT_TYPE_DIRECTIONAL;
 
@@ -1187,9 +1202,7 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 					// inspector buys the same offset in meters whatever the light is.
 					rt_light.normal_bias = MAX(0.0f, (float)light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS]) * 0.0075f;
 
-					const uint32_t caster_mask = light->shadow_caster_mask;
-					uint32_t folded = (caster_mask & 0xFF) | ((caster_mask >> 8) & 0xFF) | ((caster_mask >> 16) & 0xFF) | ((caster_mask >> 24) & 0xFF);
-					rt_light.mask = folded == 0 ? 0xFF : folded;
+					rt_light.mask = RTShadows::fold_layer_mask(light->shadow_caster_mask);
 
 					const uint32_t slot = _rt_slot_acquire(light_instance, rt_frame);
 					if (slot != RT_SLOT_UNASSIGNED) {
@@ -1417,7 +1430,13 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 		// is bounded by what fits in the index rather than by the mask's four
 		// channels.
 		light_data.rt_slot = RT_SLOT_NONE;
-		if (rt_shadows_available && light_instance->raytraced_shadow) {
+		// A lamp whose shadow is fully transparent still reaches here for the same
+		// reason the sun does, and a slot is a scarce resource: there are four per
+		// pixel and lights past the fourth go unshadowed with no map to fall back
+		// on. Read the parameter directly -- light_data.shadow_opacity is not
+		// assigned until well below this block.
+		const bool rt_shadow_visible = light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY] > 0.001;
+		if (rt_shadows_available && light_instance->raytraced_shadow && rt_shadow_visible) {
 			RTShadows::LightParams rt_light = {};
 
 			// The acceleration structure is in world space, so the ray tracing pass
@@ -1460,14 +1479,9 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 			// separate mask from the one deciding what it lights.
 			//
 			// The acceleration structure's instance mask is eight bits against
-			// Godot's thirty-two, so both sides are folded down by OR. That is
-			// exact for the first eight render layers and conservative beyond
-			// them: a caster on layer 9 also answers a light that only asked for
-			// layer 1. Being wrong that way costs an extra ray test rather than a
-			// missing shadow.
-			const uint32_t caster_mask = light->shadow_caster_mask;
-			uint32_t folded = (caster_mask & 0xFF) | ((caster_mask >> 8) & 0xFF) | ((caster_mask >> 16) & 0xFF) | ((caster_mask >> 24) & 0xFF);
-			rt_light.mask = folded == 0 ? 0xFF : folded;
+			// Godot's thirty-two; RTShadows::fold_layer_mask states the rule and is
+			// the one place it lives.
+			rt_light.mask = RTShadows::fold_layer_mask(light->shadow_caster_mask);
 
 			const uint32_t slot = _rt_slot_acquire(light_instance, rt_frame);
 			if (slot != RT_SLOT_UNASSIGNED) {
