@@ -49,15 +49,8 @@ error columns, because a clipping transfer looks fine on every average and terri
 ## Getting a binary
 
 `run.sh` looks for `bin/godot.linuxbsd.editor.x86_64` at the repository root, or wherever
-`GODOT_BIN` points. The binary is gitignored, so a fresh clone has none. Build one with:
-
-```
-scons platform=linuxbsd target=editor dev_build=no debug_symbols=no -j$(nproc)
-```
-
-The project's own builds come from GitHub Actions rather than a local toolchain.
-`.github/workflows/linux_builds.yml` still exists and carries `workflow_dispatch`, so a Linux binary
-can be had from the Actions tab on demand even though the default push runs only the Windows jobs.
+`GODOT_BIN` points. "Getting a binary" in `../shadow_validation/README.md` has the build line and
+where the project's own builds come from.
 
 ## Running it
 

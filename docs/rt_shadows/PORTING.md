@@ -63,8 +63,7 @@ report true from the new validity query.
   `tlas_create` (`:423`) take neither that nor `_THREAD_SAFE_METHOD_`, where the equivalent
   `compute_pipeline_create` (`:5092`) does. They touch the frame's disposal lists and the render
   graph's resource tracker unguarded. So **every structure creation has to happen on the render
-  thread**: scene cull records what needs building and the render step builds it. That queue is not
-  a design preference, it is the reason this fork has one.
+  thread**: scene cull records what needs building and the render step builds it.
 - **`AccelerationStructure::invalidated` never re-arms.** It starts true and is cleared by a
   successful build (`rendering_device.cpp:460`, `:566`), but nothing sets it back when the vertex
   data underneath it changes. A skinned mesh whose deformed buffer was just rewritten leaves a BLAS
@@ -647,16 +646,12 @@ MultiMesh become twelve TLAS entries backed by one built BLAS.
   elements no light can reach. Bound each element by putting the shared mesh's own AABB through the
   composed transform, and intersect that against the lamp bounds the gather queried with. A
   directional light's swept volumes are consulted only as a second chance, and only when
-  `scatter_casters` allows it -- under Near Camera the element's bounds center must also be within
-  `scatter_distance` of the camera position. A scattered field under a sun is the one case that can
-  flood the structure, because the light reaches the whole level and every blade of grass is its own
-  entry, which is why how far scatter casts is a setting rather than a constant.
+  `scatter_casters` allows it; stage 12 has the order of the two tests and what each value of that
+  setting admits.
 - The per-element test consults the **whole** lamp bounds list, including the lamps the gather itself
-  skipped because a directional volume already enclosed them. That is the reason those lamps are
-  moved to the back of the list rather than dropped: the gather asks whether an instance is reached,
-  this test asks whether one element of it is, and an element that an enclosed lamp was the only
-  reason to keep would otherwise be lost. Drop them and the bug shows up as scattered props missing
-  their shadows only near a lamp, only with a sun in the scene.
+  skipped because a directional volume already enclosed them -- which is why stage 12 partitions
+  those to the back of the list rather than dropping them. Drop them and the bug shows up as
+  scattered props missing their shadows only near a lamp, only with a sun in the scene.
 - Because a raytraced light has no shadow-map fallback, an unsupported caster type is an **absent**
   shadow, not a degraded one -- and turning the feature off brings the shadows back, which reads as
   the feature being broken. Bound the total at `MAX_RT_CASTERS`, which is **65536**, and warn once
@@ -742,16 +737,15 @@ at frame rate, and shadows survive the session.
   the cache entry rather than a device call per surface. `FINDINGS.md` has what the device-lock
   version cost.
 - **The key is not the quantity the guard above compares, and that gap is what makes the guard work.**
-  The entry separately records the buffer it was built from, and the guard compares that against what
-  the surface would build from now. For a mesh-keyed entry the two are different objects: the key
-  survives `clear_surfaces()`, so the dead entry is still found and can be erased, while the buffer
-  does not, so the comparison fails and erases it. Key on the buffer instead and the dead entry is
-  never looked up again -- no crash, it just sits there until eviction while a second entry is built
-  beside it. For a buffer-keyed skinned entry the two are the same RID by construction, so the
-  comparison can never fail; it does not need to, because when that buffer goes away the key goes with
-  it, the entry is unreachable and leaves through eviction holding a handle the device already freed,
-  which is exactly what the release path's validity check is for. Nothing tells this cache that a mesh
-  or an instance went away, so the guard and the sweep are the only two ways an entry ever leaves.
+  For a mesh-keyed entry the key and the recorded buffer are different objects: the key survives
+  `clear_surfaces()`, so the dead entry is still found and can be erased, while the buffer does not,
+  so the comparison fails. Key on the buffer instead and the dead entry is never looked up again --
+  no crash, it just sits there until eviction while a second entry is built beside it. For a
+  buffer-keyed skinned entry the two are the same RID by construction, so the comparison can never
+  fail; it does not need to, because when that buffer goes away the key goes with it and the entry
+  leaves through eviction holding a handle the device already freed, which is what the release path's
+  validity check is for. Nothing tells this cache that a mesh or an instance went away, so the guard
+  and the sweep are the only two ways an entry ever leaves.
 - **An entry has three states and only `BLAS_READY` is ever re-examined.** `BLAS_UNBUILT` is the
   initial value of a fresh record and is never stored -- a surface that loses to the build budget has
   no entry inserted at all, so it is simply reached again by the next call's walk. `BLAS_INELIGIBLE`
@@ -961,13 +955,12 @@ Bound the sun's caster set behind its own setting, and fix the cascade-slot fill
 - **Lights whose bounds a directional volume already encloses are partitioned to the back of the
   query list, not dropped.** Querying such a lamp descends the geometry index a second time over
   ground the sun's volume already covered, and the per-instance pass counter throws every duplicate
-  away at the leaf, so skipping the query changes which casters are gathered not at all. It is worth
-  testing for because it is the common case rather than a corner one: a sun's volume swallows every
-  lamp in an interior, a street or a town square, and those lamps' queries then account for most of
-  the index visits. Partition with a swap -- walk the array, swap each non-enclosed entry to the
-  front, and query only that prefix -- because the per-element multimesh test above asks a
-  **different** question of the same array and iterates it whole. Erasing the enclosed entries
-  instead loses exactly the elements those lamps were the only reason to include.
+  away at the leaf, so skipping the query changes which casters are gathered not at all -- and it is
+  the common case, since a sun's volume swallows every lamp in an interior or a street, so those
+  queries account for most of the index visits. Partition with a swap -- walk the array, swap each
+  non-enclosed entry to the front, and query only that prefix -- because the per-element multimesh
+  test above asks a **different** question of the same array and iterates it whole. Erasing the
+  enclosed entries instead loses exactly the elements those lamps were the only reason to include.
 
 - **Filling unused cascade slots from the last real one is a prerequisite for stage 14, not a
   tidy-up.** The cascade ladders in the shaders end in a branch that reads slot 3; with fewer
@@ -1436,30 +1429,26 @@ The prefilter's linearization and the gather's UV-to-view do handle it.
 
 - Six details are load-bearing, and every one was wrong before it was measured. Each is a steady
   bias that reads as the effect working rather than as a bug, so none will be caught by looking.
-  `FINDINGS.md` has the measurements; what a port needs is the list.
-  1. The depth pyramid is sampled with a **nearest** sampler, so a sample must be reconstructed at
-     the center of the texel its depth came from, not at the position the step asked for.
-  2. The per sector weight is the integral of `cos(t - n) * |sin t|` over the sector, carrying the
-     `|sin t|` Jacobian of the slice parametrization, and **not** the sector's share of the arc. The
-     closed form and its fixed `cos`/`sin` step at `pi/16` are in the estimator description above.
-     Dropping the Jacobian counted the two sectors either side of the normal about ten times too
-     heavily.
-  3. The strength curve scales occlusion as a **ratio**. Subtracting a multiple of the distance
+  `FINDINGS.md` has the measurements; the first four are described where the estimator is, above,
+  and are gathered here so a port can check them off.
+  1. Reconstructing a sample at the center of the texel its depth came from, not at the position the
+     step asked for, because the pyramid is sampled **nearest**.
+  2. The `|sin t|` Jacobian in the per sector weight, which is the integral of `cos(t - n) * |sin t|`
+     over the sector and not the sector's share of the arc.
+  3. The strength curve scaling occlusion as a **ratio**. Subtracting a multiple of the distance
      from white has a hard floor and clips a third of the tonal range to black inside the gather,
      where no filter can recover it. The one-step test: put a flawless traced occlusion through the
      curve and see whether the artifact survives.
   4. **The checkerboard is the shipped shading rate whenever half resolution is on**, and items 5
      and 6 below describe the quarter resolution grid, which is now the fallback rung. A port that
-     reproduces only the grid ships a renderer whose default occlusion path does not exist. The
-     checkerboard packs pixel `(2u + (y & 1), y)` into gather texel `(u, y)`, so the gather is half
-     width and full height rather than half of both; reconstruction copies the shaded half through
-     untouched and takes a **plane-weighted** average of the four immediate neighbors of the rest --
-     the same plane term the quarter grid uses, so a neighbor across a silhouette is still rejected,
-     and where the weights sum to 0.0001 or less the first on-screen neighbor is taken whole. An
-     off-screen neighbor is skipped rather than clamped, so an edge pixel blends two or three. Four
-     taps is complete rather than an approximation. One detail is load bearing: at an odd width the last texel of an odd row is
-     clamped and no full resolution pixel maps back to it, so the upsample never reads it -- but the
-     horizontal denoise walks the gather's own grid and does, so it must still be written.
+     reproduces only the grid ships a renderer whose default occlusion path does not exist. It packs
+     pixel `(2u + (y & 1), y)` into gather texel `(u, y)`, so the gather is half width and full
+     height rather than half of both; reconstruction is the upsample's four-neighbor filter above,
+     weighted by the same plane term, with an off-screen neighbor skipped rather than clamped so an
+     edge pixel blends two or three, and the first on-screen neighbor taken whole where the weights
+     sum to 0.0001 or less. One detail is load bearing: at an odd width the last texel of an odd row
+     is clamped and no full resolution pixel maps back to it, so the upsample never reads it -- but
+     the horizontal denoise walks the gather's own grid and does, so it must still be written.
   5. The half resolution stride is **passed** in a push constant. `gather_size_for` rounds up and
      integer division rounds down, so recovering it in the shader gives 2 at every even width and 1
      at every odd one, and at an odd width the gather then answers only for the top left quadrant.
@@ -1552,9 +1541,9 @@ darken.
   buffer's **internal** size, one layer, usage `SAMPLING | STORAGE | CAN_COPY_TO | CAN_COPY_FROM` --
   and `ScreenSpaceShadows::is_target_format_supported()` queries the first three. `CAN_COPY_TO` is
   what the two `texture_clear` calls need; a storage-only texture fails the clear, not the dispatch.
-  White is fully lit. A fresh image holds nothing in particular, and the mask darkens the sun
-  wherever it is read, so an uncleared one is a screen of arbitrary darkness on the frame the buffers
-  are reconfigured. Keep this clear **and** the one inside `render()`: they cover different frames.
+  White is fully lit, and an uncleared mask is a screen of arbitrary darkness on the frame the
+  buffers are reconfigured. Keep this clear **and** the one inside `render()`: they cover different
+  frames.
 
 - **A light is marked with `sss_strength` only when a mask is genuinely written for it that pass.**
   In `LightStorage::update_light_buffers`, `sss_available = p_using_shadows &&
@@ -1712,11 +1701,9 @@ darken.
 - **The output is cleared to white ahead of every *remaining* early return in `render()`.** Two
   returns precede the clear -- an invalid effect or a null depth or output texture, and a
   non-positive size -- and everything after it clears first: the degenerate direction, and a dispatch
-  list that came back empty. Two reasons for the placement: the early-out means a rejected pixel is a
-  pixel no dispatch writes, so the target must start from a known value rather than last frame's; and
-  a frame that bails out after the clear must not leave the previous frame's shadows standing while
-  the light is already marked with a strength, which the caller cannot detect because
-  `update_light_buffers` ran first.
+  list that came back empty. A rejected pixel is a pixel no dispatch writes, so the target must start
+  from a known value rather than last frame's, and a frame that bails out after the clear must not
+  leave the previous frame's shadows standing while the light is already marked with a strength.
 
 - **The depth sampler is point-filtered on all three filters and clamped to a transparent black
   border, not to the edge.** The march reads off screen on purpose and those reads have to come back
@@ -1763,15 +1750,12 @@ darken.
           shadow = min(shadow, mix(1.0, sss_shadow_lookup(), directional_lights.data[i].sss_strength));
       }
 
-  `min()` rather than a multiply because an occluder that is both in the acceleration structure and
-  on screen is described by **both** terms -- a wall shadows the grass in front of it through the
-  raytraced mask, and the same wall is in the depth buffer this marches -- so multiplying darkens
-  those pixels twice. Taking the darker answer leaves them alone and still lets the screen space term
-  shadow what the structure has never heard of. Placement is the other half: put it after the tail
-  and a baked shadowmask's replace/overlay branch overwrites it, and the `USE_VERTEX_LIGHTING` apply
-  never sees it. `RT_MASK_ANSWERS_HERE` applies unchanged -- this mask is marched over the pre-pass
-  depth too, so it describes exactly the fragments that pre-pass contains and a genuinely
-  alpha-blended fragment must not read it.
+  `min()` rather than a multiply: an occluder that is both in the acceleration structure and on
+  screen is described by both terms, so multiplying darkens it twice -- stage 20 argues that case in
+  full. Placement is the other half: put it after the tail and a baked shadowmask's replace/overlay
+  branch overwrites it, and the `USE_VERTEX_LIGHTING` apply never sees it. `RT_MASK_ANSWERS_HERE`
+  applies unchanged -- this mask is marched over the pre-pass depth too, so it describes exactly the
+  fragments that pre-pass contains and a genuinely alpha-blended fragment must not read it.
 
 - **`sss_shadow_lookup()` goes in `scene_forward_lights_inc.glsl`, inside the `#ifndef
   USING_MOBILE_RENDERER` block**, for the same reason as `rt_shadow_lookup()` in stage 4: it reads
@@ -2019,10 +2003,9 @@ shadows.
   VoxelGI is in view the pre-pass writes no mask while `_render_screen_space_shadows` still binds
   `RB_TEX_SSS_CASTER` -- it guards only on `has_texture()`, and the texture persists once any
   earlier frame created it. The result is the **previous** frame's mask applied to this frame's
-  depth, which reads as contact shadows lagging or sticking to the wrong surfaces as the camera
-  moves; only on a run where a VoxelGI is in view from the first frame is the restriction merely
-  inert. The comment beside that bind claims the two cannot disagree, which is true of the setting
-  and of the sun and not of VoxelGI. Closing it means either adding `!using_voxelgi` to
+  depth: contact shadows lagging or sticking to the wrong surfaces as the camera moves. The comment
+  beside that bind claims the two cannot disagree, which is true of the setting and of the sun and
+  not of VoxelGI. Closing it means either adding `!using_voxelgi` to
   `_using_restricted_sss_casters()` or binding the mask only when the pass mode that actually ran
   wrote one.
 
@@ -2047,8 +2030,8 @@ The fix is one line, in `_render_scene`, inside the same branch that selects the
 
     scene_shader.enable_advanced_shader_group(p_render_data->scene_data->view_count > 1);
 
-This was hit for real during implementation. Enable the group where the pass mode is chosen, not at
-init: enabling it unconditionally compiles the whole advanced set for every project.
+Enable the group where the pass mode is chosen, not at init: enabling it unconditionally compiles
+the whole advanced set for every project.
 
 **The variant numbering invariant.** `ShaderVersion`'s constants are not an enum -- they are the
 **indices at which `init()` pushes each `VariantDefine`**, and the depth block is pushed twice, once
@@ -2186,8 +2169,7 @@ rather than a broken one.
 Every entry here is a member added to an interface the engine implements more than once, so a port
 that adds it in one place and not the others fails to link -- and for a pure virtual the error names
 an abstract class being instantiated, far from anything this fork touched. The stages introduce
-these in passing; this is the checklist, because "far from the change" is exactly the failure a
-recipe should not leave you to rediscover.
+these in passing; this is the checklist.
 
 | Added to | Member | Kind | Who must implement it |
 | --- | --- | --- | --- |
@@ -2202,9 +2184,8 @@ recipe should not leave you to rediscover.
 | `rendering_device.h` | `acceleration_structure_is_valid` | non-virtual | the device |
 | `renderer_geometry_instance.h` | `set_screen_space_shadow_caster` | pure virtual | every `RenderGeometryInstance`: the forward-clustered one, the mobile one and the dummy. The base implementation must call `_mark_dirty()`, or the flag never reaches instance data and the caster mask comes back empty with nothing to indicate why. |
 
-The defaulted virtuals are deliberate: a renderer that has no raytraced shadows should not have to
-say so four times. The pure ones are the opposite call -- they change behavior a backend cannot
-sensibly guess at, so every backend is made to answer.
+Default a virtual where a renderer with no raytraced shadows would only be repeating itself; make
+it pure where it changes behavior a backend cannot sensibly guess at.
 
 `RenderSceneDataRD` also gains an `alpha_pass` bool that reaches the shader as a scene data flag;
 see stage 15. It is not on this table because nothing else implements that class.
@@ -2213,8 +2194,7 @@ see stage 15. It is not on this table because nothing else implements that class
 
 Everything in this section belongs to the fork rather than to upstream, so unlike the rest of this
 document it can be copied literally and will not drift when Godot changes underneath it. A rebuild
-that reproduces the structure but guesses at these will be subtly wrong in ways that read as the
-system working.
+that guesses at these is wrong in ways that read as the system working.
 
 ### Project settings -- `rendering/lights_and_shadows/raytraced_shadows/`
 

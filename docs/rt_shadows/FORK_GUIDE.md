@@ -708,17 +708,14 @@ Under `rendering/environment/ssao/ground_truth/`.
   flips between marking several sectors and marking none; and the sector quantisation, which snaps
   every occluder to a 5.6 degree grid. Attacking those is what would let the sample budget come
   *down* rather than up.
-- **Half resolution reconstruction is a 2x2 bilateral, and widening it is not the fix.** Silhouettes
-  still show some stair stepping: a silhouette pixel is about sixteen times more likely to be badly
-  wrong than an average one, and the disagreement with a full resolution render is seven times the
-  frame average there. Widening the reconstruction barely touches it -- measured, a 7x7 gains three
-  percent at silhouettes for five times the taps -- because the problem is not too few candidates.
-  It is that half resolution never evaluated a pixel near the edge, and no filter can invent a
-  sample that was not taken. Shading a CHECKERBOARD fixes it, and it is **the shipped default**
-  whenever `half_size` is on -- `ground_truth/shading_rate` has to be set to `Quarter Resolution`
-  to get the coarser grid back. Every unshaded pixel has all four of its immediate neighbors
-  shaded, one pixel away rather than two, which measures 33% better at silhouettes and 29% better
-  overall for twice the gather. What it costs on a real GPU is measured two bullets down.
+- **Half resolution stair steps at silhouettes, and widening the reconstruction is not the fix.** A
+  silhouette pixel is about sixteen times more likely to be badly wrong than an average one, and the
+  disagreement with a full resolution render is seven times the frame average there. Widening barely
+  touches it -- measured, a 7x7 gains three percent at silhouettes for five times the taps --
+  because the problem is not too few candidates but that half resolution never evaluated a pixel
+  near the edge, and no filter can invent a sample that was not taken. The checkerboard described
+  in 9.4 is what fixes it, measuring 33% better at silhouettes and 29% better overall for twice the
+  gather. What it costs on a real GPU is two bullets down.
 - **Measured directly on an RTX 5090 at 3440x1440 full screen, 4.95 Mpx, occlusion at full
   resolution, in a scene with dozens of raytraced lights.** The whole GPU frame is 3.41 ms, of which
   `Process GTAO` is **1.12 ms** and the raytraced shadow block is also 1.12 ms -- the two matching is
@@ -727,50 +724,32 @@ Under `rendering/environment/ssao/ground_truth/`.
   times what tracing the shadows costs**. At full resolution it is a third of the GPU frame.
 - **Cost is very nearly linear in shading rate, and almost nothing is fixed.** All three rungs
   measured on the same RTX 5090, same camera, at 3440x1440: quarter resolution 0.35 ms,
-  checkerboard 0.61 ms, every pixel 1.11 ms. Solving those for a fixed cost and a full resolution
-  gather cost gives three independent answers that agree to within four percent -- the gather is
-  about 1.02 ms and the fixed part about **0.10 ms, nine percent** of the effect. The code says
-  that is what should happen: the gather derives its reach and its sample count from the full
-  resolution footprint whatever the rate, so per shaded pixel work is rate independent, and both
-  denoise passes dispatch at the gather's own size. Only the depth pyramid and the upsample are
-  fixed, and they are streaming passes.
-
+  checkerboard 0.61 ms, every pixel 1.11 ms. Solving those three ways for a fixed cost and a full
+  resolution gather cost gives answers that agree to within four percent -- the gather is about
+  1.02 ms and the fixed part about **0.10 ms, nine percent** of the effect. Only the depth pyramid
+  and the upsample do not scale with the rate. The solve, and why the code says it should come out
+  that way, is in `docs/rt_shadows/FINDINGS.md`.
 - **Measured once on a Radeon 780M, and it is not the pass to worry about there.** Captured at the
   quarter resolution rung, so the gather ran at a quarter of the pixels while the prefilter and the
   upsample stayed at full. That is no longer the default -- a capture on stock settings shades a
   checkerboard, at half the pixels, and will read higher. The whole `Process GTAO` block reads
-  **1.43 ms**, against a GPU frame
-  of about 11.2 ms in which the raytraced shadow block alone is 4.49 ms. On this class of hardware
-  the occlusion estimator is roughly an eighth of the frame and the third largest of four passes. If
-  an iGPU frame is too slow, this is not where to start.
+  **1.43 ms**, against a GPU frame of about 11.2 ms in which the raytraced shadow block alone is
+  4.49 ms. On this class of hardware the occlusion estimator is roughly an eighth of the frame and
+  the third largest of four passes. If an iGPU frame is too slow, this is not where to start.
 
-  Read those two figures as a ratio and not as a budget. They were captured with the game running
-  embedded in the editor, so the render size was a fraction of the panel it would ship at, and the
+  Read those two figures as a ratio and not as a budget: they were captured with the game running
+  embedded in the editor, so the render size was a fraction of the panel it would ship at and the
   editor was drawing its own interface on the same integrated GPU and the same memory. Every pass
-  in that frame scales with the internal buffer size -- `internal_size` is the viewport size times
-  `rendering/scaling_3d/scale` -- so a shipping frame at native resolution is several times this
-  one. What transfers is the shape: occlusion is a small share, the shadow stage is the large one.
+  scales with the internal buffer size, so a shipping frame at native resolution is several times
+  this one. What transfers is the shape: occlusion is a small share, the shadow stage is the large
+  one.
 
-  What that does not settle is the shape: one reading at one setting is one equation in two
-  unknowns, so the fixed and gather costs on this part are still separate unknowns. Two captures
-  close it, with no code change and no restart. Read `Process GTAO` with
-  `rendering/environment/ssao/half_size` on and again with it off.
-
-  Which pair of formulas applies depends on the rung, because the toggle moves the gather between
-  different fractions. At the default checkerboard it moves between half and all the pixels:
-  `F = 2*t_half - t_full` and `G_full = 2*(t_full - t_half)`. Set `shading_rate` to
-  `Quarter Resolution` first and it moves between a quarter and all of them instead:
-  `F = (4*t_half - t_full)/3` and `G_full = (4/3)*(t_full - t_half)`. Using the second pair against
-  a checkerboard capture can return a negative fixed cost, which is the sign it was the wrong pair
-  rather than a bad reading. Discard the first frame after the toggle: `gather_size`
-  changes with `half_size`, so the pyramid and both AO buffers are reallocated inside the mark.
-  Per-dispatch numbers need a profiler that reads debug labels, and the five dispatches are already
-  wrapped in a `GTAO` label, so nothing has to be added to get them.
-
-  That split also decides what the checkerboard rung is worth. It shades half the pixels rather
-  than a quarter, so it moves the gather term and nothing else -- if the fixed part dominates on a
-  given GPU, the rung costs little and saves little, and the interesting comparison is against
-  shading every pixel rather than against a quarter resolution grid.
+  One reading at one setting does not split the fixed cost from the gather cost on this part. Two
+  captures of `Process GTAO` do, with no code change and no restart -- `half_size` on, then off,
+  discarding the first frame after the toggle because the buffers are reallocated inside the mark.
+  The formulas, and which pair goes with which shading rate, are in `docs/rt_shadows/FINDINGS.md`.
+  The five dispatches are wrapped in a `GTAO` debug label, so a profiler that reads labels gets
+  per-dispatch numbers with nothing added.
 - **`AreaLight3D`, reflection probes and the Mobile and Compatibility renderers** never see this
   estimator; they use whatever the legacy path gives them.
 
@@ -814,11 +793,10 @@ The grass still *receives* the raytraced shadow as it always did; `cast_shadow` 
 
 ### 10.2 Why min() and not a multiply
 
-An occluder that is both in the acceleration structure and on screen is described by **both** terms.
-A wall shadows the grass in front of it through the raytraced mask, and the same wall is in the
-depth buffer the screen-space march reads. Multiplying would darken those pixels twice. Taking the
-darker of the two leaves them alone and still lets the screen-space term shadow what the structure
-has never heard of, which is the whole point.
+A wall that is both in the acceleration structure and in the depth buffer the march reads is
+described by **both** terms, so multiplying would darken it twice. Taking the darker of the two
+leaves it alone and still lets the screen-space term shadow what the structure has never heard of,
+which is the whole point. The setting in 10.6 drops the redundant term on such a surface altogether.
 
 The error that remains is bounded by construction: the march reaches `SAMPLE_COUNT` **pixels**, which
 is the contact region, and that is exactly where the sun's penumbra is narrowest — at the fork's
@@ -848,17 +826,11 @@ nothing. Under multiview the pass declines and warns once rather than running: s
 dispatch and a mask per eye, and the depth buffer is a 2D array its sampler cannot be handed.
 Reflection probe renders decline too, having no render buffers of their own to hold a mask.
 
-**Orthographic cameras also decline**, including the editor's Top/Front/Side views. Bend's dispatch
-builder takes the march direction from the sign of the light's clip `w`, and `set_orthogonal` leaves
-`columns[2][3]` at zero -- the very element `Projection::is_orthogonal()` tests and the one `xform()`
-builds `w` from -- so a direction vector projects to `w` of exactly zero. Bend then reads that single
-zero two ways that disagree: it clamps the magnitude up to `+FP_limit` when it places the light's
-screen coordinate, putting it on the side the sun really is, but tests the raw value for the sign,
-where `0 > 0` is false and yields "behind the camera". A sun in front and a sun behind produce
-byte-identical output. Forcing the sign would fix that half and leave the other wrong, because the
-march divides each stored depth by its distance along the ray to make the light's rays parallel --
-which is what a perspective projection needs and an orthographic one, whose rays are already
-parallel and whose depth is linear, does not.
+**Orthographic cameras also decline**, with a one-time warning, including the editor's
+Top/Front/Side views. An orthographic projection gives a direction vector a clip `w` of exactly zero
+and the march takes its direction from that sign, so a sun in front and a sun behind are
+indistinguishable to it. Forcing the sign would not be enough either; stage 19 of
+`docs/rt_shadows/PORTING.md` derives both halves.
 
 ### 10.4 The settings
 
@@ -909,10 +881,8 @@ What 1.0 does *not* recover is shadow **area**. On that field it darkens each sh
 is occluders off the top of the frame or further along the ray than the tier reaches, which no march
 over a depth buffer can find; that is what the `SHADOWS_ONLY` clump proxies in 10.3 are for.
 
-Darkness overshooting while area undershoots is what a `min()` composition that can only darken
-looks like: where the march finds the occluder it commits fully, and where it does not there is
-nothing at all. So tune `surface_thickness` against total shadow, not against how dark a shadow
-looks.
+Darkness overshooting while area undershoots is what a `min()` that can only darken looks like, so
+tune `surface_thickness` against total shadow rather than against how dark a shadow looks.
 
 `surface_thickness` is next. A depth buffer records one surface per pixel and says nothing about how
 solid it is, so this stands in for that. Too high and everything casts a thick shadow onto what is
@@ -920,10 +890,9 @@ behind it; too low and shadows thin out. Move it in multiples of two, and move `
 in the same direction.
 
 It is tempting to scale it with the occluder's real depth — 1 cm blades rather than 4 mm ones look
-like they want 0.010 rather than the default, and measured over a whole frame they appear to. They do
-not: raising it trades a near-field shadow that the march cannot reach the end of against a far-field
-one that is already too wide, and the global average of those two errors reads as a match. Measured
-per distance band the default wins. See the screen space section of `docs/rt_shadows/FINDINGS.md`.
+like they want 0.010, and measured over a whole frame they appear to. Measured per distance band
+the default wins: raising it only trades a near-field error against a far-field one. See the screen
+space section of `docs/rt_shadows/FINDINGS.md`.
 
 There is no third darkness knob, and there used to be two settings that looked like one. `contrast`
 only widened the window around an exact depth match and saturated -- 4 to 16 moved shadow mass by 11%
@@ -1005,9 +974,7 @@ Flipping it honestly needs one specific experiment, which **has not been run**:
 3. The default flipped only if the restricted side wins with its own tuning.
 
 Until then, turn it on per project if the scene is mostly structure geometry with a little foliage,
-and measure rather than assume. This is not a stub or a half-feature: the machinery is finished,
-tested and documented, and the only thing missing is the evidence that a different default would be
-better for everyone.
+and measure rather than assume.
 
 ### 10.7 Where it lives
 
@@ -1024,11 +991,7 @@ whitespace this repository normalizes; the shader is a port to RD GLSL.
 | `light_storage.{h,cpp}` | `SSSLight`, which picks the light, and `DirectionalLightData::sss_strength`, which tells the shader which one it picked. |
 | `scene_forward_lights_inc.glsl` | `sss_shadow_lookup()`. |
 
-Two things worth knowing about the port, because both fail silently and plausibly:
-
-- Bend maps clip Y to a pixel row with `* -0.5 + 0.5`, which assumes a clip space whose `+1` is the
-  top row. Godot's projection already negates Y, so the input Y is negated on the way in instead.
-  Getting this wrong puts the sun at its own vertical mirror.
-- `gl_WorkGroupID` is unsigned and the wave offset is routinely negative, so the cast to signed has
-  to happen before the add. Without it the quadrants left of and above the light fill with garbage —
-  which looks like a light-coordinate bug rather than an integer one.
+Two deviations from Bend's HLSL fail silently and plausibly if a port drops them: the clip Y
+negation, which otherwise puts the sun at its own vertical mirror, and a signed cast before the wave
+offset is added. Stage 19 of `docs/rt_shadows/PORTING.md` has both; the shader's header lists the
+rest.

@@ -21,8 +21,8 @@ premise under a lot of what follows:
   for weak hardware, the 780M is the hardware they mean.
 - **SMAA, not TAA.** This matters beyond antialiasing: Godot fills the velocity buffer only for a
   viewport running a temporal upscaler or TAA, and DLSS frame generation refuses without motion
-  vectors. So frame generation here is reachable only on top of DLSS super resolution, which has
-  never produced an image -- the two open DLSS items are serially dependent.
+  vectors. So frame generation here is reachable only while DLSS super resolution is running, which
+  is what supplies them. Super resolution does run, so that is a live path rather than a blocked one.
 - **MSAA deliberately off.** So "measure with MSAA off as the control" is the shipping configuration
   rather than a methodology note, and `restrict_casters` declining under MSAA is a non-issue here.
 - **Not VR.** Every multiview and stereo fallback in this fork is dead code for this project.
@@ -150,9 +150,8 @@ buffer. Read section 10 of **`docs/rt_shadows/FORK_GUIDE.md`** before answering 
   matches the trace. It moves darkness 2.1x while moving area 5%, so it and `surface_thickness` are
   independent: hardness sets how dark, thickness sets how wide. There is no third darkness knob --
   `contrast` and `strength` were settings until they were measured, and are now constants at 4.0 and
-  1.0. **Score these captures in linear light, never off the sRGB PNG values**; every ratio in
-  that section was first published from gamma-space differences and had to be re-derived. See the
-  screen space section of `docs/rt_shadows/FINDINGS.md`.
+  1.0. Score these captures in linear light (the rule and the decode are under "Building and
+  validating" below); the sweeps are in `docs/rt_shadows/FINDINGS.md`, screen space section.
 - **Do not tune it by screenshot.** `docs/rt_shadows/shadow_validation/` renders the same scene with
   and without the pass and scores it against a raytraced reference; its README lists the numbers a
   change must not move. The pass overshoots darkness while undershooting area, so an eye judging
@@ -267,10 +266,22 @@ answering anything about upscaling, frame generation or the Vulkan loader.
   driver control panel.
 - **Streamline 2.12.0 does not ship XeSS.** Adding it means integrating Intel's SDK directly, not
   adding a Streamline feature id.
-- **Nothing has rendered a DLSS frame yet.** The load path is confirmed on an RTX 5090 — the
-  interposer loads, the signature check passes, `slInit` succeeds and Reflex reports available —
-  but no image has come out of super resolution or frame generation. Section 8 of the integration
-  document lists what to check first and in what order.
+- **DLSS super resolution works. Frame generation is still unverified.** Super resolution is
+  confirmed on the RTX 5090 at 3440x1440 fullscreen with a 3D scale of 0.67, the equivalent of DLSS
+  Quality, and the image is clean — no ghosting, no smearing under motion, no shimmer at rest. That
+  also confirms the conventions it rides on, because each fails visibly and differently: motion
+  vector sign and `mvecScale` smear under motion, the `clipToPrevClip` transpose ghosts with the
+  camera still, the jitter sign reads as softness, bad resource tags give black. Do not describe
+  those as unverified. Section 9 of the integration document is the ladder for frame generation and
+  for any configuration not yet tried.
+- **DLSS is what makes the render size arbitrary, and the fork's passes are budgeted in pixels.**
+  Every pass this fork adds dispatches from `get_internal_size()`. The contact shadow's march
+  length, `denoiser/min_filter_pixels` and `MAX_PENUMBRA_PIXELS` are all in *internal* pixels, so at
+  0.67 the contact shadow reaches about two thirds as far across the output image. That is the
+  upscaler's tradeoff, not a fault. The sharper trap is size alignment: 3440x1440 divides cleanly by
+  16 and the 2305x965 that DLSS Quality gives does not, which is how a mip-bound off-by-one in the
+  occlusion prefilter stayed invisible until DLSS ran. **Check a new pass against an odd size, not
+  against the native one.**
 
 ## Working in this repo
 
