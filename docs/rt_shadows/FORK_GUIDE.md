@@ -560,27 +560,26 @@ anything else.
   not among them — the Windows job runs `--test` itself.
   If you change a bound property, run `godot --headless --doctool .` yourself and commit the result.
 
-Three more were found while fixing the raytraced `shadow_opacity` double-apply, and left alone
-deliberately. All three live in the directional light loop in `scene_forward_clustered.glsl`, all
-three are narrow, and none is a regression — they were shipped, not introduced. They are recorded
-because nothing else would surface them:
+Three more were found while fixing the raytraced `shadow_opacity` double-apply. Two have since been
+fixed and are kept here because the shape of the mistake recurs: **anything that consumes the
+directional shadow term has to know that the trace already faded it**, and each of these was a
+consumer that did not.
 
-- **A lightmapped surface under a raytraced sun fades its dynamic shadow twice.** The shadowmask
-  REPLACE and OVERLAY arms apply `smoothstep(fade_from, fade_to, vertex.z)` unconditionally, but the
-  trace has already faded its own visibility to lit across that identical window — which is exactly
-  why the non-lightmap arm beneath them is guarded with `if (!rt_shadowed)`. So mid-window such a
-  surface reads lighter than the cascade path would make it. Confined to the fade window, and
-  reachable only with `LightmapGI` plus a baked shadowmask plus a raytraced sun.
-- **`shadow_opacity` is ignored entirely under `render_mode vertex_lighting`.** The second
-  directional loop, which is the single place the fade is applied, is compiled out on that path.
-  This is upstream Godot's behavior for the cascade path too, so the fork now matches it rather than
-  being the only path that honored it. One line applying the fade once before the vertex-light
-  multiply would fix both at once.
-- **A vertex-lit fragment can keep a contact shadow from a sun whose `shadow_opacity` is zero.** A
-  sun is granted a mask slot regardless of opacity, so `rt_shadowed` is true, the screen space term
-  is folded in by `min()`, and on the vertex-lighting path there is no second loop to multiply it
-  away. Needs vertex lighting, a raytraced sun, `shadow_opacity` at exactly zero, and screen space
-  shadows on.
+- **Fixed.** The shadowmask REPLACE and OVERLAY arms faded a raytraced sun twice, applying
+  `smoothstep(fade_from, fade_to, vertex.z)` when the trace had already faded its own visibility
+  across that identical window. REPLACE was the worse of the two: it crossfaded toward fully lit and
+  then toward the bake, so ground shadowed in both read a lit band peaking at 0.25 mid-window. Both
+  now branch on `rt_shadowed`, as the non-lightmap arm beneath them always did.
+- **Fixed.** A sun with `shadow_opacity` of zero was granted a mask slot anyway, so `rt_shadowed`
+  was true, it traced a full set of rays for an answer nothing read, and on the vertex-lighting path
+  it could keep a contact shadow that no second loop was there to multiply away. It also read
+  `fade_from`/`fade_to` that were never written that frame. Slot acquisition and screen-space
+  marking now both test the opacity.
+- **Still open, and deliberately.** `shadow_opacity` is ignored entirely under
+  `render_mode vertex_lighting`: the second directional loop, the single place the fade is applied,
+  is compiled out on that path. This is upstream Godot's behavior for the cascade path too, so the
+  fork matches it rather than being the only path that honors it. One line applying the fade once
+  before the vertex-light multiply would fix both at once.
 
 ---
 
@@ -870,11 +869,9 @@ of them are Bend Studio's own values, kept; `hardness` is not part of their tech
 | --- | --- | --- |
 | `enabled` | `false` | Turns the pass on. **Also forces the depth pre-pass on and forces its MSAA resolve**, because that buffer is what the shadow is marched over. |
 | `quality` | `Medium` | March length, in **samples and therefore in pixels**: Low 32, Medium 60, High 96. Not a world-space distance — see 10.3. |
-| `strength` | `1.0` | How dark a fully shadowed pixel goes. This fork's addition, not Bend's. For a shadow of the wrong darkness reach for `hardness` first. |
 | `hardness` | `1.0` | How much one depth sample may darken a pixel alone. **Not Bend's**: they always average, which is `0.0` here. See 10.5. |
 | `surface_thickness` | `0.005` | How solid the depth buffer's one surface per pixel is assumed to be. Bend's recommended starting value. See 10.5. |
 | `bilinear_threshold` | `0.02` | Edge detect sensitivity. Bend's value; scale it with `surface_thickness`. |
-| `contrast` | `4.0` | Widens the window around an exact depth match. Bend's value. **Not a darkness knob** — it saturates. |
 | `ignore_edge_pixels` | `false` | Stops a pixel the edge detect flags from casting. Bend suggest trying it for striated flat surfaces; leave it off for foliage. |
 | `restrict_casters` | `false` | Only geometry outside the acceleration structure casts. See 10.6. |
 | `debug_view` | `Disabled` | `Edge Mask`, `Thread Index`, `Wave Index`, `Caster Mask`. See 10.7. |
@@ -928,8 +925,11 @@ not: raising it trades a near-field shadow that the march cannot reach the end o
 one that is already too wide, and the global average of those two errors reads as a match. Measured
 per distance band the default wins. See the screen space section of `docs/rt_shadows/FINDINGS.md`.
 
-`contrast` is not a third darkness knob. It only widens the window around an exact depth match, and
-it saturates: taking it from 4 to 16 moved shadow mass by 11% and per-pixel darkness by 5%.
+There is no third darkness knob, and there used to be two settings that looked like one. `contrast`
+only widened the window around an exact depth match and saturated -- 4 to 16 moved shadow mass by 11%
+and per-pixel darkness by 5% -- and `strength` scaled the whole term, with a zero that switched the
+pass off rather than fading it. Both are now constants at the values everything was measured with,
+Bend's 4.0 and 1.0. `hardness` is the knob.
 
 Leave `ignore_edge_pixels` off. It helps where large flat surfaces at grazing angles produce spurious
 edges along themselves, but it thins genuine shadows at silhouettes — foliage most of all, which is

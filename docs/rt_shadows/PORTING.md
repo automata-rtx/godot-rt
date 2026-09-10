@@ -1574,9 +1574,10 @@ darken.
   since the fallback is opaque white, the guard turns that failure into no contact shadow anywhere
   rather than a dark screen. Keep the guard, and keep the invariant that makes it unreachable.
 
-- **Setting `strength` to 0 turns the pass off rather than running it and multiplying by zero.** No
-  light is selected, so `_render_screen_space_shadows` returns at `!light.valid` and never enters
-  `render()`. The mask therefore keeps whatever it last held, which is harmless precisely because no
+- **A pass with no light selected does not run at all, rather than running and multiplying by
+  zero.** `_render_screen_space_shadows` returns at `!light.valid` and never enters `render()`. This
+  is why the fork removed its own `strength` setting: a zero there was a second, undocumented way to
+  switch the whole feature off. The mask therefore keeps whatever it last held, which is harmless precisely because no
   light is marked to read it -- the "must not leave last frame's shadows standing" invariant below
   belongs to the returns *inside* `render()`, where a light already is marked. The pre-pass is still
   forced, because the predicate cannot see the strength.
@@ -1797,7 +1798,7 @@ darken.
 - **`debug_view` is how to bring the pass up, and each mode answers one question.** All three
   suppress the early-out, so they paint the sky as well and the pattern covers the frame; all three
   are written into the mask rather than over the screen, so read them on a sunlit surface with
-  `strength` at 1.0.
+  a sunlit surface rather than in shadow.
   - **Wave Index** (`fract(float(gl_WorkGroupID.x) / float(WAVE_SIZE))`) draws the compute wavefront
     layout, which must fan out from the sun's screen position and track it as the camera turns. This
     is the first one to reach for: if the pattern converges on the wrong point, the light's projected
@@ -1813,14 +1814,15 @@ darken.
 
 - **The settings, all under `rendering/lights_and_shadows/screen_space_shadows/` in
   `project_settings.cpp`, are all live.** `enabled` (bool, false), `quality`
-  (enum Low/Medium/High, 1), `strength` (float, 1.0), `surface_thickness` (float, 0.005),
-  `bilinear_threshold` (float, 0.02), `contrast` (float, 4.0, raised to at least 1.0 in the driver),
-  `hardness` (float, 1.0, clamped 0--1), `ignore_edge_pixels` (bool, false), `debug_view` (enum, 0).
+  (enum Low/Medium/High, 1), `surface_thickness` (float, 0.005), `bilinear_threshold` (float, 0.02),
+  `hardness` (float, 1.0, clamped 0--1), `restrict_casters` (bool, false), `ignore_edge_pixels`
+  (bool, false), `debug_view` (enum, 0). Bend's `contrast` and this fork's own `strength` were
+  settings and are now constants (4.0 and 1.0) -- both were measured to have exactly one correct
+  value, and `strength`'s zero doubled as an off switch.
   Unlike the raytraced master flag of stage 1, `enabled` is `GLOBAL_DEF_BASIC` and **not**
   restart-required and must not be marked so: it is read through `GLOBAL_GET_CACHED` every frame and
   the effect is built lazily, so it takes effect the next frame. `enabled` is read in
-  `_using_screen_space_shadows` and `strength` in `update_light_buffers`; the other seven are read in
-  `_render_screen_space_shadows`. Leave `ignore_edge_pixels` off: it thins genuine shadows at
+  `_using_screen_space_shadows`; the rest are read in `_render_screen_space_shadows`. Leave `ignore_edge_pixels` off: it thins genuine shadows at
   silhouettes, which is exactly the geometry the feature serves.
 
 - **Run `godot --headless --doctool .` and commit the result**, per stage 17 -- nine new
@@ -2245,10 +2247,9 @@ belonging to this fork and would be wrong if taken from Bend's sample.
 | --- | --- | --- | --- |
 | `enabled` | bool | `false` | forces the depth pre-pass on and forces its MSAA resolve |
 | `quality` | int | `1` | Low, **Medium**, High -- 32, 60 and 96 samples, which is the march length in PIXELS |
-| `strength` | float | `1.0` | hint `0–1`; this fork's, not Bend's. Reaches the shader as `DirectionalLightData::sss_strength` |
 | `surface_thickness` | float | `0.005` | hint `0.0001–0.1`. Bend's recommended starting value, and **measured** to be right at two blade sizes -- do not scale it with the occluder, see FINDINGS |
 | `bilinear_threshold` | float | `0.02` | hint `0.001–0.2`. Bend's; scale it with `surface_thickness` |
-| `contrast` | float | `4.0` | hint `1–8`. Bend's. Not a darkness control -- it saturates |
+| `contrast` | -- | `4.0` | **constant, not a setting.** Bend's value. It saturates: 4 to 16 moves mass 11% and darkness 5% |
 | `hardness` | float | `1.0` | hint `0–1`. **Not Bend's at all**: their shader always averages the four accumulators, which is `0.0` here. `1.0` is a measured result and taking `0.0` from the upstream sample gives about half the trace's shadow |
 | `restrict_casters` | bool | `false` | **ships off deliberately; do not flip it during a port.** The reason and the experiment that would justify it are in FORK_GUIDE section 10.6 |
 | `ignore_edge_pixels` | bool | `false` | Bend suggest trying it; off here because it thins genuine shadows at silhouettes |

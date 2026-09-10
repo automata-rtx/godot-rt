@@ -148,8 +148,9 @@ buffer. Read section 10 of **`docs/rt_shadows/FORK_GUIDE.md`** before answering 
   dense field where blades shadow each other. `hardness` blends that average against
   the minimum of the same four buckets; `0.0` is Bend's behavior exactly and the default `1.0`
   matches the trace. It moves darkness 2.1x while moving area 5%, so it and `surface_thickness` are
-  independent: hardness sets how dark, thickness sets how wide. `contrast` is neither -- it
-  saturates. **Score these captures in linear light, never off the sRGB PNG values**; every ratio in
+  independent: hardness sets how dark, thickness sets how wide. There is no third darkness knob --
+  `contrast` and `strength` were settings until they were measured, and are now constants at 4.0 and
+  1.0. **Score these captures in linear light, never off the sRGB PNG values**; every ratio in
   that section was first published from gamma-space differences and had to be re-derived. See the
   screen space section of `docs/rt_shadows/FINDINGS.md`.
 - **Do not tune it by screenshot.** `docs/rt_shadows/shadow_validation/` renders the same scene with
