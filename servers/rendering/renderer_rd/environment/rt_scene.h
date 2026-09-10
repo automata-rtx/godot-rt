@@ -247,7 +247,6 @@ public:
 	// without a structure behind it means the light casts no shadow at all.
 	bool has_traceable_scene() const { return supported && tlas_valid; }
 
-
 	void free_all();
 
 	RaytracingScene();
