@@ -3,12 +3,21 @@
 DLSS super resolution and DLSS frame generation, on Vulkan, on Windows. This is the current
 description of what the engine does.
 
-**No DLSS frame has been produced on hardware yet.** The load path is confirmed on an RTX 5090
-running Vulkan: the interposer loads, its signature is accepted, `slInit` succeeds and Reflex
-reports itself available. Past that, every claim below is read out of the Streamline SDK's headers
-and guides or out of this engine's own code — whether DLSS produces a correct image, and whether
-the constants handed to it are right in sign and scale, is unverified. Section 8 lists the specific
-things to check first.
+**DLSS super resolution works.** Confirmed on the RTX 5090 target, running Vulkan fullscreen at
+3440x1440 with a 3D scale of 0.67 — the equivalent of DLSS Quality — and the image is clean: no
+ghosting, no smearing under camera motion, no shimmer at rest.
+
+That result retires most of what this document used to hedge about, because the conventions DLSS
+depends on fail *visibly* and specifically. A wrong motion vector sign or `mvecScale` smears under
+motion; a wrong `clipToPrevClip` transpose ghosts even with the camera still; a wrong jitter sign
+reads as softness or shimmer; wrong resource tags give black or garbage. None of those are present,
+so the sign and scale conventions in sections 4 and 5, and the camera-motion pre-fill of the
+velocity buffer that section 4 explains, are confirmed in practice rather than only from the SDK
+headers. Read them as describing what runs.
+
+**DLSS frame generation is still unverified**, and is now genuinely reachable for the first time:
+it refuses without motion vectors, this project uses SMAA rather than TAA, so it was only ever
+reachable on top of super resolution. Section 9 is what to check for it.
 
 ---
 
@@ -287,7 +296,39 @@ Everything the engine had to grow to make one external upscaler possible — raw
 access, native image handles with their layouts and usage flags, a stable per-viewport handle --
 is reusable as is.
 
-## 7. Costs
+## 7. What DLSS does to the fork's other passes
+
+Now that super resolution runs, this is the live interaction and it is easy to miss: **every pass
+this fork adds runs at the viewport's INTERNAL size**, not its output size. The raytraced shadow
+trace and denoiser, the Bend contact shadow march and the occlusion gather are all dispatched from
+`get_internal_size()`. At DLSS Quality that is 0.67 of each axis, so about 45% of the pixels.
+
+Three fork quantities are budgeted in **pixels** rather than in world units, so DLSS silently
+rescales what they mean on screen:
+
+- **The contact shadow's march length**, which the quality tier fixes in samples and therefore in
+  pixels. At 0.67 it reaches roughly two thirds as far across the output image, so a shadow that
+  ran out of march at native runs out sooner. `quality` is the knob; there is no world-space one.
+- **`raytraced_shadows/denoiser/min_filter_pixels`**, the floor on filter reach.
+- **`MAX_PENUMBRA_PIXELS`**, the cap the trace quantizes hit distance against, which covers about
+  1.5x as much of the output image as it did at native.
+
+None of this is wrong, and none of it needs a code change — it is the same tradeoff any upscaler
+makes — but a contact shadow that looks shorter with DLSS on is this, not a bug.
+
+**An odd internal size is the part that did bite.** 3440x1440 divides cleanly by 16; 3440x0.67 does
+not. The GTAO depth prefilter's mip bound was `(size - 1) >> level` where the last valid index is
+`max(1, size >> level) - 1`, which agree only when a dimension is a multiple of 2^level. At native
+they always agreed, so the defect was invisible; at the 2305x965 internal size DLSS Quality gives,
+the guard admitted one texel past the end of the row at **every** mip level. Fixed, but worth
+recording as the shape of the problem: **DLSS is the thing most likely to expose a latent
+size-alignment assumption in a pass, because it is the only feature that makes the render size
+arbitrary.** When a new pass builds a mip chain or tiles a dispatch, check it against an odd size,
+not against 3440x1440.
+
+---
+
+## 8. Costs
 
 - Super resolution: no engine-side allocation beyond what FSR2 already needs. Streamline
   allocates its own history under the viewport handle.
@@ -297,21 +338,20 @@ is reusable as is.
 - Neither costs anything when Streamline is off: the singleton does not exist, and every entry
   point is behind a null check.
 
-## 8. What to check first on hardware
+## 9. What to check first on hardware
 
 **None of this can be checked from a Linux checkout.** Streamline is Windows-only and needs an
 NVIDIA GPU, so every step below wants a Windows binary on the machine that has one. The Windows job
 in `.github/workflows/runner.yml` is the route to that binary — this project builds through GitHub
-Actions rather than a local toolchain — and the artifact it uploads is what to test with. Reasoning
-about DLSS from the source alone is how a feature that has never rendered a frame accumulates
-confident, wrong documentation.
+Actions rather than a local toolchain — and the artifact it uploads is what to test with.
 
-**Check super resolution before frame generation, and not only because it is simpler.** Frame
-generation refuses without motion vectors, and the engine fills the velocity buffer only for a
-viewport running a temporal upscaler or TAA. This project uses SMAA and deliberately not TAA, so on
-it frame generation is reachable *only* on top of DLSS super resolution — which has itself never
-produced an image. The two open items are serially dependent: debugging frame generation first means
-debugging something structurally unreachable.
+**Steps 1 to 6 below are answered.** Super resolution loads, initializes and renders a clean image
+at DLSS Quality on the RTX 5090 at 3440x1440 fullscreen. They are kept as the diagnostic ladder for
+a configuration that has not been tried — another GPU, a different quality mode, windowed
+presentation — and because each one names the artifact its own failure produces, which is how to
+attribute a new one. Start at step 7 for frame generation, which is the remaining open item and is
+now reachable: it refuses without motion vectors, and super resolution running is what supplies
+them on a project that uses SMAA rather than TAA.
 
 In roughly the order a failure would be easiest to diagnose:
 
