@@ -279,12 +279,8 @@ answering anything about upscaling, frame generation or the Vulkan loader.
   recipe for re-applying it to a newer Godot.
 - `docs/rt_shadows/FINDINGS.md` — what was measured and what the numbers refused. Read it before
   re-trying an idea that looks obvious; several already were, and failed. Keep it out of the guide.
-- `docs/rt_shadows/PLAN.md` — the pre-implementation design document. **Historical. Superseded by
-  the guide and the porting document; several of its decisions were not taken.** Not current.
 - `docs/streamline/INTEGRATION.md` — the DLSS integration: how it attaches, every seam it touches,
   the motion vector and depth conventions it assumes, and what to check first on hardware.
-- `docs/streamline/EVALUATION.md` — the design note that preceded it. **Historical.** Some of its
-  decisions were taken differently.
 - `docs/rt_shadows/ao_validation/` and `docs/rt_shadows/shadow_validation/` — the two measurement
   harnesses. Each has its own README. Every published number came from one of them, and a claim
   about occlusion or shadow quality that did not is an opinion.

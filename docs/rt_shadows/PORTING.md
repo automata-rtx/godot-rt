@@ -58,6 +58,27 @@ report true from the new validity query.
   on the same RID.
 - The Vulkan container targets SPIR-V 1.4 with a Vulkan 1.1 client -- exactly the minimum
   `GL_EXT_ray_query` needs. Check `RenderingShaderContainerFormatVulkan::get_shader_spirv_version`.
+- **Creating an acceleration structure is not thread-safe; building one is guarded.** `blas_build`
+  takes `ERR_RENDER_THREAD_GUARD` (`rendering_device.cpp:445`), but `blas_create` (`:302`) and
+  `tlas_create` (`:423`) take neither that nor `_THREAD_SAFE_METHOD_`, where the equivalent
+  `compute_pipeline_create` (`:5092`) does. They touch the frame's disposal lists and the render
+  graph's resource tracker unguarded. So **every structure creation has to happen on the render
+  thread**: scene cull records what needs building and the render step builds it. That queue is not
+  a design preference, it is the reason this fork has one.
+- **`AccelerationStructure::invalidated` never re-arms.** It starts true and is cleared by a
+  successful build (`rendering_device.cpp:460`, `:566`), but nothing sets it back when the vertex
+  data underneath it changes. A skinned mesh whose deformed buffer was just rewritten leaves a BLAS
+  that looks valid and is stale, with no diagnostic. The BLAS cache here tracks staleness itself
+  rather than trusting the flag -- keep that if you port it.
+- **`SUPPORTS_RAY_QUERY` can return true where every implementation body is compiled out.**
+  Raytracing is `#define VULKAN_RAYTRACING_ENABLED 0` on macOS and iOS
+  (`rendering_device_driver_vulkan.cpp:56`), but the feature query at `:7479` sits outside that
+  guard. On a MoltenVK build advertising the extensions the query says yes and `blas_create()` then
+  returns a null RID. `has_feature()` alone is not the capability test.
+- **`misc/extension_api_validation/` treats a changed arity as non-additive**, default argument or
+  not. Widening a bound method -- `blas_build(RID)` to `blas_build(RID, bool)` -- fails that gate;
+  add a separate method instead. This is why the fork's one addition is a new
+  `acceleration_structure_is_valid(RID)` rather than a widened existing call.
 
 ---
 
@@ -1663,15 +1684,9 @@ darken.
   `lds_early_out` path with its two `memoryBarrierShared(); barrier();` pairs exists for. Reduce it
   to `gl_SubgroupSize` and the wavefront geometry no longer matches what the CPU builder laid out.
 
-- **Push constant: 76 bytes, in this order.** `light_coordinate[4]`, `wave_offset[2]`,
-  `screen_size[2]`, `inv_depth_texture_size[2]`, `depth_bounds[2]`, `surface_thickness`,
-  `bilinear_threshold`, `shadow_contrast`, `far_depth_value`, `near_depth_value`, `flags`,
-  `hardness`, with a `static_assert` on the size. The GLSL block is `layout(push_constant, std430)`
-  and the C++ struct is plain, with no `alignas`: the agreement comes from that grouping putting
-  every `vec2`/`ivec2` on an 8 byte boundary, so reordering the trailing scalars for readability
-  keeps `sizeof == 76` and breaks the alignment silently. Add a row for it to the push constant table
-  in the reference section; the size rule and the way to read a block's reflected size are stated
-  there. The consequence of a mismatch is worth restating because this pass fails into a value that
+- **Push constant: 76 bytes**, with a `static_assert` on the size; the field order and the alignment
+  rule that holds it together are in the push constant table in the reference section. The
+  consequence of a mismatch is worth restating because this pass fails into a value that
   looks intentional: under `DEBUG_ENABLED` RenderingDevice rejects the push and then refuses the
   dispatch for having none, so the mask keeps the white it was cleared to and **the feature reads as
   "the setting does nothing"** -- in the editor, where it is fatal, and not in a release build, where
@@ -2381,9 +2396,17 @@ trailing pad on one side alone is fatal, and how to read the reflected size.
 | `GTAO::GatherPushConstant` | 96 |
 | `GTAO::FilterPushConstant` | 80 |
 | `RaytracingScene::DequantizePushConstant` | 32 |
+| `ScreenSpaceShadows::PushConstant` | 76 |
 
 *The three GTAO structs carry their field order here as well, because that order is the other half
 of the contract; the assertions catch a size mismatch but not a reordering.*
+
+`ScreenSpaceShadows::PushConstant` is `light_coordinate[4]`, `wave_offset[2]`, `screen_size[2]`,
+`inv_depth_texture_size[2]`, `depth_bounds[2]`, `surface_thickness`, `bilinear_threshold`,
+`shadow_contrast`, `far_depth_value`, `near_depth_value`, `flags`, `hardness`. The C++ struct is
+plain, with no `alignas`: the agreement comes from that grouping putting every `vec2`/`ivec2` on an
+8 byte boundary, so reordering the trailing scalars for readability keeps `sizeof == 76` and breaks
+the alignment silently.
 
 | Struct | Bytes | Fields, in order |
 | --- | --- | --- |

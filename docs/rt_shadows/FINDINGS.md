@@ -384,10 +384,6 @@ how well the totals agree.
 
 ## Raytraced shadows
 
-The pre-implementation design document is `PLAN.md`. It is historical: several of its decisions
-were not taken, and `FORK_GUIDE.md` plus `PORTING.md` supersede it. It is kept because it
-records the reasoning behind the shape of the system, not because it describes the system.
-
 ### Three things the closed-form reference refused
 
 The reference is geometric rather than another render — a lamp of known radius over a post of known

@@ -1,8 +1,7 @@
 # NVIDIA Streamline in this fork
 
 DLSS super resolution and DLSS frame generation, on Vulkan, on Windows. This is the current
-description of what the engine does; `EVALUATION.md` beside it is the design note that preceded
-it and is now historical.
+description of what the engine does.
 
 **No DLSS frame has been produced on hardware yet.** The load path is confirmed on an RTX 5090
 running Vulkan: the interposer loads, its signature is accepted, `slInit` succeeds and Reflex
