@@ -68,8 +68,9 @@ a run silently stops reproducing — it happened while this directory was being 
 | `opacity` | boxes on open ground | — | 800×450 | is `shadow_opacity` linear on a raytraced sun, with the shadow-map control |
 
 `probe` also carries the controls that ruled out explanations before the cause was found:
-`SSS_SUN_AZ`, `SSS_SUN_EL`, `SSS_BLADE_W`, `SSS_BLADE_D`, `SSS_RANDOM_YAW`, `SSS_CONTRAST`,
-`SSS_BIAS`, `SSS_NBIAS`. Set `SSS_BLADE_W=0.12` for fat blades whose shadow is tens of pixels
+`SSS_SUN_AZ`, `SSS_SUN_EL`, `SSS_BLADE_W`, `SSS_BLADE_D`, `SSS_RANDOM_YAW`, `SSS_BIAS`,
+`SSS_NBIAS`. (`SSS_CONTRAST` is gone with the setting: contrast saturates -- 4 to 16 moved mass 11%
+and darkness 5% -- so it is now Bend's 4.0 as a constant.) Set `SSS_BLADE_W=0.12` for fat blades whose shadow is tens of pixels
 across, which is what a *width* measurement needs; it does not give the same numbers as the default
 and is not a substitute for it.
 

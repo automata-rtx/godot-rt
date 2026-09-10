@@ -1926,7 +1926,13 @@ void RenderForwardClustered::_render_screen_space_shadows(RenderDataRD *p_render
 					0, int(RendererRD::ScreenSpaceShadows::QUALITY_MAX) - 1));
 	settings.surface_thickness = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/surface_thickness");
 	settings.bilinear_threshold = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/bilinear_threshold");
-	settings.contrast = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/contrast");
+	// Bend's own value. It was a setting until it was swept: 4 to 16 moved shadow
+	// mass by 11% and per-pixel darkness by 5%, measured in linear light, because
+	// the term saturates. `hardness` is what actually moves darkness -- 2.1x while
+	// moving area 5% -- so the knob was removed rather than left as a trap. The
+	// push constant field and the shader arithmetic are untouched: this is a port
+	// of Bend's HLSL and it keeps their parameter.
+	settings.contrast = 4.0f;
 	settings.hardness = GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/hardness");
 	settings.ignore_edge_pixels = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/screen_space_shadows/ignore_edge_pixels");
 	settings.debug_view = RendererRD::ScreenSpaceShadows::DebugView(

@@ -191,12 +191,8 @@ RaytracingScene::RaytracingScene() {
 
 	supported = RD::get_singleton()->has_feature(RD::SUPPORTS_RAY_QUERY);
 
-	if (setting_enabled) {
-		if (supported) {
-			print_line("Raytraced shadows: enabled (device supports ray queries).");
-		} else {
-			WARN_PRINT("Raytraced shadows are enabled in the project settings, but this rendering device does not support ray queries. Local lights will fall back to shadow maps.");
-		}
+	if (setting_enabled && supported) {
+		print_line("Raytraced shadows: enabled (device supports ray queries).");
 	}
 
 	if (!setting_enabled) {

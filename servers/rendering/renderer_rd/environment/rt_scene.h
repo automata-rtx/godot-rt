@@ -247,7 +247,6 @@ public:
 	// without a structure behind it means the light casts no shadow at all.
 	bool has_traceable_scene() const { return supported && tlas_valid; }
 
-	uint32_t get_blas_count() const { return blas_cache.size(); }
 
 	void free_all();
 

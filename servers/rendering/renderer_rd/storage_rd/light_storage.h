@@ -226,7 +226,6 @@ public:
 		// DirectionalLightData::direction, which for a directional light is built
 		// from the light basis's +Z rather than its -Z.
 		Vector3 direction;
-		float strength = 1.0f;
 	};
 
 private:

@@ -3754,7 +3754,7 @@ void RenderingServer::init() {
 	// power and fadeout, and writes the same buffer, so nothing downstream
 	// needs to know which one produced the value. Detail, horizon and sharpness
 	// describe the other estimator and are ignored by this one.
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/method", PROPERTY_HINT_ENUM, "Screen Space (Legacy),Ground Truth"), 0);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "rendering/environment/ssao/method", PROPERTY_HINT_ENUM, "Screen Space (Legacy),Ground Truth"), 0);
 	// Off, the march covers a fixed distance in the world and its on-screen span
 	// shrinks with distance until the steps land on the same texel. On, the span
 	// is fixed and the world radius follows the depth, which is what keeps
@@ -3781,7 +3781,17 @@ void RenderingServer::init() {
 	// deficit, so it needs multiplying up. This estimator reports the deficit
 	// directly, so handing it the same number doubles a figure that is already
 	// right. Scale it here rather than moving the Environment default, which
-	// the legacy estimator still needs. Set it to 1.0 for the old behavior.
+	// the legacy estimator still needs.
+	//
+	// KEEP THIS, and do not read it as a tuning knob: 0.5 is derived, not fitted,
+	// and it is what puts the shipped Environment.ssao_intensity default of 2.0 at
+	// exactly 1.0, the identity of the ratio transfer. Deleting it and folding the
+	// 0.5 into the read would be equivalent, but every published occlusion number
+	// was measured through it -- ao_validation/main.gd deliberately reads it back
+	// and asks for whatever value cancels it, so a harness that stopped seeing it
+	// would keep scoring at the old strength while the game got darker. 1.0 is
+	// bug compatibility with the legacy calibration, not "stronger occlusion";
+	// Environment.ssao_intensity is the per-scene knob.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/environment/ssao/ground_truth/intensity_scale", PROPERTY_HINT_RANGE, "0.05,2,0.01"), 0.5);
 	// How a reduced shading rate is spent, when rendering/environment/ssao/half_size
 	// asks for one. A quarter resolution grid gives a quarter of the pixels their

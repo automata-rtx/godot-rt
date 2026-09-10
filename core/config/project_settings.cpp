@@ -1839,7 +1839,10 @@ ProjectSettings::ProjectSettings() {
 	// the rendering device is created and before any Light3D is constructed.
 	GLOBAL_DEF_RST_BASIC("rendering/lights_and_shadows/raytraced_shadows/enabled", false);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/samples_per_light", PROPERTY_HINT_RANGE, "1,16,1"), 1);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/max_ray_distance", PROPERTY_HINT_RANGE, "0,4096,0.1,or_greater"), 0.0);
+	// Shortens every shadow ray, trading distant occlusion for traversal time.
+	// ZERO MEANS UNLIMITED, not "no rays": the ray still runs the full distance
+	// to its light.
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/max_ray_distance", PROPERTY_HINT_RANGE, "0,4096,0.1,or_greater,suffix:m"), 0.0);
 	// Scales every raytraced light's emitter size, and the sun's angular radius,
 	// on the way into the trace. A quality dial for weak hardware: soft shadows
 	// cost more than hard ones for reasons that survive the sample count staying
@@ -1864,7 +1867,7 @@ ProjectSettings::ProjectSettings() {
 	// or below one pixel the floor lets no neighbor in, because the nearest tap
 	// already sits a pixel away, so contact shadows stay crisp; raising it trades
 	// that crispness for smoother penumbrae.
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels", PROPERTY_HINT_RANGE, "0,8,0.1"), 1.0);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels", PROPERTY_HINT_RANGE, "1,8,0.1,suffix:px"), 1.0);
 	// How far a reprojected history sample may sit outside what this frame sees
 	// around it, in standard deviations, before it is pulled back in. This is
 	// what stops a moving shadow trailing across a surface. Lower reacts faster
@@ -1892,7 +1895,7 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF_BASIC("rendering/lights_and_shadows/raytraced_shadows/directional/enabled", false);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale", PROPERTY_HINT_RANGE, "0.5,8,0.1,or_greater"), 2.0);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters", PROPERTY_HINT_ENUM, "Disabled,Near Camera,Full Distance"), 1);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance", PROPERTY_HINT_RANGE, "0,500,1,or_greater"), 25.0);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance", PROPERTY_HINT_RANGE, "0,500,1,or_greater,suffix:m"), 25.0);
 	// What the sun's shadow map is demoted to once the mask drives its opaque
 	// shading. What is left of it answers subsurface transmittance, alpha-blended
 	// surfaces and reflection probes, none of which need cascade density, so it
@@ -1900,7 +1903,7 @@ ProjectSettings::ProjectSettings() {
 	// direct inspection. Volumetric fog is not on that list: a froxel under a
 	// raytraced sun traces its own ray instead of sampling a cascade.
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_mode", PROPERTY_HINT_ENUM, "Keep Authored,Orthogonal,2 Splits"), 2);
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size", PROPERTY_HINT_RANGE, "0,4096"), 1024);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/demoted_shadow_size", PROPERTY_HINT_RANGE, "0,4096,1,suffix:px"), 1024);
 
 	// Screen space shadows for the sun, marched over the depth pre-pass buffer.
 	// Every setting here is live.
@@ -1911,12 +1914,9 @@ ProjectSettings::ProjectSettings() {
 	// Grass is the case it exists for.
 	GLOBAL_DEF_BASIC("rendering/lights_and_shadows/screen_space_shadows/enabled", false);
 	// Sample count, which sets both the cost and the maximum shadow length in
-	// PIXELS. Low is 32 samples, Medium 60, High 96.
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/screen_space_shadows/quality", PROPERTY_HINT_ENUM, "Low,Medium,High"), 1);
-	// How much of the term is applied. Not a quality knob -- the shadow is fully
-	// resolved either way -- but the way to blend a contact shadow that reads too
-	// strongly against the sun's own.
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/strength", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0);
+	// PIXELS -- not in world units, so a low sun wants a longer shadow than any
+	// tier reaches.
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/screen_space_shadows/quality", PROPERTY_HINT_ENUM, "Low (32 Samples),Medium (60 Samples),High (96 Samples)"), 1);
 	// Assumed thickness of a pixel for casting, as a fraction of the non-linear
 	// depth left between it and the far plane. Scale in multiples of two, and
 	// scale bilinear_threshold along with it.
@@ -1924,14 +1924,18 @@ ProjectSettings::ProjectSettings() {
 	// How far two neighboring depths may differ before the pair counts as an
 	// edge and interpolation is suppressed. Tune it with the Edge Mask debug view.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/bilinear_threshold", PROPERTY_HINT_RANGE, "0.001,0.2,0.001"), 0.02);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/contrast", PROPERTY_HINT_RANGE, "1,8,0.1"), 4.0);
 	// How much a single depth sample may shadow a pixel on its own. Bend average
 	// four accumulators, so a pixel needs four samples' worth of evidence before
 	// it is fully shadowed, which under-darkens any occluder thinner than the
-	// march's one pixel sample spacing -- a grass blade casts about a quarter of
-	// the shadow a trace of the same blade gives. Zero is that original
-	// behavior; one drops the requirement to a single sample, and is what
+	// march's one pixel sample spacing. Measured in linear light, that averaging
+	// reaches 0.445 of the trace's per-pixel darkening on separated prisms and
+	// about 0.80 on a dense field where blades shadow each other. Zero is that
+	// original behavior; one drops the requirement to a single sample and is what
 	// matches a traced shadow of the same geometry.
+	//
+	// This is the knob for a contact shadow that reads too dark or too faint.
+	// `contrast` is not, and is no longer a setting: sweeping it 4 to 16 moved
+	// shadow mass 11% and per-pixel darkness 5%, so it saturates.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/hardness", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0);
 	// Whether only geometry the raytracing acceleration structure will not hold
 	// may cast. Off for now: it changes which surfaces cast, and the surface

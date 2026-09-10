@@ -133,15 +133,30 @@ void RendererSceneCull::camera_initialize(RID p_rid) {
 // describing itself twice -- and the min() composition absorbs that by
 // construction. Only under-inclusion loses a shadow, and this never
 // under-includes.
-static _FORCE_INLINE_ bool _is_screen_space_shadow_caster(const RendererSceneCull::Instance *p_instance) {
+//
+// The one place these three tests live. CullRTCasters below decides what goes
+// INTO the acceleration structure, and the screen space caster mask has to be
+// its exact complement -- anything the structure holds already casts a traced
+// shadow, and marching it again would be the same occluder described twice.
+// These were two hand-maintained copies, with a comment on each admitting that
+// nothing checked they agreed; now disagreeing is not expressible.
+static _FORCE_INLINE_ bool _casts_into_acceleration_structure(const RendererSceneCull::Instance *p_instance) {
 	if (p_instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_OFF) {
-		return true;
+		return false;
 	}
 	if (p_instance->base_type != RSE::INSTANCE_MESH && p_instance->base_type != RSE::INSTANCE_MULTIMESH) {
-		return true;
+		return false;
 	}
+	// The same test the shadow map path makes, so that glass, a material whose
+	// shader discards its depth, and anything else Godot already considers a non
+	// caster does not start casting a solid shadow just because the light became
+	// raytraced.
 	const RendererSceneCull::InstanceGeometryData *geom = static_cast<const RendererSceneCull::InstanceGeometryData *>(p_instance->base_data);
-	return geom == nullptr || !geom->can_cast_shadows;
+	return geom != nullptr && geom->can_cast_shadows;
+}
+
+static _FORCE_INLINE_ bool _is_screen_space_shadow_caster(const RendererSceneCull::Instance *p_instance) {
+	return !_casts_into_acceleration_structure(p_instance);
 }
 
 void RendererSceneCull::camera_set_perspective(RID p_camera, float p_fovy_degrees, float p_z_near, float p_z_far) {
@@ -3645,9 +3660,10 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			rt_directional_bounds_scratch.push_back(volume);
 		}
 
-		// If you change any test in here, change _is_screen_space_shadow_caster at
-		// the top of this file to match: it is defined as the exact complement of
-		// this predicate, and nothing checks that they agree.
+		// The caster tests come from _casts_into_acceleration_structure at the top
+		// of this file, which _is_screen_space_shadow_caster negates. Add a new
+		// caster test there, not here, or the screen space mask stops being this
+		// predicate's complement.
 		struct CullRTCasters {
 			LocalVector<Instance *> *result;
 			uint64_t pass;
@@ -3664,19 +3680,15 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				}
 				instance->rt_caster_pass = pass;
 
-				if (!instance->visible || instance->base.is_null() ||
-						instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_OFF) {
+				// Visibility is this functor's own business; the caster tests are
+				// shared with _is_screen_space_shadow_caster at the top of this file
+				// so the two cannot drift apart.
+				if (!instance->visible || instance->base.is_null()) {
 					return false;
 				}
-				if (instance->base_type != RSE::INSTANCE_MESH && instance->base_type != RSE::INSTANCE_MULTIMESH) {
-					return false;
-				}
-				// The same test the shadow map path makes, so that glass, a material
-				// whose shader discards its depth, and anything else Godot already
-				// considers a non caster does not start casting a solid shadow just
-				// because the light became raytraced.
-				const InstanceGeometryData *geom = static_cast<const InstanceGeometryData *>(instance->base_data);
-				if (geom == nullptr || !geom->can_cast_shadows) {
+				if (!_casts_into_acceleration_structure(instance)) {
+					// Counts every non-caster reason rather than only a failed
+					// can_cast_shadows, which is what the name said all along.
 					(*rejected)++;
 					return false;
 				}

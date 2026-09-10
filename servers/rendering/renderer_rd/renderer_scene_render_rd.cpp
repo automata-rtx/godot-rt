@@ -33,6 +33,7 @@
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/io/image.h"
+#include "core/os/os.h"
 #include "servers/rendering/renderer_rd/effects/dlss.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
@@ -1520,7 +1521,25 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 #ifdef STREAMLINE_ENABLED
 void RendererSceneRenderRD::_process_frame_generation(const Ref<RenderSceneBuffersRD> &p_render_buffers, const RenderSceneDataRD *p_scene_data, RID p_reflection_probe) {
 	StreamlineVK *streamline = StreamlineVK::get_singleton();
-	if (streamline == nullptr || p_render_buffers.is_null() || p_reflection_probe.is_valid()) {
+	if (streamline == nullptr) {
+		// The singleton is null whenever StreamlineVK::initialize() did not run or
+		// bailed, which covers both common cases -- rendering/streamline/enabled
+		// off, and a non-Vulkan rendering driver, since initialize() is only
+		// reached from the Vulkan context driver. Read the setting FIRST, so that a
+		// user who turned frame generation on hears why it is doing nothing instead
+		// of nothing at all. The scaling path already reports this properly; this
+		// one returned in silence.
+		if (GLOBAL_GET_CACHED(bool, "rendering/streamline/frame_generation")) {
+			if (OS::get_singleton()->get_current_rendering_driver_name() != "vulkan") {
+				WARN_PRINT_ONCE(vformat("DLSS frame generation needs the Vulkan rendering driver, but this process is using '%s'. Set rendering/rendering_device/driver.windows to \"vulkan\" and restart.", OS::get_singleton()->get_current_rendering_driver_name()));
+			} else {
+				WARN_PRINT_ONCE(vformat("DLSS frame generation is unavailable because %s.", StreamlineVK::get_unavailability_reason()));
+			}
+		}
+		return;
+	}
+	// Per-viewport rather than user error, so no message.
+	if (p_render_buffers.is_null() || p_reflection_probe.is_valid()) {
 		return;
 	}
 

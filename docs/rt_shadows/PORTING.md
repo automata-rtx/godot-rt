@@ -1558,11 +1558,13 @@ darken.
 
 - **A light is marked with `sss_strength` only when a mask is genuinely written for it that pass.**
   In `LightStorage::update_light_buffers`, `sss_available = p_using_shadows &&
-  p_use_screen_space_shadows`, where the second term is the caller's predicate above; the strength
-  itself comes from `screen_space_shadows/strength` clamped to 0--1. The first directional light with
-  `light->shadow` set and a non-zero strength takes it: `sss_light.valid`, `sss_light.direction` and
-  `light_data.sss_strength` are written together, and every other directional light keeps
-  `sss_strength = 0.0`. That single float is the whole of how the forward shader learns which light
+  p_use_screen_space_shadows`, where the second term is the caller's predicate above. The first
+  directional light with `light->shadow` set and a non-zero `shadow_opacity` takes it:
+  `sss_light.valid`, `sss_light.direction` and `light_data.sss_strength = 1.0` are written together,
+  and every other directional light keeps `sss_strength = 0.0`. The 1.0 was a
+  `screen_space_shadows/strength` setting until that was removed as a second, undocumented off
+  switch -- port it as a constant, and note that the field is a name tag rather than a strength, so
+  it cannot be folded away even though it is now always 0.0 or 1.0. That single float is the whole of how the forward shader learns which light
   the one-channel mask belongs to; there is no companion index texture as there is for the raytraced
   mask. **Marking a light whose mask never arrives is not a missing shadow, it is a black one.**
   Binding 39 falls back to `DEFAULT_RD_TEXTURE_WHITE`, which is 4x4, and `sss_shadow_lookup`

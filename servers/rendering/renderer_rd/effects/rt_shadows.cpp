@@ -38,14 +38,6 @@ using namespace RendererRD;
 
 namespace {
 
-void store_projection(const Projection &p_projection, float *r_dest) {
-	for (int i = 0; i < 4; i++) {
-		for (int j = 0; j < 4; j++) {
-			r_dest[i * 4 + j] = p_projection.columns[i][j];
-		}
-	}
-}
-
 void store_vector3(const Vector3 &p_vector, float *r_dest) {
 	r_dest[0] = p_vector.x;
 	r_dest[1] = p_vector.y;
@@ -205,7 +197,7 @@ void RTShadows::_trace(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, 
 	RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(compiled, 0, uniforms);
 
 	TracePushConstant push_constant = {};
-	store_projection(p_inv_view_projection, push_constant.inv_view_projection);
+	MaterialStorage::store_camera(p_inv_view_projection, push_constant.inv_view_projection);
 	const Quaternion camera_rotation = p_camera_transform.basis.get_rotation_quaternion();
 	push_constant.camera_rotation[0] = camera_rotation.x;
 	push_constant.camera_rotation[1] = camera_rotation.y;
@@ -272,7 +264,7 @@ void RTShadows::_temporal(RID p_depth_texture, const Buffers &p_buffers, const S
 	RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(compiled, 0, uniforms);
 
 	TemporalPushConstant push_constant = {};
-	store_projection(p_reprojection, push_constant.reprojection);
+	MaterialStorage::store_camera(p_reprojection, push_constant.reprojection);
 	push_constant.depth_unproject[0] = p_inv_projection.columns[2][2];
 	push_constant.depth_unproject[1] = p_inv_projection.columns[3][2];
 	push_constant.depth_unproject[2] = p_inv_projection.columns[2][3];

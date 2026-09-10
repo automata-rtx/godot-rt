@@ -201,8 +201,6 @@ func _apply_variant() -> void:
 	# Bend scale bilinear_threshold with surface_thickness, so the sweep does too
 	# rather than holding an edge-detect tuned for a different thickness.
 	ProjectSettings.set_setting(base + "bilinear_threshold", 0.02 * (v.t / 0.005))
-	if OS.has_environment("SSS_CONTRAST"):
-		ProjectSettings.set_setting(base + "contrast", float(OS.get_environment("SSS_CONTRAST")))
 	ProjectSettings.set_setting(SSS, true)
 	print("stage: hardness %s, surface_thickness %s" % [v.h, v.t])
 

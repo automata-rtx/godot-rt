@@ -943,7 +943,6 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 	// the fourth reads an invalid texel and the sun goes out.
 	sss_light = SSSLight();
 	const bool sss_available = p_using_shadows && p_use_screen_space_shadows;
-	const float sss_strength = sss_available ? CLAMP(float(GLOBAL_GET_CACHED(float, "rendering/lights_and_shadows/screen_space_shadows/strength")), 0.0f, 1.0f) : 0.0f;
 
 	r_directional_light_soft_shadows = false;
 
@@ -976,12 +975,23 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 				// because the mask they write has one channel. This is what tells the
 				// forward shader which light that is: every other directional light
 				// keeps a strength of zero and never reads the mask.
+				// The value is 1.0 rather than a setting. What made it a setting was
+				// a `strength` knob whose only measured value was 1.0 and whose zero
+				// was a second, undocumented way to switch the whole pass off -- the
+				// pass declines to dispatch when no light is marked. `hardness` is the
+				// knob for a contact shadow that reads too dark or too faint, and it
+				// was measured; this one never was.
+				//
+				// Do not fold this field away as constant. It is not a strength so
+				// much as a NAME TAG: it is the only thing that tells the forward
+				// shader which of the directional lights the single channel mask
+				// belongs to, and a light marked without a mask behind it goes black
+				// rather than unshadowed.
 				light_data.sss_strength = 0.0f;
-				if (sss_available && !sss_light.valid && light->shadow && sss_strength > 0.0f) {
+				if (sss_available && !sss_light.valid && light->shadow && light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY] > 0.001) {
 					sss_light.valid = true;
 					sss_light.direction = direction;
-					sss_light.strength = sss_strength;
-					light_data.sss_strength = sss_strength;
+					light_data.sss_strength = 1.0f;
 				}
 
 				float sign = light->negative ? -1 : 1;

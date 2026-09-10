@@ -374,12 +374,18 @@ void main() {
 	// the first HARD_SHADOW_SAMPLES are allowed to shadow on their own.
 	//
 	// Grass inverts the assumption. A blade narrower than the march's one pixel
-	// spacing IS a one-sample occluder, so averaging caps its shadow at a quarter
-	// strength however the rest is tuned -- measured against this fork's raytraced
-	// shadow of the same blades, the screen space shadow came back a third as dark
-	// spread over one and a half times the area, and neither surface_thickness nor
-	// shadow_contrast could close it: thickness buys darkness only by widening the
-	// window until the shadow is visibly too wide, and contrast saturates.
+	// spacing IS a one-sample occluder, so averaging under-darkens it however the
+	// rest is tuned. Measured against this fork's raytraced shadow of the same
+	// blades, IN LINEAR LIGHT, the screen space shadow reached 0.445 of the
+	// trace's per-pixel darkening spread over one and a half times the area, and
+	// neither surface_thickness nor shadow_contrast could close it: thickness buys
+	// darkness only by widening the window until the shadow is visibly too wide,
+	// and contrast saturates -- 4 to 16 moves mass 11% and darkness 5%.
+	//
+	// Do not restate these as "a quarter" or "a third". Both figures were
+	// published once and retracted: the first had no measurement behind it, and
+	// the second (0.335) was the same ratio taken in gamma space, which is what
+	// differencing sRGB PNG values measures rather than light.
 	//
 	// Taking the minimum of the four instead is the same test with the evidence
 	// requirement dropped back to one sample. hardness blends between them, so
