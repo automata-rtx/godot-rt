@@ -279,9 +279,11 @@ answering anything about upscaling, frame generation or the Vulkan loader.
   length, `denoiser/min_filter_pixels` and `MAX_PENUMBRA_PIXELS` are all in *internal* pixels, so at
   0.67 the contact shadow reaches about two thirds as far across the output image. That is the
   upscaler's tradeoff, not a fault. The sharper trap is size alignment: 3440x1440 divides cleanly by
-  16 and the 2305x965 that DLSS Quality gives does not, which is how a mip-bound off-by-one in the
-  occlusion prefilter stayed invisible until DLSS ran. **Check a new pass against an odd size, not
-  against the native one.**
+  16 and the 2304x964 that DLSS Quality gives does not, which is how a mip-bound off-by-one in the
+  occlusion prefilter stayed invisible until DLSS ran. Godot TRUNCATES the internal size
+  (`renderer_viewport.cpp:315`, a float expression assigned to an `int`), so 0.67 of 3440x1440 is
+  2304x964 and not 2305x965 -- work the real number, because whether a dimension divides by 2^level
+  is the whole question. **Check a new pass against an awkward size, not against the native one.**
 
 ## Working in this repo
 

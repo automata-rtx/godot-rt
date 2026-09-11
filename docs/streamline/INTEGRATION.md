@@ -319,8 +319,11 @@ makes — but a contact shadow that looks shorter with DLSS on is this, not a bu
 **An odd internal size is the part that did bite.** 3440x1440 divides cleanly by 16; 3440x0.67 does
 not. The GTAO depth prefilter's mip bound was `(size - 1) >> level` where the last valid index is
 `max(1, size >> level) - 1`, which agree only when a dimension is a multiple of 2^level. At native
-they always agreed, so the defect was invisible; at the 2305x965 internal size DLSS Quality gives,
-the guard admitted one texel past the end of the row at **every** mip level. Fixed, but worth
+they always agreed, so the defect was invisible. Godot truncates the internal size
+(`renderer_viewport.cpp:315` is a float expression assigned to an `int`), so DLSS Quality on that
+display gives **2304x964**: 2304 is 2^8 x 9 and stays clean, but 964 is 2^2 x 241, so the guard
+admitted one texel past the end of the row at mip levels 3 and 4 in HEIGHT. Two levels of five, one
+axis -- enough to be a real out of bounds store, and reachable only through DLSS. Fixed, but worth
 recording as the shape of the problem: **DLSS is the thing most likely to expose a latent
 size-alignment assumption in a pass, because it is the only feature that makes the render size
 arbitrary.** When a new pass builds a mip chain or tiles a dispatch, check it against an odd size,
