@@ -339,3 +339,31 @@ nothing else will catch it. Static checks run `codespell`, which rejects
 British spellings. The -our, -re and -ise endings have each failed a build here; write US English in
 prose and comments. Note that codespell rewrites in place, so it will also "correct" a sentence
 that quotes a British spelling as an example.
+
+**Run the repository's own hooks before pushing rather than discovering them in CI.** `pip install
+prek`, then:
+
+```
+prek run --from-ref origin/master --to-ref HEAD   # the whole branch
+prek run                                          # just what is staged
+```
+
+Use the **range**, not the staged form alone. CI compares against the branch point, so a formatting
+problem introduced two commits earlier fails the run for whichever commit happens to be on top --
+that has cost a cycle here twice. `clang-format`, `ruff-format` and `codespell` all rewrite in
+place, so a hook that "fails" with no message has usually just edited your files: check `git diff`
+and commit what it did.
+
+**Exporting a game from this fork needs this fork's own export template.** Stock Godot templates
+produce a running game with none of the fork in it -- the renderer changes are in the binary, not in
+the project. The Windows CI run uploads two artifacts, MSVC only: `windows-editor` and
+`windows-template` (`godot.windows.template_release.x86_64.exe` and its `.console.exe`). Point the
+export preset at it with **Export -> preset -> Custom Template -> Release**, which sidesteps version
+matching entirely -- a fork's version string will not line up with any installed template.
+
+**There is no `template_debug` build anywhere in the matrix**, which is editor x2 and
+`template_release` x2. So release exports work and debug exports do not: no "Export With Debug", no
+one-click deploy, no remote debugging into an exported build. It also means no shippable
+configuration has `DEBUG_ENABLED` on, and that is the flag that turns a C++/GLSL push constant
+mismatch into a hard error instead of a silently skipped pass. Adding the target is a matrix entry
+plus a CI job.

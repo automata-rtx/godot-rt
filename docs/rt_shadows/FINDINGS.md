@@ -275,6 +275,16 @@ them wastes the saving on wave divergence.
 
 ### Scored again against the shipped implementation, not the prototype
 
+> **The numbers in this subsection cannot currently be reproduced from this repository.** An audit
+> checked: nothing in `ao_validation/` implements the checkerboard packing, either filter pass, the
+> reconstruction, the silhouette mask used below, or the exhaustive bijection check. `gtao_sim.py`
+> models the gather only. So this is the one place in this document that breaks the rule the rest of
+> it keeps -- that every published number came from a committed harness. The figures are recorded
+> as measured and are not being retracted, but **treat them as unverified until the scorer is
+> committed**, and do not cite them as the harness's output. Closing this means committing the
+> reconstruction scorer and the bijection check, or extending `gtao_sim.py` to cover both filter
+> passes.
+
 The table above was measured on a prototype. Re-scored against the mapping and reconstruction the
 shaders actually run -- packed texel `(u, y)` holds pixel `(2u + (y & 1), y)`, shaded pixels copied
 through untouched, the rest averaged from four neighbors with the same plane weights -- on the

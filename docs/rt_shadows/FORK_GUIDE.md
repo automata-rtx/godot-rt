@@ -522,6 +522,47 @@ anything else.
 
 ## 8. Known gaps
 
+The first block below came out of a full audit of the fork and is **verified against the code but
+not yet fixed**. It is written down so the next audit recognizes them instead of re-deriving them;
+each names the file so it can be picked up directly.
+
+- **A spot light's cone falloff is ignored when the per-pixel top four are chosen.**
+  `light_importance` (`rt_shadow_trace.glsl:275-292`) scores on energy, radial falloff and facing
+  only; the cone appears solely as a binary reject at `:461`. So a spot contributing *nothing* at
+  its cone rim scores exactly as high there as one on its axis, and where five raytraced lights
+  overlap it can evict a light that is genuinely lighting the pixel -- which then renders fully
+  unshadowed, with no map to fall back on. Fix is to multiply the score by the same ramp the forward
+  pass uses, reusing the dot product already computed at `:461`.
+- **The sun can lose its channel at grazing incidence.** The tile cull gives directional lights an
+  explicit priority pass (`rt_shadow_trace.glsl:352-376`), but the per-pixel top four does not: the
+  insertion at `:473-482` compares score alone, and a sun low on the horizon has a small `facing`
+  term. So on a near-horizontal surface under a low sun, overhead lamps can take all four channels
+  exactly when the sun's shadows are longest. Making light type the primary key in that insertion
+  mirrors the priority the tile cull already has.
+- **Penumbra width is converted to pixels using radial distance where `focal_pixels` is a
+  per-view-depth scale** (`rt_shadow_trace.glsl:676`). The error is `1/cos(theta)` off axis, so
+  penumbrae toward the edges of a wide frame are reported 15-30% narrower than they are and the
+  a-trous pass filters them with too small a kernel. `view_depth` is already in a register two lines
+  above. Worst on the ultrawide target, and worse again with a wide FOV.
+- **`Environment.ssao_intensity = 0` does not disable occlusion, it inverts it.** The strength curve
+  at `gtao_gather.glsl:438-439` divides by `open + (1 - open) * intensity`; at intensity zero the
+  `max(..., 0.0001)` floor takes over and a fully occluded pixel comes out black rather than lit.
+  Zero is reachable from the inspector. The exact fix is an explicit degenerate case rather than a
+  floored divide.
+- **Switching an `Environment` from legacy occlusion to ground truth strands the legacy buffers.**
+  The reverse direction clears `RB_SCOPE_GTAO` explicitly
+  (`render_forward_clustered.cpp:2060-2063`); nothing frees the legacy deinterleaved arrays, which
+  cannot use `clear_context` because GTAO's own `RB_FINAL` lives in that scope. Roughly 25 MB per
+  viewport, stranded in exactly the A/B comparison the class reference invites.
+- **DLSS never validates the render extent against the quality mode's range.**
+  `slDLSSGetOptimalSettings`, which returns `renderWidthMin`/`renderWidthMax` for a mode, is not
+  resolved or called anywhere. The mode is picked from the 3D scale and the render size is computed
+  independently, so nothing guarantees they agree. It is clean at the tested 0.67; other scales are
+  an untested assumption.
+- **A viewport leaving DLSS never releases its Streamline resources.** `super_resolution_release`
+  appears only in the destructor, and `configure()` rebuilds the same object, so switching the
+  scaling mode away from DLSS at runtime leaks until the render buffers are destroyed.
+
 - **Subsurface transmittance** still measures thickness from a shadow map rather than from a ray
   (task deferred). Under a raytraced light with no map, it falls back to the material's own
   `transmittance_depth`, so the surface still transmits -- it just stops responding to what is

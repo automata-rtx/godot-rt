@@ -2411,6 +2411,26 @@ which is the orthographic gap noted above rather than an oversight in this table
 Each was tried, measured, and refused. `FINDINGS.md` has the numbers; what a rebuild needs is the
 decision, because every one of these looks like an obvious improvement from the code alone.
 
+Four more were proposed by an audit, examined, and **declined on judgment rather than on a
+measurement**. They are here because each reads as an obvious cleanup from the code alone and will
+be proposed again otherwise:
+
+- **Deleting `FLAG_USE_PRECISION_OFFSET` and `FLAG_BILINEAR_SAMPLING_OFFSET_MODE`** from
+  `screen_space_shadows.h` because nothing sets them. They are Bend's own options in a file that is
+  a port of their HLSL under Apache-2.0, next to a header vendored unmodified. Deleting them makes
+  the port diverge from its upstream for no gain. Leave them.
+- **Removing `ssao/ground_truth/intensity_scale`** because its only correct value is its default.
+  It is a derived constant, not a knob: `0.5` puts the shipped `Environment.ssao_intensity` default
+  of `2.0` at exactly `1.0`, the identity of the strength curve. Removing it doubles occlusion in
+  every existing scene, and `ao_validation/main.gd` reads it back and solves for the value that
+  cancels it, so the harness would keep scoring at the old strength while the game got darker.
+- **Scaling the ray-origin normal offset by camera distance instead of light distance.** The
+  reasoning is sound -- the offset covers depth-reconstruction error, which scales with the camera
+  -- but the arithmetic does not reach a pixel at any reachable bias. Comment fix at most.
+- **Treating the 128-lights-per-tile overflow as a denoiser-history problem.** The claim that the
+  surviving set is re-rolled every frame was asserted rather than measured, and it sits awkwardly
+  beside this harness being byte-for-byte deterministic. Measure it before acting on it.
+
 - **Widening the occlusion denoise unconditionally.** It is already sized from the radius and the
   slice count. A wider fixed filter scores worse, because the problem at half resolution is missing
   samples rather than too few candidates.
