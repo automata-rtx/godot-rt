@@ -277,6 +277,22 @@ void RenderSceneDataRD::update_ubo(RID p_uniform_buffer, RSE::ViewportDebugDraw 
 		RendererRD::MaterialStorage::store_camera(prev_projection.inverse(), prev_ubo.inv_projection_matrix);
 		RendererRD::MaterialStorage::store_transform_transposed_3x4(prev_cam_transform, prev_ubo.inv_view_matrix);
 		RendererRD::MaterialStorage::store_transform_transposed_3x4(prev_cam_transform.affine_inverse(), prev_ubo.view_matrix);
+		// The memcpy above left this holding the CURRENT frame's main camera, and
+		// BaseMaterial3D's billboard code is generated as
+		// `MODELVIEW_MATRIX = VIEW_MATRIX * mat4(MAIN_CAM_INV_VIEW_MATRIX[0..2], MODEL_MATRIX[3])`,
+		// which renames to this field. So the previous-frame vertex evaluation --
+		// the one that exists to produce a motion vector -- was orienting the quad
+		// with the camera basis it has NOW. A billboard therefore reported almost
+		// no motion of its own however fast the camera turned, and every temporal
+		// consumer downstream (DLSS, FSR2, TAA) smeared it.
+		//
+		// prev_cam_transform is the right source rather than a separate
+		// prev_main_cam_transform: motion vectors are calculated only from
+		// _render_scene, where main_cam_transform and cam_transform are both
+		// p_camera_data->main_transform. The three paths that set main_cam_transform
+		// to something else -- shadow append, particle collider heightfield, material
+		// render -- all leave calculate_motion_vectors false and never reach here.
+		RendererRD::MaterialStorage::store_transform(prev_cam_transform, prev_ubo.main_cam_inv_view_matrix);
 
 #ifdef REAL_T_IS_DOUBLE
 		RendererRD::MaterialStorage::split_double(-prev_cam_transform.origin.x, &prev_ubo.inv_view_matrix[3], &prev_ubo.inv_view_precision[0]);

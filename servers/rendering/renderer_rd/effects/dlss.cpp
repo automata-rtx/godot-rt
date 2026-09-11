@@ -79,6 +79,8 @@ void DLSSEffect::upscale(const Parameters &p_params) {
 	args->inputs.motion_vectors = StreamlineVK::texture_from_rid(p_params.velocity, StreamlineVK::TEXTURE_USE_SAMPLED);
 	args->inputs.motion_vectors.extent = internal_rect;
 	args->inputs.exposure = StreamlineVK::texture_from_rid(p_params.exposure, StreamlineVK::TEXTURE_USE_SAMPLED);
+	args->inputs.reactive = StreamlineVK::texture_from_rid(p_params.reactive, StreamlineVK::TEXTURE_USE_SAMPLED);
+	args->inputs.reactive.extent = internal_rect;
 	args->inputs.output = StreamlineVK::texture_from_rid(p_params.output, StreamlineVK::TEXTURE_USE_STORAGE);
 
 	// These usages are what put the images into the layouts `texture_from_rid` promised above;
@@ -89,6 +91,12 @@ void DLSSEffect::upscale(const Parameters &p_params) {
 	resources.push_back({ p_params.velocity, RD::CALLBACK_RESOURCE_TYPE_TEXTURE, RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE });
 	if (p_params.exposure.is_valid()) {
 		resources.push_back({ p_params.exposure, RD::CALLBACK_RESOURCE_TYPE_TEXTURE, RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE });
+	}
+	if (p_params.reactive.is_valid()) {
+		// The same underlying image as `color`, under a different view. Listing it
+		// again is harmless -- both want the sampled layout -- and leaving it out
+		// would be wrong, because the render graph tracks the view.
+		resources.push_back({ p_params.reactive, RD::CALLBACK_RESOURCE_TYPE_TEXTURE, RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE });
 	}
 	resources.push_back({ p_params.output, RD::CALLBACK_RESOURCE_TYPE_TEXTURE, RD::CALLBACK_RESOURCE_USAGE_STORAGE_IMAGE_READ_WRITE });
 

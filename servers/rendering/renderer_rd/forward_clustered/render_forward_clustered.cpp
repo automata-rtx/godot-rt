@@ -3149,6 +3149,12 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				params.depth = rb->get_depth_texture(v);
 				params.velocity = rb->get_velocity_buffer(false, v);
 				params.exposure = exposure;
+				// The same alpha-swizzled view of the colour buffer FSR2 is given a
+				// few hundred lines above. It is a view, not an allocation, and the
+				// alpha it reads is only meaningful because using_motion_pass is true
+				// whenever an upscaler runs: that zeroes alpha across the opaque pass
+				// and leaves the transparent pass to accumulate coverage into it.
+				params.reactive = rb->get_internal_texture_reactive(v);
 				params.output = rb->get_upscaled_texture(v);
 				params.z_near = p_render_data->scene_data->z_near;
 				params.z_far = p_render_data->scene_data->z_far;

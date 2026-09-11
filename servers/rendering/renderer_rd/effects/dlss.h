@@ -75,6 +75,9 @@ public:
 		RID depth;
 		RID velocity;
 		RID exposure; // Optional; without it DLSS estimates exposure itself.
+		// The colour buffer's alpha channel, which the renderer has already filled
+		// with accumulated transparent coverage. FSR2 is handed the identical RID.
+		RID reactive;
 		RID output;
 
 		float z_near = 0.0f;

@@ -151,6 +151,10 @@ public:
 		Texture depth;
 		Texture motion_vectors;
 		Texture exposure; // Optional.
+		// Optional. Per-pixel "this pixel is not described by the motion vectors"
+		// hint, which is what keeps alpha-blended surfaces from being reprojected
+		// as though they were the opaque geometry behind them.
+		Texture reactive;
 		Texture output;
 	};
 
