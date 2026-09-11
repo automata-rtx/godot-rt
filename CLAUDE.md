@@ -19,10 +19,18 @@ premise under a lot of what follows:
   rather than on arbitrary test hardware: an **RTX 5090 desktop at 3440x1440**, and a
   **Ryzen 7 7840HS / Radeon 780M laptop**. When the docs single out `shading_rate` as the first knob
   for weak hardware, the 780M is the hardware they mean.
-- **SMAA, not TAA.** This matters beyond antialiasing: Godot fills the velocity buffer only for a
-  viewport running a temporal upscaler or TAA, and DLSS frame generation refuses without motion
-  vectors. So frame generation here is reachable only while DLSS super resolution is running, which
-  is what supplies them. Super resolution does run, so that is a live path rather than a blocked one.
+- **Never TAA. SMAA only when DLSS is off.** There are two shipping antialiasing configurations and
+  they are exclusive: with DLSS super resolution on, DLSS does the antialiasing and SMAA and FXAA
+  are both OFF; with DLSS off, SMAA does it. Do not reason about a post-process AA running alongside
+  DLSS -- that combination is not used and would be wrong.
+  This matters beyond antialiasing, because Godot fills the velocity buffer only for a viewport
+  running a temporal upscaler or TAA. With SMAA there is no velocity buffer; with DLSS there is, and
+  DLSS is what supplies it. That is why DLSS frame generation, which refuses without motion vectors,
+  is reachable only while super resolution is running -- and since super resolution does run, it is
+  a live path rather than a blocked one.
+  It also means **anything that ghosts is a DLSS-on problem**, not a general one: with SMAA there is
+  no temporal reprojection of the frame at all. The raytraced shadow denoiser is the exception --
+  it accumulates over time in both configurations.
 - **MSAA deliberately off.** So "measure with MSAA off as the control" is the shipping configuration
   rather than a methodology note, and `restrict_casters` declining under MSAA is a non-issue here.
 - **Not VR.** Every multiview and stereo fallback in this fork is dead code for this project.
