@@ -1571,13 +1571,16 @@ darken.
   belongs to the returns *inside* `render()`, where a light already is marked. The pre-pass is still
   forced, because the predicate cannot see the strength.
 
-- **`DirectionalLightData` gains a whole `vec4`, not a spare float.** `sss_strength` plus
-  `pad_sss[3]` in `light_storage.h` and `sss_strength` plus `pad_sss0..2` in `light_data_inc.glsl`,
-  placed after `volumetric_fog_energy` and before `shadow_bias`. The fields ahead of it sum to
-  exactly 80 bytes, so `sss_strength` opens a fresh 16 byte slot and the three pads close it: the
+- **`DirectionalLightData` gains a whole `vec4`, not a spare float.** `sss_strength` plus three
+  more slots, placed after `volumetric_fog_energy` and before `shadow_bias`. The fields ahead of it
+  sum to exactly 80 bytes, so `sss_strength` opens a fresh 16 byte slot and the rest close it: the
   `vec4` array that follows needs its alignment, and adding one bare float shifts every shadow matrix
-  in the struct by four bytes on one side only. The three pads are real slack -- a third consumer
-  takes one of them without changing `sizeof`. `light_data_inc.glsl` is included by
+  in the struct by four bytes on one side only. Two of the three have since been claimed -- a
+  `uint rt_caster_mask` and a `float rt_softshadow_angle`, both for the fog's own sun ray -- leaving
+  one `pad_sss` float, which a fourth consumer takes without changing `sizeof`. **Anything added
+  here must be written UNCONDITIONALLY**, beside the field it derives from rather than inside a
+  branch: the array is persistent and indexed by light count, so a field written only on some frames
+  holds whichever light last occupied that index on the others. `light_data_inc.glsl` is included by
   `forward_clustered/scene_forward_clustered_inc.glsl`,
   `forward_mobile/scene_forward_mobile_inc.glsl`, `environment/volumetric_fog.glsl` and
   `environment/volumetric_fog_process.glsl`, so the edit reaches all four; keeping the `vec4` intact
@@ -2440,7 +2443,7 @@ format Godot revises between versions. Check these first.
 | `RD::AccelerationStructureGeometry` / `blas_build` | Still carries `vertex_buffer`/`offset`/`stride`/`count`/`format` plus index fields, and `blas_build` is still a full in-place rebuild with no refit. |
 | Mesh vertex layout | Positions still a contiguous `float32x3` block at offset 0 ahead of the attribute block; compressed decode still `pos * aabb.size + aabb.position`. |
 | `MeshInstance::Surface` (`vertex_buffer[2]`, `current_buffer`, `last_change`) | `last_change` still set on **every** surface `update_mesh_instances()` dispatches, not only on a buffer flip. |
-| `LightData` / `DirectionalLightData` trailing `pad[2]` | Still unclaimed padding. If upstream took it, find new space and keep `sizeof` identical. This fork appended a whole `vec4` for `sss_strength` rather than a bare float, because the `vec4` array after it needs its 16 byte alignment and one loose float shifts every shadow matrix by four bytes on one side only. Three of those four slots are still free -- `pad_sss[3]` in `light_storage.h`, `pad_sss0..2` in `light_data_inc.glsl` -- so a third consumer can take one without changing `sizeof`. |
+| `LightData` / `DirectionalLightData` trailing `pad[2]` | Still unclaimed padding. If upstream took it, find new space and keep `sizeof` identical. This fork appended a whole `vec4` for `sss_strength` rather than a bare float, because the `vec4` array after it needs its 16 byte alignment and one loose float shifts every shadow matrix by four bytes on one side only. Of the other three slots, `rt_caster_mask` and `rt_softshadow_angle` are now taken and one `pad_sss` float remains. |
 | `RENDER_PASS_UNIFORM_SET` bindings 37/38/39 | Find the new highest binding; renumber C++ and GLSL in lockstep. 37 and 38 are the raytraced mask and its light index, 39 the screen space shadow mask. |
 | `_setup_render_pass_uniform_set` | Bindings added on every path, including probe and no-render-buffer renders. |
 | `update_light_buffers` | Every early-out preserves both invariants: `rt_slot < RT_SLOT_NONE` iff the light has a channel this frame, `shadow_map_opacity > 0.001` iff an atlas rect or cascade was actually written. |

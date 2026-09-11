@@ -1044,6 +1044,12 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 					angular_diameter = 0.0;
 				}
 
+				// Unconditional, and deliberately outside the shadow_opacity guard
+				// below that softshadow_angle sits in: the fog reads this on its own
+				// schedule, and a field written only on some frames holds whichever
+				// light last occupied this index on the rest.
+				light_data.rt_softshadow_angle = angular_diameter * RendererRD::RaytracingScene::get_softness_scale();
+
 				light_data.bake_mode = light->bake_mode;
 
 				if (light_data.shadow_opacity > 0.001) {

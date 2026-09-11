@@ -297,7 +297,13 @@ private:
 		// above is cull_mask at full width, which is a different mask and which
 		// rayQueryInitializeEXT would silently truncate to its low byte.
 		uint32_t rt_caster_mask;
-		float pad_sss[2];
+		// The sun's angular radius as a tangent, already multiplied by
+		// raytraced_shadows/softness_scale. softshadow_angle above deliberately
+		// keeps the AUTHORED angle, because that one also drives the cascade path's
+		// PCSS branch and the scale must not reach it; the fog's own sun ray is a
+		// raytraced shadow and must follow the scale like every other one.
+		float rt_softshadow_angle;
+		float pad_sss[1];
 		float shadow_bias[4];
 		float shadow_normal_bias[4];
 		float shadow_transmittance_bias[4];

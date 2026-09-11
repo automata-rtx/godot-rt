@@ -440,7 +440,7 @@ void main() {
 					// global jitter like the position one above rather than per froxel
 					// noise, and it is applied under the same condition: a cell with no
 					// history to accumulate into would only get noisier for it.
-					if (reproject_amount > 0.0 && directional_lights.data[i].softshadow_angle > 0.0) {
+					if (reproject_amount > 0.0 && directional_lights.data[i].rt_softshadow_angle > 0.0) {
 						vec3 up = abs(ray_dir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
 						vec3 tangent = normalize(cross(up, ray_dir));
 						vec3 bitangent = cross(ray_dir, tangent);
@@ -449,7 +449,7 @@ void main() {
 						// it to the disk by area keeps that stratification instead of
 						// bunching samples at the center.
 						vec2 h = halton_map[params.temporal_frame].xy;
-						float radius = sqrt(h.x) * directional_lights.data[i].softshadow_angle;
+						float radius = sqrt(h.x) * directional_lights.data[i].rt_softshadow_angle;
 						float phi = h.y * M_TAU;
 						ray_dir += (tangent * cos(phi) + bitangent * sin(phi)) * radius;
 					}
