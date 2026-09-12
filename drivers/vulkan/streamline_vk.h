@@ -151,6 +151,10 @@ public:
 		Texture depth;
 		Texture motion_vectors;
 		Texture exposure; // Optional.
+		// Optional. Single channel, and a texture of its OWN -- a view of `color`
+		// collides with the colour tag and blacks out the frame. See
+		// dlss_reactive.glsl.
+		Texture reactive;
 		Texture output;
 	};
 

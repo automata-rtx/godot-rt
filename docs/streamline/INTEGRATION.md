@@ -215,9 +215,18 @@ underlying `VkImage` (`streamline_vk.cpp:914`). So the colour tag and the reacti
 which is alpha replicated to all four channels, and alpha is zero everywhere the opaque pass drew.
 The symptom reads like a lighting or exposure failure and is neither.
 
-Doing it properly means giving DLSS its **own** single channel texture, copied from the colour
-buffer's alpha, so the tag carries a distinct `VkImage`. That is an allocation and a blit per frame
-rather than a free view, which is why it was not done that way first. Do not re-attempt the view.
+**The proper version is implemented and ships OFF**, behind `rendering/streamline/reactive_mask`.
+`effects/dlss_reactive.glsl` copies the colour buffer's alpha into an `R8_UNORM` texture of its own
+at the internal size, and that texture -- a distinct `VkImage` -- is what carries the tag. It costs
+one full screen single channel copy per frame while enabled.
+
+It is off by default because **nothing in this repository can exercise it**: the Streamline driver
+files compile to empty objects anywhere but Windows, so CI type-checks them and no test runs them.
+The shader itself is validated -- `glslangValidator` compiles it to SPIR-V and reflects a 16 byte
+push constant block matching the `static_assert` -- but that says nothing about whether DLSS likes
+the tag. Turn it on, look at transparency in motion, and turn it back off if anything is worse.
+
+Do not re-attempt the view.
 
 ---
 

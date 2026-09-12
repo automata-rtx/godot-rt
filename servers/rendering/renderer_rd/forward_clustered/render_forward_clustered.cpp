@@ -3149,6 +3149,23 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				params.depth = rb->get_depth_texture(v);
 				params.velocity = rb->get_velocity_buffer(false, v);
 				params.exposure = exposure;
+				// Off by default. A Streamline tagging change cannot be exercised
+				// anywhere in this repository, and the first attempt at this -- tagging an
+				// alpha-swizzled view of the colour buffer -- blacked out every opaque
+				// pixel, because the view shares the colour buffer's VkImage and the two
+				// tags collided. This copies into an image of its own instead.
+				if (GLOBAL_GET_CACHED(bool, "rendering/streamline/reactive_mask")) {
+					const Size2i dlss_internal = rb->get_internal_size();
+					if (!rb->has_texture(RB_SCOPE_DLSS, RB_TEX_DLSS_REACTIVE)) {
+						rb->create_texture(RB_SCOPE_DLSS, RB_TEX_DLSS_REACTIVE, RD::DATA_FORMAT_R8_UNORM,
+								RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT,
+								RD::TEXTURE_SAMPLES_1, dlss_internal, 1);
+					}
+					RID dlss_reactive = rb->get_texture(RB_SCOPE_DLSS, RB_TEX_DLSS_REACTIVE);
+					if (dlss_effect->build_reactive_mask(rb->get_internal_texture(v), dlss_reactive, dlss_internal, 1.0f)) {
+						params.reactive = dlss_reactive;
+					}
+				}
 				params.output = rb->get_upscaled_texture(v);
 				params.z_near = p_render_data->scene_data->z_near;
 				params.z_far = p_render_data->scene_data->z_far;

@@ -1972,6 +1972,15 @@ ProjectSettings::ProjectSettings() {
 	// GUID issued by NVIDIA for this title. Without one, Streamline identifies the application
 	// by engine name and version instead, which is enough for development but not for the
 	// per-title tuning NVIDIA ships over the air.
+	// Hands DLSS the reactive mask the renderer already builds for FSR2, which
+	// stops alpha-blended surfaces being reprojected as though they were the opaque
+	// geometry behind them. OFF by default and deliberately so: nothing in this
+	// repository can exercise a Streamline tagging change -- the driver files
+	// compile to nothing off Windows -- and the first attempt at this blacked out
+	// the frame. Turn it on, look at a scene with transparency in motion, and turn
+	// it back off if anything is worse. Live; costs one full screen single channel
+	// copy per frame while on.
+	GLOBAL_DEF("rendering/streamline/reactive_mask", false);
 	GLOBAL_DEF(PropertyInfo(Variant::STRING, "rendering/streamline/project_id"), "");
 	GLOBAL_DEF_RST(PropertyInfo(Variant::BOOL, "rendering/streamline/verbose_logging"), false);
 	// DLSS frame generation. Unlike super resolution, which is a viewport scaling mode, this is

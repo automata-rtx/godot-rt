@@ -36,6 +36,7 @@
 #ifdef STREAMLINE_ENABLED
 
 #include "core/templates/paged_allocator.h"
+#include "servers/rendering/renderer_rd/shaders/effects/dlss_reactive.glsl.gen.h"
 #include "servers/rendering/rendering_device.h"
 
 namespace RendererRD {
@@ -61,7 +62,27 @@ class DLSSEffect {
 	PagedAllocator<CallbackArgs, true, 16> args_allocator;
 	static void callback(RDD *p_driver, RDD::CommandBufferID p_command_buffer, CallbackArgs *p_userdata);
 
+	// Copies the colour buffer's alpha into a single channel image of its own. It
+	// cannot be a view of that buffer: see the comment at the head of
+	// dlss_reactive.glsl for the failure that produces.
+	DlssReactiveShaderRD reactive_shader;
+	RID reactive_shader_version;
+	RID reactive_pipeline;
+
+	struct ReactivePushConstant {
+		int32_t size[2];
+		float scale;
+		float pad;
+	};
+	static_assert(sizeof(ReactivePushConstant) == 16, "ReactivePushConstant must match dlss_reactive.glsl.");
+
 public:
+	DLSSEffect();
+	~DLSSEffect();
+
+	// Fills p_dest (single channel, internal size) from p_color's alpha. Returns
+	// false if the pass could not run, in which case p_dest must not be tagged.
+	bool build_reactive_mask(RID p_color, RID p_dest, const Size2i &p_size, float p_scale);
 	struct Parameters {
 		// Unique per view, and stable across frames: Streamline keeps this viewport's history
 		// under it.
@@ -75,6 +96,9 @@ public:
 		RID depth;
 		RID velocity;
 		RID exposure; // Optional; without it DLSS estimates exposure itself.
+		// Optional single channel mask marking pixels the motion vectors do not
+		// describe. Must be a texture of its own, never a view of `color`.
+		RID reactive;
 		RID output;
 
 		float z_near = 0.0f;

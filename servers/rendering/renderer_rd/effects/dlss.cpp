@@ -30,9 +30,65 @@
 
 #include "dlss.h"
 
+#include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
+#include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
+
 #ifdef STREAMLINE_ENABLED
 
 using namespace RendererRD;
+
+DLSSEffect::DLSSEffect() {
+	Vector<String> single;
+	single.push_back("");
+	reactive_shader.initialize(single);
+	reactive_shader_version = reactive_shader.version_create();
+	RID compiled = reactive_shader.version_get_shader(reactive_shader_version, 0);
+	if (compiled.is_valid()) {
+		reactive_pipeline = RD::get_singleton()->compute_pipeline_create(compiled);
+	}
+}
+
+DLSSEffect::~DLSSEffect() {
+	if (reactive_shader_version.is_valid()) {
+		reactive_shader.version_free(reactive_shader_version);
+	}
+}
+
+bool DLSSEffect::build_reactive_mask(RID p_color, RID p_dest, const Size2i &p_size, float p_scale) {
+	if (!reactive_pipeline.is_valid() || p_color.is_null() || p_dest.is_null() || p_size.x <= 0 || p_size.y <= 0) {
+		return false;
+	}
+
+	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
+	RID nearest = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
+
+	RD::Uniform source;
+	source.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+	source.binding = 0;
+	source.append_id(nearest);
+	source.append_id(p_color);
+
+	RD::Uniform dest;
+	dest.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+	dest.binding = 1;
+	dest.append_id(p_dest);
+
+	RID compiled = reactive_shader.version_get_shader(reactive_shader_version, 0);
+	RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache(compiled, 0, source, dest);
+
+	ReactivePushConstant push = {};
+	push.size[0] = p_size.x;
+	push.size[1] = p_size.y;
+	push.scale = p_scale;
+
+	RD::ComputeListID list = RD::get_singleton()->compute_list_begin();
+	RD::get_singleton()->compute_list_bind_compute_pipeline(list, reactive_pipeline);
+	RD::get_singleton()->compute_list_bind_uniform_set(list, uniform_set, 0);
+	RD::get_singleton()->compute_list_set_push_constant(list, &push, sizeof(push));
+	RD::get_singleton()->compute_list_dispatch_threads(list, p_size.x, p_size.y, 1);
+	RD::get_singleton()->compute_list_end();
+	return true;
+}
 
 bool DLSSEffect::is_available() {
 	StreamlineVK *streamline = StreamlineVK::get_singleton();
@@ -79,6 +135,8 @@ void DLSSEffect::upscale(const Parameters &p_params) {
 	args->inputs.motion_vectors = StreamlineVK::texture_from_rid(p_params.velocity, StreamlineVK::TEXTURE_USE_SAMPLED);
 	args->inputs.motion_vectors.extent = internal_rect;
 	args->inputs.exposure = StreamlineVK::texture_from_rid(p_params.exposure, StreamlineVK::TEXTURE_USE_SAMPLED);
+	args->inputs.reactive = StreamlineVK::texture_from_rid(p_params.reactive, StreamlineVK::TEXTURE_USE_SAMPLED);
+	args->inputs.reactive.extent = internal_rect;
 	args->inputs.output = StreamlineVK::texture_from_rid(p_params.output, StreamlineVK::TEXTURE_USE_STORAGE);
 
 	// These usages are what put the images into the layouts `texture_from_rid` promised above;
@@ -89,6 +147,9 @@ void DLSSEffect::upscale(const Parameters &p_params) {
 	resources.push_back({ p_params.velocity, RD::CALLBACK_RESOURCE_TYPE_TEXTURE, RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE });
 	if (p_params.exposure.is_valid()) {
 		resources.push_back({ p_params.exposure, RD::CALLBACK_RESOURCE_TYPE_TEXTURE, RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE });
+	}
+	if (p_params.reactive.is_valid()) {
+		resources.push_back({ p_params.reactive, RD::CALLBACK_RESOURCE_TYPE_TEXTURE, RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE });
 	}
 	resources.push_back({ p_params.output, RD::CALLBACK_RESOURCE_TYPE_TEXTURE, RD::CALLBACK_RESOURCE_USAGE_STORAGE_IMAGE_READ_WRITE });
 

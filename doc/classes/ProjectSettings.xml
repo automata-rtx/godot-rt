@@ -3623,6 +3623,10 @@
 		<member name="rendering/streamline/project_id" type="String" setter="" getter="" default="&quot;&quot;">
 			GUID issued by NVIDIA for this application. Leaving this empty falls back to a GUID built into the engine rather than to no identity at all, because NGX disables itself when it is given neither an NVIDIA-issued application ID nor a project GUID. Setting your own is what selects the per-title tuning NVIDIA ships over the air.
 		</member>
+		<member name="rendering/streamline/reactive_mask" type="bool" setter="" getter="" default="false">
+			Hands DLSS super resolution the reactive mask the renderer already builds for FSR 2, marking the pixels that alpha-blended surfaces covered so the model leans on the current frame there instead of dragging history across them. Reduces ghosting on transparent surfaces, at the cost of one full-screen single-channel copy per frame.
+			[b]Off by default, and experimental.[/b] It cannot be tested anywhere but on hardware, and an earlier attempt at the same feature blacked out the frame. Enable it, look at transparency in motion, and disable it again if anything looks worse. Has no effect unless DLSS super resolution is the upscaler that actually ran.
+		</member>
 		<member name="rendering/streamline/verbose_logging" type="bool" setter="" getter="" default="false">
 			If [code]true[/code], Streamline writes verbose logs to the user data directory. Only useful when diagnosing why a feature refuses to start.
 		</member>

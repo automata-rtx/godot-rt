@@ -53,6 +53,8 @@
 #define RB_TEX_SPECULAR SNAME("specular")
 #define RB_TEX_SPECULAR_MSAA SNAME("specular_msaa")
 #define RB_TEX_NORMAL_ROUGHNESS SNAME("normal_roughness")
+#define RB_SCOPE_DLSS SNAME("dlss")
+#define RB_TEX_DLSS_REACTIVE SNAME("dlss_reactive")
 #define RB_SCOPE_RT_SHADOWS SNAME("rt_shadows")
 #define RB_TEX_RT_SHADOW_MASK SNAME("rt_shadow_mask")
 #define RB_TEX_RT_SHADOW_INDEX SNAME("rt_shadow_index")
