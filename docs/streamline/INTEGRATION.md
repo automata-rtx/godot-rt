@@ -195,6 +195,32 @@ did rather than what it was asked to do. That distinction is the point: a DLSS r
 FSR 2 wherever DLSS cannot run, and the old `Size:` line would have gone on reporting the requested
 scale as though it had been honored. It now uses the same authoritative number.
 
+### DLSS gets no reactive mask, and the obvious way to give it one blacks out the frame
+
+Godot builds a reactive mask every frame an upscaler runs -- the colour buffer's **alpha channel**,
+which is zeroed across the opaque pass by `pass_alpha_multiplier` and then accumulates transparent
+coverage -- and FSR2 is handed it at `render_forward_clustered.cpp:3098` as
+`get_internal_texture_reactive()`. DLSS is handed four tags and not this one, so alpha-blended
+surfaces ghost worse under DLSS than under FSR2 at the same scale. That much is real.
+
+**Tagging that same RID as `kBufferTypeBiasCurrentColorHint` does NOT fix it. It was tried on
+hardware and every opaque pixel went black**, leaving only alpha-blended surfaces and the HUD
+visible, with FSR2 unaffected.
+
+The reason is that `get_internal_texture_reactive()` is not a texture, it is an **alpha-swizzled
+view of the colour buffer**, and `texture_from_rid` resolves `DRIVER_RESOURCE_TEXTURE` to the
+underlying `VkImage` (`streamline_vk.cpp:914`). So the colour tag and the reactive tag carry the
+*same image handle*. With `eUseFrameBasedResourceTagging` in the preference flags
+(`streamline_vk.cpp:671`) the two collide, and DLSS samples the swizzled view as its input colour --
+which is alpha replicated to all four channels, and alpha is zero everywhere the opaque pass drew.
+The symptom reads like a lighting or exposure failure and is neither.
+
+Doing it properly means giving DLSS its **own** single channel texture, copied from the colour
+buffer's alpha, so the tag carries a distinct `VkImage`. That is an allocation and a blit per frame
+rather than a free view, which is why it was not done that way first. Do not re-attempt the view.
+
+---
+
 ## 4. Frame generation
 
 **It is not loaded in the editor at all.** `sl.dlss_g` is the one plugin that hooks

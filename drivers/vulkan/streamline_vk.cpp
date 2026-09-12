@@ -1136,9 +1136,7 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 	sl::Resource motion_vectors = to_sl_resource(p_inputs.motion_vectors);
 	sl::Resource output = to_sl_resource(p_inputs.output);
 	sl::Resource exposure = to_sl_resource(p_inputs.exposure);
-	sl::Resource reactive = to_sl_resource(p_inputs.reactive);
 
-	const sl::Extent reactive_extent = to_sl_extent(p_inputs.reactive);
 	const sl::Extent color_extent = to_sl_extent(p_inputs.color);
 	const sl::Extent depth_extent = to_sl_extent(p_inputs.depth);
 	const sl::Extent motion_vectors_extent = to_sl_extent(p_inputs.motion_vectors);
@@ -1153,14 +1151,6 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 	tags.push_back(sl::ResourceTag(&output, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &output_extent));
 	if (p_inputs.exposure.is_valid()) {
 		tags.push_back(sl::ResourceTag(&exposure, sl::kBufferTypeExposure, sl::ResourceLifecycle::eValidUntilEvaluate));
-	}
-	if (p_inputs.reactive.is_valid()) {
-		// Godot already builds this every frame an upscaler runs and hands it to
-		// FSR2; DLSS was simply never given it, which made moving a viewport from
-		// FSR2 to DLSS strictly worse for every alpha-blended surface. It tells the
-		// model which pixels the motion vectors do not describe, so it can lean on
-		// the current frame there instead of dragging history across them.
-		tags.push_back(sl::ResourceTag(&reactive, sl::kBufferTypeBiasCurrentColorHint, sl::ResourceLifecycle::eValidUntilEvaluate, &reactive_extent));
 	}
 
 	sl::CommandBuffer *command_buffer = to_sl_command_buffer(p_command_buffer);
