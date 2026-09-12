@@ -394,6 +394,39 @@ how well the totals agree.
 
 ## Raytraced shadows
 
+### The history clamp cannot fire at one ray per light (confirmed in a game, not in the harness)
+
+Almost everything in this document came from a harness. This did not, and it is flagged as such
+because the harness **cannot** produce it: `shadow_validation/` runs with the denoiser off and every
+capture is a settled still frame, deliberately, so nothing here measures temporal behavior at all.
+
+The observation came from a first person weapon in a game built on this engine, whose raytraced
+shadow smeared badly. What it establishes:
+
+- **The variance clamp is the only defense against a shadow sliding across a receiver that did not
+  move**, because in that case the reprojection is exact, the depth test passes, and nothing else
+  rejects the stale tap.
+- **At the shipped `samples_per_light = 1` the clamp cannot fire.** Its window is built from the 3x3
+  neighborhood of the raw traced visibility, so all nine taps are binary. With 2 of 9 blocked the
+  measured spread is 0.416 and the window is `[-0.05, 1.61]`, wider than the valid range. Nine
+  binary samples genuinely cannot separate "penumbra at 0.5" from "this shadow moved".
+- **So `history_clamp_sigma` and `lag_response` are both inert against ghosting at the default
+  sample count** -- one narrows a window nothing is tested against, the other scales a term that is
+  zero unless the clamp fired. The fork guide previously recommended reaching for `lag_response`
+  first; that advice was reasoned from the code and was wrong.
+- `samples_per_light = 4` with `temporal_frames = 12` took the same shadow from badly smeared to
+  acceptable.
+
+A residual remains and is expected: strafing is consistently worse than turning, because turning
+pivots a camera-attached object about the camera while strafing translates it through the world, and
+a fixed camera angle keeps the history long exactly where the shadow is sliding. Bounding that is
+what the clamp does; removing it is not something a temporal filter can do.
+
+**The obvious next step, unmeasured:** widen the clamp's moment window from 3x3 to 5x5 at low sample
+counts. Twenty five binary taps estimate a proportion far better than nine, at no ray cost. Nothing
+in this repository can score it -- it needs a temporal rig that does not exist.
+
+
 ### Three things the closed-form reference refused
 
 The reference is geometric rather than another render — a lamp of known radius over a post of known

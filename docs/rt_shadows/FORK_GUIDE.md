@@ -367,13 +367,23 @@ actually moves the picture:
   gives about 94% of the real sun's penumbra despite the class reference quoting `0.5` for the sun.
 - **Too soft at contact?** Lower `denoiser/min_filter_pixels`. At or below `1.0` the filter switches
   off entirely at a hard edge, so `1.0` and `0.0` render identically.
-- **Shadow trails behind a moving object?** Lower `denoiser/history_clamp_sigma`. `2.0` cuts
-  ghosting to nothing; what is left after a blocker moves is its new shadow still filling in, not
-  its old one lingering.
-- **Shadow arrives late, or fades in behind a fast mover?** Three settings buy responsiveness and
-  only one of them is free. `denoiser/lag_response` acts only on frames where the clamp fired, so
-  it costs nothing in a settled image -- reach for it first, and leave it at `1.0` unless it
-  sparkles. `denoiser/temporal_frames` shortens the window everywhere, so it buys responsiveness
+- **Shadow trails behind a moving object? Raise `samples_per_light` FIRST, not
+  `denoiser/history_clamp_sigma`.** This is the one piece of tuning advice here that was confirmed
+  on hardware rather than reasoned from the code, and the code-reasoned version was wrong.
+  The clamp is the only thing standing between a moving shadow and a smear, and **at the shipped
+  `samples_per_light = 1` it cannot fire at all**: its window comes from the 3x3 neighborhood of the
+  raw traced visibility, every tap there is a hard 0 or 1, and with 2 of 9 blocked the measured
+  spread is 0.416 and the window is wider than the whole valid range. Nothing is ever outside it.
+  Lowering `history_clamp_sigma` narrows a window that is not being consulted, and
+  `denoiser/lag_response` scales a term that is zero on every frame the clamp does not fire, so at
+  one ray per light **both of those knobs are inert against ghosting**. Reported from a game: a
+  first person weapon's shadow went from badly smeared to acceptable on
+  `samples_per_light = 4` with `denoiser/temporal_frames = 12`, having not responded to the
+  clamp settings at all.
+- **Shadow arrives late, or fades in behind a fast mover?** Three settings buy responsiveness.
+  `denoiser/lag_response` acts only on frames where the clamp fired -- which, per the entry above,
+  means it does nothing until the sample count is high enough for the clamp to fire in the first
+  place. `denoiser/temporal_frames` shortens the window everywhere, so it buys responsiveness
   with steady state noise. `denoiser/history_clamp_sigma` buys it with penumbra accuracy.
 
   Those last two are coupled and must move together. A tight clamp is only safe with a short
@@ -387,6 +397,18 @@ actually moves the picture:
   raise `history_clamp_sigma` with it.**
 - **Grainy in wide penumbrae?** Raise `samples_per_light`, or `denoiser/spatial_passes`. Samples now
   cost what they say: every one is traced. They converge on the same shadow, only with less noise.
+  Note that the sample count buys two different things: less noise, and -- per the ghosting entry
+  above -- a variance estimate good enough for the history clamp to work with at all.
+- **A shadow cast by something rigidly attached to the camera will always be the worst case, and
+  strafing will always be worse than turning.** A first person weapon is the example. Turning pivots
+  it about the camera, so its world position barely moves and its shadow barely slides across the
+  floor; strafing translates it bodily, so the shadow sweeps over ground that is perfectly static.
+  A static receiver reprojects EXACTLY, so the depth test passes and nothing rejects the stale tap
+  -- and holding a fixed angle keeps history long, which is when a stale contribution is weighted
+  most heavily. Raising the sample count bounds this; no temporal filter removes it. If a residual
+  survives tuning, the remaining options are `cast_shadow = Off` on the view model (what section 3
+  recommends for exactly this node) or `light_size = 0` on the light, which switches the filter off
+  because a hard shadow is one deterministic ray.
 - **Slow in a large level generally?** Put `OccluderInstance3D` geometry in. Occlusion culling is
   worth more here than it is in stock Godot, and the reason is indirect: a lamp that gets occlusion
   culled leaves the visible light list, so its bounds never reach the caster gather, so every
