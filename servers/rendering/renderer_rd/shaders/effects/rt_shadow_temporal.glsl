@@ -210,11 +210,29 @@ void main() {
 	float lag = 0.0;
 
 	if (params.clamp_sigma > 0.0 && history_length > 0.0) {
+		// The clamp is CENTERED on the mean gathered here, so once the window is
+		// tight the accumulated value essentially IS that mean and its noise is what
+		// reaches the screen. At one ray per light the taps are binary, and nine of
+		// them carry a standard error of 0.167 in the middle of a penumbra where
+		// twenty-five carry 0.100. So gather wider when the sample count is too low
+		// to do that job on its own, and stay at 3x3 when it is not, because the
+		// taps are averages by then and the extra sixteen fetches buy little.
+		//
+		// This only became worth doing once the radius stopped coming from the
+		// spread of these same taps (see the decomposition below). While it did,
+		// widening the gather inflated the window as much as it improved the center
+		// and was a wash; now it improves the center alone.
+		//
+		// Simulated at one sample, clamp_sigma 0.3 and a 32 frame window -- a
+		// configuration that leans on the clamp hard -- output noise falls from
+		// about 0.13 to about 0.08, with the converged value unchanged on a flat
+		// penumbra and on a steep gradient alike. No penumbra flattening.
+		int moment_radius = params.sample_count >= 4.0 ? 1 : 2;
 		vec4 moment1 = vec4(0.0);
 		vec4 moment2 = vec4(0.0);
 		float taps = 0.0;
-		for (int cy = -1; cy <= 1; cy++) {
-			for (int cx = -1; cx <= 1; cx++) {
+		for (int cy = -moment_radius; cy <= moment_radius; cy++) {
+			for (int cx = -moment_radius; cx <= moment_radius; cx++) {
 				ivec2 tap = clamp(pos + ivec2(cx, cy), ivec2(0), params.screen_size - ivec2(1));
 				// A neighbor carrying different lights describes something else.
 				if (texelFetch(source_index, tap, 0) != current_index) {
