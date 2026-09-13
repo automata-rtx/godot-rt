@@ -85,8 +85,8 @@ All under `rendering/lights_and_shadows/raytraced_shadows/`.
 | `denoiser/enabled` | `true` | The denoiser keeps its own temporal history and does not need TAA — it works with SMAA, FXAA or nothing. |
 | `denoiser/spatial_passes` | `3` | Edge-stopping wavelet passes. Each doubles the filter's reach at roughly constant cost. |
 | `denoiser/temporal_frames` | `32` | Frames blended over. History is discarded on disocclusion, so this does not cause trailing. |
-| `denoiser/min_filter_pixels` | `1.0` | Narrowest the spatial filter may work where a penumbra was measured. At ≤1 px it switches off at a hard edge, which is what keeps contact shadows crisp. |
-| `denoiser/history_clamp_sigma` | `2.0` | How far reprojected history may sit outside this frame's local spread before being pulled back. This is what stops a *moving* shadow trailing across a *stationary* surface. `0.0` disables. |
+| `denoiser/min_filter_pixels` | `1.0` | Narrowest the spatial filter may work where a penumbra was measured. At the default a contact shadow is filtered in no pass at all, which is what keeps its edge exact; raising it filters those pixels and fringes every contact edge in the same move. Section 6 has the numbers for both ends. |
+| `denoiser/history_clamp_sigma` | `2.0` | How far reprojected history may sit outside this frame's local spread before being pulled back. This is what stops a *moving* shadow trailing across a *stationary* surface. Tightening it to `1.0` or below also widens the clamp's own moment gather while `samples_per_light` is under 4 — see section 6. `0.0` disables. |
 | `denoiser/lag_response` | `1.0` | How much of the clamp's own correction sets the blend weight, once it has decided the history was wrong. Inert on any frame the clamp did not fire. `0.0` restores the behavior that shipped before it. |
 | `directional/enabled` | `false` | `DirectionalLight3D` also takes its shadow from the mask. Requires `enabled`. |
 | `directional/caster_distance_scale` | `2.0` | How far past the shadow distance geometry is still gathered as a sun caster. Raising it lets distant landmarks cast onto ground you walk on; it costs proportionally more geometry, which slows *every* ray in the frame. |
@@ -318,19 +318,19 @@ sun's opaque shading does not need cascade density — and both are configurable
    emitter sampled as a Vogel disk whose radius is jittered per frame. Writes an RGBA8 visibility
    mask, an RGBA8 hit-distance (penumbra width in pixels), and an RGBA8UI index saying which light
    each channel belongs to.
-5. **Denoise.** Temporal reprojection with variance clamping — floored by the standard error the
-   ray counts carry, so it cannot pin a penumbra's shallow ends to a binary answer, and shortening
-   the accumulation window in proportion to how far it had to correct the history — then N
-   edge-stopping à-trous passes whose reach is driven by the measured penumbra width. The
-   accumulator's 8-bit store is dithered, because it re-reads its own rounded output every frame.
+5. **Denoise.** Temporal reprojection with variance clamping — the neighborhood's spread less the
+   per-tap sampling noise the ray counts carry, floored by the standard error of its mean so it
+   cannot pin a penumbra's shallow ends to a binary answer, and shortening the accumulation window
+   in proportion to how far it had to correct the history — then N edge-stopping à-trous passes
+   whose reach is driven by the measured penumbra width. The accumulator's 8-bit store is dithered,
+   because it re-reads its own rounded output every frame.
 6. **Volumetric fog**, which traces its own ray per froxel for a raytraced sun.
 7. **Forward pass** samples the mask instead of the shadow atlas.
 
 **Cost model.** It scales with how many raytraced lights *overlap a pixel*, not how many the scene
-contains — where more than four overlap, the four brightest at that pixel are shadowed and the rest
-are unshadowed there. Up to 255 raytraced lights may exist in a frame. No shadow map is rendered for
-a raytraced light unless `shadow_map_enabled` asks for one, so a scene can hold far more
-shadow-casting lights than the atlas has room for.
+contains — past four they stop being shadowed rather than costing more, per section 4. No shadow map
+is rendered for a raytraced light unless `shadow_map_enabled` asks for one, so a scene can hold far
+more shadow-casting lights than the atlas has room for.
 
 Visibility is stored as its square root and squared on read, spending more of the 8-bit range on the
 dark end where a shadow's detail is.
@@ -352,8 +352,6 @@ dark end where a shadow's detail is.
 
 ## 6. Tuning
 
-Start with the defaults. In order of what actually moves the picture:
-
 At the defaults the shadow's width is the width the geometry calls for. Measured against a
 closed-form ground truth — a lamp of known radius over a post of known size, in a scene where the
 50% crossing of the shadow edge lands within a pixel of the analytic answer at every distance — the
@@ -365,62 +363,61 @@ actually moves the picture:
 - **Shadow softness** is `light_size` (lamps, in meters, a radius) and `light_angular_distance` (the
   sun, in degrees). Godot treats the latter as the disk's angular radius, so the default `0.25°`
   gives about 94% of the real sun's penumbra despite the class reference quoting `0.5` for the sun.
-- **Too soft at contact?** Lower `denoiser/min_filter_pixels`. At or below `1.0` the filter switches
-  off entirely at a hard edge, so `1.0` and `0.0` render identically.
-- **Shadow trails behind a moving object? Raise `samples_per_light` FIRST, not
-  `denoiser/history_clamp_sigma`.** This is the one piece of tuning advice here that was confirmed
-  on hardware rather than reasoned from the code, and the code-reasoned version was wrong.
-  The clamp is the only thing standing between a moving shadow and a smear, and **at the shipped
-  `samples_per_light = 1` it cannot fire at all**: its window comes from the 3x3 neighborhood of the
-  raw traced visibility, every tap there is a hard 0 or 1, and with 2 of 9 blocked the measured
-  spread is 0.416 and the window is wider than the whole valid range. Nothing is ever outside it.
-  Lowering `history_clamp_sigma` narrows a window that is not being consulted, and
-  `denoiser/lag_response` scales a term that is zero on every frame the clamp does not fire, so at
-  one ray per light **both of those knobs are inert against ghosting**. Reported from a game: a
-  first person weapon's shadow went from badly smeared to acceptable on
-  `samples_per_light = 4` with `denoiser/temporal_frames = 12`, having not responded to the
-  clamp settings at all.
-
-  **The estimator has since been fixed, so this is no longer the cost it was.** The clamp used to
-  take the raw spread of its 3x3 neighborhood as its radius, which charges binomial sampling noise
-  to the signal -- and at one ray per light that scatter is `sqrt(p(1-p))`, 0.5 at the middle of a
-  penumbra, and it does not shrink however many taps are averaged. Raising the sample count did not
-  improve the estimator, it just made each tap an average and starved the noise term. The noise is
-  predictable, so it is now subtracted instead: the radius is the spatial variance left after
-  removing the per-tap binomial variance, plus the uncertainty in the mean. Simulated on a flat
-  penumbra the radius is 0.27 at ONE sample where it used to be 0.94, and where eight samples used
-  to be needed to reach 0.32. **Try `samples_per_light = 2` before 4 or 8** -- one sample cannot
-  separate a gradient from noise in a single frame so the decomposition treats the neighborhood as
-  flat there, and two is enough to tell them apart.
+- **`denoiser/min_filter_pixels` is a trade, and it cuts both ways.** Every à-trous pass early-outs
+  where a pixel's reach is no wider than that pass's own step, and the first pass already steps one
+  pixel, so at the default `1.0` -- the bottom of its range, and nothing lower would render
+  differently -- a penumbra narrower than a pixel is filtered in no pass at all, and the temporal
+  pass's output is what you see there. That is what makes a contact edge exact, and it is also why a
+  contact shadow that reads noisy stays noisy. Raising it buys those pixels spatial filtering and
+  fringes every contact edge in the same move: on a perfect step edge over a flat floor, where no
+  depth or normal weight rejects anything, `1.0` leaves the step exact at `0.000 | 1.000`, `1.5`
+  reads `0.137 | 0.863`, `2.0` reads `0.208 | 0.792` -- a two pixel fringe -- and `3.0` reads
+  `0.036 0.122 0.322 | 0.678 0.878 0.964`, a six pixel one. Those figures are arithmetic on the
+  shipped kernel (`0.375/0.25/0.0625`), its per-tap reach taper and the early-out, over the three
+  passes at steps 1, 2 and 4; they are not a render, and not from the simulation named below. Which
+  end you want depends on whether your contact shadows read noisy or read crisp. Nothing in this
+  denoiser is free.
+- **Shadow trails behind a moving object? Lower `denoiser/history_clamp_sigma` first.** The clamp is
+  the only thing standing between a moving shadow and a smear across a receiver that did not move,
+  and it works at the shipped `samples_per_light = 1`. It did not until the estimator was changed:
+  its window came from the raw spread of the traced taps, which at one binary ray per light is
+  wider than the whole valid range, so nothing was ever outside it and the clamp could not fire.
+  Each tap's own sampling noise is now subtracted from that spread instead, and that is what makes
+  one ray enough. `docs/rt_shadows/shadow_validation/denoiser_sim.py --radius` prints both
+  estimators' windows -- two sigma of 0.27 at one sample where the old one gave 0.93, 0.15 at eight
+  where it gave 0.32 -- and `FINDINGS.md` derives them. Reported from a game at one sample and the
+  default 32 frame window: dropping `history_clamp_sigma` to `0.3` almost entirely removed a first
+  person weapon's ghosting, for slightly more noise. The sample count is the second lever, and 2 is
+  the one to try before 4 -- a single frame of one ray per light cannot separate a gradient from
+  noise, so the decomposition treats the neighborhood as flat there.
 - **Shadow arrives late, or fades in behind a fast mover?** Three settings buy responsiveness.
-  `denoiser/lag_response` acts only on frames where the clamp fired -- which, per the entry above,
-  means it does nothing until the sample count is high enough for the clamp to fire in the first
-  place. `denoiser/temporal_frames` shortens the window everywhere, so it buys responsiveness
-  with steady state noise. `denoiser/history_clamp_sigma` buys it with penumbra accuracy.
+  `denoiser/lag_response` acts only on frames where the clamp fired, which since the decomposition
+  above includes frames at the default sample count. `denoiser/temporal_frames` shortens the window
+  everywhere, so it buys responsiveness with steady state noise. `denoiser/history_clamp_sigma`
+  buys it with penumbra accuracy, and it is independent of `temporal_frames`: a tight clamp no
+  longer needs a short window to stay honest. `denoiser_sim.py --window` reads a penumbra back at
+  three clamps against two window lengths, and its header records what used to couple them.
 
-  Those last two are coupled and must move together. A tight clamp is only safe with a short
-  window. At one ray per light and a true visibility of 0.25, all nine neighbors miss about one
-  frame in thirteen; the measured spread is then zero, the window collapses to the binomial floor,
-  and a correct history is yanked toward it. Nothing pulls the other way at that end, so it biases
-  dark. Simulated at the shipped 32 frames, dropping sigma to `1.0` reads a true 0.25/0.50/0.75
-  penumbra as 0.15/0.49/0.85 -- contrast expansion that eats the soft tails the floor exists to
-  protect. At 12 frames the same sigma reads 0.19/0.50/0.82, because a short window lets the value
-  track the neighborhood instead of being pinned to it. **If you raise `temporal_frames` back up,
-  raise `history_clamp_sigma` with it.**
+  Tightening the clamp does change one thing: the width of its own moment gather. The shader gathers
+  5x5 instead of 3x3 where `sample_count < 4.0 && clamp_sigma <= 1.0`, which buys about 0.62x the
+  noise for roughly twice the peak error at a narrow penumbra's shoulder; `FINDINGS.md` and
+  `denoiser_sim.py` carry the table. **At the shipped defaults -- one sample, sigma 2.0 -- that gate
+  is false and the 5x5 path never runs at all.** It is there for a project that has tightened the
+  clamp.
 - **Grainy in wide penumbrae?** Raise `samples_per_light`, or `denoiser/spatial_passes`. Samples now
   cost what they say: every one is traced. They converge on the same shadow, only with less noise.
-  Note that the sample count buys two different things: less noise, and -- per the ghosting entry
-  above -- a variance estimate good enough for the history clamp to work with at all.
+  The count is also one of the two terms in the gather gate above.
 - **A shadow cast by something rigidly attached to the camera will always be the worst case, and
   strafing will always be worse than turning.** A first person weapon is the example. Turning pivots
   it about the camera, so its world position barely moves and its shadow barely slides across the
   floor; strafing translates it bodily, so the shadow sweeps over ground that is perfectly static.
   A static receiver reprojects EXACTLY, so the depth test passes and nothing rejects the stale tap
   -- and holding a fixed angle keeps history long, which is when a stale contribution is weighted
-  most heavily. Raising the sample count bounds this; no temporal filter removes it. If a residual
-  survives tuning, the remaining options are `cast_shadow = Off` on the view model (what section 3
-  recommends for exactly this node) or `light_size = 0` on the light, which switches the filter off
-  because a hard shadow is one deterministic ray.
+  most heavily. Tightening `denoiser/history_clamp_sigma` bounds this -- it is what the game's own
+  fix moved -- and raising the sample count bounds it further; no temporal filter removes it. If a
+  residual survives tuning, the remaining options are `cast_shadow = Off` on the view model (what
+  section 2 recommends for exactly this node) or `light_size = 0` on the light, which switches the
+  filter off because a hard shadow is one deterministic ray.
 - **Slow in a large level generally?** Put `OccluderInstance3D` geometry in. Occlusion culling is
   worth more here than it is in stock Godot, and the reason is indirect: a lamp that gets occlusion
   culled leaves the visible light list, so its bounds never reach the caster gather, so every
@@ -447,18 +444,21 @@ actually moves the picture:
   `1.0`. Because it reaches only the trace, a player who turns it down keeps the sun in the sky and
   keeps every light exactly as authored for when they turn it back up.
 - **Slow everywhere?** The whole raytraced shadow stage -- the trace, the temporal accumulation and
-  every a-trous pass -- runs at the render buffer's *internal* size, so `rendering/scaling_3d/scale`
+  every à-trous pass -- runs at the render buffer's *internal* size, so `rendering/scaling_3d/scale`
   moves all of it quadratically, along with the depth pre-pass, the occlusion pass and the opaque
   pass. There is no half resolution setting for the mask alone. Inside the stage the largest single
   knob is `denoiser/spatial_passes`, because each pass is one more full resolution dispatch.
 - **Judge a denoiser change with the camera moving, not parked.** A converged static frame has no
   disocclusions, so the wide spatial passes are doing the least work they ever will and every
-  reduction in filter width looks free. There is **no rig for this**. Both harnesses capture settled
-  still frames with the denoiser off, deliberately, because a filtered accumulating shadow is not
-  deterministic frame to frame and cannot be differenced against a fixed baseline. So every temporal
-  claim in this document -- ghosting, convergence, and the blinking-light behavior under "The
-  four-light ceiling" -- comes from reading the code rather than from a measurement, unlike almost
-  everything else here. Weight them accordingly.
+  reduction in filter width looks free. There is **no render rig for this**: both harnesses capture
+  settled still frames with the denoiser off, deliberately, because a filtered accumulating shadow
+  is not deterministic frame to frame and cannot be differenced against a fixed baseline.
+  `shadow_validation/README.md` records that blind spot and the other one, that no rig here builds
+  the compressed geometry an imported mesh gets. What covers the temporal pass instead is
+  `shadow_validation/denoiser_sim.py`, a numpy reimplementation of it: every history clamp figure
+  above comes from one of its modes and is simulated rather than measured, and the ghosting reports
+  beside them are a player's eye on hardware. Convergence and the blinking-light behavior under
+  "The four-light ceiling" come from reading the code. Weight them accordingly.
 
 All of these take effect on the next frame.
 
@@ -576,7 +576,7 @@ each names the file so it can be picked up directly.
 - **Penumbra width is converted to pixels using radial distance where `focal_pixels` is a
   per-view-depth scale** (`rt_shadow_trace.glsl:676`). The error is `1/cos(theta)` off axis, so
   penumbrae toward the edges of a wide frame are reported 15-30% narrower than they are and the
-  a-trous pass filters them with too small a kernel. `view_depth` is already in a register two lines
+  à-trous pass filters them with too small a kernel. `view_depth` is already in a register two lines
   above. Worst on the ultrawide target, and worse again with a wide FOV.
 - **`Environment.ssao_intensity = 0` does not disable occlusion, it inverts it.** The strength curve
   at `gtao_gather.glsl:438-439` divides by `open + (1 - open) * intensity`; at intensity zero the
@@ -682,7 +682,7 @@ ray trace of the real geometry (mean absolute error / correlation, lower and hig
 
 | scene | bitmask | bitmask off | legacy |
 | --- | --- | --- | --- |
-| thin geometry — a louvre, a standing fin, a table on thin legs | **0.0134 / 0.947** | 0.0346 / 0.875 | 0.0433 / 0.845 |
+| thin geometry — a louver, a standing fin, a table on thin legs | **0.0134 / 0.947** | 0.0346 / 0.875 | 0.0433 / 0.845 |
 | solid boxes | 0.0307 / 0.796 | **0.0235 / 0.859** | 0.0515 / 0.693 |
 | an interior room, camera inside it | **0.0104 / 0.936** | — | 0.0367 / 0.653 |
 
@@ -780,7 +780,7 @@ Under `rendering/environment/ssao/ground_truth/`.
   paying for the symptom. **Revisit this.** The candidates, none yet measured to a conclusion: the
   mip level transitions in the march, which are discontinuous because the pyramid is
   farthest-biased; the hard accept/reject at the elevation bias, where a sample near the threshold
-  flips between marking several sectors and marking none; and the sector quantisation, which snaps
+  flips between marking several sectors and marking none; and the sector quantization, which snaps
   every occluder to a 5.6 degree grid. Attacking those is what would let the sample budget come
   *down* rather than up.
 - **Half resolution stair steps at silhouettes, and widening the reconstruction is not the fix.** A
@@ -789,8 +789,14 @@ Under `rendering/environment/ssao/ground_truth/`.
   touches it -- measured, a 7x7 gains three percent at silhouettes for five times the taps --
   because the problem is not too few candidates but that half resolution never evaluated a pixel
   near the edge, and no filter can invent a sample that was not taken. The checkerboard described
-  in 9.4 is what fixes it, measuring 33% better at silhouettes and 29% better overall for twice the
-  gather. What it costs on a real GPU is two bullets down.
+  in 9.4 is what fixes it, for twice the gather: scored against the shaders that actually ship, its
+  error against a fully shaded frame is 0.00502 overall where the quarter resolution grid is
+  0.00713, about 29.6% better, and 0.01180 against 0.02472 at silhouettes. Take that second pair as
+  a comparison within this one run -- its silhouette mask is that scorer's own definition, selecting
+  one percent of the frame -- and read both with the caveat `FINDINGS.md` attaches: **nothing
+  committed in `ao_validation/` implements the checkerboard packing, the reconstruction or that
+  mask**, so the figures are recorded as measured but cannot currently be reproduced from this
+  repository. What it costs on a real GPU is two bullets down.
 - **Measured directly on an RTX 5090 at 3440x1440 full screen, 4.95 Mpx, occlusion at full
   resolution, in a scene with dozens of raytraced lights.** The whole GPU frame is 3.41 ms, of which
   `Process GTAO` is **1.12 ms** and the raytraced shadow block is also 1.12 ms -- the two matching is
@@ -799,11 +805,14 @@ Under `rendering/environment/ssao/ground_truth/`.
   times what tracing the shadows costs**. At full resolution it is a third of the GPU frame.
 - **Cost is very nearly linear in shading rate, and almost nothing is fixed.** All three rungs
   measured on the same RTX 5090, same camera, at 3440x1440: quarter resolution 0.35 ms,
-  checkerboard 0.61 ms, every pixel 1.11 ms. Solving those three ways for a fixed cost and a full
-  resolution gather cost gives answers that agree to within four percent -- the gather is about
-  1.02 ms and the fixed part about **0.10 ms, nine percent** of the effect. Only the depth pyramid
-  and the upsample do not scale with the rate. The solve, and why the code says it should come out
-  that way, is in `docs/rt_shadows/FINDINGS.md`.
+  checkerboard 0.61 ms, every pixel 1.11 ms. That last is the sweep's own third rung and not the
+  1.12 ms full-frame capture above, which was taken in a different scene -- they agree to within a
+  hundredth of a millisecond, which is why it is worth saying they are two measurements. Solving
+  those three ways for
+  a fixed cost and a full resolution gather cost gives answers that agree to within four percent --
+  the gather is about 1.02 ms and the fixed part about **0.10 ms, nine percent** of the effect. Only
+  the depth pyramid and the upsample do not scale with the rate. The solve, and why the code says it
+  should come out that way, is in `docs/rt_shadows/FINDINGS.md`.
 - **Measured once on a Radeon 780M, and it is not the pass to worry about there.** Captured at the
   quarter resolution rung, so the gather ran at a quarter of the pixels while the prefilter and the
   upsample stayed at full. That is no longer the default -- a capture on stock settings shades a

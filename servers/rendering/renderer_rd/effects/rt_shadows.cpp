@@ -346,9 +346,10 @@ void RTShadows::_atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_nor
 	push_constant.depth_sigma = 0.02f;
 	push_constant.normal_sigma = 64.0f;
 	// The narrowest the filter may reach wherever a penumbra WAS measured; where
-	// none was, the filter is off regardless of this value. At or below one pixel
-	// the floor lets no neighbor in at all, because the nearest tap already sits a
-	// pixel away, which is what keeps a contact shadow crisp.
+	// none was, the filter is off regardless of this value. At the shipped default
+	// of one a contact shadow is filtered in no pass at all -- the early-out guard
+	// in `rt_shadow_atrous.glsl` says why -- so raising it filters those pixels and
+	// fringes every contact edge in the same move.
 	push_constant.min_filter_pixels = p_min_filter_pixels;
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();

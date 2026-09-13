@@ -94,7 +94,7 @@ estimator reports the deficit directly, so the same number doubles a figure that
 right. Hence `intensity_scale`, rather than changing the `Environment` default the legacy path
 still needs.
 
-### The denoiser, and two intuitive fixes the numbers refused
+### The denoiser, and three intuitive fixes the numbers refused
 
 At the small radius the effect first shipped with, only 31% of the visible grain was removable
 by dithering at all — the rest is deterministic estimator structure. At a large radius that
@@ -151,24 +151,19 @@ between five dispatches.
 Two consequences were drawn from that: that full resolution is simply affordable on desktop, and
 that on weaker hardware the resolution knob can only ever address the smaller half of the cost.
 
-**Both are wrong, and so is the solve they came from.** See "The three rung solve" below. The fixed
-part is nine percent, not forty to sixty five, and the error is instructive: the derivation
-subtracted three whole-frame framerates, one of which this section already flagged as the least
-certain of the three, and a small error in a large subtrahend became a large error in a small
-difference. A pass that can be measured directly should never be inferred from frame totals.
+**Both are wrong, and so is the solve they came from.** See "The three rung solve" below: the fixed
+part is nine percent, not forty to sixty five. The error is instructive. The derivation subtracted
+three whole-frame framerates, one of them the least certain reading of the three, and a small error
+in a large subtrahend became a large error in a small difference. A pass that can be measured
+directly should never be inferred from frame totals.
 
 A second data point, from a Radeon 780M with `half_size` on and raytraced shadows running in the
 same frame: the whole `Process GTAO` block is **1.43 ms** of a GPU frame of about 11.2 ms, in which
-the raytraced shadow block alone is 4.49 ms. That is a whole-block figure and not a split, so it
-neither confirms nor refutes the forty to sixty five percent fixed share above. What it does do is
-warn against transplanting that share. If the fixed part really were dominated by full resolution
-bandwidth, a part with a small fraction of a 5090's bandwidth could not fit all five dispatches into
-1.43 ms at a comparable pixel count. That was posed as a dilemma -- either the desktop solve
-over-estimated the fixed cost, leaning on the "over 1000 fps with the effect off" figure this
-section already flags as the least certain of the three, or the gather is a larger share on weak
-hardware than the desktop ratio implies. **The three rung solve below settles it: the first.** The
-780M figure needed no special explanation once the desktop fixed share came down from forty to
-sixty five percent to nine.
+the raytraced shadow block alone is 4.49 ms. That is a whole-block figure and not a split. It is
+what first made the desktop share look untransplantable -- if the fixed part really were dominated
+by full resolution bandwidth, a part with a small fraction of a 5090's bandwidth could not fit all
+five dispatches into 1.43 ms at a comparable pixel count -- and it needed no special explanation at
+all once that share came down to nine percent.
 
 Two captures settle it on any part, with no code change and no restart: read the block with
 `half_size` on and again with it off. Which pair applies depends on the shading rate, because
@@ -243,10 +238,20 @@ quarter near 0.75 and the gap near 0.37, against the 0.3 it claimed. Its SPLIT i
 variable cost does not, and the three rung solve refutes it outright -- forty to sixty five percent
 fixed against an actual nine. Both can be true at once: subtracting two nearly equal framerates
 gives a difference that is roughly right, while attributing that difference between two unknowns
-amplifies the error in the least certain of the three readings. Either way the derivation is retired
-in favor of the direct numbers; it is quoted here only so the failure mode stays on record.
+amplifies the error in the least certain of the three readings. The derivation is retired in favor
+of the direct numbers, and quoted only so the failure mode stays on record.
 
 ### Shading a checkerboard beats shading a coarser grid
+
+> **The two checkerboard tables, this one and the one in the next section, cannot currently be
+> reproduced from this repository.** An audit checked: nothing in `ao_validation/` implements the
+> checkerboard packing, either filter pass, the reconstruction, the silhouette mask, or the
+> exhaustive bijection check. `gtao_sim.py` models the gather only. So these two tables are the one
+> place in this document that breaks the rule the rest of it keeps -- that every published number
+> came from a committed harness. They are recorded as measured and are not being retracted, but
+> **treat them as unverified until the scorer is committed**, and do not cite them as the harness's
+> output. Closing this means committing the reconstruction scorer and the bijection check, or
+> extending `gtao_sim.py` to cover both filter passes.
 
 `half_size` halves each dimension, so it evaluates a QUARTER of the pixels, not half. Shading a
 checkerboard at full resolution instead evaluates half of them, and the difference is not only the
@@ -275,15 +280,7 @@ them wastes the saving on wave divergence.
 
 ### Scored again against the shipped implementation, not the prototype
 
-> **The numbers in this subsection cannot currently be reproduced from this repository.** An audit
-> checked: nothing in `ao_validation/` implements the checkerboard packing, either filter pass, the
-> reconstruction, the silhouette mask used below, or the exhaustive bijection check. `gtao_sim.py`
-> models the gather only. So this is the one place in this document that breaks the rule the rest of
-> it keeps -- that every published number came from a committed harness. The figures are recorded
-> as measured and are not being retracted, but **treat them as unverified until the scorer is
-> committed**, and do not cite them as the harness's output. Closing this means committing the
-> reconstruction scorer and the bijection check, or extending `gtao_sim.py` to cover both filter
-> passes.
+Unverified for the reason flagged above, which covers this table too.
 
 The table above was measured on a prototype. Re-scored against the mapping and reconstruction the
 shaders actually run -- packed texel `(u, y)` holds pixel `(2u + (y & 1), y)`, shaded pixels copied
@@ -298,7 +295,7 @@ interior scene at the shipped defaults, against a fully shaded frame:
 Overall, 29.6% better, against the 29% the prototype measured -- close enough to say the shipped
 arithmetic is the arithmetic that was scored. The silhouette figure comes out further ahead than
 the prototype's 33%, but that one is not comparable: the mask here is "any pixel whose 3x3
-neighbourhood spans more than five percent of its own depth", which is this harness's definition
+neighborhood spans more than five percent of its own depth", which is this harness's definition
 and not the prototype's, and it selects 1.0% of the frame. Trust the overall column for
 cross-checking the two, and the silhouette column only for comparing the two schemes within this
 run.
@@ -315,7 +312,7 @@ The gather evaluates full-resolution pixel `k·stride`; the upsample computed
 `(pos + 0.5)·scale − 0.5`, which assumes texel `k` sits at the *center* of its block. Cross
 correlating a half-resolution render against a full-resolution one put their best alignment at
 exactly (−0.5, −0.5), matching the arithmetic. Separately, the upsample's bilateral guide was
-the nearest gather texel's depth, which quantised every silhouette to the coarse grid — that,
+the nearest gather texel's depth, which quantized every silhouette to the coarse grid — that,
 not the reduced sample count, was most of why half resolution read as low resolution rather
 than merely soft.
 
@@ -394,11 +391,12 @@ how well the totals agree.
 
 ## Raytraced shadows
 
-### The history clamp cannot fire at one ray per light (confirmed in a game, not in the harness)
+### The history clamp could not fire at one ray per light (confirmed in a game, not in the harness)
 
-Almost everything in this document came from a harness. This did not, and it is flagged as such
-because the harness **cannot** produce it: `shadow_validation/` runs with the denoiser off and every
-capture is a settled still frame, deliberately, so nothing here measures temporal behavior at all.
+Almost everything in this document came from a harness. This did not, and no harness here could
+produce it: the rigs have two standing blind spots -- none of them measures temporal behavior, and
+none of them builds compressed geometry -- both set out, with what closing them would take, in
+`shadow_validation/README.md` and `ao_validation/README.md`, which are the maintained copies.
 
 The observation came from a first person weapon in a game built on this engine, whose raytraced
 shadow smeared badly. What it establishes:
@@ -406,26 +404,150 @@ shadow smeared badly. What it establishes:
 - **The variance clamp is the only defense against a shadow sliding across a receiver that did not
   move**, because in that case the reprojection is exact, the depth test passes, and nothing else
   rejects the stale tap.
-- **At the shipped `samples_per_light = 1` the clamp cannot fire.** Its window is built from the 3x3
-  neighborhood of the raw traced visibility, so all nine taps are binary. With 2 of 9 blocked the
-  measured spread is 0.416 and the window is `[-0.05, 1.61]`, wider than the valid range. Nine
-  binary samples genuinely cannot separate "penumbra at 0.5" from "this shadow moved".
-- **So `history_clamp_sigma` and `lag_response` are both inert against ghosting at the default
-  sample count** -- one narrows a window nothing is tested against, the other scales a term that is
-  zero unless the clamp fired. The fork guide previously recommended reaching for `lag_response`
+- **At the shipped `samples_per_light = 1` the clamp could not fire.** Its window was built from the
+  raw spread of the 3x3 neighborhood of the traced visibility, so all nine taps are binary. With 2
+  of 9 blocked that spread is 0.416, and two sigma either side of the tap mean at the shipped
+  `history_clamp_sigma` of 2.0 is `[-0.05, 1.61]` -- wider than the valid range. Nine binary samples
+  genuinely cannot separate "penumbra at 0.5" from "this shadow moved"; the fix below stops trying
+  to, rather than gathering more of them.
+- **So `history_clamp_sigma` and `lag_response` were both inert against ghosting at the default
+  sample count** -- one narrowed a window nothing was tested against, the other scaled a term that
+  was zero unless the clamp fired. The fork guide previously recommended reaching for `lag_response`
   first; that advice was reasoned from the code and was wrong.
 - `samples_per_light = 4` with `temporal_frames = 12` took the same shadow from badly smeared to
-  acceptable.
+  acceptable. That was brute force: raising the count does not improve the estimator, it makes each
+  tap an average and starves the noise term that was holding the window open.
 
 A residual remains and is expected: strafing is consistently worse than turning, because turning
 pivots a camera-attached object about the camera while strafing translates it through the world, and
 a fixed camera angle keeps the history long exactly where the shadow is sliding. Bounding that is
 what the clamp does; removing it is not something a temporal filter can do.
 
-**The obvious next step, unmeasured:** widen the clamp's moment window from 3x3 to 5x5 at low sample
-counts. Twenty five binary taps estimate a proportion far better than nine, at no ray cost. Nothing
-in this repository can score it -- it needs a temporal rig that does not exist.
+### Subtracting the sampling noise made the clamp work at one ray, and made a wider gather pay
 
+The spread of those nine taps is two quantities added together, and they want opposite treatment:
+the penumbra genuinely varying across them, which the clamp must not flatten, and the binomial
+scatter of each tap being a count of blocked rays, which says nothing about the shadow. At one ray
+per light a tap is a hard 0 or 1, so that scatter is `sqrt(p(1-p))` -- 0.5 in mid-penumbra -- and it
+does not shrink however many taps are averaged, because it is the spread of a Bernoulli draw and not
+an uncertainty in a mean. Charging it to the radius is what held the window wider than the valid
+range; it is predictable, so it is now subtracted instead. The radius is the spatial variance left
+after removing the per-tap binomial variance, plus the uncertainty in the mean, and
+`denoiser_sim.py --radius` prints the two sigma window each estimator asks for in mid-penumbra at 1,
+2, 4 and 8 samples per light: raw spread **0.93, 0.65, 0.46, 0.32**, decomposed **0.27, 0.28, 0.21,
+0.15** -- the decomposed window at ONE sample is tighter than the raw one was at eight. Confirmed on
+the owner's machine rather than in a rig: at `samples_per_light = 1` with `history_clamp_sigma`
+tightened to 0.3, the weapon shadow's ghosting is almost entirely gone for slightly more noise. The
+strafing residual above survives it.
+
+A tight window is also what makes the moment gather's width worth arguing about, and it is why this
+could not have been done first: while the radius came from the raw spread of these same taps, a
+wider gather inflated the window as much as it improved the center and the two canceled. Now the
+clamp is centered on a mean it trusts, so once the window is tight the accumulated value
+essentially IS that mean and both the mean's noise and its bias reach the screen. A tap mean's
+standard error is `sqrt(p(1-p)/n)`, so twenty-five binary taps carry 0.100 in mid-penumbra where
+nine carry 0.167.
+
+Measured with `shadow_validation/denoiser_sim.py`, which is a simulation and not a render -- for
+the reason above, no capture in this repository can score a temporal pass. The script reimplements
+`rt_shadow_temporal.glsl` -- binary taps, sqrt-encoded 8-bit storage, and the dithered store,
+without which a bias figure reads the accumulator's ratchet rather than the filter -- over a static
+camera at `samples_per_light` 1, `temporal_frames` 32, `lag_response` 1.0, temporal pass only.
+Excluding the a-trous pass costs little at the SHIPPED default: it early-outs wherever
+`reach_pixels <= step_size`, which a contact shadow at the default `min_filter_pixels` of 1 always
+satisfies, so for a narrow penumbra the temporal pass is the whole output. Raise `min_filter_pixels`
+and that stops being true, as "Raising `min_filter_pixels`" below sets out, so this table describes
+the default and not a project that has raised it.
+
+`python3 denoiser_sim.py` reprints the whole of it:
+
+| scene | `clamp_sigma` | metric | 3x3 | 5x5 | ratio |
+| --- | --- | --- | --- | --- | --- |
+| flat p = 0.5 | 2.0 | noise | 0.1029 | 0.0628 | 0.61 |
+| flat p = 0.5 | 0.3 | noise | 0.1972 | 0.1224 | 0.62 |
+| 32 px penumbra | 2.0 | noise | 0.0434 | 0.0293 | 0.68 |
+| 32 px penumbra | 0.3 | noise | 0.0932 | 0.0578 | 0.62 |
+| 2 px penumbra | 2.0 | peak bias | 0.0576 | 0.1878 | 3.26 |
+| 2 px penumbra | 0.3 | peak bias | 0.1499 | 0.2796 | 1.86 |
+| 4 px penumbra | 2.0 | peak bias | 0.0435 | 0.0979 | 2.25 |
+| 4 px penumbra | 0.3 | peak bias | 0.0729 | 0.1293 | 1.77 |
+| 8 px penumbra | 2.0 | peak bias | 0.0355 | 0.0510 | 1.43 |
+| 8 px penumbra | 0.3 | peak bias | 0.0467 | 0.0645 | 1.38 |
+| 16 px penumbra | 2.0 | peak bias | 0.0474 | 0.0321 | 0.68 |
+| 16 px penumbra | 0.3 | peak bias | 0.0347 | 0.0370 | 1.07 |
+| 32 px penumbra | 2.0 | peak bias | 0.0608 | 0.0228 | 0.37 |
+| 32 px penumbra | 0.3 | peak bias | 0.0258 | 0.0234 | 0.90 |
+
+The wide gather cuts noise to 0.61-0.68x, and to 0.62x in both rows at the tight window the gate
+actually enables it in; that ratio is the robust output and the absolute figures belong to this
+scene. Its cost is at the penumbra SHOULDER and not in the interior -- the interior is where the
+widening was first scored, which is why it first shipped unconditional. Twenty-five taps straddle
+the step into the flat region, and the clamp then pins the pixel to what they averaged across it.
+The cost falls with width, is gone by sixteen pixels and reverses by thirty-two. So the gate is on
+the window as well as the sample count: the shader gathers 5x5 only where
+`sample_count < 4.0 && clamp_sigma <= 1.0`. Below `clamp_sigma` 1.0 the 3x3 is already paying most
+of the shoulder cost, 0.150 against the 5x5's 0.280, because a tight window pins the value whatever
+it is centered on; the noise reduction is what makes an already-made trade affordable. At the
+shipped 2.0 the 3x3 is nearly unbiased and widening would buy a cost nothing asked for.
+
+Two negative results, so that nobody re-derives them. **Weighted 5x5 kernels sit on the same
+tradeoff line rather than beating it:** at `clamp_sigma` 0.3 a (1,2,3,2,1) tent is 0.82x the noise
+for 1.36x the shoulder bias and a (1,4,6,4,1) binomial 0.94x for 1.14x, so the box is the far end
+of a curve rather than a bad point on it (`denoiser_sim.py --kernels`). And **the width cannot be
+chosen per pixel at one ray per light:** half the taps deterministically 0 and half
+deterministically 1 has exactly the variance of every tap being an independent p = 0.5 draw, so the
+decomposition subtracts all of it and reports no structure, while the difference between the 3x3
+and 5x5 means has a standard deviation of 0.133 -- larger than the shoulder signal it would have to
+detect. (That figure is arithmetic, not a run: the 3x3 mean contains the 5x5 one, so the variance of
+their difference is the difference of their variances, `0.25 * (1/9 - 1/25)`.)
+
+### The tight clamp's contrast expansion is superseded and does not reproduce
+
+`FORK_GUIDE.md` used to warn that `history_clamp_sigma` and `temporal_frames` were coupled -- that
+a tight clamp was only safe with a short window, and that raising the frame count meant raising
+sigma with it. It cited a true 0.25/0.50/0.75 penumbra reading **0.15/0.49/0.85** at sigma 1.0 over
+32 frames, and **0.19/0.50/0.82** at 12.
+
+Those figures came from the estimator that shipped BEFORE the variance decomposition above, and the
+mechanism behind them is gone. That estimator floored the window at the uncertainty in the mean
+alone, so wherever the nine binary taps happened to agree -- at a true visibility of 0.25 and one
+ray per light, all nine come back blocked on the same frame about once in thirteen -- the window
+collapsed to that floor and yanked a correct history to the binary answer, with nothing pulling the
+other way. The decomposed window carries the per-tap binomial term as a subtraction rather than the
+raw spread as a total, and no longer collapses where the taps agree.
+
+`denoiser_sim.py --window` re-runs it on 8, 16 and 32 pixel penumbrae, at `clamp_sigma` 2.0, 1.0 and
+0.3, over both 32 and 12 frame windows. Every converged value lands within 0.05 of the truth and
+most within 0.02, and what deviation there is does not grow as the clamp tightens or the window
+lengthens: the largest, 0.55 for a true 0.50 on the 16 px penumbra, is at the LOOSEST setting of
+both. There is no contrast expansion left to warn about and the two settings are no longer coupled.
+The script's `--window` header carries this history, so a document that needs it can point there
+rather than repeat it.
+
+### Raising `min_filter_pixels` buys spatial filtering with a fringe, and is not a free lever
+
+`FORK_GUIDE.md` used to answer only the opposite question -- "too soft at contact? lower it" -- for
+a value the inspector will not produce, since the hint range starts at 1.0 and anything below it
+renders identically. Correcting that produced a worse error in an intermediate draft, which sold
+raising it as a free lever for a noisy contact shadow. It is not free.
+
+At the default of 1.0 a pixel whose measured penumbra is narrower than a pixel is filtered in NO
+a-trous pass at all: every pass early-outs where `reach_pixels <= step_size`, and the first already
+steps one. That is what makes a contact edge exact, and it also means the temporal pass's output is
+what reaches the screen there. Raising the floor does switch spatial filtering on for those pixels
+-- and fringes every contact edge in the same move, because the floor applies wherever a penumbra
+was measured at all.
+
+How wide that fringe gets is arithmetic on the shader's own constants rather than a capture -- a
+perfect step edge on a flat floor, where no depth or normal weight rejects anything, through the
+default three passes. `FORK_GUIDE.md` section 6 carries the ladder, because a reader deciding
+whether to move the setting is the one who needs it; the short of it is that 2.0 costs two pixels
+and 3.0 costs six. `rt_shadow_atrous.glsl` is where to check the mechanism.
+
+So it is a trade of the same shape as everything else in this denoiser: raise it when the contact
+shadow reads noisy, leave it when it reads crisp. Nothing here is free. It also bounds this
+document's own method -- `denoiser_sim.py` omits the a-trous pass on the grounds that a contact
+shadow early-outs of every pass, which is true at 1.0 and false at 2.0.
 
 ### Three things the closed-form reference refused
 

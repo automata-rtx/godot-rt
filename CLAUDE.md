@@ -85,11 +85,9 @@ Not covered, and silently falling back or losing shadowing:
 - **XR / multiview, reflection probes, the Mobile and Compatibility renderers** — shadow maps.
 
 `Light3D.shadow_map_enabled` buys a light back its shadow map, at the cost of an atlas quadrant and
-a shadow map render. That helps the three entries above that read a map and find none -- subsurface
-transmittance, volumetric fog under a lamp, and alpha-blended surfaces receiving. The rest of the
-list never reads a shadow map in the first place -- an opaque surface under a light that holds a mask
-slot takes its answer from the mask whether or not a map was also rendered -- so the flag does
-nothing for them.
+a shadow map render. It helps only the three entries above that read a map and find none: subsurface
+transmittance, volumetric fog under a lamp, and alpha-blended surfaces receiving. Everything else on
+the list takes its answer from the mask whether or not a map was rendered, so the flag does nothing.
 
 ## Traps when authoring for raytraced shadows
 
@@ -119,6 +117,15 @@ nothing for them.
   `light_size = 0` and the problem goes away — a hard shadow is one deterministic ray and the filter
   switches itself off. Turn a flash off with `visible = false` rather than fading `light_energy` to
   zero: a zero-energy light keeps its slot and all of its rays.
+- **Denoiser tuning: `denoiser/history_clamp_sigma` for ghosting, `samples_per_light` for noise,
+  and `denoiser/min_filter_pixels` only goes up and is not free** — raising it buys the narrowest
+  penumbrae spatial filtering at the price of a fringe on every contact edge. The clamp subtracts
+  each tap's own sampling noise from the spread it measures, so it fires at one binary ray per
+  light; under 4 samples at `sigma` 1.0 or below it gathers its moments 5x5 rather than 3x3: less
+  noise, at the price of bias where a penumbra meets full light. From the game, not a harness: at
+  1 sample, dropping `history_clamp_sigma` to **0.3** from its default of 2.0 almost entirely
+  removed a first-person weapon's smear. `docs/rt_shadows/FINDINGS.md` derives all of this, and
+  `shadow_validation/denoiser_sim.py` reprints every simulated number.
 
 ## Two behaviors that surprise people
 
@@ -151,26 +158,23 @@ buffer. Read section 10 of **`docs/rt_shadows/FORK_GUIDE.md`** before answering 
 - **`hardness` is the knob for a shadow that reads too faint, not `surface_thickness`.** Bend average
   the march into four buckets, so a pixel needs four samples' worth of agreement before it is fully
   shadowed -- and samples are one pixel apart, so a grass blade narrower than that casts well short
-  of the shadow a trace of the same blade gives. Measured in linear light: 0.445 of the raytraced
-  path's darkening per pixel on separated prisms, over 1.5x the area, rising to about 0.80 on a
-  dense field where blades shadow each other. `hardness` blends that average against
-  the minimum of the same four buckets; `0.0` is Bend's behavior exactly and the default `1.0`
-  matches the trace. It moves darkness 2.1x while moving area 5%, so it and `surface_thickness` are
-  independent: hardness sets how dark, thickness sets how wide. There is no third darkness knob --
-  `contrast` and `strength` were settings until they were measured, and are now constants at 4.0 and
-  1.0. Score these captures in linear light (the rule and the decode are under "Building and
-  validating" below); the sweeps are in `docs/rt_shadows/FINDINGS.md`, screen space section.
+  of the shadow a trace of the same blade gives. `hardness` blends that average against the minimum
+  of the same four buckets; `0.0` is Bend's behavior exactly and the default `1.0` matches the trace.
+  It moves darkness far more than it moves area, so it and `surface_thickness` are independent:
+  hardness sets how dark, thickness sets how wide. There is no third darkness knob -- `contrast` and
+  `strength` were settings until they were measured, and are now constants at 4.0 and 1.0. The
+  sweeps, scored in linear light, are in `docs/rt_shadows/FINDINGS.md`, screen space section.
 - **Do not tune it by screenshot.** `docs/rt_shadows/shadow_validation/` renders the same scene with
   and without the pass and scores it against a raytraced reference; its README lists the numbers a
   change must not move. The pass overshoots darkness while undershooting area, so an eye judging
   "too dark" is reading one of those and not the other.
-- **One light, Forward+, single view.** The mask has one channel. A second `DirectionalLight3D` gets
-  nothing, and this is not a per-light property: `LightStorage` picks the light and marks it with
-  `DirectionalLightData::sss_strength`. Multiview, reflection probe and **orthographic** renders
-  decline the pass, the first and last with a one-time warning -- an orthographic projection gives a
-  direction vector a clip `w` of exactly zero, and the march takes its direction from that sign. A light is marked ONLY when a mask is genuinely written for it that
-  pass -- marking one whose mask never arrives puts the sun out rather than leaving it alone, because
-  the fallback bound in the mask's place is a 4x4 texture the lookup reads past.
+- **One light, Forward+, single view.** The mask has one channel, so a second `DirectionalLight3D`
+  gets nothing, and this is not a per-light property: `LightStorage` picks the light and marks it
+  with `DirectionalLightData::sss_strength`. Multiview, reflection probe and **orthographic** renders
+  decline the pass, the first and last with a one-time warning: an orthographic projection gives a
+  direction vector a clip `w` of exactly zero and the march takes its direction from that sign. A
+  light is marked ONLY when a mask is genuinely written for it -- marking one whose mask never
+  arrives puts the sun out, because the fallback in its place is a 4x4 texture the lookup reads past.
 - **It only shadows from occluders on screen and in front, and shadow length is bounded in PIXELS**
   by the quality tier, not in world units. So grass above the top of the viewport casts nothing, and
   a low sun wants shadows longer than any tier reaches. Neither is tunable. The complement for those
@@ -265,9 +269,13 @@ answering anything about upscaling, frame generation or the Vulkan loader.
   "nothing wrote here" and FSR2 decodes the sentinel inside its own patched shader; DLSS reads it
   literally and, scaled by the render size, sees a full screen of motion everywhere the motion pass
   did not draw. The symptom is edges that crawl and never resolve even with the camera still.
+- **The DLSS reactive mask (`rendering/streamline/reactive_mask`) ships off and has never run on
+  hardware**; an earlier attempt tagged the alpha-swizzled view FSR2 takes and blacked the frame
+  out (`docs/streamline/INTEGRATION.md` section 3). And no Streamline tagging change is low risk:
+  nothing here can exercise one -- it compiles out off Windows, and CI runs nothing that reaches it.
 - **Frame generation refuses rather than half-applies**: never in the editor, never in stereo,
   never on a viewport no window presents, and never without motion vectors (which means a
-  temporal upscaler or TAA must be running). It provides hudless colour but **not UI alpha**,
+  temporal upscaler or TAA must be running). It provides hudless color but **not UI alpha**,
   which Godot cannot currently produce, so a moving interface element smears across generated
   frames. Fixed 2x only — dynamic multi-frame generation is D3D12-only in this SDK.
 - **V-Sync with frame generation is D3D12-only too**, so on Vulkan it has to be forced from the
@@ -304,8 +312,8 @@ answering anything about upscaling, frame generation or the Vulkan loader.
 - `docs/streamline/INTEGRATION.md` — the DLSS integration: how it attaches, every seam it touches,
   the motion vector and depth conventions it assumes, and what to check first on hardware.
 - `docs/rt_shadows/ao_validation/` and `docs/rt_shadows/shadow_validation/` — the two measurement
-  harnesses. Each has its own README. Every published number came from one of them, and a claim
-  about occlusion or shadow quality that did not is an opinion.
+  harnesses, each with its own README. Every published number comes from one of them or from a
+  stated simulation, and says which; a number with neither behind it is an opinion.
 
 ## Building and validating
 
@@ -337,7 +345,10 @@ Three things about it are worth knowing before reading any output:
   It prints `OpTypeRayQueryKHR is not supported yet.` once at startup; that line comes from the Mesa
   stack, not the engine, and does not stop the trace. `GODOT_RT_DEBUG=1` settles it — a line reading
   `pre_opaque: ... rt_lights=1 new_slots=1 tlas=1` is the mask being written.
-- **It cannot tell you cost.** Every timing under software rendering is meaningless.
+- **It cannot tell you cost, temporal behavior, or how a mesh was authored.** Timings under software
+  rendering are meaningless, the denoiser is off on every settled still-frame capture, and no rig's
+  geometry carries the vertex compression an imported mesh has. Both blind spots, and the way
+  around each, are in the two validation READMEs.
 
 CI was narrowed to Windows only, which dropped the checks that ran on Linux — the `--doctool` class
 reference check and the GDExtension API compatibility check. (Unit tests still run: the Windows

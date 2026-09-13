@@ -344,14 +344,18 @@ bool RaytracingScene::_build_blas_geometry(RID p_mesh, RID p_mesh_instance, uint
 		const uint32_t source_stride = sizeof(uint16_t) * 4;
 		// A VERTEX buffer, not a storage buffer, and the distinction is the whole
 		// bug this line used to carry. `blas_create` resolves a geometry's vertex
-		// buffer through `vertex_buffer_owner` alone (rendering_device.cpp:322), so
+		// buffer through `vertex_buffer_owner` alone (rendering_device.cpp:323), so
 		// an RID minted by `storage_buffer_create` -- which lands in
 		// `storage_buffer_owner` (:1509) -- fails that lookup and the build errors
 		// out with `Parameter "vertex_buffer" is null.` every frame, for every
 		// compressed surface, forever. Nothing downstream is lost by switching:
-		// `uniform_set_create` accepts either owner for a storage binding
-		// (:4752-4754), so the dequantize pass can still write into it, and
-		// `vertex_buffer_create` takes the same device-address and build-input bits.
+		// `uniform_set_create` takes a vertex buffer for a storage binding too
+		// (:4753), so the dequantize pass can still write into it. It does insist
+		// that a vertex buffer carry the storage usage explicitly (:4756), where
+		// `storage_buffer_create` set it unconditionally (:1465) -- that is what
+		// BUFFER_CREATION_AS_STORAGE_BIT below is for. Drop it and the dequantize
+		// pass's uniform set is refused, leaving the structure built from a buffer
+		// nothing ever wrote.
 		//
 		// This never showed in the validation harness because every rig builds its
 		// meshes procedurally and uncompressed. Imported meshes are compressed by

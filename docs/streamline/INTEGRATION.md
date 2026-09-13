@@ -4,20 +4,27 @@ DLSS super resolution and DLSS frame generation, on Vulkan, on Windows. This is 
 description of what the engine does.
 
 **DLSS super resolution works.** Confirmed on the RTX 5090 target, running Vulkan fullscreen at
-3440x1440 with a 3D scale of 0.67 — the equivalent of DLSS Quality — and the image is clean: no
-ghosting, no smearing under camera motion, no shimmer at rest.
+3440x1440 with a 3D scale of 0.67 — the equivalent of DLSS Quality — and opaque geometry is clean:
+no ghosting, no smearing under camera motion, no shimmer at rest. Transparency was not: world-space
+label text ghosted badly in the same build, which is what the billboard fix in section 5 and the
+reactive mask in section 3 came out of.
 
-That result retires most of what this document used to hedge about, because the conventions DLSS
-depends on fail *visibly* and specifically. A wrong motion vector sign or `mvecScale` smears under
-motion; a wrong `clipToPrevClip` transpose ghosts even with the camera still; a wrong jitter sign
-reads as softness or shimmer; wrong resource tags give black or garbage. None of those are present,
-so the sign and scale conventions in sections 4 and 5, and the camera-motion pre-fill of the
-velocity buffer that section 4 explains, are confirmed in practice rather than only from the SDK
-headers. Read them as describing what runs.
+That result retires most of what this document used to hedge about, because every convention DLSS
+depends on fails *visibly* and in its own way — steps 3 to 6 of section 9 map each artifact back to
+the one cause that produces it — and not one of those artifacts is present. So the sign and scale
+conventions in section 5, and the camera-motion pre-fill of the velocity buffer that step 4 of
+section 9 explains, are confirmed in practice rather than only from the SDK headers. Read them as
+describing what runs, with one exception: both fixes for the transparency failure were written
+after that run and have not been back on the machine since.
 
-**DLSS frame generation is still unverified**, and is now genuinely reachable for the first time:
-it refuses without motion vectors, this project uses SMAA rather than TAA, so it was only ever
-reachable on top of super resolution. Section 9 is what to check for it.
+**Two things here have never run on hardware**, so plan a session around both rather than one.
+**Frame generation** is now genuinely reachable for the first time: it refuses without motion
+vectors, and TAA is never used here, so super resolution is the only thing that fills the velocity
+buffer for it — the two antialiasing configurations in this project are exclusive, DLSS doing the
+antialiasing whenever it is on and SMAA whenever it is off, and SMAA leaving no velocity buffer at
+all. **The reactive mask** (`rendering/streamline/reactive_mask`, section 3) is off by default for
+exactly that reason: an earlier attempt at it blacked out every opaque pixel on hardware, and the
+version in the tree fixes that cause but has never been tried. Section 9 checks both.
 
 ---
 
@@ -102,6 +109,9 @@ below reports itself unavailable. There is no half-loaded state.
 | `drivers/vulkan/rendering_context_driver_vulkan.cpp` | `volkInitializeCustom()` with the interposer's proc address; `StreamlineVK::finalize()` in the destructor. |
 | `drivers/vulkan/rendering_device_driver_vulkan.cpp/.h` | `set_physical_device()` once the device exists; `command_buffer_get_vulkan_handle()`. |
 | `servers/rendering/renderer_rd/effects/dlss.h/.cpp` | Super resolution and frame generation as renderer-side effects. |
+| `servers/rendering/renderer_rd/shaders/effects/dlss_reactive.glsl` | The reactive mask copy. Globbed by the effects `SCsub`, so nothing registers it. |
+| `servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp/.h` | The `SCALE_DLSS` branch that fills the effect's parameters, and the reactive mask's `RB_SCOPE_DLSS` texture. |
+| `servers/rendering/renderer_rd/storage_rd/render_scene_data_rd.cpp` | The previous frame's `main_cam_inv_view_matrix`, so billboards produce a motion vector. A stock Godot bug, not Streamline-specific. |
 | `servers/rendering/rendering_server_default.cpp` | Frame token and latency markers around the render frame. |
 | `servers/rendering/renderer_rd/renderer_scene_render_rd.cpp` | Frame generation's per-frame update, including the hudless copy. |
 | `servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h/.cpp` | The per-viewport Streamline handle and its release. |
@@ -134,9 +144,9 @@ preset nearest that scale:
 | ≥ 0.417 | Performance (0.5) |
 | below | Ultra Performance (0.333) |
 
-Inputs are the internal colour, depth and velocity buffers, plus the auto-exposure buffer when
+Inputs are the internal color, depth and velocity buffers, plus the auto-exposure buffer when
 the camera has auto exposure on; without it DLSS estimates exposure itself. The output is the
-upscaled colour buffer the engine already allocates for FSR2.
+upscaled color buffer the engine already allocates for FSR2.
 
 ### Model presets
 
@@ -152,13 +162,11 @@ be five entries that do nothing.
 
 **Nothing reads back which model is actually running.** `sl::DLSSState` carries only
 `estimatedVRAMUsageInBytes`, and every NGX preset parameter is a write-only *hint*
-(`DLSS.Hint.Render.Preset.*`). NVIDIA's own on-screen DLSS indicator knows, because it is drawn from
-inside the runtime, but it is enabled by a machine-wide registry key and exposes nothing to the
-application. So a viewport left on Default reports the preset the SDK's own header documents for its
-quality mode — K for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance — and
-says "documented default" rather than presenting it as fact, because the same header warns the
-choice "may or may not change after an OTA". Force a preset and the overlay reports it plainly,
-because then it is exactly what was handed to the runtime.
+(`DLSS.Hint.Render.Preset.*`). So a viewport left on Default reports the preset the SDK's own header
+documents for its quality mode — K for DLAA, Quality and Balanced, M for Performance, L for Ultra
+Performance — and says "documented default" rather than presenting it as fact, because the same
+header warns the choice "may or may not change after an OTA". Force a preset and the overlay reports
+it plainly, because then it is exactly what was handed to the runtime.
 
 The one thing that does report the model authoritatively is NVIDIA's on-screen DLSS indicator,
 which the runtime draws into the upscaled image from inside `nvngx_dlss.dll` — where the choice is
@@ -177,14 +185,13 @@ preset-shaped; and `sl.dlss`'s own debug HUD prints mode, viewport, runtime and 
 (`dlssEntry.cpp:84-91`, filled at `:772-775`) — NVIDIA's own overlay, with full access to the
 plugin's state, cannot print a preset letter either, because the plugin does not know it.
 
-
 ### The editor overlay
 
 **View → View Information** in the 3D viewport gains two lines whenever DLSS is the upscaler that
 actually ran:
 
 ```
-DLSS: 1720 × 720 → 3440 × 1440 (50%)
+DLSS: 2304 × 964 → 3440 × 1440 (67%)
 Quality, preset K (documented default)
 ```
 
@@ -195,38 +202,51 @@ did rather than what it was asked to do. That distinction is the point: a DLSS r
 FSR 2 wherever DLSS cannot run, and the old `Size:` line would have gone on reporting the requested
 scale as though it had been honored. It now uses the same authoritative number.
 
-### DLSS gets no reactive mask, and the obvious way to give it one blacks out the frame
+### The reactive mask, and why it ships off
 
-Godot builds a reactive mask every frame an upscaler runs -- the colour buffer's **alpha channel**,
+Godot builds a reactive mask every frame an upscaler runs -- the color buffer's **alpha channel**,
 which is zeroed across the opaque pass by `pass_alpha_multiplier` and then accumulates transparent
 coverage -- and FSR2 is handed it at `render_forward_clustered.cpp:3098` as
-`get_internal_texture_reactive()`. DLSS is handed four tags and not this one, so alpha-blended
-surfaces ghost worse under DLSS than under FSR2 at the same scale. That much is real.
+`get_internal_texture_reactive()`. Unless `rendering/streamline/reactive_mask` is on, DLSS is not
+handed it, so at the shipped defaults alpha-blended surfaces ghost worse under DLSS than under FSR2
+at the same scale. That much is real.
 
 **Tagging that same RID as `kBufferTypeBiasCurrentColorHint` does NOT fix it. It was tried on
 hardware and every opaque pixel went black**, leaving only alpha-blended surfaces and the HUD
-visible, with FSR2 unaffected.
+visible. FSR2 was unaffected because it never goes through Streamline's tagging at all -- the engine
+binds that same view itself, as an ordinary shader resource in its own dispatch.
 
-The reason is that `get_internal_texture_reactive()` is not a texture, it is an **alpha-swizzled
-view of the colour buffer**, and `texture_from_rid` resolves `DRIVER_RESOURCE_TEXTURE` to the
-underlying `VkImage` (`streamline_vk.cpp:914`). So the colour tag and the reactive tag carry the
-*same image handle*. With `eUseFrameBasedResourceTagging` in the preference flags
-(`streamline_vk.cpp:671`) the two collide, and DLSS samples the swizzled view as its input colour --
-which is alpha replicated to all four channels, and alpha is zero everywhere the opaque pass drew.
-The symptom reads like a lighting or exposure failure and is neither.
+**The rule this establishes is more general than the one RID that broke it: anything tagged for
+Streamline has to be a texture of its own.** A tag names its resource by its native `VkImage`, and
+`RenderingDeviceDriverVulkan::get_resource_native_handle` answers `DRIVER_RESOURCE_TEXTURE` with
+`vk_view_create_info.image` -- a field that a swizzled view and a texture *slice* alike inherit
+unchanged from the texture they were carved out of, because `texture_create_shared_from_slice`
+copies the parent's whole create-info and replaces only the view. So parent, view and slice all
+resolve to one handle through `texture_from_rid` (`streamline_vk.cpp`), and with
+`eUseFrameBasedResourceTagging` in the preference flags (`streamline_vk.cpp:671`) two tags built
+from any of them name the same resource and collide.
 
-**The proper version is implemented and ships OFF**, behind `rendering/streamline/reactive_mask`.
-`effects/dlss_reactive.glsl` copies the colour buffer's alpha into an `R8_UNORM` texture of its own
-at the internal size, and that texture -- a distinct `VkImage` -- is what carries the tag. It costs
-one full screen single channel copy per frame while enabled.
+`get_internal_texture_reactive()` is the instance that cost a frame: it is not a texture but an
+**alpha-swizzled view of the color buffer**, so the color tag and the reactive tag carried the same
+image handle, and DLSS sampled the swizzled view as its input color -- which is alpha replicated to
+all four channels, and alpha is zero everywhere the opaque pass drew. The symptom reads like a
+lighting or exposure failure and is neither.
 
-It is off by default because **nothing in this repository can exercise it**: the Streamline driver
+**The proper version is implemented and ships OFF**, behind `rendering/streamline/reactive_mask`,
+and **has never been run on hardware**. `effects/dlss_reactive.glsl` copies the color buffer's
+alpha into an `R8_UNORM` texture of its own at the internal size, and that texture -- a distinct
+`VkImage` -- is what carries the tag. The setting is read every frame, so it can be flipped in game
+without a restart; the texture lives in the `RB_SCOPE_DLSS` scope and is freed when the render
+buffers are next configured, not when the setting goes off. It costs one full screen single channel
+copy per frame while enabled.
+
+It stays off because **nothing in this repository can exercise it**: the Streamline driver
 files compile to empty objects anywhere but Windows, so CI type-checks them and no test runs them.
 The shader itself is validated -- `glslangValidator` compiles it to SPIR-V and reflects a 16 byte
 push constant block matching the `static_assert` -- but that says nothing about whether DLSS likes
-the tag. Turn it on, look at transparency in motion, and turn it back off if anything is worse.
-
-Do not re-attempt the view.
+the tag. Step 7 of section 9 is how to answer that on a machine that can. Do not re-attempt the
+view: the first attempt was reasoned as additive and low risk, both of which were claims about the
+code, and the failure was in the runtime.
 
 ---
 
@@ -250,7 +270,6 @@ factory proxy, and its own worked example for the multiple-swapchain case reache
 `slSetFeatureLoaded` instead. And a game that presents more than one window is still unhandled:
 `RenderingDeviceDriverVulkan` batches every window's swapchain into a single `vkQueuePresentKHR`,
 so there is no per-window native/proxy split to route around it.
-
 
 One switch for the whole application, not a per-viewport setting, because it takes over the swap
 chain. It runs nowhere in the frame the engine records: the interpolation happens inside the
@@ -310,6 +329,11 @@ for a sign or scale error:
   calls normalized, so `mvecScale` is `{1, 1}` and `motionVectorsJittered` is false.
 - **Depth** is reverse-Z, so `depthInverted` is true.
 - **Camera motion** is included in the motion vectors, so `cameraMotionIncluded` is true.
+- **A billboard's previous-frame position** is oriented with the previous camera:
+  `RenderSceneDataRD::update_ubo` writes `prev_cam_transform` into the previous frame UBO's
+  `main_cam_inv_view_matrix`, a field the `memcpy` that seeds that UBO had left holding the CURRENT
+  camera. Without it a billboard reports almost no motion however fast the camera turns, and DLSS
+  smears it.
 - **Matrices** cross as a straight copy. Godot stores columns and multiplies as `M * v`;
   Streamline stores rows and multiplies as `v * M`. Those are transposes of each other in both
   convention and storage, and the two cancel.
@@ -368,9 +392,10 @@ not against 3440x1440.
 
 ## 8. Costs
 
-- Super resolution: no engine-side allocation beyond what FSR2 already needs. Streamline
-  allocates its own history under the viewport handle.
-- Frame generation: one full-resolution colour texture per running viewport, and one
+- Super resolution: no engine-side allocation beyond what FSR2 already needs, unless the reactive
+  mask is on, which adds one R8 texture at the internal size. Streamline allocates its own history
+  under the viewport handle.
+- Frame generation: one full-resolution color texture per running viewport, and one
   full-resolution copy per frame, both only while it runs. Streamline allocates the
   interpolation resources and an optical flow surface of its own.
 - Neither costs anything when Streamline is off: the singleton does not exist, and every entry
@@ -381,15 +406,15 @@ not against 3440x1440.
 **None of this can be checked from a Linux checkout.** Streamline is Windows-only and needs an
 NVIDIA GPU, so every step below wants a Windows binary on the machine that has one. The Windows job
 in `.github/workflows/runner.yml` is the route to that binary — this project builds through GitHub
-Actions rather than a local toolchain — and the artifact it uploads is what to test with.
+Actions rather than a local toolchain. The `windows-editor` artifact is what to test super
+resolution and the reactive mask with; frame generation never runs in the editor, so steps 8 and 9
+need a game exported against the `windows-template` artifact as a custom release template.
 
-**Steps 1 to 6 below are answered.** Super resolution loads, initializes and renders a clean image
-at DLSS Quality on the RTX 5090 at 3440x1440 fullscreen. They are kept as the diagnostic ladder for
-a configuration that has not been tried — another GPU, a different quality mode, windowed
-presentation — and because each one names the artifact its own failure produces, which is how to
-attribute a new one. Start at step 7 for frame generation, which is the remaining open item and is
-now reachable: it refuses without motion vectors, and super resolution running is what supplies
-them on a project that uses SMAA rather than TAA.
+**Steps 1 to 6 below are answered** by the run described at the top of this document. They are kept
+as the diagnostic ladder for a configuration that has not been tried — another GPU, a different
+quality mode, windowed presentation — and because each one names the artifact its own failure
+produces, which is how to attribute a new one. **Steps 7 to 9 are the two open items**, the reactive
+mask and frame generation.
 
 In roughly the order a failure would be easiest to diagnose:
 
@@ -414,10 +439,19 @@ In roughly the order a failure would be easiest to diagnose:
    transpose convention in section 5.
 6. **Jitter.** If the image is stable but soft, or shimmering at native scale, check the sign of
    the jitter offset against DLSS's convention.
-7. **Frame generation starting.** It refuses through a status bitfield rather than by failing a
+7. **The reactive mask.** Turn `rendering/streamline/reactive_mask` on with super resolution
+   running — it is read every frame, so it toggles in place — and watch an alpha-blended surface
+   cross the frame; world-space label text is the case it was written for. Success is that surface
+   holding its edge instead of dragging a trail. Three failures to tell apart: **anything happening
+   to opaque pixels at all** means the tag landed on something other than the mask's own texture —
+   the failure section 3 describes — and is the reason to turn it straight back off; **transparency
+   going noisy or flickering rather than sharper** means the hint is too strong, and its scale is a
+   fixed `1.0` at the call site with no setting behind it; **no difference either way** means the
+   tag is not reaching DLSS, which `sl.log` will say more about than the engine's own output.
+8. **Frame generation starting.** It refuses through a status bitfield rather than by failing a
    call, so the engine reads that back each frame and warns once with the reason in words. The
    common refusals are Reflex not running and the output resolution being too low.
-8. **Interface smearing across generated frames** is the known UI alpha gap in section 4, not a
+9. **Interface smearing across generated frames** is the known UI alpha gap in section 4, not a
    bug in the hudless copy.
 
 Signatures worth recognizing:
@@ -427,8 +461,9 @@ Signatures worth recognizing:
   `VK_ERROR_INITIALIZATION_FAILED` arrives from a before-hook, and only `sl.dlss_g` registers one.
   Each retry also pays a full `_flush_and_stall_for_all_frames()`, so it is expensive as well as
   noisy.
-- **Every DLSS feature unavailable while Reflex is available** is NGX declining to initialize; see
-  the identity note in section 1.
+- **A ghosting raytraced shadow is not a DLSS problem.** That denoiser accumulates over time in
+  both antialiasing configurations, so its own `denoiser/*` settings are the knob and not the
+  upscaler's; the tuning list in `docs/rt_shadows/FORK_GUIDE.md` says which one.
 - Streamline's own log is warnings and errors by default now, written to `sl.log` in the project's
   user data directory. It is the only place Streamline's side of a refusal is recorded, and it is
   worth reading before forming a theory from the engine's own messages.

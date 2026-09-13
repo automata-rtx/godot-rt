@@ -1864,9 +1864,11 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes", PROPERTY_HINT_RANGE, "1,5,1"), 3);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames", PROPERTY_HINT_RANGE, "1,64,1"), 32);
 	// How narrowly the spatial filter may work where a penumbra was measured. At
-	// or below one pixel the floor lets no neighbor in, because the nearest tap
-	// already sits a pixel away, so contact shadows stay crisp; raising it trades
-	// that crispness for smoother penumbrae.
+	// the default of one a contact shadow is filtered in no a-trous pass at all and
+	// reaches the screen as traced; raising it filters those pixels and fringes
+	// every contact edge in the same move, two pixels wide at 2.0. Which end you
+	// want depends on whether contact shadows read noisy or read crisp;
+	// docs/rt_shadows/FORK_GUIDE.md prints the fringe at each value.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels", PROPERTY_HINT_RANGE, "1,8,0.1,suffix:px"), 1.0);
 	// How far a reprojected history sample may sit outside what this frame sees
 	// around it, in standard deviations, before it is pulled back in. This is
@@ -1969,18 +1971,16 @@ ProjectSettings::ProjectSettings() {
 	// Directory holding sl.interposer.dll and the sl.*.dll plugins. Empty means the directory
 	// the executable is in, which is where an exported game's own libraries sit.
 	GLOBAL_DEF_RST(PropertyInfo(Variant::STRING, "rendering/streamline/binary_path", PROPERTY_HINT_GLOBAL_DIR), "");
+	// Gives DLSS a reactive mask, which stops alpha-blended surfaces being reprojected
+	// as though they were the opaque geometry behind them. Off, and unverified: the
+	// Streamline driver files compile to nothing off Windows, so nothing in this
+	// repository can exercise a tagging change, and the first attempt at this one
+	// blacked out the frame. Live. docs/streamline/INTEGRATION.md, section 3, has
+	// what it costs, what went wrong before, and how to try it on hardware.
+	GLOBAL_DEF("rendering/streamline/reactive_mask", false);
 	// GUID issued by NVIDIA for this title. Without one, Streamline identifies the application
 	// by engine name and version instead, which is enough for development but not for the
 	// per-title tuning NVIDIA ships over the air.
-	// Hands DLSS the reactive mask the renderer already builds for FSR2, which
-	// stops alpha-blended surfaces being reprojected as though they were the opaque
-	// geometry behind them. OFF by default and deliberately so: nothing in this
-	// repository can exercise a Streamline tagging change -- the driver files
-	// compile to nothing off Windows -- and the first attempt at this blacked out
-	// the frame. Turn it on, look at a scene with transparency in motion, and turn
-	// it back off if anything is worse. Live; costs one full screen single channel
-	// copy per frame while on.
-	GLOBAL_DEF("rendering/streamline/reactive_mask", false);
 	GLOBAL_DEF(PropertyInfo(Variant::STRING, "rendering/streamline/project_id"), "");
 	GLOBAL_DEF_RST(PropertyInfo(Variant::BOOL, "rendering/streamline/verbose_logging"), false);
 	// DLSS frame generation. Unlike super resolution, which is a viewport scaling mode, this is

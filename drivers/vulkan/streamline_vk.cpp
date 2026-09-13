@@ -911,6 +911,13 @@ StreamlineVK::Texture StreamlineVK::texture_from_rid(RID p_texture, TextureUse p
 
 	RenderingDevice *rendering_device = RenderingDevice::get_singleton();
 	ERR_FAIL_NULL_V(rendering_device, texture);
+	// `image` is the underlying VkImage and is NOT unique to this RID: a texture slice or a
+	// swizzled view resolves through DRIVER_RESOURCE_TEXTURE to its PARENT's image
+	// (`RenderingDeviceDriverVulkan::get_resource_native_handle` hands back
+	// `vk_view_create_info.image`) and differs only in the view fetched below. Two Streamline
+	// tags built that way name the same resource and collide -- tagging an alpha-swizzled view
+	// of the color buffer as the reactive mask blacked the frame out on hardware. Anything
+	// tagged has to be a texture of its own.
 	texture.image = rendering_device->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE, p_texture);
 	texture.view = rendering_device->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE_VIEW, p_texture);
 	texture.format = uint32_t(rendering_device->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE_DATA_FORMAT, p_texture));
@@ -1144,8 +1151,8 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 	const sl::Extent motion_vectors_extent = to_sl_extent(p_inputs.motion_vectors);
 	const sl::Extent output_extent = to_sl_extent(p_inputs.output);
 
-	// These four are read and written inside this one `slEvaluateFeature` and nowhere else, so
-	// they only have to survive until it returns.
+	// Every one of these is read and written inside this one `slEvaluateFeature` and nowhere
+	// else, so they only have to survive until it returns.
 	LocalVector<sl::ResourceTag> tags;
 	tags.push_back(sl::ResourceTag(&color, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &color_extent));
 	tags.push_back(sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilEvaluate, &depth_extent));
@@ -1157,9 +1164,7 @@ bool StreamlineVK::super_resolution_evaluate(uint64_t p_command_buffer, uint32_t
 	if (p_inputs.reactive.is_valid()) {
 		// Which pixels the motion vectors do not describe, so the model leans on the
 		// current frame there instead of dragging history across them. The renderer
-		// already computes this for FSR2; DLSS needs it copied into an image of its
-		// own first, because a view of the colour buffer shares that buffer's
-		// VkImage and the two tags collide.
+		// writes this into a texture of its own; `texture_from_rid` says why it has to.
 		tags.push_back(sl::ResourceTag(&reactive, sl::kBufferTypeBiasCurrentColorHint, sl::ResourceLifecycle::eValidUntilEvaluate, &reactive_extent));
 	}
 

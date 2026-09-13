@@ -57,15 +57,15 @@ report true from the new validity query.
 - **There is no refit or compaction entry point.** Every "update" of a BLAS is a full `blas_build`
   on the same RID.
 - **`blas_create` resolves a geometry's vertex buffer through `vertex_buffer_owner` ALONE**
-  (`rendering_device.cpp:322`), so any buffer you hand it must come from `vertex_buffer_create`. An
+  (`rendering_device.cpp:323`), so any buffer you hand it must come from `vertex_buffer_create`. An
   RID from `storage_buffer_create` lands in a different owner (`:1509`), fails the lookup, and
   reports `Parameter "vertex_buffer" is null.` -- once per surface per frame, forever, with the
   build silently producing nothing. This bit this fork: the buffer holding dequantized positions for
   compressed meshes was a storage buffer, so no compressed mesh cast a raytraced shadow at all.
   `vertex_buffer_create` takes the same device-address and build-input creation bits, and
-  `uniform_set_create` accepts a vertex buffer for a storage binding (`:4752-4754`), so a buffer a
-  compute pass writes and the BLAS reads should simply be a vertex buffer with
-  `BUFFER_CREATION_AS_STORAGE_BIT`.
+  `uniform_set_create` accepts a vertex buffer for a storage binding provided it carries storage
+  usage (`:4756`), so a buffer a compute pass writes and the BLAS reads should simply be a vertex
+  buffer with `BUFFER_CREATION_AS_STORAGE_BIT`.
 - The Vulkan container targets SPIR-V 1.4 with a Vulkan 1.1 client -- exactly the minimum
   `GL_EXT_ray_query` needs. Check `RenderingShaderContainerFormatVulkan::get_shader_spirv_version`.
 - **Creating an acceleration structure is not thread-safe; building one is guarded.** `blas_build`
@@ -157,8 +157,16 @@ with the setting on a mesh's vertex buffer is created with `DEVICE_ADDRESS` and 
   index is allocated for motion vectors, so both buffers of the pair must come from it.
 
   One further buffer takes the same rule but does not exist until stage 2: the expanded `float32x3`
-  position buffer the dequantize pass writes is created with the device address and AS-build-input
-  bits, because it, not the compressed source, is what the build reads.
+  position buffer the dequantize pass writes, because it, not the compressed source, is what the
+  build reads. Create it with **`vertex_buffer_create`** and **all three** bits -- device address,
+  AS build input, and `BUFFER_CREATION_AS_STORAGE_BIT`. Both the function and that third bit are
+  load bearing, and they fail differently. The function: `blas_create` resolves a geometry's vertex
+  buffer through `vertex_buffer_owner` alone (`rendering_device.cpp:323`), so a
+  `storage_buffer_create` RID fails that lookup and no compressed mesh casts a shadow at all --
+  stage 0 has the symptom, and this fork shipped it. The bit: `uniform_set_create` refuses a vertex
+  buffer that lacks storage usage (`:4756`), which `storage_buffer_create` set unconditionally
+  (`:1465`) where `vertex_buffer_create` sets it only when asked, so leave it out and the dequantize
+  pass cannot bind its own output.
 - `_uses_raytraced_shadows()` must be a separate virtual, because the RT objects live on the shared
   RD base class. Without it the Mobile renderer looks capable, and its lights lose their shadow maps
   without gaining a mask.
@@ -340,8 +348,8 @@ an empty channel instead of quietly losing its shadow; that floor is also why fa
 energy to zero releases neither its channel nor its rays, and `visible = false` is what does. A
 directional light does not attenuate, so it scores flat and outranks a lamp on any surface the lamp
 is not close to, which is the right way round outdoors -- and it costs nothing to lose the channel at
-the far end of its range, because the shadow has faded out by then anyway. **There is no colour or
-luminance term**, and the record carries no colour: a channel is worth the same whatever the light's
+the far end of its range, because the shadow has faded out by then anyway. **There is no color or
+luminance term**, and the record carries no color: a channel is worth the same whatever the light's
 hue.
 
 Insert by strict `>` into a four-entry array held in descending score, the displaced entry cascading
@@ -427,7 +435,7 @@ history. If nothing survives, that is the disocclusion path: the history length 
 accumulator's alpha comes out 1, and the pixel takes this frame's raw trace.
 
 - **Reproject with the camera, not motion vectors.** The velocity buffer is written by the opaque
-  colour pass, which runs *after* the mask is needed, so it is a frame stale; under MSAA it is only
+  color pass, which runs *after* the mask is needed, so it is a frame stale; under MSAA it is only
   resolved when TAA or an upscaler asks. Camera reprojection is exact for static geometry, and
   geometry that moved on its own is then rejected by the surface test rather than smeared.
 - The `w` of a reprojected position is the previous clip position scaled by the reciprocal of view
@@ -441,7 +449,7 @@ accumulator's alpha comes out 1, and the pixel takes this frame's raw trace.
   smear.
 - Channel assignments are per pixel and **cannot be interpolated**: filter the temporal history by
   hand, accepting or rejecting each bilinear tap on its own, and reject a-trous taps whose index
-  assignment differs from the centre's.
+  assignment differs from the center's.
 - **Both passes return early on the same two tests, and neither one looks at the visibility
   values.** A depth of zero is sky under reverse-Z; an index of `SLOT_NONE` in all four channels
   means no raytraced light reaches the pixel, which the trace leaves fully lit in every channel.
@@ -496,12 +504,14 @@ Three defects each squeeze or stretch the penumbra, and each is invisible withou
   counts, so the shadow got *sharper* as the sample count rose. Trace every sample. Skipping settled
   work is still worth having, but it has to learn the penumbra is absent from somewhere other than
   the rays it is trying to avoid.
-- **A variance clamp needs a floor.** With a handful of rays per pixel the 3x3 neighborhood used for
-  the clamp agrees outright in the shallow ends of a penumbra -- at one ray per light and a true
-  visibility of 0.95, about two frames in three -- so the measured spread is exactly zero and the
-  history is pinned to that binary answer. It removed a third of every penumbra. Floor the spread
-  with the standard error the ray counts carry, with two pseudo-counts so the floor cannot collapse
-  with the spread.
+- **A variance clamp needs a floor, and its sampling noise subtracted.** The raw neighborhood spread
+  fails at both ends: it collapses to exactly zero wherever a handful of binary taps happen to
+  agree, pinning the history to that answer and removing a third of every penumbra, and it charges
+  the whole per-tap binomial scatter to the signal, which is large enough that the clamp can never
+  fire at all. Floor it with the standard error the ray counts carry, two pseudo-counts so the floor
+  cannot collapse with it; subtract the predictable per-tap term; and make the radius the remaining
+  spatial variance plus the uncertainty in the mean. `FINDINGS.md` has the decomposition and the
+  numbers, which `shadow_validation/denoiser_sim.py --radius` reproduces.
 - **An 8-bit accumulator that re-reads its own output must round stochastically.** Once the step the
   accumulator wants is under half a quantization level it stops moving, and not symmetrically: rare
   large steps land and frequent small ones do not, so the value ratchets. It made the stock penumbra
@@ -519,12 +529,12 @@ because it describes each light's penumbra:
 | reach, per channel | `clamp(1 - length(vec2(x, y)) * step_size / reach_pixels, 0, 1)` |
 
 The center tap takes `KERNEL[0] * KERNEL[0]` and none of the other three; a tap is dropped outright,
-before any of this, if its depth is zero or its index differs from the centre's. `depth_sigma` and
+before any of this, if its depth is zero or its index differs from the center's. `depth_sigma` and
 `normal_sigma` are fork constants pushed from C++ with no project setting behind them, because the
 reach term is what the look is tuned with.
 
 The depth term runs on **raw reverse-Z depth buffer values, with no plane fit and no
-linearisation**. Reverse-Z is proportional to the reciprocal of view distance, so a relative
+linearization**. Reverse-Z is proportional to the reciprocal of view distance, so a relative
 difference in depth is already a relative difference in distance for every projection of this
 family, and no tap has to be reconstructed into view space to find out. Orientation is not folded
 into that term; it is the separate normal power beside it. Do not assume this is the same test as
@@ -532,13 +542,19 @@ the one in this fork's occlusion denoise and swap either for the other: that fil
 each tap and weights it by its distance from the shaded point's own plane, for the reason its own
 header comment gives -- a relative depth difference has no notion of orientation, so on a plane seen
 at a glancing angle it discards neighbors lying on the very plane being shaded. Normals here are
-compared only against the centre's, so the pass can use the pre-pass encoding (`xyz * 2 - 1`)
+compared only against the center's, so the pass can use the pre-pass encoding (`xyz * 2 - 1`)
 directly and never needs the world-space rotation the trace does.
 
 **There is no variance term and no variance buffer.** The filter's width comes from the traced
 occluder distance, which is a measurement of the penumbra rather than an estimate of the noise, so
 there is nothing here corresponding to SVGF's variance channel. The one spread this system does
-measure -- the 3x3 moments -- belongs to the temporal clamp, not to the spatial filter.
+measure -- the temporal clamp's neighborhood moments -- belongs to that pass, not to this one.
+
+**The clamp's moment gather is 3x3 or 5x5**, gated per pixel on
+`(sample_count < 4.0 && clamp_sigma <= 1.0) ? radius 2 : radius 1`. The wider gather trades output
+noise against bias at a narrow penumbra's shoulder, and the gate takes that trade only where a tight
+window has already paid most of the bias. `FINDINGS.md` has the table and the two alternatives it
+refused; `shadow_validation/denoiser_sim.py`, with no flag and with `--kernels`, prints the figures.
 
 **The noise source is baked into the trace shader.** A 32x32 void-and-cluster (Ulichney) blue noise
 mask, as `const uint BLUE_NOISE[256]`, four 8-bit values packed per 32-bit word. There is no
@@ -580,9 +596,12 @@ ordinary jittered stratification and is still the better estimator.
 - **Decode out of sqrt space everywhere it is read.** Averaging roots and squaring darkens every
   penumbra by Jensen's inequality; one missed decode lightens every umbra almost invisibly unless
   you measure it. (NVIDIA's SIGMA filters *in* sqrt space on purpose; this system does not.)
-- `min_filter_pixels` below 1.0 is meaningless and above it grays everything: the kernel's nearest
-  tap sits at exactly 1.0 px, so a floor of 1.5 leaves it at a third weight and turns a perfect step
-  edge into 0.863/0.137 -- a two-pixel fringe on every contact shadow.
+- `min_filter_pixels` at its default of 1.0 equals the first a-trous pass's step of one pixel, and
+  every pass early-outs where no channel's reach survives a single step, so a pixel whose penumbra
+  is narrower than a pixel is filtered in no pass at all -- which is what keeps a contact edge
+  exact. Raising it buys those pixels spatial filtering and fringes every contact edge in the same
+  move; section 6 of `FORK_GUIDE.md` has that trade and the fringe widths, `rt_shadow_atrous.glsl`
+  the mechanism.
 - At one sample a ray that misses reports **no** penumbra, so sizing the filter from the center pixel
   alone smooths the shadowed half of a penumbra and leaves the lit half speckled. Take the widest
   penumbra any immediate neighbor reports; at a real contact edge every neighbor reports zero and
@@ -595,13 +614,11 @@ ordinary jittered stratification and is still the better estimator.
   formulas multiply by the emitter size and throw the distance away, so the accuracy it bought
   cannot reach the picture.
 - Both floors (`min_filter_pixels` and the history-fill widening) must apply **only where a penumbra
-  was actually measured**, or a pixel a light reaches but no ray hit is dragged into the tap loop at
-  that floor -- up to the eight pixels the setting allows -- and takes
-  thirty-one frames to recover -- every camera turn does that to the newly revealed screen edge.
-  The a-trous also skips the whole tap loop where no channel's reach survives a single step, which
-  catches two common cases at once: a pixel a light reaches but no ray hit, so there is no blocker
-  to measure a penumbra to, and a contact shadow sitting at the default one-pixel floor, where the
-  first pass's step already equals the reach.
+  was actually measured**. A pixel a light reaches but no ray hit has no blocker to measure one to;
+  apply a floor there anyway and it is dragged into the tap loop at up to the eight pixels the
+  setting allows and takes thirty-one frames to recover, which is what every camera turn does to the
+  newly revealed screen edge. Restricted correctly its reach is zero, so the same early-out skips
+  it -- in a sunlit frame that is most of the screen.
 - Ray offsets come from the light's own bias properties **scaled down** -- a shadow map's bias clears
   a depth texel, a ray only clears the error in a position reconstructed from depth. A directional
   light defaults normal bias to 2.0 where a lamp defaults to 1.0, so it needs half the scale or the
@@ -789,7 +806,7 @@ at frame rate, and shadows survive the session.
   nothing that depends on where an instance sits in the array, so two orderings of the same
   instances describe the same scene and the spatial index's iteration order must not read as a
   change. Seed the accumulator with the instance count, and put each per-instance hash through the
-  32-bit finaliser (`hash_fmix32`) before adding it, or the sum degenerates into an additive
+  32-bit finalizer (`hash_fmix32`) before adding it, or the sum degenerates into an additive
   collision.
 - Hash exactly three fields of each instance record, in this order: the **BLAS handle**, the **8-bit
   instance mask**, and the **full transform** (nine basis components, then the three origin
@@ -1070,12 +1087,8 @@ cascade map's uniform 0/1/1 -- the traced sun's penumbra grows with the gap it c
   rays entirely once that reaches 1.0. The `+ 0.0001` is the trace's guard against equal smoothstep
   edges; the CPU side's is clamping the fade-start fraction to 0.999.
 
-- **Do not tile-cull directional lights with a sphere around the camera.** Radial distance is always
-  at least the view depth the fade is keyed on, so such a test rejects tiles the per-pixel check
-  accepts and the corners of the frame lose the sun well before the fade starts. Admit every
-  directional light with no geometric test at all, and claim them before the lamps so that a crowded
-  tile -- one past the 128-candidate shared-memory list -- drops lamps rather than the sun. There
-  can be at most eight directional lights, so that pass cannot fill the list by itself.
+- Tile-level admission of a directional light belongs to stage 4 (Trace and mask) and is unchanged
+  here: no geometric test, claimed ahead of the lamps, and never a sphere around the camera.
 
 - **Softness follows the `softshadow_angle` convention so both paths agree at the default
   `softness_scale`** -- the trace carries the same tangent of the angular radius, scaled only by
@@ -2200,8 +2213,9 @@ these in passing; this is the checklist.
 Default a virtual where a renderer with no raytraced shadows would only be repeating itself; make
 it pure where it changes behavior a backend cannot sensibly guess at.
 
-`RenderSceneDataRD` also gains an `alpha_pass` bool that reaches the shader as a scene data flag;
-see stage 15. It is not on this table because nothing else implements that class.
+`RenderSceneDataRD` also gains an `alpha_pass` bool that reaches the shader as a scene data flag
+(stage 15), and its previous-frame UBO carries one changed field (the seams table below). Neither is
+on this table because nothing else implements that class.
 
 ## Reference values
 
@@ -2221,7 +2235,7 @@ that guesses at these is wrong in ways that read as the system working.
 | `denoiser/enabled` | bool | `true` | |
 | `denoiser/spatial_passes` | int | `3` | 1–5 |
 | `denoiser/temporal_frames` | int | `32` | 1–64 |
-| `denoiser/min_filter_pixels` | float | `1.0` | 0–8 |
+| `denoiser/min_filter_pixels` | float | `1.0` | 1–8; the read clamps 0–8, so only a script goes lower |
 | `denoiser/history_clamp_sigma` | float | `2.0` | 0–8; `0` disables |
 | `denoiser/lag_response` | float | `1.0` | 0–1; `0` restores pre-lag behavior |
 | `directional/enabled` | bool | `false` | live, snapshotted once per frame |
@@ -2459,6 +2473,9 @@ be proposed again otherwise:
 - **Feeding the a-trous result back into the temporal history.** It compounds without bound; a two
   pixel kernel becomes a twenty pixel smear and contact hardening is the first thing lost. The
   history stores the accumulation, never the filtered output.
+- **Widening the clamp's moment gather unconditionally, or choosing its width per pixel.** Stage 6
+  has the gate that shipped; `FINDINGS.md` has why a weighted kernel and a data-driven choice are
+  both refused.
 - **Deriving pass cost by subtracting whole-frame framerates.** It produced a fixed-overhead figure
   that three direct measurements later refuted outright.
 
@@ -2472,6 +2489,8 @@ format Godot revises between versions. Check these first.
 | Seam | What to verify on the new engine |
 | --- | --- |
 | `RD::AccelerationStructureGeometry` / `blas_build` | Still carries `vertex_buffer`/`offset`/`stride`/`count`/`format` plus index fields, and `blas_build` is still a full in-place rebuild with no refit. |
+| `blas_create`'s vertex buffer lookup | Still `vertex_buffer_owner` and nothing else (`rendering_device.cpp:323`), so every buffer a geometry is built from must come from `vertex_buffer_create` -- including the dequantized position buffer a compute pass writes, which then also needs `BUFFER_CREATION_AS_STORAGE_BIT`. A `storage_buffer_create` RID fails the lookup, prints `Parameter "vertex_buffer" is null.` once per surface per frame and builds nothing. That cost a debugging session here; stages 0 and 1 have the rest. |
+| `RenderSceneDataRD`'s previous-frame UBO | The fork stores `prev_cam_transform` into `main_cam_inv_view_matrix` where upstream stores the current camera's, so a billboard's previous-frame vertex evaluation uses the camera basis it actually had (`storage_rd/render_scene_data_rd.cpp`). If upstream rewrites that copy or reuses the field, billboards report almost no motion of their own and silently ghost again under DLSS or any other temporal consumer, with nothing pointing at the cause. |
 | Mesh vertex layout | Positions still a contiguous `float32x3` block at offset 0 ahead of the attribute block; compressed decode still `pos * aabb.size + aabb.position`. |
 | `MeshInstance::Surface` (`vertex_buffer[2]`, `current_buffer`, `last_change`) | `last_change` still set on **every** surface `update_mesh_instances()` dispatches, not only on a buffer flip. |
 | `LightData` / `DirectionalLightData` trailing `pad[2]` | Still unclaimed padding. If upstream took it, find new space and keep `sizeof` identical. This fork appended a whole `vec4` for `sss_strength` rather than a bare float, because the `vec4` array after it needs its 16 byte alignment and one loose float shifts every shadow matrix by four bytes on one side only. Of the other three slots, `rt_caster_mask` and `rt_softshadow_angle` are now taken and one `pad_sss` float remains. |
@@ -2486,7 +2505,7 @@ format Godot revises between versions. Check these first.
 | `RB_SCOPE_SSAO` / `RB_FINAL` format and usage | Still `R8_UNORM` with sampling and storage, and still what the forward shader samples for occlusion. Both estimators write it; if upstream changes it, change both. |
 | `Environment::_validate_property` forward_plus branch | The `else` this fork added is still reachable, i.e. upstream has not put its own `return` in front of it. |
 | `re-spirv` `SpvIsSupported()` | Still excludes ray-query opcodes so those modules bail out rather than being miscompiled. Watch stderr for the "not supported yet" line. |
-| C++ push constant struct vs its GLSL block | Sizes match **exactly**, trailing padding included. The reflected size is the block's exact end, not rounded up to sixteen, so a pad on one side alone breaks it. RenderingDevice then rejects the whole push and refuses the dispatch -- but only under `DEBUG_ENABLED`, so this is fatal in the editor and invisible in a shipped game. The pass silently stops running and the frame shows whatever its target already held; in this fork that was an entirely black scene. **Nine** pairings, spread across `effects/rt_shadows.h`, `effects/gtao.h`, `effects/screen_space_shadows.h`, `effects/dlss.h` and `environment/rt_scene.h`. The registry listing all eight, and the way to read a block's reflected size, is the comment above the assertions in `effects/rt_shadows.h` -- keep it in step, since it is the only place they are gathered. |
+| C++ push constant struct vs its GLSL block | Sizes match **exactly**, trailing padding included. The reflected size is the block's exact end, not rounded up to sixteen, so a pad on one side alone breaks it. RenderingDevice then rejects the whole push and refuses the dispatch -- but only under `DEBUG_ENABLED`, so this is fatal in the editor and invisible in a shipped game. The pass silently stops running and the frame shows whatever its target already held; in this fork that was an entirely black scene. **Nine** pairings, spread across `effects/rt_shadows.h`, `effects/gtao.h`, `effects/screen_space_shadows.h`, `effects/dlss.h` and `environment/rt_scene.h`. The registry listing all nine, and the way to read a block's reflected size, is the comment above the assertions in `effects/rt_shadows.h` -- keep it in step, since it is the only place they are gathered. |
 | Screen space shadow light selection | `update_light_buffers` still runs before `_pre_opaque_render` reads `get_sss_light()`, and still fills `DirectionalLightData::direction` for a directional light from the light basis's **+Z** (pointing toward the light), not the `-Z` omni and spot use. If upstream unifies those two, the march runs backwards and shadows radiate away from the sun. |
 | Screen space shadow depth availability | `force_depth_pre_pass` and `finish_depth` both still take a term for this feature. It marches the pre-pass depth buffer and, unlike raytraced shadows, can be enabled with raytracing off -- where nothing else would force either. |
 | Bend's Y convention | `Projection::set_depth_correction` still negates Y (`m[5] = -1` under `flip_y`) against a positive-height Vulkan viewport. The vendored dispatch builder applies D3D's `* -0.5 + 0.5`, so the effect negates clip Y on the way in. If upstream changes the viewport or the correction, this double negation flips and the sun lands at its vertical mirror. |
@@ -2527,19 +2546,26 @@ Two harnesses do all of this already and are the place to start rather than a ne
 
 | | What it scores | How |
 | --- | --- | --- |
-| `docs/rt_shadows/shadow_validation/` | the screen space contact shadow against a raytraced reference, and `shadow_opacity` linearity | `./run.sh field`, `./run.sh probe`, `./run.sh opacity` |
+| `docs/rt_shadows/shadow_validation/` | the screen space contact shadow against a raytraced reference, and `shadow_opacity` linearity | `./run.sh probe`, `./run.sh field`, `./run.sh field_thin`, `./run.sh opacity` |
 | `docs/rt_shadows/ao_validation/` | the occlusion estimators against two CPU-traced references | `./run.sh room gtao`, then `ao_truth.py` and `ao_compare.py` |
 
 Each README carries the numbers a change must not move, and each pins its own quality tier, capture
 resolution and scene geometry rather than inheriting them -- which is how a run silently stops
 reproducing.
 
-The technique that settled most **denoiser** questions was **RMSE against a high-sample,
+The technique that settled most **spatial denoiser** questions was **RMSE against a high-sample,
 denoiser-off render of the same scene** -- one sample plus denoiser versus sixteen-sample ground
 truth. Edge-width metrics were tried first and proved unreliable there, because they were confounded
 by the two images having different noise levels. Note that this does not replace stage 6's
 acceptance gate: a rendered reference carries the same geometric defects as the render, so the three
 that stage names have to be measured against a closed form instead.
+
+Two things neither harness reaches, both set out in full in the two READMEs above, which are the
+maintained copies. Nothing rendered settles a **temporal** question, because both run with the
+denoiser off by design; `shadow_validation/denoiser_sim.py` covers those by simulation instead, and
+anything published from it must be labeled simulated. And every rig builds its geometry
+procedurally, so all of it is **uncompressed** and the compressed path into the acceleration
+structure is never walked -- which is how stage 0's `blas_create` owner bug went unseen here.
 
 For "this change costs nothing when unused", the standard is **byte-identical output**: build with
 the change and render; stash the change, rebuild, render the same scene; compare checksums. That is

@@ -73,8 +73,9 @@ layout(push_constant, std430) uniform Params {
 	// directly. One spends all of it; zero leaves only the window shortening,
 	// which is what shipped before.
 	float lag_response;
-	// Rays per light this frame, so the clamp can tell a neighborhood that
-	// genuinely agrees from one that has too few samples to disagree yet.
+	// Rays per light this frame. The clamp reads it twice: to subtract the
+	// binomial noise a tap of that many rays carries, and to decide whether the
+	// moment gather widens to 5x5, which only pays at a low sample count.
 	float sample_count;
 	uint frame_index;
 }
@@ -201,9 +202,12 @@ void main() {
 	// into that range. Where the neighborhood agrees -- open floor, deep umbra --
 	// the window is only as wide as the binomial floor below allows, and the
 	// history is pulled back to what this frame sees within a frame or two.
-	// Inside a penumbra, where one ray per pixel makes neighbors genuinely
-	// disagree, the spread is wide and accumulation proceeds untouched. The test
-	// costs nothing where it is not needed and everything where it is.
+	// Inside a penumbra the taps disagree too, but at one ray per pixel most of
+	// that is the sampling and not the shadow: the estimator below subtracts the
+	// binomial term first, so the window widens only where the taps disagree by
+	// more than sampling alone accounts for. The test costs nothing where it is
+	// not needed and everything where it is.
+
 	// How far the clamp had to move the history, kept for the accumulator below.
 	// Zero in the steady state and on every frame the clamp does not fire, so
 	// everything downstream of it is inert there.
@@ -212,50 +216,34 @@ void main() {
 	if (params.clamp_sigma > 0.0 && history_length > 0.0) {
 		// The clamp is CENTERED on the mean gathered here, so once the window is
 		// tight the accumulated value essentially IS that mean, and both the mean's
-		// noise and the mean's bias reach the screen. Widening the gather trades one
-		// against the other and the trade is only worth taking at a tight window.
+		// noise and the mean's bias reach the screen. Widening the gather to 5x5
+		// trades one for the other: twenty-five binary taps make a quieter mean than
+		// nine, and they also straddle a narrow penumbra's shoulder and average across
+		// it, which the clamp then pins the pixel to. The quieter mean only buys
+		// anything while a tap is still binary, which is the sample count half of the
+		// gate below. Both effects are tabulated, along with weighted 5x5 kernels that
+		// sit on the same tradeoff line rather than beating it, in
+		// docs/rt_shadows/shadow_validation/denoiser_sim.py -- which simulates this
+		// pass, because no capture in this repository can score a temporal filter.
 		//
-		// Every figure below is from docs/rt_shadows/shadow_validation/denoiser_sim.py,
-		// which reimplements this pass -- run it rather than re-deriving them. It is a
-		// simulation and not a render: nothing in this repository can measure temporal
-		// behavior, because the capture harness runs with the denoiser off by design.
+		// The other half of the gate is the window. At the shipped clamp_sigma of 2.0
+		// the 3x3 mean is nearly unbiased and the pixel is not pinned hard to it
+		// anyway, so widening would buy quieter output at a shoulder cost nothing asked
+		// for. At 1.0 and below the pixel IS pinned to whatever the mean is, so the 3x3
+		// is already paying most of that shoulder cost -- penumbra accuracy has been
+		// traded for ghosting control there -- and the quieter mean is what makes that
+		// trade affordable.
 		//
-		// NOISE. At one ray per light the taps are binary, so nine of them carry a
-		// standard error of 0.167 in the middle of a penumbra where twenty-five
-		// carry 0.100. Output noise follows: 5x5 is 0.62x of 3x3 at every window
-		// width, 0.197 to 0.122 at clamp_sigma 0.3 and 0.103 to 0.063 at 2.0.
+		// The choice cannot be made per pixel instead: at one ray per light a shoulder
+		// and a flat penumbra are the same measurement. Half the taps deterministically
+		// 0 and half deterministically 1 has exactly the variance of every tap being an
+		// independent p = 0.5 draw, so the decomposition below subtracts the whole of
+		// it and reports no structure to gate on.
 		//
-		// BIAS. Twenty-five taps also straddle a narrow penumbra's shoulder, and
-		// what they average across it the clamp then pins the pixel to. Peak error
-		// on a two pixel penumbra goes 0.058 to 0.188 at clamp_sigma 2.0 -- three
-		// times worse, on exactly the contact hardening the rest of this denoiser is
-		// built to protect. It shrinks with width, is gone by sixteen pixels, and on
-		// a thirty-two pixel penumbra the wider gather is simply better, 0.061 to
-		// 0.023.
-		//
-		// So gate on the window being tight as well as on the sample count. Below
-		// clamp_sigma 1.0 the 3x3 is ALREADY paying most of that shoulder cost
-		// (0.150, against 0.280 for the 5x5) because a tight window pins the value
-		// whatever it is centered on -- the project has already traded penumbra
-		// accuracy for ghosting control there, and the extra noise reduction is what
-		// makes that trade affordable. At the shipped 2.0 the 3x3 is nearly unbiased
-		// and widening would introduce a cost nothing asked for. Tightening the
-		// clamp therefore buys the better mean it needs, by itself.
-		//
-		// Weighted 5x5 kernels sit on the same line rather than beating it: a
-		// (1,2,3,2,1) tent gives 0.82x the noise for 1.36x the shoulder bias and a
-		// (1,4,6,4,1) binomial 0.94x for 1.14x, so the box is the honest end of a
-		// curve, not a bad point on it. Nor can the choice be made per pixel: at one
-		// ray per light a shoulder and a flat penumbra are the same measurement.
-		// Half the taps deterministically 0 and half deterministically 1 has exactly
-		// the variance of every tap being an independent p = 0.5 draw, so the
-		// decomposition below subtracts the whole of it and reports no structure,
-		// and the 3x3-versus-5x5 mean difference is smaller than its own noise.
-		//
-		// None of this was worth doing before that decomposition landed. While the
-		// radius came from the raw spread of these same taps, a wider gather
-		// inflated the window as much as it improved the center and the two
-		// cancelled; now it improves the center alone.
+		// None of this was worth doing before that decomposition. While the radius came
+		// from the raw spread of these same taps, a wider gather inflated the window as
+		// much as it improved the center and the two canceled; now it improves the
+		// center alone.
 		int moment_radius = (params.sample_count < 4.0 && params.clamp_sigma <= 1.0) ? 2 : 1;
 		vec4 moment1 = vec4(0.0);
 		vec4 moment2 = vec4(0.0);
@@ -286,19 +274,14 @@ void main() {
 			//            shadow.
 			//
 			// Taking the raw spread as the radius charges the whole of the noise to
-			// the signal, and at one ray per light that is nearly all of it: the taps
-			// are then a hard 0 or 1, their spread is sqrt(p(1-p)) -- 0.5 at the
-			// middle of a penumbra -- and it does NOT shrink however many taps are
-			// averaged, because it is the scatter of a Bernoulli draw rather than an
-			// uncertainty. Two sigma of that is a window wider than the valid range,
-			// so nothing is ever outside it and the clamp cannot fire. That is why
-			// raising `samples_per_light` used to be the only thing that helped: it
-			// does not improve the estimator, it just makes each tap an average and
-			// starves the noise term.
-			//
-			// Binomial noise is predictable, so subtract it instead of out-sampling
-			// it. What is left is the spatial variation, and the radius is that plus
-			// the uncertainty in the mean the taps are centered on.
+			// the signal, and at one ray per light that is nearly all of it: two sigma
+			// of it is a window wider than the valid range, so nothing is ever outside
+			// it and the clamp cannot fire at all. Binomial noise is predictable, so
+			// subtract it instead of out-sampling it -- what is left is the spatial
+			// variation, and the radius is that plus the uncertainty in the mean the
+			// taps are centered on. Why that scatter does not fall off however many
+			// taps are averaged, and what raising `samples_per_light` did about it
+			// before this, is in docs/rt_shadows/FINDINGS.md.
 			float trials = max(taps * params.sample_count, 1.0);
 			vec4 corrected = (moment1 * trials + 2.0) / (trials + 4.0);
 
@@ -316,16 +299,10 @@ void main() {
 			vec4 var_spatial = max(var_measured - var_sampling, vec4(0.0));
 			vec4 sigma = sqrt(var_spatial + var_mean);
 
-			// Simulated over a flat penumbra at p = 0.5, mean two sigma radius:
-			// the old estimator gave 0.94 at one sample and 0.32 at eight; this one
-			// gives 0.27 at ONE, so it is tighter at a single ray than the old one
-			// was at eight. Over a steep gradient it widens with the sample count
-			// (0.27 to 0.41 from one sample to eight) rather than staying pinned,
-			// which is the signal being recovered once there is enough information
-			// to see it. Converged values on that gradient are no worse than before
-			// and better at the tails -- a true 0.75 settled at 0.76 where the old
-			// estimator read 0.81 -- so the contrast expansion this floor exists to
-			// prevent does not come back.
+			// What that is worth, from `denoiser_sim.py --radius`: over a flat penumbra
+			// at p = 0.5 the raw spread asked for a two sigma window half-width of 0.93
+			// at one sample per light and 0.32 at eight, this estimator for 0.27 at one
+			// -- tighter at a single ray than the raw spread was at eight.
 			//
 			// At one sample per light a single frame genuinely cannot tell a
 			// gradient from noise, so the decomposition treats the neighborhood as

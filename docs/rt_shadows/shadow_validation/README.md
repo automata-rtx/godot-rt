@@ -21,13 +21,12 @@ mask and no assumption about which pixels are ground.
 
 **A PNG is sRGB encoded. Decode to linear before differencing anything.**
 
-Every published number in the screen space section of `FINDINGS.md` was first taken by differencing
-sRGB values directly, which measures gamma space rather than light, and all of them had to be
-re-derived. Gamma compresses the dark end, so every ratio came out *lower* than the truth and the
-technique looked consistently further from the reference than it is.
-
-`score.py` decodes first, always. Its `--srgb` flag exists only so that a number found in an old
-note can be *identified* as gamma-space rather than mistaken for a regression.
+Every published number in the screen space section of `../FINDINGS.md` was first taken by
+differencing sRGB values directly, which measures gamma space rather than light, and all of them had
+to be re-derived: gamma compresses the dark end, so every ratio came out *lower* than the truth and
+the technique looked further from the reference than it is. `score.py` decodes first, always, and
+its `--srgb` flag exists only so that a number found in an old note can be *identified* as
+gamma-space rather than mistaken for a regression.
 
 The error was caught by a control that could not miss and did: `opacity.gd` renders the same sun on
 shadow maps, a path this fork does not touch, which applies `shadow_opacity` exactly once and must
@@ -69,11 +68,9 @@ a run silently stops reproducing — it happened while this directory was being 
 
 `probe` also carries the controls that ruled out explanations before the cause was found:
 `SSS_SUN_AZ`, `SSS_SUN_EL`, `SSS_BLADE_W`, `SSS_BLADE_D`, `SSS_RANDOM_YAW`, `SSS_BIAS`,
-`SSS_NBIAS`. (`SSS_CONTRAST` is gone with the setting: contrast saturates -- 4 to 16 moved mass 11%
-and darkness 5% -- so it is now Bend's 4.0 as a constant.) Set `SSS_BLADE_W=0.12` for fat blades whose shadow is tens of pixels
-across, which is what a *width* measurement needs; it does not give the same numbers as the default
-and is not a substitute for it.
-
+`SSS_NBIAS`. Set `SSS_BLADE_W=0.12` for fat blades whose shadow is tens of pixels across, which is
+what a *width* measurement needs; it does not give the same numbers as the default and is not a
+substitute for it.
 
 ## Getting a binary
 
@@ -99,9 +96,10 @@ SHADOW_THICKNESS=0.0025,0.005,0.010 ./run.sh field --bands
 ./run.sh field --srgb --overlay /tmp/agree.png
 ```
 
-Anything after the rig name goes to `score.py`. `GODOT_BIN` points at the engine binary,
-`SHADOW_RES` and `SHADOW_QUALITY` override a rig's pinned values — for deliberately re-deriving,
-never for reproducing. `SHADOW_HARDNESS` and `SHADOW_THICKNESS` are comma-separated lists rendered
+Anything after the rig name goes to `score.py`, except on `opacity`, whose scorer takes the output
+directory and ignores the rest. `GODOT_BIN` points at the engine binary, `SHADOW_RES` and
+`SHADOW_QUALITY` override a rig's pinned values — for deliberately re-deriving, never for
+reproducing. `SHADOW_HARDNESS` and `SHADOW_THICKNESS` are comma-separated lists rendered
 as a cross product; the whole sweep runs in **one** render, because every `screen_space_shadows`
 setting is live from one frame to the next.
 
@@ -109,42 +107,64 @@ A field run is about a minute under lavapipe.
 
 ## What this harness cannot tell you
 
+Two of these are standing blind spots rather than oversights, and `../ao_validation/` has both of
+them as well: **no rig measures temporal behavior, and no rig can produce a compressed mesh.**
+
 **Cost.** Every timing under lavapipe is meaningless; profile on hardware.
 
-**Anything that depends on how a mesh was authored.** Every rig here builds its geometry
-procedurally in GDScript, so every mesh is uncompressed, unskinned, single surface and never
-imported. Compressed vertex attributes -- which is what an imported mesh gets by DEFAULT -- take a
-completely different path into the acceleration structure, and a bug that made every compressed
-surface fail to build a BLAS survived this harness untouched because no rig can produce one. If a
-change touches `_build_blas_geometry`, test it against a mesh built with
-`Mesh.ARRAY_FLAG_COMPRESS_ATTRIBUTES` as well.
+**Anything temporal.** `project.godot` turns the denoiser off and sets `samples_per_light = 1`, and
+every capture is a settled still frame from a static camera, deliberately: a filtered accumulating
+shadow is not deterministic frame to frame and cannot be differenced against a fixed baseline. So
+no rig here measures the denoiser, and none can while that holds -- ghosting, steady state noise,
+disocclusion and every history clamp setting are outside what a number from here can mean.
 
-The raytraced reference itself is real under lavapipe — it advertises ray query support, the fork
+`denoiser_sim.py`, in this directory, covers that gap by simulation rather than by render: it
+reimplements `rt_shadow_temporal.glsl` in numpy and drives it with synthetic visibility whose true
+value is known exactly, which a render never gives you. **It is a model of the shader rather than a
+measurement of it**, so label anything published from it simulated; its docstring states what the
+model leaves out, and `../FINDINGS.md` carries the tables it prints. Four modes, and `--quick`
+shortens any of them:
+
+- no flag -- the temporal pass's 3x3 gather against a 5x5 one, noise against bias: what the
+  shader's choice between the two widths was decided from.
+- `--kernels` -- weighted 5x5 gathers against the box.
+- `--radius` -- the history clamp window each variance estimator asks for, the old one against the
+  shipped one, at one to eight samples per light.
+- `--window` -- what a tight clamp does to a penumbra: three penumbra widths against three
+  `history_clamp_sigma` values and two window lengths.
+
+**Anything that depends on how a mesh was authored.** Every rig here builds its geometry
+procedurally in GDScript from `BoxMesh` and `PlaneMesh`, and `PrimitiveMesh` uploads its surface
+with a compress format of zero (`scene/resources/3d/primitive_meshes.cpp:129`), so every mesh is
+uncompressed, unskinned, single surface and never imported. Compressed vertex attributes -- what an
+IMPORTED mesh gets by default -- take a separate path into the acceleration structure, and nothing
+here walks it. That is how a bug that made every compressed surface fail to build a BLAS, so that no
+imported mesh cast a raytraced shadow at all, went through this harness unseen. Closing it is one
+rig building its blade as an `ArrayMesh` and passing `Mesh.ARRAY_FLAG_COMPRESS_ATTRIBUTES` as the
+`flags` argument of `add_surface_from_arrays`; until that exists, test any change to
+`_build_blas_geometry` against such a mesh by hand.
+
+The raytraced reference itself is real under lavapipe -- it advertises ray query support, the fork
 takes it, and `GODOT_RT_DEBUG=1` shows the TLAS built and a mask slot granted and written. Startup
 prints `OpTypeRayQueryKHR is not supported yet.` once; **that line comes from the Mesa stack, not
 from the engine, and does not stop the trace.** The proof is behavioral rather than textual: the
-opacity rig can distinguish the raytraced branch from the shadow-map branch, which it could not do
-if the mask were absent. This is worth knowing because the line reads exactly like the reference
-silently degrading, and believing it would make every "vs trace" ratio here look untrustworthy.
+opacity rig can tell the raytraced branch from the shadow-map branch, which it could not if the mask
+were absent. Worth knowing, because the line reads exactly like the reference silently degrading and
+believing it would make every "vs trace" ratio here look untrustworthy.
 
 **`restrict_casters` has no rig here, and the four that exist cannot give it one.** All of them are
 grass on an empty ground plane, so the only geometry in the acceleration structure is a flat plane,
-and a flat plane cannot occlude itself from a 38 degree sun. Toggling the setting on these scenes
-changes the frame by a single pixel -- which is correct, and tells you nothing. A rig that could
-settle it needs real props at `cast_shadow = On` -- rocks, posts, a wall -- standing among the
-grass, so there is genuinely redundant casting to remove; `field.gd` is the closest starting point.
-Do not conclude from a one-pixel difference that the toggle does nothing. Why the default is off,
-and what flipping it would take, is in section 10.6 of `FORK_GUIDE.md`.
-
-It says nothing about temporal behavior. The denoiser is off and every capture is a settled
-still frame, deliberately, because a filtered accumulating shadow is not deterministic frame to
-frame and cannot be differenced against a fixed baseline. Ghosting, flicker and denoiser convergence
-need a different rig that does not exist yet.
+and a flat plane cannot occlude itself from a 38 degree sun: toggling the setting changes the frame
+by a single pixel, which is correct and tells you nothing. Do not read that as the toggle doing
+nothing. A rig that could settle it needs real props at `cast_shadow = On` standing among the grass
+-- rocks, posts, a wall -- so there is genuinely redundant casting to remove; `field.gd` is the
+closest starting point. Why the default is off, and what flipping it would take, is in section 10.6
+of `../FORK_GUIDE.md`.
 
 ## The numbers to reproduce
 
 If a change is not meant to move the screen space shadow, these should come back unchanged. All
-linear; the sRGB column of `--srgb` is in `FINDINGS.md` beside them.
+linear; the sRGB column of `--srgb` is in `../FINDINGS.md` beside them.
 
 `./run.sh probe` — trace removes 0.2767 per px over 2217 px:
 

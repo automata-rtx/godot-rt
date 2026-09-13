@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Simulate the raytraced shadow denoiser's temporal pass and score it.
 
-    python3 denoiser_sim.py              # the table FINDINGS.md quotes
-    python3 denoiser_sim.py --quick      # fewer frames, for a sanity check
+    python3 denoiser_sim.py              # the 3x3 against 5x5 table FINDINGS.md quotes
     python3 denoiser_sim.py --kernels    # weighted 5x5 gathers against the box
+    python3 denoiser_sim.py --radius     # the clamp window each estimator asks for
+    python3 denoiser_sim.py --window     # what a tight clamp does to a penumbra
+    python3 denoiser_sim.py --quick      # any of the above with fewer frames
 
 WHY THIS EXISTS AND WHY IT IS NOT A RENDER
 ------------------------------------------
