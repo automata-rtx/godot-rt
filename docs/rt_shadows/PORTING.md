@@ -56,6 +56,16 @@ report true from the new validity query.
   never pooled; build-input buffers need `DEVICE_ADDRESS` as well as the AS-input bit.
 - **There is no refit or compaction entry point.** Every "update" of a BLAS is a full `blas_build`
   on the same RID.
+- **`blas_create` resolves a geometry's vertex buffer through `vertex_buffer_owner` ALONE**
+  (`rendering_device.cpp:322`), so any buffer you hand it must come from `vertex_buffer_create`. An
+  RID from `storage_buffer_create` lands in a different owner (`:1509`), fails the lookup, and
+  reports `Parameter "vertex_buffer" is null.` -- once per surface per frame, forever, with the
+  build silently producing nothing. This bit this fork: the buffer holding dequantized positions for
+  compressed meshes was a storage buffer, so no compressed mesh cast a raytraced shadow at all.
+  `vertex_buffer_create` takes the same device-address and build-input creation bits, and
+  `uniform_set_create` accepts a vertex buffer for a storage binding (`:4752-4754`), so a buffer a
+  compute pass writes and the BLAS reads should simply be a vertex buffer with
+  `BUFFER_CREATION_AS_STORAGE_BIT`.
 - The Vulkan container targets SPIR-V 1.4 with a Vulkan 1.1 client -- exactly the minimum
   `GL_EXT_ray_query` needs. Check `RenderingShaderContainerFormatVulkan::get_shader_spirv_version`.
 - **Creating an acceleration structure is not thread-safe; building one is guarded.** `blas_build`

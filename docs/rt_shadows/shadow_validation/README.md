@@ -111,6 +111,14 @@ A field run is about a minute under lavapipe.
 
 **Cost.** Every timing under lavapipe is meaningless; profile on hardware.
 
+**Anything that depends on how a mesh was authored.** Every rig here builds its geometry
+procedurally in GDScript, so every mesh is uncompressed, unskinned, single surface and never
+imported. Compressed vertex attributes -- which is what an imported mesh gets by DEFAULT -- take a
+completely different path into the acceleration structure, and a bug that made every compressed
+surface fail to build a BLAS survived this harness untouched because no rig can produce one. If a
+change touches `_build_blas_geometry`, test it against a mesh built with
+`Mesh.ARRAY_FLAG_COMPRESS_ATTRIBUTES` as well.
+
 The raytraced reference itself is real under lavapipe — it advertises ray query support, the fork
 takes it, and `GODOT_RT_DEBUG=1` shows the TLAS built and a mask slot granted and written. Startup
 prints `OpTypeRayQueryKHR is not supported yet.` once; **that line comes from the Mesa stack, not

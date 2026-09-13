@@ -342,8 +342,24 @@ bool RaytracingScene::_build_blas_geometry(RID p_mesh, RID p_mesh_instance, uint
 		// AABB, which is not a legal acceleration structure vertex format. Expand
 		// them once into a dedicated float32x3 buffer.
 		const uint32_t source_stride = sizeof(uint16_t) * 4;
-		position_buffer = RD::get_singleton()->storage_buffer_create(vertex_count * sizeof(float) * 3, {}, 0,
-				RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT | RD::BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT);
+		// A VERTEX buffer, not a storage buffer, and the distinction is the whole
+		// bug this line used to carry. `blas_create` resolves a geometry's vertex
+		// buffer through `vertex_buffer_owner` alone (rendering_device.cpp:322), so
+		// an RID minted by `storage_buffer_create` -- which lands in
+		// `storage_buffer_owner` (:1509) -- fails that lookup and the build errors
+		// out with `Parameter "vertex_buffer" is null.` every frame, for every
+		// compressed surface, forever. Nothing downstream is lost by switching:
+		// `uniform_set_create` accepts either owner for a storage binding
+		// (:4752-4754), so the dequantize pass can still write into it, and
+		// `vertex_buffer_create` takes the same device-address and build-input bits.
+		//
+		// This never showed in the validation harness because every rig builds its
+		// meshes procedurally and uncompressed. Imported meshes are compressed by
+		// default, so in a real project it meant NO compressed mesh cast a
+		// raytraced shadow at all.
+		position_buffer = RD::get_singleton()->vertex_buffer_create(vertex_count * sizeof(float) * 3, {},
+				RD::BUFFER_CREATION_AS_STORAGE_BIT | RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT |
+						RD::BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT);
 		ERR_FAIL_COND_V(position_buffer.is_null(), false);
 
 		_dequantize_positions(vertex_buffer, position_buffer, vertex_count, source_stride, mesh_storage->mesh_surface_get_aabb(surface));
