@@ -122,13 +122,20 @@ def run(
     frames=700,
     warmup=450,
     seed=20260913,
+    old_estimator=False,
+    want_radius=False,
 ):
-    """Drive the temporal pass over a static scene. Returns the settled frames."""
+    """Drive the temporal pass over a static scene. Returns the settled frames.
+
+    With `want_radius`, returns the per-frame clamp sigma instead, so the window
+    the estimator asks for can be scored on its own.
+    """
     rng = np.random.default_rng(seed)
     height, width = truth.shape
     history = np.zeros_like(truth)
     history_length = np.zeros_like(truth)
     settled = []
+    radii = []
 
     for frame in range(frames):
         # The trace's own store is dithered too, on its own frame counter.
@@ -143,7 +150,14 @@ def run(
         var_mean = corrected * (1.0 - corrected) / (trials + 4.0)
         var_sampling = corrected * (1.0 - corrected) / max(samples, 1)
         var_measured = np.maximum(moment2 - moment1 * moment1, 0.0)
-        sigma = np.sqrt(np.maximum(var_measured - var_sampling, 0.0) + var_mean)
+        if old_estimator:
+            # What shipped before the decomposition: the raw spread of the taps,
+            # floored by the uncertainty in their mean. Kept so the two can be
+            # scored against each other rather than compared from memory.
+            sigma = np.maximum(np.sqrt(var_measured), np.sqrt(var_mean))
+        else:
+            sigma = np.sqrt(np.maximum(var_measured - var_sampling, 0.0) + var_mean)
+        radii.append(sigma)
 
         clamped = np.clip(history, moment1 - sigma * clamp_sigma, moment1 + sigma * clamp_sigma)
         fired = history_length > 0.0
@@ -160,7 +174,7 @@ def run(
         if frame >= warmup:
             settled.append(history)
 
-    return np.array(settled)
+    return np.array(radii[warmup:]) if want_radius else np.array(settled)
 
 
 def noise(settled):
@@ -186,8 +200,66 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--quick", action="store_true", help="fewer frames")
     parser.add_argument("--kernels", action="store_true", help="weighted 5x5 gathers against the box")
+    parser.add_argument(
+        "--radius", action="store_true", help="the clamp window this estimator asks for, against the old one"
+    )
+    parser.add_argument("--window", action="store_true", help="what a tight clamp does to a penumbra, by window length")
     args = parser.parse_args()
     span = dict(frames=300, warmup=180) if args.quick else {}
+
+    if args.radius:
+        print(
+            "Mean clamp window half-width, two sigma, at the middle of a flat penumbra\n"
+            "(p = 0.5), 3x3 gather. This is the quantity that decides whether the clamp\n"
+            "can fire at all: two sigma wider than the valid range and nothing is ever\n"
+            "outside it.\n"
+        )
+        print(f"{'samples_per_light':>17s} {'raw spread (old)':>17s} {'decomposed':>11s}")
+        for samples in (1, 2, 4, 8):
+            row = []
+            for old_est in (True, False):
+                sig = run(
+                    flat(),
+                    box(1),
+                    samples=samples,
+                    old_estimator=old_est,
+                    want_radius=True,
+                    **span,
+                )
+                row.append(2.0 * float(sig.mean()))
+            print(f"{samples:17d} {row[0]:17.2f} {row[1]:11.2f}")
+        print(
+            "\nThe old estimator charged the whole per-tap binomial scatter to the signal,\n"
+            "and that scatter does not shrink with tap count -- so raising the sample\n"
+            "count was the only thing that moved it. The decomposed one is tighter at ONE\n"
+            "sample than the old one was at eight."
+        )
+        return
+
+    if args.window:
+        print(
+            "Converged value at three points of a penumbra, 3x3 gather, samples 1. A\n"
+            "tight window pins the value to the neighborhood mean; the question is whether\n"
+            "that expands contrast and eats the penumbra's soft tails.\n"
+            "\n"
+            "It used to. Before the variance decomposition the window collapsed to its\n"
+            "floor wherever the taps happened to agree, and a correct history was yanked\n"
+            "to a binary answer -- a true 0.25/0.50/0.75 read 0.15/0.49/0.85 at\n"
+            "clamp_sigma 1.0 over 32 frames, which is why the guide used to say the two\n"
+            "settings had to move together. They no longer do.\n"
+        )
+        for width in (8, 16, 32):
+            truth = penumbra(width)
+            column = truth[0]
+            probes = [int(np.argmin(np.abs(column - t))) for t in (0.25, 0.50, 0.75)]
+            print(f"  penumbra {width}px" + " " * 14 + "true 0.25  true 0.50  true 0.75")
+            for clamp_sigma in (2.0, 1.0, 0.3):
+                for frames_ in (32.0, 12.0):
+                    mean = run(truth, box(1), clamp_sigma=clamp_sigma, max_history=frames_, **span).mean(axis=0)[0]
+                    cells = "  ".join(f"{mean[i]:9.2f}" for i in probes)
+                    print(f"    sigma {clamp_sigma:4.1f}  frames {frames_:3.0f}   {cells}")
+            print()
+        return
 
     if args.kernels:
         kernels = {
