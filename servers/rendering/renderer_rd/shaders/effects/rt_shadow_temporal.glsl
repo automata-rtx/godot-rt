@@ -211,23 +211,52 @@ void main() {
 
 	if (params.clamp_sigma > 0.0 && history_length > 0.0) {
 		// The clamp is CENTERED on the mean gathered here, so once the window is
-		// tight the accumulated value essentially IS that mean and its noise is what
-		// reaches the screen. At one ray per light the taps are binary, and nine of
-		// them carry a standard error of 0.167 in the middle of a penumbra where
-		// twenty-five carry 0.100. So gather wider when the sample count is too low
-		// to do that job on its own, and stay at 3x3 when it is not, because the
-		// taps are averages by then and the extra sixteen fetches buy little.
+		// tight the accumulated value essentially IS that mean, and both the mean's
+		// noise and the mean's bias reach the screen. Widening the gather trades one
+		// against the other and the trade is only worth taking at a tight window.
 		//
-		// This only became worth doing once the radius stopped coming from the
-		// spread of these same taps (see the decomposition below). While it did,
-		// widening the gather inflated the window as much as it improved the center
-		// and was a wash; now it improves the center alone.
+		// Every figure below is from docs/rt_shadows/shadow_validation/denoiser_sim.py,
+		// which reimplements this pass -- run it rather than re-deriving them. It is a
+		// simulation and not a render: nothing in this repository can measure temporal
+		// behavior, because the capture harness runs with the denoiser off by design.
 		//
-		// Simulated at one sample, clamp_sigma 0.3 and a 32 frame window -- a
-		// configuration that leans on the clamp hard -- output noise falls from
-		// about 0.13 to about 0.08, with the converged value unchanged on a flat
-		// penumbra and on a steep gradient alike. No penumbra flattening.
-		int moment_radius = params.sample_count >= 4.0 ? 1 : 2;
+		// NOISE. At one ray per light the taps are binary, so nine of them carry a
+		// standard error of 0.167 in the middle of a penumbra where twenty-five
+		// carry 0.100. Output noise follows: 5x5 is 0.62x of 3x3 at every window
+		// width, 0.197 to 0.122 at clamp_sigma 0.3 and 0.103 to 0.063 at 2.0.
+		//
+		// BIAS. Twenty-five taps also straddle a narrow penumbra's shoulder, and
+		// what they average across it the clamp then pins the pixel to. Peak error
+		// on a two pixel penumbra goes 0.058 to 0.188 at clamp_sigma 2.0 -- three
+		// times worse, on exactly the contact hardening the rest of this denoiser is
+		// built to protect. It shrinks with width, is gone by sixteen pixels, and on
+		// a thirty-two pixel penumbra the wider gather is simply better, 0.061 to
+		// 0.023.
+		//
+		// So gate on the window being tight as well as on the sample count. Below
+		// clamp_sigma 1.0 the 3x3 is ALREADY paying most of that shoulder cost
+		// (0.150, against 0.280 for the 5x5) because a tight window pins the value
+		// whatever it is centered on -- the project has already traded penumbra
+		// accuracy for ghosting control there, and the extra noise reduction is what
+		// makes that trade affordable. At the shipped 2.0 the 3x3 is nearly unbiased
+		// and widening would introduce a cost nothing asked for. Tightening the
+		// clamp therefore buys the better mean it needs, by itself.
+		//
+		// Weighted 5x5 kernels sit on the same line rather than beating it: a
+		// (1,2,3,2,1) tent gives 0.82x the noise for 1.36x the shoulder bias and a
+		// (1,4,6,4,1) binomial 0.94x for 1.14x, so the box is the honest end of a
+		// curve, not a bad point on it. Nor can the choice be made per pixel: at one
+		// ray per light a shoulder and a flat penumbra are the same measurement.
+		// Half the taps deterministically 0 and half deterministically 1 has exactly
+		// the variance of every tap being an independent p = 0.5 draw, so the
+		// decomposition below subtracts the whole of it and reports no structure,
+		// and the 3x3-versus-5x5 mean difference is smaller than its own noise.
+		//
+		// None of this was worth doing before that decomposition landed. While the
+		// radius came from the raw spread of these same taps, a wider gather
+		// inflated the window as much as it improved the center and the two
+		// cancelled; now it improves the center alone.
+		int moment_radius = (params.sample_count < 4.0 && params.clamp_sigma <= 1.0) ? 2 : 1;
 		vec4 moment1 = vec4(0.0);
 		vec4 moment2 = vec4(0.0);
 		float taps = 0.0;
