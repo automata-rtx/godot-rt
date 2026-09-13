@@ -380,6 +380,18 @@ actually moves the picture:
   first person weapon's shadow went from badly smeared to acceptable on
   `samples_per_light = 4` with `denoiser/temporal_frames = 12`, having not responded to the
   clamp settings at all.
+
+  **The estimator has since been fixed, so this is no longer the cost it was.** The clamp used to
+  take the raw spread of its 3x3 neighborhood as its radius, which charges binomial sampling noise
+  to the signal -- and at one ray per light that scatter is `sqrt(p(1-p))`, 0.5 at the middle of a
+  penumbra, and it does not shrink however many taps are averaged. Raising the sample count did not
+  improve the estimator, it just made each tap an average and starved the noise term. The noise is
+  predictable, so it is now subtracted instead: the radius is the spatial variance left after
+  removing the per-tap binomial variance, plus the uncertainty in the mean. Simulated on a flat
+  penumbra the radius is 0.27 at ONE sample where it used to be 0.94, and where eight samples used
+  to be needed to reach 0.32. **Try `samples_per_light = 2` before 4 or 8** -- one sample cannot
+  separate a gradient from noise in a single frame so the decomposition treats the neighborhood as
+  flat there, and two is enough to tell them apart.
 - **Shadow arrives late, or fades in behind a fast mover?** Three settings buy responsiveness.
   `denoiser/lag_response` acts only on frames where the clamp fired -- which, per the entry above,
   means it does nothing until the sample count is high enough for the clamp to fire in the first
