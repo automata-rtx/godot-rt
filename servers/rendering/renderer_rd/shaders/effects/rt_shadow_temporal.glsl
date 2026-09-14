@@ -223,7 +223,7 @@ void main() {
 		// anything while a tap is still binary, which is the sample count half of the
 		// gate below. Both effects are tabulated, along with weighted 5x5 kernels that
 		// sit on the same tradeoff line rather than beating it, in
-		// docs/rt_shadows/shadow_validation/denoiser_sim.py -- which simulates this
+		// docs/validation/shadow_validation/denoiser_sim.py -- which simulates this
 		// pass, because no capture in this repository can score a temporal filter.
 		//
 		// The other half of the gate is the window. At the shipped clamp_sigma of 2.0
@@ -281,7 +281,7 @@ void main() {
 			// variation, and the radius is that plus the uncertainty in the mean the
 			// taps are centered on. Why that scatter does not fall off however many
 			// taps are averaged, and what raising `samples_per_light` did about it
-			// before this, is in docs/rt_shadows/FINDINGS.md.
+			// before this, is in docs/HISTORY.md.
 			float trials = max(taps * params.sample_count, 1.0);
 			vec4 corrected = (moment1 * trials + 2.0) / (trials + 4.0);
 

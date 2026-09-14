@@ -16,7 +16,7 @@ extends Node3D
 const SSS := "rendering/lights_and_shadows/screen_space_shadows/enabled"
 const OUT := "res://out/"
 
-# 2.2 cm x 4 mm, which is what the hardness sweep table in FINDINGS.md was
+# 2.2 cm x 4 mm, which is what the hardness sweep table in docs/HISTORY.md was
 # measured at and is nearly razor thin -- the case `hardness` exists for, where a
 # blade is narrower than the march's one-pixel sample spacing.
 #
@@ -180,7 +180,7 @@ func _env(k: String, dflt: String) -> String:
 # every h<H>_t<T> is a screen space variant. The whole sweep runs in ONE render,
 # because every screen_space_shadows setting is live from one frame to the next.
 #
-# Defaults reproduce the hardness sweep table in FINDINGS.md.
+# Defaults reproduce the hardness sweep table in docs/HISTORY.md.
 func _variants() -> Array:
 	var out := []
 	for t in _env("SHADOW_THICKNESS", "0.005").split(","):

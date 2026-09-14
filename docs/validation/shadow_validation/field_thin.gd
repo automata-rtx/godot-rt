@@ -4,7 +4,7 @@ extends Node3D
 # under lavapipe: once with screen space shadows off, once on. The difference of
 # the two is exactly what the feature adds.
 
-# 15,000 is what the thin-field table in FINDINGS.md was measured at, paired
+# 15,000 is what the thin-field table in docs/HISTORY.md was measured at, paired
 # with this rig's 1280x720 (see run.sh). Both matter: the count sets how much
 # the field self-shadows, and the resolution sets how many pixels a blade is
 # wide, which is the whole variable `hardness` exists for.
@@ -150,7 +150,7 @@ func _env(k: String, dflt: String) -> String:
 
 # Same contract as field.gd: a cross product of hardness and thickness, named so
 # one scorer reads both rigs. Defaults reproduce the thin-field table in
-# FINDINGS.md.
+# docs/HISTORY.md.
 func _variants() -> Array:
 	var out := []
 	for t in _env("SHADOW_THICKNESS", "0.005").split(","):

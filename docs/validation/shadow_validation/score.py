@@ -11,7 +11,7 @@ THE ONE RULE
 A PNG is sRGB encoded. Differencing two of them measures GAMMA SPACE, not light,
 and a darkness ratio read off that difference is not the ratio of light the two
 shadows remove. Every published screen space number was first taken that way and
-had to be re-derived; see the head of the screen space section of FINDINGS.md.
+had to be re-derived; see the screen space section of docs/HISTORY.md.
 Everything here decodes to linear first, and --srgb exists only so a stale number
 can be identified as gamma-space rather than as a regression.
 

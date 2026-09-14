@@ -1868,7 +1868,7 @@ ProjectSettings::ProjectSettings() {
 	// reaches the screen as traced; raising it filters those pixels and fringes
 	// every contact edge in the same move, two pixels wide at 2.0. Which end you
 	// want depends on whether contact shadows read noisy or read crisp;
-	// docs/rt_shadows/FORK_GUIDE.md prints the fringe at each value.
+	// docs/features/rt-shadows.md prints the fringe at each value.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels", PROPERTY_HINT_RANGE, "1,8,0.1,suffix:px"), 1.0);
 	// How far a reprojected history sample may sit outside what this frame sees
 	// around it, in standard deviations, before it is pulled back in. This is
@@ -1975,7 +1975,7 @@ ProjectSettings::ProjectSettings() {
 	// as though they were the opaque geometry behind them. Off, and unverified: the
 	// Streamline driver files compile to nothing off Windows, so nothing in this
 	// repository can exercise a tagging change, and the first attempt at this one
-	// blacked out the frame. Live. docs/streamline/INTEGRATION.md, section 3, has
+	// blacked out the frame. Live. docs/internals/dlss.md has
 	// what it costs, what went wrong before, and how to try it on hardware.
 	GLOBAL_DEF("rendering/streamline/reactive_mask", false);
 	// GUID issued by NVIDIA for this title. Without one, Streamline identifies the application

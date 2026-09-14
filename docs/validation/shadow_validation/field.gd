@@ -11,7 +11,7 @@ extends Node3D
 #
 # The variants come from SHADOW_HARDNESS and SHADOW_THICKNESS, rendered as a
 # cross product; see _variants(). The defaults reproduce the chunky-blade table
-# in FINDINGS.md.
+# in docs/HISTORY.md.
 #
 # Blade size is what a game actually scatters when it wants visual density
 # without millions of primitives: 1.0 x 1.5 cm cross section, 25 cm tall, with a
@@ -249,7 +249,7 @@ func _env(k: String, dflt: String) -> String:
 
 
 # The variants to render, as the cross product of two lists. The defaults
-# reproduce the two hardness rows of the chunky-blade table in FINDINGS.md; set
+# reproduce the two hardness rows of the chunky-blade table in docs/HISTORY.md; set
 # SHADOW_THICKNESS to "0.0025,0.005,0.010" to reproduce its thickness sweep too.
 func _variants() -> Array:
 	var out := []
