@@ -21,7 +21,7 @@ mask and no assumption about which pixels are ground.
 
 **A PNG is sRGB encoded. Decode to linear before differencing anything.**
 
-Every published number in the screen space section of `../FINDINGS.md` was first taken by
+Every published number in the screen space section of `../../HISTORY.md` was first taken by
 differencing sRGB values directly, which measures gamma space rather than light, and all of them had
 to be re-derived: gamma compresses the dark end, so every ratio came out *lower* than the truth and
 the technique looked further from the reference than it is. `score.py` decodes first, always, and
@@ -122,7 +122,7 @@ disocclusion and every history clamp setting are outside what a number from here
 reimplements `rt_shadow_temporal.glsl` in numpy and drives it with synthetic visibility whose true
 value is known exactly, which a render never gives you. **It is a model of the shader rather than a
 measurement of it**, so label anything published from it simulated; its docstring states what the
-model leaves out, and `../FINDINGS.md` carries the tables it prints. Four modes, and `--quick`
+model leaves out, and `../../HISTORY.md` carries the tables it prints. Four modes, and `--quick`
 shortens any of them:
 
 - no flag -- the temporal pass's 3x3 gather against a 5x5 one, noise against bias: what the
@@ -159,12 +159,12 @@ by a single pixel, which is correct and tells you nothing. Do not read that as t
 nothing. A rig that could settle it needs real props at `cast_shadow = On` standing among the grass
 -- rocks, posts, a wall -- so there is genuinely redundant casting to remove; `field.gd` is the
 closest starting point. Why the default is off, and what flipping it would take, is in section 10.6
-of `../FORK_GUIDE.md`.
+of `../../features/screen-space-shadows.md`.
 
 ## The numbers to reproduce
 
 If a change is not meant to move the screen space shadow, these should come back unchanged. All
-linear; the sRGB column of `--srgb` is in `../FINDINGS.md` beside them.
+linear; the sRGB column of `--srgb` is in `../../HISTORY.md` beside them.
 
 `./run.sh probe` — trace removes 0.2767 per px over 2217 px:
 

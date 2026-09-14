@@ -85,7 +85,7 @@ shipped default uses instead of a fixed world radius.
 
 As a smoke test rather than a score: on the `room` scene the ground truth estimator comes back at a
 mean visibility of about 0.94 with a minimum near 0.26, and the legacy one at about 0.98 with a
-minimum near 0.77. Those are not targets -- the targets are in section 9 of `../FORK_GUIDE.md`, and
+minimum near 0.77. Those are not targets -- the targets are in `../../features/ambient-occlusion.md`, and
 come from `ao_compare.py` against a traced reference -- but if a run produces two nearly identical
 captures, or an `ao.png` no darker than its `noao.png`, something is wrong before any scoring starts.
 
@@ -131,5 +131,5 @@ It has no command line, so running the file does nothing: import it, then `z, nv
 you want what ships rather than the raw estimator. `AO_SCENE` selects the scene here too, through
 `scenes.py`.
 
-`../FINDINGS.md` records what those measurements found, including the ideas that looked obvious and
+`../../HISTORY.md` records what those measurements found, including the ideas that looked obvious and
 did not survive being measured.
