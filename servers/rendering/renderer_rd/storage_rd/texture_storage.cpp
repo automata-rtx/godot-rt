@@ -995,6 +995,7 @@ void TextureStorage::texture_2d_initialize(RID p_texture, const Ref<Image> &p_im
 	Ref<Image> image = _validate_texture_format(p_image, ret_format);
 
 	Texture texture;
+	texture.content_revision_tracked = true;
 
 	texture.type = TextureStorage::TYPE_2D;
 
@@ -1091,6 +1092,7 @@ void TextureStorage::texture_2d_layered_initialize(RID p_texture, const Vector<R
 	}
 
 	Texture texture;
+	texture.content_revision_tracked = true;
 
 	texture.type = TextureStorage::TYPE_LAYERED;
 	texture.layered_type = p_layered_type;
@@ -1223,6 +1225,7 @@ void TextureStorage::texture_3d_initialize(RID p_texture, Image::Format p_format
 	}
 
 	Texture texture;
+	texture.content_revision_tracked = true;
 
 	texture.type = TextureStorage::TYPE_3D;
 	texture.width = p_width;
@@ -1639,6 +1642,7 @@ void TextureStorage::_texture_2d_update(RID p_texture, const Ref<Image> &p_image
 	Ref<Image> validated = _validate_texture_format(p_image, f);
 
 	RD::get_singleton()->texture_update(tex->rd_texture, p_layer, validated->get_data());
+	tex->content_revision++;
 }
 
 void TextureStorage::texture_2d_update(RID p_texture, const Ref<Image> &p_image, int p_layer) {
@@ -1681,6 +1685,7 @@ void TextureStorage::texture_3d_update(RID p_texture, const Vector<Ref<Image>> &
 	}
 
 	RD::get_singleton()->texture_update(tex->rd_texture, 0, all_data);
+	tex->content_revision++;
 }
 
 void TextureStorage::texture_external_update(RID p_texture, int p_width, int p_height, uint64_t p_external_buffer) {
@@ -2247,6 +2252,20 @@ void TextureStorage::texture_rd_initialize(RID p_texture, const RID &p_rd_textur
 	texture.is_proxy = false;
 
 	texture_owner.initialize_rid(p_texture, texture);
+}
+
+bool TextureStorage::texture_get_content_revision(RID p_texture, RID &r_storage, uint64_t &r_revision) const {
+	const Texture *texture = texture_owner.get_or_null(p_texture);
+	// Resolve proxies to the actual owner; a proxy's copied revision can be stale.
+	for (int depth = 0; texture && texture->is_proxy && depth < 16; depth++) {
+		texture = texture_owner.get_or_null(texture->proxy_to);
+	}
+	if (!texture || texture->is_proxy || texture->is_render_target || !texture->content_revision_tracked) {
+		return false;
+	}
+	r_storage = texture->rd_texture;
+	r_revision = texture->content_revision;
+	return true;
 }
 
 RID TextureStorage::texture_get_rd_texture(RID p_texture, bool p_srgb) const {

@@ -8,6 +8,29 @@
 #include "../half_inc.glsl"
 #include "scene_forward_clustered_inc.glsl"
 
+#define MATERIAL_INSTANCE_INDEX INSTANCE_INDEX
+
+// A capture page carries source vertex IDs separately from atlas placement.
+// Original UV/UV2/color/custom inputs continue through the normal material shader.
+#ifdef MODE_RENDER_MATERIAL
+layout(set = 4, binding = 0, std430) restrict readonly buffer MaterialCapture {
+	uvec4 layout_info; // tile size, columns, source vertex count, normal/tangent/pose bits
+	vec4 instance_color;
+	vec4 instance_custom;
+	uvec4 instance_info;
+	uint source_vertex_ids[];
+}
+material_capture;
+layout(set = 4, binding = 1, std430) restrict readonly buffer MaterialCapturePose {
+	uint data[];
+}
+material_capture_pose;
+#undef MATERIAL_INSTANCE_INDEX
+#define MATERIAL_INSTANCE_INDEX (bool(scene_data.flags & SCENE_DATA_FLAGS_USE_TRIANGLE_MATERIAL) ? int(material_capture.instance_info.x) : INSTANCE_INDEX)
+#undef VERTEX_INDEX
+#define VERTEX_INDEX (bool(scene_data.flags & SCENE_DATA_FLAGS_USE_TRIANGLE_MATERIAL) ? int(material_capture.source_vertex_ids[gl_VertexIndex]) : gl_VertexIndex)
+#endif
+
 #define SHADER_IS_SRGB false
 #define SHADER_SPACE_FAR 0.0
 
@@ -235,6 +258,14 @@ void vertex_shader(vec3 vertex_input,
 	vec4 instance_custom = vec4(0.0);
 #if defined(COLOR_USED)
 	color_interp = color_attrib;
+#endif
+#ifdef MODE_RENDER_MATERIAL
+	if (bool(scene_data.flags & SCENE_DATA_FLAGS_USE_TRIANGLE_MATERIAL)) {
+		instance_custom = material_capture.instance_custom;
+#ifdef COLOR_USED
+		color_interp *= material_capture.instance_color;
+#endif
+	}
 #endif
 
 	mat4 inv_view_matrix = transpose(mat4(scene_data.inv_view_matrix[0],
@@ -691,6 +722,16 @@ void vertex_shader(vec3 vertex_input,
 		}
 
 		vec2 uv_offset = unpackHalf2x16(draw_call.uv_offset);
+		if (bool(scene_data.flags & SCENE_DATA_FLAGS_USE_TRIANGLE_MATERIAL)) {
+			uint triangle = uint(gl_VertexIndex) / 3u;
+			uint corner = uint(gl_VertexIndex) % 3u;
+			uint side = material_capture.layout_info.x;
+			uint columns = material_capture.layout_info.y;
+			vec2 origin = vec2(triangle % columns, triangle / columns) * float(side) + vec2(1.0);
+			vec2 corner_uv = vec2(corner == 1u ? 1.0 : 0.0, corner == 2u ? 1.0 : 0.0);
+			uv_dest_attrib = (origin + corner_uv * float(side - 2u)) * scene_data.screen_pixel_size;
+			uv_offset = vec2(0.0);
+		}
 		gl_Position.xy = (uv_dest_attrib + uv_offset) * 2.0 - 1.0;
 		gl_Position.z = 0.00001;
 		gl_Position.w = 1.0;
@@ -840,6 +881,35 @@ void main() {
 			binormal,
 #endif
 			vertex);
+
+#ifdef MODE_RENDER_MATERIAL
+	// Reuse the native skinning/blend-shape output, including its current normal
+	// frame. UVs, vertex colors and custom attributes still come from the source.
+	if (bool(scene_data_block.data.flags & SCENE_DATA_FLAGS_USE_TRIANGLE_MATERIAL) && (material_capture.layout_info.w & 4u) != 0u) {
+		uint source_id = material_capture.source_vertex_ids[gl_VertexIndex];
+		uint offset = source_id * 3u;
+		vertex = uintBitsToFloat(uvec3(material_capture_pose.data[offset], material_capture_pose.data[offset + 1u], material_capture_pose.data[offset + 2u]));
+#if defined(NORMAL_USED) || defined(TANGENT_USED)
+		uint flags = material_capture.layout_info.w;
+		uint stride = ((flags & 1u) != 0u ? 1u : 0u) + ((flags & 2u) != 0u ? 1u : 0u);
+		offset = material_capture.layout_info.z * 3u + source_id * stride;
+		vec3 pose_normal = vec3(0.0, 0.0, 1.0);
+		if ((flags & 1u) != 0u) {
+			pose_normal = oct_to_vec3(unpackUnorm2x16(material_capture_pose.data[offset++]) * 2.0 - 1.0);
+		}
+#ifdef NORMAL_USED
+		normal = pose_normal;
+#endif
+#ifdef TANGENT_USED
+		if ((flags & 2u) != 0u) {
+			vec2 signed_oct = unpackUnorm2x16(material_capture_pose.data[offset]) * 2.0 - 1.0;
+			tangent = oct_to_vec3(vec2(signed_oct.x, abs(signed_oct.y) * 2.0 - 1.0));
+			binormal = normalize(cross(pose_normal, tangent)) * sign(signed_oct.y);
+		}
+#endif
+#endif
+	}
+#endif
 
 	// Current vertex.
 	global_time = scene_data_block.data.time;
@@ -2263,14 +2333,14 @@ void fragment_shader(in SceneData scene_data) {
 #endif // SPECULAR_OCCLUSION_DISABLED
 		ambient_light *= albedo.rgb;
 
-		if (bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_SSIL)) {
+		if (bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_INDIRECT_DIFFUSE)) {
 #ifdef USE_MULTIVIEW
-			vec4 ssil = textureLod(sampler2DArray(ssil_buffer, SAMPLER_LINEAR_CLAMP), vec3(screen_uv, ViewIndex), 0.0);
+			vec4 indirect_diffuse = textureLod(sampler2DArray(indirect_diffuse_buffer, SAMPLER_LINEAR_CLAMP), vec3(screen_uv, ViewIndex), 0.0);
 #else
-			vec4 ssil = textureLod(sampler2D(ssil_buffer, SAMPLER_LINEAR_CLAMP), screen_uv, 0.0);
+			vec4 indirect_diffuse = textureLod(sampler2D(indirect_diffuse_buffer, SAMPLER_LINEAR_CLAMP), screen_uv, 0.0);
 #endif // USE_MULTIVIEW
-			ambient_light *= 1.0 - ssil.a;
-			ambient_light += ssil.rgb * albedo.rgb;
+			ambient_light *= 1.0 - indirect_diffuse.a;
+			ambient_light += indirect_diffuse.rgb * albedo.rgb;
 		}
 
 		//process ssr
@@ -2300,7 +2370,9 @@ void fragment_shader(in SceneData scene_data) {
 			}
 
 			// Apply fade when approaching 0.7 roughness to smoothen the harsh cutoff in the main SSR trace pass.
-			ssr *= smoothstep(0.0, 1.0, 1.0 - clamp((roughness - 0.6) / (0.7 - 0.6), 0.0, 1.0));
+			if (!bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_RT_REFLECTIONS)) {
+				ssr *= smoothstep(0.0, 1.0, 1.0 - clamp((roughness - 0.6) / (0.7 - 0.6), 0.0, 1.0));
+			}
 
 			// Alpha is premultiplied.
 			indirect_specular_light = indirect_specular_light * (1.0 - ssr.a) + ssr.rgb;

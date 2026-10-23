@@ -294,6 +294,7 @@ private:
 		//shortcut to shader data and type
 		ShaderType shader_type = SHADER_TYPE_MAX;
 		uint32_t shader_id = 0;
+		uint64_t content_revision = 1;
 		bool uniform_dirty = false;
 		bool texture_dirty = false;
 		HashMap<StringName, Variant> params;
@@ -496,6 +497,10 @@ public:
 
 	virtual void material_set_param(RID p_material, const StringName &p_param, const Variant &p_value) override;
 	virtual Variant material_get_param(RID p_material, const StringName &p_param) const override;
+	uint64_t material_get_content_revision(RID p_material) const {
+		const Material *material = material_owner.get_or_null(p_material);
+		return material ? material->content_revision : 0;
+	}
 
 	virtual void material_set_next_pass(RID p_material, RID p_next_material) override;
 	virtual void material_set_render_priority(RID p_material, int priority) override;

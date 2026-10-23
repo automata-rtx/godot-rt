@@ -55,6 +55,16 @@ ICD, capture, move, score.
 | harness | what it scores | entry point |
 | --- | --- | --- |
 | `docs/validation/shadow_validation/` | the screen space contact shadow against a **raytraced** reference, and `shadow_opacity` linearity | `./run.sh probe` / `field` / `field_thin` / `opacity` |
+| `docs/validation/shadow_validation/geometry.gd` | geometry-cache rendering regressions against a baseline engine, including compressed meshes and deformation | `./run.sh geometry --reference /path/to/baseline-captures` |
+| `docs/validation/shadow_validation/material.gd` | explicit native triangle-material capture against analytical outputs, including original attributes, material updates, and legacy UV2 baking | `./run.sh material` |
+| `docs/validation/shadow_validation/gi.gd` | uncached diffuse transport stills: extra-bounce energy, non-caster material transfer, zero-indirect-energy control, and exact disabled restoration | `RTGI_SAMPLES=1 ./run.sh gi` |
+| `docs/validation/shadow_validation/amd_gi.gd` | sparse cached diffuse, multibounce and denoising; startup, material/light/camera controls and disabled restoration | `./run.sh amd_gi` |
+| `docs/validation/shadow_validation/amd_gi_sampling.gd` | fixed-budget guiding/adaptive/cache switches, dark-history recovery, emissive removal, GPU cache ownership, allocation and disabled controls | `./run.sh amd_gi_sampling` |
+| `docs/validation/shadow_validation/amd_gi_cache.gd` | GPU probe ownership/LRU permutation, small-camera-motion history preservation, displacement/reuse and disabled restoration | `./run.sh amd_gi_cache` |
+| `docs/validation/shadow_validation/amd_gi_materials.gd` | retained capture preparation, in-place vertex-color edits versus surface rebuild, non-caster indirect color transfer and disabled restoration | `./run.sh amd_gi_materials` |
+| `docs/validation/shadow_validation/amd_gi_lights.gd` | light-reservoir normalization/reuse, exhaustive-light comparison at the same primary-ray budget, allocation and direct-only controls | `./run.sh amd_gi_lights` |
+| `docs/validation/shadow_validation/amd_gi_bounces.gd` | secondary receiver population/ownership, multibounce energy and allocation toggle at a fixed primary-ray budget | `./run.sh amd_gi_bounces` |
+| `docs/validation/shadow_validation/gi_compare.gd` | same-room diffuse stills against baked VoxelGI and settled SDFGI, with disabled controls and settling diagnostics | `./run.sh gi_compare` |
 | `docs/validation/ao_validation/` | both occlusion estimators against **two** CPU-traced references (real geometry, and a depth buffer from the camera's own view) | `./run.sh room gtao`, then `ao_truth.py` and `ao_compare.py` |
 
 - Each README carries its own invocation, environment variables and scene list; read it rather than
@@ -109,8 +119,8 @@ noise, disocclusion and every history clamp setting are outside what either rig 
 - Nothing covers the motion side of the AO dither: how that fixed pattern reads while the camera
   moves is unmeasured.
 
-**3. How a mesh was authored.** Every rig builds geometry procedurally in GDScript from `BoxMesh`
-and `PlaneMesh`, and `PrimitiveMesh` uploads its surface with a compress format of zero
+**3. How a mesh was authored.** The original AO and shadow-accuracy rigs build geometry
+procedurally in GDScript from `BoxMesh` and `PlaneMesh`, and `PrimitiveMesh` uploads its surface with a compress format of zero
 (`scene/resources/3d/primitive_meshes.cpp:129`) — so every mesh in both directories is uncompressed,
 unskinned, single surface and never imported.
 - Compressed vertex attributes, which is what an **imported** mesh gets by default, take a separate
@@ -119,9 +129,11 @@ unskinned, single surface and never imported.
   through `vertex_buffer_owner` alone, and the dequantized position buffer for a compressed mesh was
   created with `storage_buffer_create`, so no compressed surface built a BLAS and **no imported mesh
   cast a raytraced shadow at all**.
-- Closing it is one rig building its blade as an `ArrayMesh` and passing
-  `Mesh.ARRAY_FLAG_COMPRESS_ATTRIBUTES` as the `flags` argument of `add_surface_from_arrays`. Until
-  that exists, test any change to `_build_blas_geometry` against such a mesh by hand.
+- The `geometry` regression rig now supplies compressed `ArrayMesh` geometry, non-indexed and
+  16/32-bit indexed meshes, shared instances, source-buffer replacement, blend-shape deformation,
+  eviction and destruction. It compares each stage against the same stage from a baseline engine.
+  It does not validate skeletal animation, actual imported assets, or establish ground-truth
+  correctness of a baseline that already has a defect.
 
 **4. Streamline / DLSS.** Nothing here can exercise it: the driver files compile to empty objects
 off Windows, so CI type-checks them and nothing runs them. The reactive mask shader is validated
@@ -226,3 +238,30 @@ Linux, macOS and Web workflow files are untouched but not invoked.
 - **No `template_debug` build exists in the matrix**, so debug exports, one-click deploy and remote
   debugging into an exported build do not work, and nothing shippable has `DEBUG_ENABLED` on —
   exercise a push constant change in an **editor** build (`CLAUDE.md`).
+
+
+AMD GI sky/reflection integration checks: `run.sh amd_gi_sky` and
+`run.sh amd_gi_reflections`. Both keep diffuse at 1/4 primary ray/pixel with
+multibounce and denoising enabled. Sky checks removal, color, orientation, ambient
+occlusion and disabled restoration. Glossy checks half/full sampling, an emitter
+behind the camera, motion, and buffer release; synchronous GPU sample validation
+is diagnostic-only. See the AMD GI feature document for remaining limitations.
+
+`run.sh amd_gi_dirty_materials` verifies static page reuse, image updates in place,
+material emission and TIME/global-uniform refresh. `run.sh amd_gi_fsr2` checks a
+jittered FSR2 Performance viewport at odd internal dimensions with both GI lobes,
+multibounce and denoising enabled. Neither harness measures target-hardware speed.
+
+AMD GI scene compatibility checks: `run.sh amd_gi_atlas` exercises packed small
+surfaces and relocation across layers; `run.sh amd_gi_dynamic_lighting` checks
+continuous sky/light changes; `GODOT_AMD_GI_VALIDATE_CACHE=1 run.sh amd_gi_deformation`
+compares native skeleton/blend-shape output with independently baked geometry and
+checks local motion invalidation, including FSR2. These are lavapipe correctness
+checks, not target-hardware performance measurements.
+
+`run.sh amd_gi_material_sharing` exercises 300 repeated mesh instances and compares
+local-normal captures against independent world captures. `run.sh amd_gi_multimesh`
+compares per-element colors/custom data/IDs against separate MeshInstances and
+checks movement and live updates. `amd_gi_atlas` also grows beyond the old capacity
+and shrinks its live budget. Keep denoising and the quarter-ray diffuse budget on;
+these are native rendering checks, not hardware performance estimates.

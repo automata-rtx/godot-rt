@@ -3869,7 +3869,109 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			}
 		}
 		const uint64_t rt_gathered = rt_time ? OS::get_singleton()->get_ticks_usec() : 0;
-		scene_render->update_raytracing_scene(rt_instance_scratch);
+		LocalVector<RendererSceneRender::RaytracingGIInstance> gi_instances;
+		LocalVector<RID> gi_lights;
+		const bool rtgi_requested = scene_render->is_rtgi_enabled(p_environment, p_render_buffers);
+		if (rtgi_requested && scene_cull_result.voxel_gi_instances.size() > 0) {
+			WARN_PRINT_ONCE("RT GI requires VoxelGI disabled; native settings have not been changed.");
+		}
+		if (rtgi_requested && scene_cull_result.voxel_gi_instances.size() == 0) {
+			// One camera-centered query, independent of both the frustum and shadow
+			// caster predicates. Reflectors behind the camera still contribute.
+			const bool amd_requested = GLOBAL_GET("rendering/global_illumination/amd_gi/enabled");
+			const real_t distance = MAX(real_t(GLOBAL_GET(amd_requested ? "rendering/global_illumination/amd_gi/max_distance" : "rendering/global_illumination/rt_validation/max_distance")), real_t(1.0));
+			const AABB bounds(p_camera_data->main_transform.origin - Vector3(distance, distance, distance), Vector3(distance, distance, distance) * 2);
+			struct GIInstanceSort {
+				bool operator()(const RendererSceneRender::RaytracingGIInstance &p_a, const RendererSceneRender::RaytracingGIInstance &p_b) const {
+					return p_a.instance == p_b.instance ? p_a.element < p_b.element : p_a.instance < p_b.instance;
+				}
+			};
+			struct CollectGI {
+				LocalVector<RendererSceneRender::RaytracingGIInstance> &instances;
+				LocalVector<RID> &lights;
+				uint32_t layers;
+				AABB bounds;
+				bool operator()(void *p_data) {
+					Instance *instance = static_cast<Instance *>(p_data);
+					if (!instance->visible || !(instance->layer_mask & layers)) {
+						return false;
+					}
+					if (instances.size() > RendererSceneRender::MAX_RT_GI_INSTANCES || lights.size() > RendererSceneRender::MAX_RT_GI_LIGHTS) {
+						return true; // Keep one overflow entry so the renderer rejects the scene.
+					}
+					if (instance->base_type == RSE::INSTANCE_LIGHT) {
+						lights.push_back(static_cast<InstanceLightData *>(instance->base_data)->instance);
+					} else if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) {
+						RendererSceneRender::RaytracingGIInstance gi;
+						gi.instance = instance->self;
+						gi.world_bounds = instance->transformed_aabb;
+						// Unsupported inputs deliberately invalidate this validation
+						// render instead of producing an attractive but incomplete scene.
+						if (instance->base_type == RSE::INSTANCE_MESH && instance->material_overlay.is_null() && instance->lightmap == nullptr) {
+							gi.mesh = instance->base;
+						}
+						gi.mesh_instance = instance->mesh_instance;
+						gi.transform = instance->transform;
+						gi.material_override = instance->material_override;
+						gi.materials = instance->materials;
+						gi.uniforms_offset = instance->instance_uniforms.location();
+						gi.layer_mask = instance->layer_mask;
+						gi.shadow_surface_mask = instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_OFF ? 0 : static_cast<InstanceGeometryData *>(instance->base_data)->shadow_caster_surface_mask;
+						if (instance->base_type == RSE::INSTANCE_MULTIMESH && instance->material_overlay.is_null() && instance->lightmap == nullptr && RSG::mesh_storage->multimesh_uses_3d_transforms(instance->base)) {
+							gi.multimesh = instance->base;
+							gi.mesh = RSG::mesh_storage->multimesh_get_mesh(gi.multimesh);
+							if (gi.mesh.is_null()) {
+								return false;
+							}
+							const int total = RSG::mesh_storage->multimesh_get_instance_count(gi.multimesh);
+							const int visible = RSG::mesh_storage->multimesh_get_visible_instances(gi.multimesh);
+							const int count = visible < 0 ? total : MIN(visible, total);
+							const AABB mesh_bounds = RSG::mesh_storage->mesh_get_aabb(gi.mesh, RID());
+							for (int element = 0; element < count; element++) {
+								gi.element = element;
+								gi.transform = instance->transform * RSG::mesh_storage->multimesh_instance_get_transform(gi.multimesh, element);
+								gi.world_bounds = gi.transform.xform(mesh_bounds);
+								if (!bounds.intersects(gi.world_bounds)) {
+									continue;
+								}
+								instances.push_back(gi);
+								if (instances.size() > RendererSceneRender::MAX_RT_GI_INSTANCES) {
+									return true;
+								}
+							}
+						} else {
+							instances.push_back(gi);
+						}
+					}
+					return false;
+				}
+			} collect{ gi_instances, gi_lights, p_visible_layers, bounds };
+			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(bounds, collect);
+			scenario->indexers[Scenario::INDEXER_VOLUMES].aabb_query(bounds, collect);
+			for (Instance *light : scenario->directional_lights) {
+				if (collect(light)) {
+					break;
+				}
+			}
+			// BVH traversal order changes during balancing, even in a static
+			// scene. Stable instance/light order preserves hit IDs, material page
+			// layout, and temporal history; traversal order is not a scene change.
+			gi_instances.sort_custom<GIInstanceSort>();
+			gi_lights.sort();
+			// GI also traces off-screen non-casters. Their pose may not have been
+			// requested by either the visible list or the shadow collection.
+			bool update_gi_poses = false;
+			for (const RendererSceneRender::RaytracingGIInstance &gi : gi_instances) {
+				if (gi.mesh_instance.is_valid()) {
+					RSG::mesh_storage->mesh_instance_check_for_update(gi.mesh_instance);
+					update_gi_poses = true;
+				}
+			}
+			if (update_gi_poses) {
+				RSG::mesh_storage->update_mesh_instances();
+			}
+		}
+		scene_render->update_raytracing_scene(rt_instance_scratch, gi_instances, gi_lights);
 		if (rt_time) {
 			_rt_report_cpu_cost(rt_gathered - rt_started, OS::get_singleton()->get_ticks_usec() - rt_gathered);
 		}
@@ -4940,6 +5042,10 @@ bool RendererSceneCull::free(RID p_rid) {
 	}
 
 	return true;
+}
+
+TypedArray<Image> RendererSceneCull::bake_render_triangle_material(RID p_mesh, int p_surface, int p_first_triangle, int p_triangle_count, int p_tile_size, const Transform3D &p_transform, RID p_material_override) {
+	return scene_render->bake_render_triangle_material(p_mesh, p_surface, p_first_triangle, p_triangle_count, p_tile_size, p_transform, p_material_override);
 }
 
 TypedArray<Image> RendererSceneCull::bake_render_uv2(RID p_base, const TypedArray<RID> &p_material_overrides, const Size2i &p_image_size) {

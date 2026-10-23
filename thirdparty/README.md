@@ -47,6 +47,17 @@ Patches:
 - `0002-godot-fsr2-options.patch` ([GH-81197](https://github.com/godotengine/godot/pull/81197))
 
 
+## amd_gi
+
+- Upstream: https://github.com/GPUOpen-LibrariesAndSDKs/Capsaicin
+- Version: 914b91596cd119eda85fbc1d3c7ee6ac391b1452
+- License: MIT
+
+`blue_noise.h` precomputes two spatial dimensions from the upstream sampler's
+Sobol, ranking, and scrambling tables. See `amd_gi/README.md` for regeneration.
+`LICENSE.txt` is copied from upstream.
+
+
 ## angle
 
 - Upstream: https://chromium.googlesource.com/angle/angle/

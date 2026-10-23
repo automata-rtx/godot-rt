@@ -1384,6 +1384,7 @@ void SkyRD::update_radiance_buffers(Ref<RenderSceneBuffersRD> p_render_buffers, 
 			sky->processing_layer = 1;
 		}
 		sky->baked_exposure = p_luminance_multiplier;
+		sky->radiance_version++;
 		sky->reflection.dirty = false;
 
 	} else {
@@ -1709,6 +1710,26 @@ RID SkyRD::sky_get_radiance_texture_rd(RID p_sky) const {
 	ERR_FAIL_NULL_V(sky, RID());
 
 	return sky->radiance;
+}
+
+RID SkyRD::sky_get_radiance_base_texture_rd(RID p_sky) const {
+	Sky *sky = get_sky(p_sky);
+	ERR_FAIL_NULL_V(sky, RID());
+	// Existing 2D view of unfiltered layer zero, valid for either sky layout.
+	return sky->reflection.radiance_base_octmap;
+}
+
+uint64_t SkyRD::sky_get_radiance_version(RID p_sky) const {
+	Sky *sky = get_sky(p_sky);
+	ERR_FAIL_NULL_V(sky, 0);
+	return sky->radiance_version;
+}
+
+bool SkyRD::sky_radiance_is_dynamic(RID p_sky) const {
+	Sky *sky = get_sky(p_sky);
+	ERR_FAIL_NULL_V(sky, false);
+	const SkyMaterialData *material = sky->prev_material_data;
+	return material && material->shader_data && (material->shader_data->uses_time || material->shader_data->uses_position || material->shader_data->uses_light);
 }
 
 float SkyRD::sky_get_uv_border_size(RID p_sky) {

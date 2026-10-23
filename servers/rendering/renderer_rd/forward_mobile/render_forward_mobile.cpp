@@ -1762,7 +1762,8 @@ void RenderForwardMobile::_render_material(const Transform3D &p_cam_transform, c
 	RD::get_singleton()->draw_command_end_label();
 }
 
-void RenderForwardMobile::_render_uv2(const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region) {
+void RenderForwardMobile::_render_uv2(const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region, RID p_capture_buffer, RID p_capture_pose) {
+	ERR_FAIL_COND_MSG(p_capture_buffer.is_valid(), "Triangle material capture requires Forward+.");
 	RENDER_TIMESTAMP("Setup Rendering UV2");
 
 	RD::get_singleton()->draw_command_begin_label("Render UV2");

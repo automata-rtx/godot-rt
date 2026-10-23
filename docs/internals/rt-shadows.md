@@ -17,7 +17,7 @@ re-applying the fork (`docs/PORTING.md`).
 | `:1465` | `storage_buffer_create` sets that bit unconditionally; `vertex_buffer_create` only when asked | which is why switching functions silently loses it |
 
 `uniform_set_create` does accept a vertex buffer for a storage binding (`:4753`), so the vertex path
-loses nothing. Live call: `environment/rt_scene.cpp`, `_build_blas_geometry`, all three of
+loses nothing. Live call: `environment/rt_geometry.cpp`, `_build_blas_geometry`, all three of
 `BUFFER_CREATION_AS_STORAGE_BIT | BUFFER_CREATION_DEVICE_ADDRESS_BIT |
 BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT`. Invisible under validation
 (harness rigs build uncompressed; imported meshes are compressed by default), so in a real project
@@ -64,7 +64,8 @@ Once per camera render that is not a reflection probe.
 
 | Concern | Files |
 | --- | --- |
-| Structure build, cache, settings accessors | `servers/rendering/renderer_rd/environment/rt_scene.{h,cpp}` |
+| Shadow TLAS and settings accessors | `servers/rendering/renderer_rd/environment/rt_scene.{h,cpp}` |
+| Reusable BLAS cache, dequantization, geometry revisions | `servers/rendering/renderer_rd/environment/rt_geometry.{h,cpp}` |
 | Trace and denoiser dispatch, light record, push constants | `servers/rendering/renderer_rd/effects/rt_shadows.{h,cpp}` |
 | Shaders | `servers/rendering/renderer_rd/shaders/effects/rt_shadow_{trace,temporal,atrous}.glsl`, `rt_dequantize.glsl` |
 | Slots, light records, demotion, projector recovery | `servers/rendering/renderer_rd/storage_rd/light_storage.{h,cpp}` |
@@ -134,6 +135,17 @@ rendered frames. Each camera also pays a TLAS rebuild: one process-wide object r
 camera's own caster list, which differs from the other camera's the moment a directional light
 exists, its volume being the camera's own frustum swept toward it. Costs rebuilds, not correctness.
 
+The BLAS methods now live in `RaytracingGeometry` (`environment/rt_geometry.{h,cpp}`).
+`RaytracingScene` owns one cache. `RendererSceneRenderRD::update_raytracing_scene()`
+brackets both shadow and optional transport-validation lookups with one
+`begin_update()`/`end_update()`, so consumers do not replenish each other's budget.
+The validator builds a separate TLAS with ordered hit metadata. Disabling it removes
+GI-only entries while preserving geometry requested by the current shadow update.
+The surface descriptor exposes the exact position/index buffers and a build revision
+for future hit shading and client TLAS invalidation. See
+[the integration status](../AMD_GI_IMPLEMENTATION.md) for the borrowing contract and
+remaining coordination work.
+
 ### Cache keying and the freed-buffer guard
 
 `SurfaceKey { RID source; uint32_t surface; }`, hashed `hash_murmur3_one_32(surface,
@@ -144,7 +156,7 @@ source.get_id())`.
 | What `source` is | the **per-instance skinned vertex buffer** when the caster carries a mesh instance and `mesh_instance_get_vertex_buffer()` returns one; the **mesh RID** otherwise. The culler fills `mesh_instance` only on the single-mesh path, so every static mesh and every MultiMesh element keys on the mesh and one structure serves all of them — which makes MultiMesh expansion cheap: an element contributes a transform and nothing else |
 | Never key a static entry on its own vertex buffer | even though that is what it builds from. The mesh RID is valid for every caster the gather hands over and survives clear-and-re-add, so every surface gets a distinct non-null key with or without a buffer — which lets an unbuildable surface be *remembered* ineligible instead of re-attempted every call |
 | Why a guard at all | every `PrimitiveMesh` clears and re-adds surface zero on any property change, as does `ArrayMesh.clear_surfaces()`. That frees the vertex buffer and takes the structure with it (`blas_create` registered it as a dependent). A mesh-keyed cache would hand out the freed handle forever after, and **one dead handle fails the whole TLAS build**, not one shadow |
-| The guard | on every `BLAS_READY` hit, compare `_get_surface_source_buffer()` against the entry's `source_buffer` and **erase** on mismatch — not skip, since a skipped entry is handed out again next frame. Exact because `RID_Owner` stamps a fresh validator into every RID; a vanished surface answers null, which also fails |
+| The guard | on every `BLAS_READY` hit, compare `_get_surface_source_buffer()` against the entry's `source_buffer`, and the surface geometry revision against `source_revision`; **erase** on mismatch. RID generations detect replacement; the revision detects in-place vertex/index updates that retain the same buffer RID. Attribute-only updates advance a separate data revision used by GI material preparation |
 | Key ≠ guarded quantity, deliberately | a mesh-keyed entry's key survives `clear_surfaces()` so the dead entry is still found and erasable, while its buffer does not, so the comparison fails. Key on the buffer instead and the dead entry is never looked up again — it sits there until eviction while a second is built beside it. For a buffer-keyed skinned entry, key and recorded buffer are the same RID so the comparison can never fail; it need not, because that buffer going away takes the key with it and the entry leaves through eviction holding a freed handle — what `_release_blas`'s `acceleration_structure_is_valid()` check is for |
 | Not asked per frame | whether the device still holds the structure: that query is `_THREAD_SAFE_METHOD_` and would take the device lock once per surface per frame. It stays on the free and teardown paths. Nothing tells this cache a mesh or instance went away, so the guard and the sweep are the only two ways an entry leaves |
 
@@ -174,7 +186,7 @@ position = vec3(xy.x, xy.y, zw.x) * aabb_size + aabb_position;
 | Ownership | the expanded buffer belongs to the **entry, not the build**; the entry also holds `source_buffer`, `source_stride`, `source_aabb`, so a skinned refresh re-expands the new pose into the *same* allocation — the geometry description was fixed at creation and cannot be re-pointed. `_release_blas` frees it on every path that drops an entry, ineligible included, since it is allocated before the build is tried |
 | Creation bits | see **Two invariants**, above |
 | `r_entry.skinned` | true only when the per-instance buffer differs from the mesh's own, so a mesh instance with no bones and no blend shapes falls back to the shared mesh BLAS |
-| Staleness | `mesh_instance_get_last_change()`; differing from `skin_version` on a cache hit, `_refresh_skinned_blas()` re-dequantizes (if compressed), calls `blas_build()` in place and sets `blas_changed_this_frame`. No refit entry point exists on `RenderingDevice`; a rebuild reuses the existing scratch allocation |
+| Staleness | `mesh_instance_get_last_change()`; differing from `skin_version` on a cache hit, `_refresh_skinned_blas()` re-dequantizes (if compressed), calls `blas_build()` in place and sets the geometry cache's `changed_this_update` flag. No refit entry point exists on `RenderingDevice`; a rebuild reuses the existing scratch allocation |
 | Importer behavior | Godot's importers already disable vertex compression for skinned and morph-target meshes, so skinned geometry usually arrives in the format the structure wants |
 | In-place mesh updates | only skinned surfaces carry a version check, so `surface_update_vertex_region()` and `ImmediateMesh` rewrites trace the geometry first built from. Replacing the surface outright trips the freed-buffer guard and is correct |
 
@@ -222,7 +234,7 @@ components row-major, then three origin) — through `hash_fmix32()` and **added
 | --- | --- |
 | Summed, not chained | a ray query reads nothing depending on array position, so two orderings describe the same scene and the spatial index's iteration order must not read as a change. `hash_fmix32` before the add, or the sum degenerates into additive collisions |
 | Field choice | the mask is in it as the only thing catching a `layers` change with nothing moving. The array index is out because it defeats order independence and nothing in the trace reads it; geometry flags and the hit-SBT range are out as the same constant for every instance |
-| Rebuild test | `rebuild = !tlas_built \|\| blas_changed_this_frame \|\| contents_hash != tlas_contents_hash`. Any BLAS built or refreshed this frame invalidates the bounds the TLAS cached for it, hence the flag. A freshly created or resized TLAS clears `tlas_built`, describing nothing yet |
+| Rebuild test | `rebuild = !tlas_built \|\| geometry.has_changed() \|\| contents_hash != tlas_contents_hash`. Any BLAS built or refreshed this frame invalidates the bounds the TLAS cached for it, hence the flag. A freshly created or resized TLAS clears `tlas_built`, describing nothing yet |
 | Two flags | `tlas_built` (a successful build exists, outliving a frame) and `tlas_valid` (this frame may trace against it) are deliberately distinct |
 | Per instance | `transform`, `id` = its index, `mask = RTShadows::fold_layer_mask(layer_mask)`, `flags = ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT` (always — `shadow_reverse_cull_face` is per light while the TLAS is per scenario, so flip-facing cannot be honored at all), `hit_sbt_range = HitShaderBindingTableRange(int64_t(1) << 32)`, offset 0 count 1, because `tlas_build()` rejects a zero range even with no ray pipeline in use |
 | **The two 65,536 ceilings** | `MAX_RT_CASTERS` (65536) bounds the gather, counts caster *instances*, warns once. A **second 65536 lives here**, a bare literal tested before each TLAS instance push and **silent** when hit — it counts caster *surfaces*, so any scene of multi-surface meshes reaches this one first, with nothing printed |
@@ -771,7 +783,7 @@ missing one.
 in one commit) and the four fields a directional row reinterprets; the caster record
 `RendererSceneRender::RaytracingInstance`; the `RB_SCOPE_RT_SHADOWS` texture formats; the push
 constant sizes (`TracePushConstant` 120 bytes, `TemporalPushConstant` 112, `AtrousPushConstant` 48,
-`RaytracingScene::DequantizePushConstant` 32); the fork's fixed constants; and the interfaces this
+`RaytracingGeometry::DequantizePushConstant` 32); the fork's fixed constants; and the interfaces this
 fork widens. Read it before changing any of them — a mismatch there is silent.
 
 Six things about them the mechanism above depends on:

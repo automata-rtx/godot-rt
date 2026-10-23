@@ -1,0 +1,26 @@
+extends "res://amd_gi.gd"
+
+
+func _run() -> void:
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/enabled", false)
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/probe_spacing", 16)
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/denoiser", true)
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/max_distance", 20.0)
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/continuation_probability", 0.3)
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/multibounce", false)
+	await _settle(12)
+	await _capture("bounces_disabled")
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/enabled", true)
+	await _settle(64)
+	await _capture("bounces_single")
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/multibounce", true)
+	await _settle(64)
+	await _capture("bounces_multiple")
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/multibounce", false)
+	await _settle(64)
+	await _capture("bounces_single_restored")
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/enabled", false)
+	await _settle(12)
+	await _capture("bounces_disabled_after")
+	print("AMD multibounce capture finished: %d failures" % _failures)
+	get_tree().quit(1 if _failures else 0)

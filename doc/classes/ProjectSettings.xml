@@ -3102,9 +3102,71 @@
 			If [code]true[/code], disables the threaded optimization feature from the NVIDIA drivers, which are known to cause stuttering in most OpenGL applications.
 			[b]Note:[/b] This setting only works on Windows, as threaded optimization is disabled by default on other platforms.
 		</member>
+		<member name="rendering/global_illumination/amd_gi/adaptive_sampling" type="bool" setter="" getter="" default="true">
+			Redistributes existing diffuse probe updates toward screen regions without reusable probe history. The stored probe grid remains spaced every 8 pixels at every quality setting. This changes which probes are traced, without increasing the primary-ray budget set by [member rendering/global_illumination/amd_gi/probe_spacing]. Changes apply at run time and reset history. Disable to compare against the regular update schedule.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/continuation_probability" type="float" setter="" getter="" default="0.3">
+			Fraction of active world-cache updates that trace an additional diffuse continuation when [member rendering/global_illumination/amd_gi/multibounce] is enabled. Contributions are probability compensated. This is additional work beyond primary screen-probe rays. Changes apply at run time and reset this experimental backend's history.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/denoiser" type="bool" setter="" getter="" default="true">
+			Enables temporal reprojection, geometry rejection, history clamping, and adaptive spatial filtering for the experimental AMD GI diffuse and reflection outputs. Screen-probe reconstruction and filtering remain part of the algorithm. Keep this enabled for representative quality comparisons. Changes apply at run time.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/enabled" type="bool" setter="" getter="" default="false">
+			Enables the experimental AMD GI diffuse pipeline in this fork. Requires Vulkan Forward+, ray-query support provisioned by RT shadows at startup, a [WorldEnvironment], and MSAA disabled. This first implementation includes sparse probes, a world radiance cache, diffuse multibounce feedback, and denoising; glossy reflections and full GI-1.2 sampling are unfinished. Native SDFGI, VoxelGI, SSIL, and lightmaps must be disabled. Unsupported scenes suppress the contribution. Changes apply at run time; GI resources are allocated only while requested.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/importance_sampling" type="bool" setter="" getter="" default="true">
+			Guides diffuse screen-probe rays using reprojected radiance and the surface cosine. The number of primary rays is unchanged; sampling and reconstruction add work, so this is not a measured performance preset. If [code]false[/code], uses stratified angular samples. Cells without reusable history and black distributions fall back to stratified samples. Changes apply at run time and reset cache/history state. GI denoising is controlled separately by [member rendering/global_illumination/amd_gi/denoiser].
+		</member>
+		<member name="rendering/global_illumination/amd_gi/light_resampling" type="bool" setter="" getter="" default="true">
+			Selects direct-light samples at GI ray hits using eight fresh candidates and compatible previous world-cell reservoirs, then traces the selected light's visibility at the current hit. Reduces visibility queries in scenes with multiple lights. Disabling evaluates all gathered lights and releases the 8 MiB reservoir storage. Scenes with zero or one light bypass resampling automatically. Changes take effect without restarting and reset AMD GI history. This does not change the primary probe-ray budget.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/material_atlas_mb" type="int" setter="" getter="" default="128">
+			Maximum size in MiB of the triangle-material texture atlas used by AMD GI and its transport validator. Layers grow on demand; lowering this live limit shrinks the atlas. This excludes native capture targets, expanded geometry, acceleration structures, and lighting histories. Exceeding capacity suppresses GI with a warning instead of tracing an incomplete scene. Disabling GI releases the atlas.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/max_distance" type="float" setter="" getter="" default="50.0">
+			Half extent of the camera-centered GI scene collection volume and maximum ray distance, in world units. Rays are clipped to the collected volume. Changes apply at run time and reset cache/history state.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/minimum_cell_size" type="float" setter="" getter="" default="0.1">
+			Minimum world-space cell size of the experimental AMD GI radiance cache. Distance and angular footprint can require larger cells. Smaller cells retain finer lighting detail but reduce reuse and increase cache pressure. Changes apply at run time and reset cache/history state.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/multibounce" type="bool" setter="" getter="" default="true">
+			Enables probability-compensated diffuse continuation, secondary world-cell population, and separate indirect-radiance histories. Secondary hits receive current direct lighting and previous-frame indirect feedback. This is not a fixed path bounce count. Disabling skips the seven multibounce stages and releases the secondary-hit buffer and indirect caches. Changes apply at run time and reset cache/history state.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/probe_cache" type="bool" setter="" getter="" default="true">
+			Retains displaced screen probes in a bounded least-recently-used cache for reuse when their surfaces become visible again. Disabling releases the cache allocation and skips its update passes. Changing this setting resets AMD GI history. Takes effect on subsequent renders without restarting.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/probe_spacing" type="int" setter="" getter="" default="16">
+			Screen-tile size for selecting updates of 8 by 8 directional probes. The stored probe grid always has 8-pixel spacing; values 8, 16, and 32 reduce the update budget to approximately 1, 1/4, and 1/16 primary GI ray per internal-resolution pixel per frame. Visibility and continuation rays are additional. Edge tiles round up. Changes apply at run time and reallocate viewport probe history; these are not measured hardware performance presets.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/reflections/enabled" type="bool" setter="" getter="" default="true">
+			Enables experimental hardware-traced glossy reflections and rough-reflection probe reuse while AMD GI is active. Shares the GI acceleration structure and radiance cache. Disabling skips all reflection dispatches and releases their full-size buffers and textures. Changes apply at run time. Clearcoat and anisotropic lobes are not separately traced.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/reflections/filter_passes" type="int" setter="" getter="" default="3">
+			Number of variance-guided a-trous reflection filter iterations, from 1 through 3. Requires [member rendering/global_illumination/amd_gi/denoiser]. More iterations suppress noise over larger neighborhoods, with additional compute cost and possible detail loss. Changes apply at run time and reset history.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/reflections/half_resolution" type="bool" setter="" getter="" default="true">
+			Samples glossy reflections at half the internal width and height, with rotating sample positions and geometry-aware reconstruction. At most one glossy primary ray is traced per 2 by 2 internal pixels, in addition to the diffuse probe budget; rough surfaces reuse probes where possible. Disabling traces at full internal resolution. Changes reset histories and reallocate reflection storage.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold" type="float" setter="" getter="" default="0.6">
+			Surfaces at or above this roughness use directional screen-probe radiance for reflections when a compatible probe exists. Lowering this value reduces glossy tracing but sacrifices reflected detail. Uncovered surfaces still trace a fallback ray. Changes take effect at run time and reset history.
+		</member>
 		<member name="rendering/global_illumination/gi/use_half_resolution" type="bool" setter="" getter="" default="false" keywords="size">
 			If [code]true[/code], renders [VoxelGI] and SDFGI ([member Environment.sdfgi_enabled]) buffers at halved resolution (e.g. 960×540 when the viewport size is 1920×1080). This improves performance significantly when VoxelGI or SDFGI is enabled, at the cost of artifacts that may be visible on polygon edges. The loss in quality becomes less noticeable as the viewport resolution increases. [LightmapGI] rendering is not affected by this setting.
 			[b]Note:[/b] This property is only read when the project starts. To set half-resolution GI at run-time, call [method RenderingServer.gi_set_use_half_resolution] instead.
+		</member>
+		<member name="rendering/global_illumination/rt_validation/bounces" type="int" setter="" getter="" default="2">
+			Number of secondary diffuse surface encounters in the uncached RT GI validation integrator, clamped to [code]1[/code] through [code]8[/code]. More encounters recover additional indirect light and increase tracing cost. This is a live diagnostic control, not the AMD GI-1.x multibounce cache setting.
+		</member>
+		<member name="rendering/global_illumination/rt_validation/enabled" type="bool" setter="" getter="" default="false">
+			Enables an experimental, uncached diffuse raytracing integrator for validating the in-progress GI integration. Requires Vulkan Forward+, a single view, MSAA disabled, a [WorldEnvironment], and [member rendering/lights_and_shadows/raytraced_shadows/enabled] enabled at startup. It shares geometry with RT shadows and contributes indirect diffuse before tone mapping and upscaling.
+			This is not the AMD GI-1.x backend or a shipping quality preset. It has no screen probes, radiance cache, denoising, sky sampling, or glossy reflections. It currently supports static mesh instances and bounded scenes; unsupported materials or scene capacity overflow suppress the validation contribution with a warning. Disable SDFGI, SSIL, VoxelGI, and lightmaps for this comparison. Native GI settings are never overwritten.
+			Changing this setting with [method ProjectSettings.set_setting] takes effect on subsequent renders. When disabled, no validation capture or tracing is scheduled. Disabling releases the validation scene resources and each rendered viewport's output; shared shadow geometry remains available to shadows.
+		</member>
+		<member name="rendering/global_illumination/rt_validation/max_distance" type="float" setter="" getter="" default="50.0">
+			Maximum segment length for validation rays, in world units. Also defines the half-extent of the camera-centered box used to gather GI geometry and lights. Tracing is clipped to this volume; geometry and environment radiance beyond it do not contribute. This live setting is clamped to at least [code]1.0[/code].
+		</member>
+		<member name="rendering/global_illumination/rt_validation/samples_per_pixel" type="int" setter="" getter="" default="1">
+			Independent diffuse paths per internal-resolution pixel in each validation frame, clamped to [code]1[/code] through [code]4096[/code]. Higher values reduce Monte Carlo noise and increase cost. There is no temporal accumulation; samples are deterministic for a fixed scene and resolution. This live control is intended for still-image validation, not performance presets.
 		</member>
 		<member name="rendering/global_illumination/sdfgi/frames_to_converge" type="int" setter="" getter="" default="5">
 			The number of frames to use for converging signed distance field global illumination. Higher values lead to a less noisy result, at the cost of taking a longer time to fully converge. This means the scene's global illumination will be too dark for a longer period of time, especially when the camera moves fast. The actual convergence speed depends on rendered framerate. For example, with the default setting of 30 frames, rendering at 60 FPS will make SDFGI fully converge after 0.5 seconds. See also [member rendering/global_illumination/sdfgi/frames_to_update_lights] and [member rendering/global_illumination/sdfgi/probe_ray_count].

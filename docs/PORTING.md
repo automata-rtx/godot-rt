@@ -400,7 +400,7 @@ eviction", "TLAS build and the contents hash".
 **Done when:** dragging a `BoxMesh`'s size in the inspector no longer prints `Parameter blas is
 null` at frame rate, and shadows survive the session.
 
-- **The key is `SurfaceKey { RID source; uint32_t surface; }`** (`environment/rt_scene.h:88`), and
+- **The key is `SurfaceKey { RID source; uint32_t surface; }`** (`environment/rt_geometry.h`, `SurfaceKey`), and
   only `source` varies: the per-instance skinned vertex buffer where the caster record carries a
   mesh instance and mesh storage returns one (stage 7), the **mesh RID** otherwise. Otherwise is the
   common case, so every static mesh and every multimesh element keys on the mesh and one built
@@ -1068,8 +1068,8 @@ Compile-time, each load-bearing for the reason given.
 | a-trous `KERNEL` | 0.375, 0.25, 0.0625 | `rt_shadow_atrous.glsl` | the standard 5-tap B3 spline row |
 | a-trous `depth_sigma` | 0.02 | `effects/rt_shadows.cpp:346` | the depth term's falloff; relative, so unitless |
 | a-trous `normal_sigma` | 64.0 | `effects/rt_shadows.cpp:347` | the normal term's exponent |
-| `MAX_BLAS_BUILDS_PER_FRAME` | 64 | `environment/rt_scene.h:159` | build budget; the rest defer |
-| `MAX_BLAS_BUILD_TRIANGLES_PER_FRAME` | 1 << 20 | `environment/rt_scene.h:160` | the other half of that budget |
+| `MAX_BLAS_BUILDS_PER_FRAME` | 64 | `environment/rt_geometry.h` | build budget; the rest defer |
+| `MAX_BLAS_BUILD_TRIANGLES_PER_FRAME` | 1 << 20 | `environment/rt_geometry.h` | the other half of that budget |
 | `MAX_RT_CASTERS` | 65536 | `renderer_scene_cull.cpp:3573` | gather ceiling, warns and drops past it |
 | TLAS instance ceiling | 65536 | `environment/rt_scene.cpp:662` | a second, separate ceiling on caster SURFACES, a bare literal, silent when hit |
 | `SHADER_VERSION_COLOR_PASS` | 10 | `scene_shader_forward_clustered.h:69` | **an invariant, not a value** — stage 20. A newer Godot adding its own depth version silently mis-indexes every color pipeline, and the symptom is wrong or missing geometry rather than an error |
@@ -1160,7 +1160,7 @@ reflected size. **Nine** pairings, and that comment is the only place they are g
 | `GTAO::FilterPushConstant` | 80 | `effects/gtao.h:195` |
 | `ScreenSpaceShadows::PushConstant` | 76 | `effects/screen_space_shadows.h:180` |
 | `DLSSEffect::ReactivePushConstant` | 16 | `effects/dlss.h:77` |
-| `RaytracingScene::DequantizePushConstant` | 32 | `environment/rt_scene.h:137` |
+| `RaytracingGeometry::DequantizePushConstant` | 32 | `environment/rt_geometry.h` |
 
 Four carry their **field order** too, because that order is the other half of the contract: the
 assertions catch a size mismatch but not a reordering.
@@ -1224,3 +1224,228 @@ before re-attempting anything here that looks like an obvious improvement from t
 
 Moved. The harnesses, the linear-light rule, the byte-identical standard and the two blind spots are
 in **`docs/VALIDATION.md`**.
+
+## AMD GI preparation: shared geometry cache
+
+`RaytracingGeometry` in `environment/rt_geometry.{h,cpp}` now owns the BLAS cache,
+compressed-position buffers, skinning refresh, budgets, and eviction. `RaytracingScene`
+still owns shadow settings, instance masks, and its TLAS. Move both files when porting;
+`environment/SCsub` discovers the new C++ file automatically. The dequantization shader
+and its 32-byte push block are unchanged. Older stage line references above describe
+the pre-extraction layout.
+
+The validation GI TLAS uses ordered hit metadata and rebuilds explicitly. A future
+persistent GI scene must also compare successful-build revisions; the shadow TLAS's
+order-independent hash is insufficient. Do not reuse the shadow caster predicate
+as GI visibility. The optimized AMD backend remains unfinished; boundaries and
+validation gates are in [AMD_GI_IMPLEMENTATION.md](AMD_GI_IMPLEMENTATION.md).
+
+### Native triangle-material capture
+
+Port `environment/rt_material_capture.{h,cpp}` and the explicit
+`bake_render_triangle_material` forwarding chain from RenderingServer through scene
+culling to the RD renderer. Compatibility's default implementation returns no images;
+Forward Mobile rejects the optional capture buffer. Run `--doctool .` for the API.
+
+Forward+ adds an optional capture buffer to `_render_uv2` and its material render-list
+parameters. `MODE_RENDER_MATERIAL` alone gains set 4/binding 0 and scene flag bit 9;
+do not introduce that binding into normal scene variants. Existing material bakes
+bind the default transform buffer as an unused placeholder. Triangle capture skips
+the legacy UV2 padding draws. Preserve source UV2 and shader vertex IDs; placement
+has a separate buffer. See [internals/rt-materials.md](internals/rt-materials.md) for
+the 64-byte header, normal encoding, lifetime contract, and remaining limitations.
+
+Run both `shadow_validation/run.sh material` and the geometry baseline comparison.
+An ordinary shadow scene does not compile and exercise all material-bake variants.
+
+### Uncached diffuse transport validation
+
+Port `environment/rt_gi_scene.{h,cpp}`, `environment/rtgi_validation.{h,cpp}`,
+`shaders/effects/rt_gi_transport_inc.glsl`, and `shaders/effects/rtgi_validation.glsl`,
+the four `rt_validation/*` project settings, and the independent collection in
+`RendererSceneCull`. The RD coordinator now brackets both TLAS consumers with one
+shared geometry update. `release_gi_only()` must run after the current shadow requests
+when disabling validation; releasing a shared shadow BLAS would invalidate its TLAS.
+
+The shader uses a 128-byte push block, 16-byte hit records, and 80-byte light records.
+Material pages are demand-allocated 256×256 texture-array layers, with 8-pixel triangle tiles
+and a live `amd_gi/material_atlas_mb` budget. Preserve layers across growth.
+Ray queries force non-opaque candidate handling so this consumer can alpha-test the
+opaque BLAS shared with shadows. Shadow visibility rays additionally honor surface
+caster state, light caster masks, and light shadow opacity.
+
+Forward+'s binding 34 is now named `indirect_diffuse_buffer` and its bit-1 effect flag
+is `SCREEN_SPACE_EFFECTS_FLAGS_USE_INDIRECT_DIFFUSE`. Native SSIL and the validation
+integrator provide the same incoming-diffuse contract; they cannot run together.
+This is a naming/generalization of the existing input, not a new normal-frame shader
+branch or descriptor. Validation captures happen before main render lists, tracing
+happens after depth/normal preparation, and composition precedes fog and upscaling.
+
+Run `run.sh gi`, `run.sh material`, and the exact geometry baseline comparison.
+Keep this diagnostic mode distinct from future AMD cache/probe quality settings.
+
+
+### Cached AMD GI diffuse path
+
+Port `environment/amd_gi.{h,cpp}` and `shaders/effects/amd_gi.glsl`, retaining the AMD
+license notice and `COPYRIGHT.txt` entry. The scene adapter above is shared with
+this path; do not construct the diagnostic tracer to enable cached GI. The common
+renderer method is now `is_rtgi_enabled()`, and the coordinator chooses the AMD
+pipeline when `amd_gi/enabled` is requested, otherwise the diagnostic pipeline.
+
+The host/shader contracts are a 128-byte transport push block, a 560-byte frame
+UBO, 192-byte probes (position, normal, SH9, seed/age/update slot), 80-byte ray records, 32-byte hash tiles,
+16-byte radiance cells, and 48-byte pixel histories. The shader specializes pass ID
+at constant 0; preserve all 35 stage boundaries and barriers, including each
+iteration of the probe-mask mip stage. Cache publication,
+lookup/update ownership, old/new radiance, mip generation, probe reconstruction,
+and temporal/spatial filtering must not become concurrent read/write operations.
+
+Viewport custom data owns all histories and buffers; its cleanup must run on resize
+and disabling. Forward+ still consumes binding 34 before tone mapping/upscaling.
+Backend switching must clear the inactive output scope, and native-GI conflicts
+must not silently change authored environment settings. Port all fifteen live
+`amd_gi/*` controls and regenerate ProjectSettings documentation. The initial path
+still uses conservative scene invalidation and dynamic-material refresh.
+
+The stored grid always uses 8-pixel spacing; `probe_spacing` controls only the
+sparse update budget. REPROJECT considers the 64 pixels in each stored tile;
+SELECT and PATCH redistribute update slots without adding rays. Keep stored-grid
+and update-grid counts separate in allocation, dispatch, and ray indexing. Spawn
+and queue buffers are bindings 24/25; the hierarchical valid-probe mask is binding
+26. Mask dimensions round up so odd edge tiles survive every mip level.
+
+The frame UBO's `flags.y` enables radiance-guided diffuse sampling. TRACE writes
+reprojected angular history into scratch; RESOLVE reads it before FILTER_X reuses
+that storage. Keep the 64-lane shared-memory scans and bin publication/read/reuse
+barriers uniform, including sky lanes. Angular bins gather a 3×3 previous-probe
+neighborhood and use bounded integer linked
+lists with floating-point sums instead of upstream fixed-point radiance atomics.
+Changing sampling mode must reset history without allocating new GPU resources.
+Relaxed interpolation uses pixel `position.w == 2` as a low-confidence hint;
+those estimates must not become trusted temporal history.
+
+Bindings 27–30 hold the displaced-probe pool, ownership/list state, and previous/current
+LRU order. The pool has 4,096 entries of 1,216 bytes each. Its single-workgroup
+exclusive scan stably partitions unused and reused entries, reserves untouched
+slots for deduplicated evictions, and appends new entries at the recent end. TRACE
+only reads the pool and claims ownership; STORE_CACHED writes after all reuse.
+The frame UBO contains both previous and current view-projection matrices.
+Keep GI collection sorted by stable instance/light IDs before computing scene
+revisions. BVH traversal order can vary in a static scene and previously caused
+every-frame resets that silently defeated all temporal reuse. The focused
+`amd_gi_cache` rig must observe one initialization reset, not a reset per frame.
+The `probe_cache` toggle frees the pool and skips its passes; disabled variants
+bind minimal valid placeholders that conditional shader paths must never access.
+`GODOT_AMD_GI_VALIDATE_CACHE=1` enables synchronous GPU-state validation only;
+the sampling and focused cache harnesses use it, performance captures must not.
+Binding 31 is the shared, read-only 32 KiB blue-noise lookup generated from
+Capsaicin's first two spatial sampler dimensions. It belongs to the lazy AMDGI
+object, not a permanently initialized rendering singleton. See
+`thirdparty/amd_gi/README.md` for provenance and regeneration.
+
+Bindings 32–33 hold previous/current light reservoirs (16 bytes per base cell,
+excluding mips). The frame UBO's `tracing.w` enables them only when the
+setting is on and the scene has multiple lights. RESET clears/copies proposals
+alongside world tiles; UPDATE reads the previous buffer and writes only its owned
+cell. Short-ray/overflow fallback shading may read proposals but must not write
+shared cells. Disabled/zero/one-light variants bind 16-byte placeholders. Packed
+records contain light index, octahedral normal, RIS weight, and confidence.
+Light-list changes invalidate history before indices can refer to different lights.
+
+Bindings 34–35 hold previous/current indirect radiance (separate from direct
+bindings 17–18), and binding 36 holds secondary 80-byte hit records. Only primary
+cache owners schedule continuations; each writes the secondary slot matching its
+primary ray ID. Secondary ownership IDs add the primary-ray count, so primary
+receivers keep priority. Populate/allocate/register secondary hits before direct
+shading and its mips, then update indirect light from current direct plus previous
+indirect, then build indirect mips. Never read the current indirect buffer while
+writing it. Disabling multibounce releases these three buffers and skips seven
+stages. `GODOT_AMD_GI_VALIDATE_BOUNCES=1` checks actual GPU parent/owner mappings.
+
+`RaytracingGIScene` retains bounded material preparation pages. `prepare()` owns
+expanded geometry/targets, while `render()` evaluates current native materials.
+Keep the `MeshStorage::Surface` geometry/data revisions and increments in region
+update methods: vertex/index edits invalidate shared BLASes and material pages;
+attribute/skin edits invalidate prepared material data. Buffer RID checks alone
+cannot detect edits in place. Re-preparation is keyed by source mesh, surface,
+triangle range, BLAS revision, and data revision. Static material pixels additionally
+compare material content revision, source texture backing RID/content revision, and
+model transform. Preserve material-queue revision increments and image-upload
+revision increments in MaterialStorage/TextureStorage. Texture proxies resolve the
+actual owner. Untracked GPU/viewport/drawable textures, TIME, global and instance
+uniforms must bypass pixel caching. Never infer stability merely from texture RID.
+The dirty-material harness verifies both reuse and these dynamic fallbacks.
+Disabling deletes all these pages.
+
+Run `./run.sh amd_gi`, the one-sample diagnostic controls, material checks, and the
+exact geometry baseline comparison. Progress captures keep denoising enabled and
+use a stated low primary-ray budget. Do not substitute historical high-sample
+transport images. Run `./run.sh amd_gi_sampling` for sampling switches, black-history
+recovery, and emissive removal. See [features/amd-gi.md](features/amd-gi.md) for remaining work.
+
+
+### AMD GI sky and glossy reflections
+
+Port `amd_gi_reflections_inc.glsl` with the main shader. The frame UBO is now 560
+bytes: the original 288-byte sky/reflection layout followed by one uvec4 and eight
+std140 min/max vec4 pairs for swept motion bounds.
+Binding 37 samples SkyRD's existing 2D base octahedral view for either sky layout;
+do not bind a cubemap or allocate a second sky bake. The sky radiance version
+increments only when its base is redrawn. Static sky edits invalidate GI history;
+TIME/position/light-driven skies use continuous sampling without per-redraw resets.
+Smooth light motion/energy/color and sky orientation changes retain history. Light
+identity/list/mask changes and large discontinuities reset it; previous light
+parameters are compared separately from the scene identity signature.
+
+Bindings 38–40 are 80-byte glossy sample/previous/current history records. Bindings
+41–42 are filtered radiance/variance images; 43 is the full-resolution reflection
+output. The last five stages trace, ratio-resolve, reproject, filter, and upsample.
+FILTER repeats with barriers at a-trous steps 1, 2, and 4 according to the control;
+its first iteration reads immutable history, subsequent iterations ping-pong images.
+No lane reads a neighbor's concurrently written history. Odd half-resolution sizes
+round up and sample positions clamp at the edge. Full-resolution output avoids an
+extra upsample blur. Disabled variants bind tiny placeholders and dispatch no
+reflection stages. Disabling AMD GI still releases the entire owning scope.
+
+Forward+'s existing reflection binding 35 carries this incoming radiance. Flag bit
+4 identifies it so native SSR's roughness fade and compressed-mip resolve are not
+applied. Native material DFG/Fresnel remains downstream. Run sky and glossy harnesses
+as well as diffuse regression checks; the matte room cannot exercise specular output.
+
+
+### Packed GI material rows
+
+The hit record's first uint is now an absolute triangle-tile address, not an array
+layer. `atlas_position()` adds the primitive index, divides by 1024 for the layer,
+and uses a fixed 32-tile row. CPU capture chunks end at layer boundaries and retain
+their requested triangle count in the preparation key. Each surface rounds its
+final row up; small meshes no longer reserve a full layer. Atlas address changes
+must copy retained capture pixels even when material content is unchanged. Keep
+copy destinations, layer bounds and the shader address calculation together.
+Run `amd_gi_atlas`, material transport and the one-sample uncached controls.
+
+### GI pose capture and local invalidation
+
+Material descriptor set 4 adds binding 1 for the native current pose vertex buffer.
+The 64-byte capture header starts with tile size, columns, source vertex count and
+normal/tangent/pose presence bits. Three further vectors carry element color, custom
+data, and instance ID; source vertex IDs follow the whole header. Read float3 positions and the native octahedral
+normal/tangent stream before material vertex evaluation, only in the material
+variant. Static and UV2 baking bind a dummy descriptor. Preserve original vertex
+IDs and UV/color/custom attributes. The expanded capture mesh itself is not skinned.
+
+Preparation keys on immutable source vertices/data revisions, not the changing
+pose BLAS revision. Pixel invalidation separately tracks mesh-instance RID and pose
+revision. GI collection requests current poses for off-screen non-casters as well
+as visible/shadow geometry; this remains under the GI gate. Do not add CPU readback
+of poses or build a duplicate skeleton/BLAS path.
+
+The scene signature includes immutable geometry identity, topology/material bindings
+and masks. Transform/pose changes instead emit swept old/new world bounds. Keep the
+CPU limit of eight synchronized with the shader's sixteen vec4 entries; merge
+additional movers into the last region. Invalidate both screen and displaced-probe
+ray connections, world tiles and relevant pixel/reflection history. Retiring only
+currently visible probes permits stale entries to reappear from the displaced pool.
+Run deformation with cache diagnostics, native material/UV2 checks, and the exact
+shadow geometry baseline when porting these changes.

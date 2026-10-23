@@ -282,6 +282,7 @@ public:
 		int processing_layer = 0;
 		Sky *dirty_list = nullptr;
 		float baked_exposure = 1.0;
+		uint64_t radiance_version = 0;
 
 		// State to track when radiance octmap needs updating.
 		SkyMaterialData *prev_material_data = nullptr;
@@ -335,6 +336,9 @@ public:
 
 	RID sky_get_material(RID p_sky) const;
 	RID sky_get_radiance_texture_rd(RID p_sky) const;
+	RID sky_get_radiance_base_texture_rd(RID p_sky) const;
+	uint64_t sky_get_radiance_version(RID p_sky) const;
+	bool sky_radiance_is_dynamic(RID p_sky) const;
 	float sky_get_baked_exposure(RID p_sky) const;
 
 	RID allocate_sky_rid();

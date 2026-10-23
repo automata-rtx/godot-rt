@@ -78,6 +78,8 @@ private:
 		struct Surface {
 			RSE::PrimitiveType primitive = RSE::PRIMITIVE_POINTS;
 			uint64_t format = 0;
+			uint64_t geometry_revision = 1;
+			uint64_t data_revision = 1;
 
 			uint32_t vertex_count = 0;
 			RID vertex_buffer;
@@ -479,6 +481,12 @@ public:
 	}
 
 	// Raw surface buffers, used to build raytracing acceleration structures.
+	_FORCE_INLINE_ uint64_t mesh_surface_get_geometry_revision(void *p_surface) const {
+		return reinterpret_cast<Mesh::Surface *>(p_surface)->geometry_revision;
+	}
+	_FORCE_INLINE_ uint64_t mesh_surface_get_data_revision(void *p_surface) const {
+		return reinterpret_cast<Mesh::Surface *>(p_surface)->data_revision;
+	}
 	_FORCE_INLINE_ uint32_t mesh_surface_get_index_count(void *p_surface) const {
 		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
 		return s->index_count;

@@ -153,6 +153,8 @@ private:
 		RenderingDevice::TextureType rd_type;
 		RID rd_texture;
 		RID rd_texture_srgb;
+		uint64_t content_revision = 1;
+		bool content_revision_tracked = false;
 		RenderingDevice::DataFormat rd_format;
 		RenderingDevice::DataFormat rd_format_srgb;
 		Vector<RID> cached_rd_slices;
@@ -641,6 +643,8 @@ public:
 
 	virtual void texture_rd_initialize(RID p_texture, const RID &p_rd_texture, const RSE::TextureLayeredType p_layer_type = RSE::TEXTURE_LAYERED_2D_ARRAY) override;
 	virtual RID texture_get_rd_texture(RID p_texture, bool p_srgb = false) const override;
+	// False for external, drawable, or viewport textures with untracked GPU writes.
+	bool texture_get_content_revision(RID p_texture, RID &r_storage, uint64_t &r_revision) const;
 	virtual uint64_t texture_get_native_handle(RID p_texture, bool p_srgb = false) const override;
 
 	//internal usage

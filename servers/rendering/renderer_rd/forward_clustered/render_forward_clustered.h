@@ -261,6 +261,8 @@ private:
 		bool no_gi = false;
 		uint32_t view_count = 1;
 		RID render_pass_uniform_set;
+		RID material_capture_buffer;
+		RID material_capture_pose;
 		bool force_wireframe = false;
 		Vector2 uv_offset;
 		float lod_distance_multiplier = 0.0;
@@ -648,6 +650,7 @@ private:
 
 	// These are not used in the Forward+ path, it has different light clustering tech.
 	virtual bool _uses_raytraced_shadows() const override { return true; }
+	bool supports_triangle_material_capture() const override { return true; }
 	virtual bool is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const override;
 
 	virtual uint32_t get_max_lights_total() override { return 0; }
@@ -879,7 +882,7 @@ protected:
 	virtual void _render_buffers_debug_draw(const RenderDataRD *p_render_data) override;
 
 	virtual void _render_material(const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region, float p_exposure_normalization) override;
-	virtual void _render_uv2(const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region) override;
+	virtual void _render_uv2(const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region, RID p_capture_buffer = RID(), RID p_capture_pose = RID()) override;
 	virtual void _render_sdfgi(Ref<RenderSceneBuffersRD> p_render_buffers, const Vector3i &p_from, const Vector3i &p_size, const AABB &p_bounds, const PagedArray<RenderGeometryInstance *> &p_instances, const RID &p_albedo_texture, const RID &p_emission_texture, const RID &p_emission_aniso_texture, const RID &p_geom_facing_texture, float p_exposure_normalization) override;
 	virtual void _render_particle_collider_heightfield(RID p_fb, const Transform3D &p_cam_transform, const Projection &p_cam_projection, const PagedArray<RenderGeometryInstance *> &p_instances) override;
 

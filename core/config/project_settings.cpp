@@ -1837,6 +1837,27 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/rendering_device/vsync/swapchain_image_count", PROPERTY_HINT_RANGE, "2,4,1"), 3);
 	// Raytraced shadows. Registered here so that the setting is available before
 	// the rendering device is created and before any Light3D is constructed.
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/enabled", false);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/probe_spacing", PROPERTY_HINT_ENUM, "1 ray/pixel:8,1/4 ray/pixel:16,1/16 ray/pixel:32"), 16);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/material_atlas_mb", PROPERTY_HINT_RANGE, "8,512,8,suffix:MiB"), 128);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/multibounce", true);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/denoiser", true);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/importance_sampling", true);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/adaptive_sampling", true);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/probe_cache", true);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/light_resampling", true);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/reflections/enabled", true);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/reflections/half_resolution", true);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold", PROPERTY_HINT_RANGE, "0.2,1,0.05"), 0.6);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/reflections/filter_passes", PROPERTY_HINT_RANGE, "1,3,1"), 3);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/minimum_cell_size", PROPERTY_HINT_RANGE, "0.01,1,0.01,or_greater"), 0.1);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/continuation_probability", PROPERTY_HINT_RANGE, "0.05,1,0.05"), 0.3);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/max_distance", PROPERTY_HINT_RANGE, "1,1000,0.1,or_greater"), 50.0);
+
+	GLOBAL_DEF("rendering/global_illumination/rt_validation/enabled", false);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/rt_validation/samples_per_pixel", PROPERTY_HINT_RANGE, "1,4096,1"), 1);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/rt_validation/bounces", PROPERTY_HINT_RANGE, "1,8,1"), 2);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/rt_validation/max_distance", PROPERTY_HINT_RANGE, "1,1000,0.1,or_greater"), 50.0);
 	GLOBAL_DEF_RST_BASIC("rendering/lights_and_shadows/raytraced_shadows/enabled", false);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/samples_per_light", PROPERTY_HINT_RANGE, "1,16,1"), 1);
 	// Shortens every shadow ray, trading distant occlusion for traversal time.

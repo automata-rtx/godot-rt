@@ -42,8 +42,10 @@
 #include "servers/rendering/renderer_rd/effects/smaa.h"
 #include "servers/rendering/renderer_rd/effects/tone_mapper.h"
 #include "servers/rendering/renderer_rd/effects/vrs.h"
+#include "servers/rendering/renderer_rd/environment/amd_gi.h"
 #include "servers/rendering/renderer_rd/environment/gi.h"
 #include "servers/rendering/renderer_rd/environment/rt_scene.h"
+#include "servers/rendering/renderer_rd/environment/rtgi_validation.h"
 #include "servers/rendering/renderer_rd/environment/sky.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_data_rd.h"
@@ -68,6 +70,9 @@ protected:
 	RendererRD::DebugEffects *debug_effects = nullptr;
 	RendererRD::RaytracingScene *raytracing_scene = nullptr;
 	RendererRD::RTShadows *rt_shadows = nullptr;
+	RendererRD::RTGIValidation *rtgi_validation = nullptr;
+	RendererRD::RaytracingGIScene *rtgi_scene = nullptr;
+	RendererRD::AMDGI *amd_gi = nullptr;
 	RendererRD::ScreenSpaceShadows *screen_space_shadows = nullptr;
 	// Set once the effect has been tried and could not be built, so that a device
 	// which cannot run it does not recompile three shader variants every frame.
@@ -102,7 +107,7 @@ protected:
 	virtual void _render_buffers_debug_draw(const RenderDataRD *p_render_data);
 
 	virtual void _render_material(const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region, float p_exposure_normalization) = 0;
-	virtual void _render_uv2(const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region) = 0;
+	virtual void _render_uv2(const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region, RID p_capture_buffer = RID(), RID p_capture_pose = RID()) = 0;
 	virtual void _render_sdfgi(Ref<RenderSceneBuffersRD> p_render_buffers, const Vector3i &p_from, const Vector3i &p_size, const AABB &p_bounds, const PagedArray<RenderGeometryInstance *> &p_instances, const RID &p_albedo_texture, const RID &p_emission_texture, const RID &p_emission_aniso_texture, const RID &p_geom_facing_texture, float p_exposure_normalization) = 0;
 	virtual void _render_particle_collider_heightfield(RID p_fb, const Transform3D &p_cam_transform, const Projection &p_cam_projection, const PagedArray<RenderGeometryInstance *> &p_instances) = 0;
 
@@ -275,6 +280,7 @@ public:
 	virtual RaytracedScatterMode get_raytraced_scatter_mode() const override;
 	virtual float get_raytraced_scatter_distance() const override;
 	virtual bool is_raytracing_scene_available() const override;
+	bool is_rtgi_enabled(RID p_environment, const Ref<RenderSceneBuffers> &p_buffers) const override;
 
 	// The screen space shadow effect, built on first use and only where it can
 	// run. Returns null when the feature cannot be used on this device, which the
@@ -282,7 +288,7 @@ public:
 	RendererRD::ScreenSpaceShadows *get_screen_space_shadows();
 	virtual bool is_raytraced_shadow_mask_available(const Ref<RenderSceneBuffers> &p_render_buffers) const override;
 	virtual bool is_raytracing_debug_enabled() const override;
-	virtual void update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances) override;
+	virtual void update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances, const LocalVector<RaytracingGIInstance> &p_gi_instances, const LocalVector<RID> &p_gi_lights) override;
 
 	virtual void render_scene(const Ref<RenderSceneBuffers> &p_render_buffers, const CameraData *p_camera_data, const CameraData *p_prev_camera_data, const PagedArray<RenderGeometryInstance *> &p_instances, const PagedArray<RID> &p_lights, const PagedArray<RID> &p_reflection_probes, const PagedArray<RID> &p_voxel_gi_instances, const PagedArray<RID> &p_decals, const PagedArray<RID> &p_lightmaps, const PagedArray<RID> &p_fog_volumes, RID p_environment, RID p_camera_attributes, RID p_compositor, RID p_shadow_atlas, RID p_occluder_debug_tex, RID p_reflection_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, const RenderShadowData *p_render_shadows, int p_render_shadow_count, const RenderSDFGIData *p_render_sdfgi_regions, int p_render_sdfgi_region_count, float p_window_output_max_value, const RenderSDFGIUpdateData *p_sdfgi_update_data = nullptr, RenderingServerTypes::RenderInfo *r_render_info = nullptr) override;
 
@@ -370,7 +376,10 @@ public:
 	int get_roughness_layers() const;
 	bool is_using_radiance_octmap_array() const;
 
+	virtual bool supports_triangle_material_capture() const { return false; }
+	void render_triangle_material_capture(const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region, RID p_capture_buffer, RID p_capture_pose = RID()) { _render_uv2(p_instances, p_framebuffer, p_region, p_capture_buffer, p_capture_pose); }
 	virtual TypedArray<Image> bake_render_uv2(RID p_base, const TypedArray<RID> &p_material_overrides, const Size2i &p_image_size) override;
+	TypedArray<Image> bake_render_triangle_material(RID p_mesh, int p_surface, int p_first_triangle, int p_triangle_count, int p_tile_size, const Transform3D &p_transform, RID p_material_override) override;
 	virtual PackedByteArray bake_render_area_light_atlas(const TypedArray<RID> &p_area_light_textures, const TypedArray<Rect2> &p_area_light_atlas_texture_rects, const Size2i &p_size, int p_mipmaps) override;
 
 	virtual bool free(RID p_rid) override;

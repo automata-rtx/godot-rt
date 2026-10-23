@@ -2418,6 +2418,7 @@ void MaterialStorage::_material_uniform_set_erased(void *p_material) {
 
 void MaterialStorage::_material_queue_update(Material *material, bool p_uniform, bool p_texture) {
 	MutexLock lock(material_update_list_mutex);
+	material->content_revision++;
 	material->uniform_dirty = material->uniform_dirty || p_uniform;
 	material->texture_dirty = material->texture_dirty || p_texture;
 

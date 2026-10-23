@@ -354,6 +354,13 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 	SceneState::PushConstant push_constant;
 
 	if constexpr (p_pass_mode == PASS_MODE_DEPTH_MATERIAL) {
+		// This set exists only in the material variant. Normal scene rendering has
+		// no additional descriptor, resource, or material-capture branch.
+		RID capture_shader = scene_shader.default_material_shader_ptr->get_shader_variant(SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_MATERIAL, 0, true);
+		RID capture_buffer = p_params->material_capture_buffer.is_valid() ? p_params->material_capture_buffer : scene_shader.default_vec4_xform_buffer;
+		RID pose_buffer = p_params->material_capture_pose.is_valid() ? p_params->material_capture_pose : scene_shader.default_vec4_xform_buffer;
+		RID capture_set = UniformSetCacheRD::get_singleton()->get_cache(capture_shader, 4, RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, capture_buffer), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, pose_buffer));
+		RD::get_singleton()->draw_list_bind_uniform_set(draw_list, capture_set, 4);
 		push_constant.uv_offset = Math::make_half_float(p_params->uv_offset.y) << 16;
 		push_constant.uv_offset |= Math::make_half_float(p_params->uv_offset.x);
 	} else {
@@ -792,14 +799,18 @@ uint32_t RenderForwardClustered::_setup_environment(const RenderDataRD *p_render
 		uint32_t ss_flags = 0;
 		if (p_opaque_render_buffers) {
 			ss_flags |= environment_get_ssao_enabled(p_render_data->environment) ? (1 << 0) : 0;
-			ss_flags |= environment_get_ssil_enabled(p_render_data->environment) ? (1 << 1) : 0;
-			ss_flags |= environment_get_ssr_enabled(p_render_data->environment) ? (1 << 2) : 0;
+			const bool validation_gi = rtgi_validation && rtgi_scene && rtgi_scene->is_ready() && rd.is_valid() && rd->has_texture(RB_SCOPE_RTGI_VALIDATION, SNAME("diffuse"));
+			const bool cached_gi = amd_gi && rtgi_scene && rtgi_scene->is_ready() && rd.is_valid() && rd->has_texture(RB_SCOPE_AMD_GI, SNAME("diffuse"));
+			ss_flags |= (environment_get_ssil_enabled(p_render_data->environment) || validation_gi || cached_gi) ? (1 << 1) : 0;
+			const bool cached_reflections = cached_gi && rd->has_texture(RB_SCOPE_AMD_GI, SNAME("reflection"));
+			ss_flags |= (environment_get_ssr_enabled(p_render_data->environment) || cached_reflections) ? (1 << 2) : 0;
+			ss_flags |= cached_reflections ? (1 << 4) : 0;
 
 			if (rd.is_valid()) {
 				Ref<RenderBufferDataForwardClustered> rb_data;
 				if (rd->has_custom_data(RB_SCOPE_FORWARD_CLUSTERED)) {
 					rb_data = rd->get_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
-					ss_flags |= (rb_data.is_valid() && !rb_data->ss_effects_data.ssr.half_size) ? (1 << 3) : 0;
+					ss_flags |= (!cached_reflections && rb_data.is_valid() && !rb_data->ss_effects_data.ssr.half_size) ? (1 << 3) : 0;
 				}
 			}
 		}
@@ -2219,6 +2230,56 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		}
 	}
 
+	// A transport reference uses the existing indirect-diffuse input in Forward+.
+	// No extra scene descriptor or shader branch is needed while it is disabled.
+	if (rtgi_validation && rtgi_scene && rb_data.is_valid() && p_render_data->reflection_probe.is_null()) {
+		RENDER_TIMESTAMP("RT GI Validation");
+		float exposure = p_render_data->camera_attributes.is_valid() ? RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes) : 1.0f;
+		if (!rtgi_validation->render(*rtgi_scene, rb, rb_data->get_normal_roughness(), p_render_data->scene_data->get_cam_projection(), p_render_data->scene_data->get_cam_transform(), exposure)) {
+			rb->clear_context(RB_SCOPE_RTGI_VALIDATION);
+		}
+	} else if (rb.is_valid() && rb->has_texture(RB_SCOPE_RTGI_VALIDATION, SNAME("diffuse"))) {
+		rb->clear_context(RB_SCOPE_RTGI_VALIDATION);
+	}
+
+	if (amd_gi && rtgi_scene && rb_data.is_valid() && p_render_data->reflection_probe.is_null()) {
+		RENDER_TIMESTAMP("AMD GI");
+		const float exposure = p_render_data->camera_attributes.is_valid() ? RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes) : 1.0f;
+		RendererRD::AMDGI::Environment gi_environment;
+		const RID env = p_render_data->environment;
+		if (env.is_valid()) {
+			const RID sky_rid = environment_get_sky(env);
+			const bool sky_background = environment_get_background(env) == RSE::ENV_BG_SKY;
+			const RSE::EnvironmentAmbientSource ambient_source = environment_get_ambient_source(env);
+			const RSE::EnvironmentReflectionSource reflection_source = environment_get_reflection_source(env);
+			const bool ambient_sky = ambient_source == RSE::ENV_AMBIENT_SOURCE_SKY || (ambient_source == RSE::ENV_AMBIENT_SOURCE_BG && sky_background);
+			const bool reflection_sky = reflection_source == RSE::ENV_REFLECTION_SOURCE_SKY || (reflection_source == RSE::ENV_REFLECTION_SOURCE_BG && sky_background);
+			if (sky_rid.is_valid() && (ambient_sky || reflection_sky)) {
+				gi_environment.radiance = sky.sky_get_radiance_base_texture_rd(sky_rid);
+				gi_environment.revision = sky.sky_radiance_is_dynamic(sky_rid) ? 0 : sky.sky_get_radiance_version(sky_rid);
+				gi_environment.world_to_sky = environment_get_sky_orientation(env).inverse();
+				gi_environment.border = sky.sky_get_uv_border_size(sky_rid);
+				// Match Forward+'s IBL normalization, but keep the cache unexposed.
+				float energy = environment_get_bg_energy_multiplier(env);
+				if (p_render_data->camera_attributes.is_valid()) {
+					energy *= environment_get_bg_intensity(env) / (rb->get_luminance_multiplier() * MAX(0.001f, sky.sky_get_baked_exposure(sky_rid)));
+				}
+				gi_environment.reflection_energy = reflection_sky ? energy : 0.0f;
+				if (ambient_sky) {
+					const float blend = environment_get_ambient_sky_contribution(env);
+					gi_environment.diffuse_energy = energy * blend;
+					gi_environment.ambient = environment_get_ambient_light(env).srgb_to_linear() * (environment_get_ambient_light_energy(env) * (1.0f - blend) / MAX(exposure, 0.000001f));
+					gi_environment.ambient.a = 1.0f;
+				}
+			}
+		}
+		if (!amd_gi->render(*rtgi_scene, rb, rb_data->get_normal_roughness(), p_render_data->scene_data->get_cam_projection(), p_render_data->scene_data->get_cam_transform(), exposure, gi_environment)) {
+			RendererRD::AMDGI::clear(rb);
+		}
+	} else if (rb.is_valid() && (rb->has_custom_data(RB_SCOPE_AMD_GI) || rb->has_texture(RB_SCOPE_AMD_GI, SNAME("diffuse")))) {
+		RendererRD::AMDGI::clear(rb);
+	}
+
 	// Screen space shadows. Separate from the block above on purpose: this runs
 	// whether or not raytraced shadows do, because the geometry it exists to
 	// shadow is geometry that was deliberately kept out of the acceleration
@@ -2445,7 +2506,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			if (environment_get_sdfgi_enabled(p_render_data->environment) && get_debug_draw_mode() != RSE::VIEWPORT_DEBUG_DRAW_UNSHADED) {
 				using_sdfgi = true;
 			}
-			if (environment_get_ssr_enabled(p_render_data->environment)) {
+			if (environment_get_ssr_enabled(p_render_data->environment) && !(amd_gi && rtgi_scene && rtgi_scene->is_ready() && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/enabled")))) {
 				if (!p_render_data->transparent_bg) {
 					using_ssr = true;
 				} else {
@@ -3706,7 +3767,7 @@ void RenderForwardClustered::_render_material(const Transform3D &p_cam_transform
 	RD::get_singleton()->draw_command_end_label();
 }
 
-void RenderForwardClustered::_render_uv2(const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region) {
+void RenderForwardClustered::_render_uv2(const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region, RID p_capture_buffer, RID p_capture_pose) {
 	RENDER_TIMESTAMP("Setup Rendering UV2");
 
 	RD::get_singleton()->draw_command_begin_label("Render UV2");
@@ -3714,6 +3775,9 @@ void RenderForwardClustered::_render_uv2(const PagedArray<RenderGeometryInstance
 	RenderSceneDataRD scene_data;
 	scene_data.dual_paraboloid_side = 0;
 	scene_data.material_uv2_mode = true;
+	scene_data.material_triangle_mode = p_capture_buffer.is_valid();
+	scene_data.time = time;
+	scene_data.time_step = time_step;
 	scene_data.opaque_prepass_threshold = 0.0;
 	scene_data.emissive_exposure_normalization = -1.0;
 
@@ -3745,6 +3809,8 @@ void RenderForwardClustered::_render_uv2(const PagedArray<RenderGeometryInstance
 
 	{
 		RenderListParameters render_list_params(render_list[RENDER_LIST_SECONDARY].elements.ptr(), render_list[RENDER_LIST_SECONDARY].element_info.ptr(), render_list[RENDER_LIST_SECONDARY].elements.size(), true, pass_mode, 0, true, false, rp_uniform_set, true);
+		render_list_params.material_capture_buffer = p_capture_buffer;
+		render_list_params.material_capture_pose = p_capture_pose;
 		//regular forward for now
 		Vector<Color> clear = {
 			Color(0, 0, 0, 0),
@@ -3769,7 +3835,7 @@ void RenderForwardClustered::_render_uv2(const PagedArray<RenderGeometryInstance
 
 		};
 
-		for (int i = 0; i < uv_offset_count; i++) {
+		for (int i = 0; i < (p_capture_buffer.is_valid() ? 0 : uv_offset_count); i++) {
 			Vector2 ofs = uv_offsets[i];
 			ofs.x /= p_region.size.width;
 			ofs.y /= p_region.size.height;
@@ -4412,8 +4478,15 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		RD::Uniform u;
 		u.binding = 34;
 		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
-		RID ssil = rb.is_valid() && rb->has_texture(RB_SCOPE_SSIL, RB_FINAL) ? rb->get_texture(RB_SCOPE_SSIL, RB_FINAL) : RID();
-		RID texture = ssil.is_valid() ? ssil : texture_storage->texture_rd_get_default(is_multiview ? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK : RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
+		// SSIL and the transport validator supply the same incoming-diffuse contract.
+		RID indirect_diffuse = rb.is_valid() && rb->has_texture(RB_SCOPE_SSIL, RB_FINAL) ? rb->get_texture(RB_SCOPE_SSIL, RB_FINAL) : RID();
+		if (rtgi_validation && rtgi_scene && rtgi_scene->is_ready() && rb.is_valid() && rb->has_texture(RB_SCOPE_RTGI_VALIDATION, SNAME("diffuse"))) {
+			indirect_diffuse = rb->get_texture(RB_SCOPE_RTGI_VALIDATION, SNAME("diffuse"));
+		}
+		if (amd_gi && rtgi_scene && rtgi_scene->is_ready() && rb.is_valid() && rb->has_texture(RB_SCOPE_AMD_GI, SNAME("diffuse"))) {
+			indirect_diffuse = rb->get_texture(RB_SCOPE_AMD_GI, SNAME("diffuse"));
+		}
+		RID texture = indirect_diffuse.is_valid() ? indirect_diffuse : texture_storage->texture_rd_get_default(is_multiview ? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK : RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
 		u.append_id(texture);
 		uniforms.push_back(u);
 	}
@@ -4435,6 +4508,9 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 			}
 		}
 
+		if (amd_gi && rtgi_scene && rtgi_scene->is_ready() && rb.is_valid() && rb->has_texture(RB_SCOPE_AMD_GI, SNAME("reflection"))) {
+			ssr = rb->get_texture(RB_SCOPE_AMD_GI, SNAME("reflection"));
+		}
 		RID texture = ssr.is_valid() ? ssr : texture_storage->texture_rd_get_default(is_multiview ? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK : RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
 		u.append_id(texture);
 		uniforms.push_back(u);

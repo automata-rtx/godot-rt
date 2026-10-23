@@ -202,6 +202,8 @@ def overlay(out_dir, variant, path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("out_dir", help="directory holding a_off.png, b_rt.png and the variants")
+    ap.add_argument("--geometry", action="store_true", help="check geometry cache captures")
+    ap.add_argument("--reference", help="baseline geometry captures for exact pixel comparison")
     ap.add_argument("--srgb", action="store_true", help="also print gamma-space numbers, to identify a stale figure")
     ap.add_argument("--bands", action="store_true", help="stratify mass by distance from the camera")
     ap.add_argument("--overlay", metavar="PNG", help="draw the disagreement map for the first variant")
@@ -215,6 +217,10 @@ def main():
         help="framing for --bands (default: field.gd's)",
     )
     a = ap.parse_args()
+
+    if a.geometry:
+        score_geometry(a.out_dir, a.reference)
+        return
 
     for need in ("a_off.png", "b_rt.png"):
         if not os.path.exists(os.path.join(a.out_dir, need)):
@@ -230,6 +236,57 @@ def main():
         v = _variants(a.out_dir)
         if v:
             overlay(a.out_dir, v[0], a.overlay)
+
+
+def score_geometry(out_dir, reference):
+    """Require every stage; exact pixel equality is stricter than a lighting metric."""
+    if reference and os.path.realpath(out_dir) == os.path.realpath(reference):
+        sys.exit("geometry reference must be a separate baseline capture directory")
+    stages = (
+        "indexed",
+        "control_none",
+        "nonindexed",
+        "compressed",
+        "index32",
+        "replaced",
+        "rest_pose",
+        "deformed",
+        "restored",
+        "after_eviction",
+        "freed",
+    )
+    images = {}
+    for stage in stages:
+        name = "geometry_" + stage + ".png"
+        path = os.path.join(out_dir, name)
+        if not os.path.isfile(path):
+            sys.exit("missing %s -- the geometry run did not finish" % path)
+        images[stage] = _rgb(path)
+        if reference:
+            control = _rgb(os.path.join(reference, name))
+            if images[stage].shape != control.shape:
+                sys.exit("%s: capture dimensions differ" % name)
+            changed = int(np.count_nonzero(np.any(images[stage] != control, axis=2)))
+            print("%s: %d changed pixels" % (name, changed))
+            if changed:
+                sys.exit("geometry regression: " + name)
+    # These controls detect an empty run and deformations/replacements that never
+    # reached rasterization. RT_DEBUG plus the device capability gate prove the RT
+    # path ran; this comparison alone cannot distinguish it from shadow maps.
+    for before, after in (("indexed", "control_none"), ("index32", "replaced"), ("rest_pose", "deformed")):
+        if np.array_equal(images[before], images[after]):
+            sys.exit("geometry control did not change: %s -> %s" % (before, after))
+    updated = _rgb(os.path.join(out_dir, "geometry_inplace_vertices.png"))
+    rebuilt = _rgb(os.path.join(out_dir, "geometry_inplace_rebuilt.png"))
+    if not np.array_equal(updated, rebuilt) or np.array_equal(updated, images["indexed"]):
+        sys.exit("In-place vertex update did not match the rebuilt geometry")
+    print("In-place vertex-buffer update matches rebuilt BLAS exactly.")
+    indices = _rgb(os.path.join(out_dir, "geometry_inplace_indices.png"))
+    indices_rebuilt = _rgb(os.path.join(out_dir, "geometry_indices_rebuilt.png"))
+    if not np.array_equal(indices, indices_rebuilt) or np.array_equal(indices, rebuilt):
+        sys.exit("In-place index update did not match the rebuilt geometry")
+    print("In-place index-buffer update matches rebuilt BLAS exactly.")
+    print("geometry controls passed" + ("; baseline pixels identical" if reference else "; no baseline supplied"))
 
 
 if __name__ == "__main__":

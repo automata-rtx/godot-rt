@@ -341,6 +341,26 @@ public:
 		uint32_t surface_mask = 0xFFFFFFFF;
 	};
 
+	static constexpr uint32_t MAX_RT_GI_INSTANCES = 65536;
+	static constexpr uint32_t MAX_RT_GI_LIGHTS = 1024;
+
+	// Independent GI collection: shadow-casting flags do not select reflectors.
+	struct RaytracingGIInstance {
+		RID multimesh;
+		uint32_t element = 0;
+		AABB world_bounds;
+		RID instance;
+		RID mesh;
+		RID mesh_instance;
+		Transform3D transform;
+		RID material_override;
+		Vector<RID> materials;
+		int32_t uniforms_offset = -1;
+		uint32_t shadow_surface_mask = 0xFFFFFFFF;
+		uint32_t layer_mask = 0xFFFFFFFF;
+	};
+	virtual bool is_rtgi_enabled(RID p_environment, const Ref<RenderSceneBuffers> &p_buffers) const { return false; }
+
 	// How a directional light's casters are bounded. A sun has no range, so the
 	// structure is bounded by the visible frustum swept towards the light, and
 	// by a policy for scattered geometry which would otherwise flood it. Both
@@ -364,7 +384,7 @@ public:
 	// Whether raytraced shadow tracing should log what it is doing. Lives here
 	// so the renderer-agnostic cull layer can log without reaching into RD.
 	virtual bool is_raytracing_debug_enabled() const { return false; }
-	virtual void update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances) {}
+	virtual void update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances, const LocalVector<RaytracingGIInstance> &p_gi_instances, const LocalVector<RID> &p_gi_lights) {}
 
 	virtual void render_scene(const Ref<RenderSceneBuffers> &p_render_buffers, const CameraData *p_camera_data, const CameraData *p_prev_camera_data, const PagedArray<RenderGeometryInstance *> &p_instances, const PagedArray<RID> &p_lights, const PagedArray<RID> &p_reflection_probes, const PagedArray<RID> &p_voxel_gi_instances, const PagedArray<RID> &p_decals, const PagedArray<RID> &p_lightmaps, const PagedArray<RID> &p_fog_volumes, RID p_environment, RID p_camera_attributes, RID p_compositor, RID p_shadow_atlas, RID p_occluder_debug_tex, RID p_reflection_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, const RenderShadowData *p_render_shadows, int p_render_shadow_count, const RenderSDFGIData *p_render_sdfgi_regions, int p_render_sdfgi_region_count, float p_window_output_max_value, const RenderSDFGIUpdateData *p_sdfgi_update_data = nullptr, RenderingServerTypes::RenderInfo *r_render_info = nullptr) = 0;
 
@@ -385,6 +405,7 @@ public:
 	virtual void sub_surface_scattering_set_scale(float p_scale, float p_depth_scale) = 0;
 
 	virtual TypedArray<Image> bake_render_uv2(RID p_base, const TypedArray<RID> &p_material_overrides, const Size2i &p_image_size) = 0;
+	virtual TypedArray<Image> bake_render_triangle_material(RID p_mesh, int p_surface, int p_first_triangle, int p_triangle_count, int p_tile_size, const Transform3D &p_transform, RID p_material_override);
 
 	virtual PackedByteArray bake_render_area_light_atlas(const TypedArray<RID> &p_area_light_textures, const TypedArray<Rect2> &p_area_light_atlas_texture_rects, const Size2i &p_size, int p_mipmaps) = 0;
 

@@ -36,6 +36,26 @@ case "$RIG" in
 	field_thin) RIG_RES=1280x720 ;;
 	probe)      RIG_RES=1280x720 ;;
 	opacity)    RIG_RES=800x450 ;;
+	geometry)   RIG_RES=641x359 ;;
+	material)   RIG_RES=641x359 ;;
+	gi)         RIG_RES=641x359 ;;
+	gi_compare) RIG_RES=641x359 ;;
+	amd_gi)     RIG_RES=641x359 ;;
+	amd_gi_sampling) RIG_RES=641x359 ;;
+	amd_gi_cache) RIG_RES=641x359 ;;
+	amd_gi_materials) RIG_RES=641x359 ;;
+	amd_gi_dirty_materials) RIG_RES=641x359 ;;
+	amd_gi_lights) RIG_RES=641x359 ;;
+	amd_gi_bounces) RIG_RES=641x359 ;;
+	amd_gi_sky) RIG_RES=641x359 ;;
+	amd_gi_reflections) RIG_RES=641x359 ;;
+	amd_gi_fsr2) RIG_RES=641x359 ;;
+	amd_gi_dynamic_lighting) RIG_RES=641x359 ;;
+	amd_gi_atlas) RIG_RES=641x359 ;;
+	amd_gi_material_sharing) RIG_RES=641x359 ;;
+	amd_gi_multimesh) RIG_RES=641x359 ;;
+	amd_gi_deformation) RIG_RES=641x359 ;;
+	amd_gi_budget_compare) RIG_RES=641x359 ;;
 	*)          RIG_RES=1280x720 ;;
 esac
 RES="${SHADOW_RES:-$RIG_RES}"
@@ -47,7 +67,7 @@ if [ ! -x "$BIN" ]; then
 	exit 1
 fi
 if [ ! -f "$HERE/$RIG.tscn" ]; then
-	echo "no rig '$RIG' -- expected one of: probe field field_thin opacity" >&2
+	echo "no rig '$RIG' -- expected one of: probe field field_thin opacity geometry material gi gi_compare amd_gi amd_gi_sampling amd_gi_cache amd_gi_materials amd_gi_lights amd_gi_bounces amd_gi_sky amd_gi_reflections amd_gi_dirty_materials amd_gi_fsr2 amd_gi_dynamic_lighting amd_gi_atlas amd_gi_deformation amd_gi_budget_compare amd_gi_material_sharing" >&2
 	exit 1
 fi
 
@@ -81,6 +101,26 @@ export DISPLAY="$DISP"
 export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.json}"
 export GODOT_SILENCE_ROOT_WARNING=1
 export SHADOW_OUT_DIR="$OUT"
+if [ "$RIG" = "geometry" ]; then
+	export GODOT_RT_DEBUG=1
+fi
+if [ "$RIG" = "amd_gi_sampling" ] || [ "$RIG" = "amd_gi_cache" ] || [ "$RIG" = "amd_gi_dynamic_lighting" ] || [ "$RIG" = "amd_gi_deformation" ] || [ "$RIG" = "amd_gi_budget_compare" ] || [ "$RIG" = "amd_gi_reflections" ] || [ "$RIG" = "amd_gi_multimesh" ]; then
+	# Synchronous diagnostic readback validates actual GPU scheduling/LRU state.
+	# This rig is deliberately not a performance benchmark.
+	export GODOT_AMD_GI_VALIDATE_CACHE=1
+fi
+if [ "$RIG" = "amd_gi_materials" ] || [ "$RIG" = "amd_gi_dirty_materials" ] || [ "$RIG" = "amd_gi_material_sharing" ] || [ "$RIG" = "amd_gi_atlas" ] || [ "$RIG" = "amd_gi_deformation" ]; then
+	export GODOT_AMD_GI_VALIDATE_MATERIALS=1
+fi
+if [ "$RIG" = "amd_gi_lights" ]; then
+	export GODOT_AMD_GI_VALIDATE_RESERVOIRS=1
+fi
+if [ "$RIG" = "amd_gi_bounces" ]; then
+	export GODOT_AMD_GI_VALIDATE_BOUNCES=1
+fi
+if [ "$RIG" = "amd_gi_reflections" ]; then
+	export GODOT_AMD_GI_VALIDATE_REFLECTIONS=1
+fi
 
 # stdbuf keeps the per-stage prints flowing, so progress is visible mid-run
 # rather than arriving in one 4 KB block at the end.
@@ -90,7 +130,12 @@ LOG="$OUT/run.log"
 timeout "${SHADOW_TIMEOUT:-1800}" stdbuf -oL -eL "$BIN" --path "$HERE" \
 	--rendering-driver vulkan --audio-driver Dummy --resolution "$RES" \
 	"res://$RIG.tscn" > "$LOG" 2>&1
-echo "godot exit=$?"
+RENDER_STATUS=$?
+echo "godot exit=$RENDER_STATUS"
+if [ "$RENDER_STATUS" -ne 0 ]; then
+	tail -n 30 "$LOG"
+	exit "$RENDER_STATUS"
+fi
 grep -aE "^(===|saved|stage)" "$LOG"
 grep -aiE "SCRIPT ERROR|ERROR: Condition|not provided" "$LOG" | head -5
 
@@ -100,6 +145,130 @@ mv "$HERE/out"/*.png "$OUT/" 2>/dev/null
 echo
 if [ "$RIG" = "opacity" ]; then
 	python3 "$HERE/score_opacity.py" "$OUT" "$@"
+elif [ "$RIG" = "amd_gi_multimesh" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG"; then
+		echo "AMD MultiMesh capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_multimesh.py" "$OUT" "$@"
+elif [ "$RIG" = "amd_gi_material_sharing" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD material sharing capture finished: 0 failures' "$LOG"; then
+		echo "AMD material sharing capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_material_sharing.py" "$OUT"
+elif [ "$RIG" = "amd_gi_atlas" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD atlas capture finished: 0 failures' "$LOG"; then
+		echo "AMD atlas capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_atlas.py" "$OUT"
+elif [ "$RIG" = "amd_gi_budget_compare" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD budget comparison finished: 0 failures' "$LOG"; then
+		echo "AMD budget comparison failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_budget_compare.py" "$OUT"
+elif [ "$RIG" = "amd_gi_deformation" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD deformation capture finished: 0 failures' "$LOG"; then
+		echo "AMD deformation capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_deformation.py" "$OUT"
+elif [ "$RIG" = "amd_gi_dynamic_lighting" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD dynamic lighting capture finished: 0 failures' "$LOG"; then
+		echo "AMD dynamic lighting capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_dynamic_lighting.py" "$OUT"
+elif [ "$RIG" = "amd_gi_fsr2" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD FSR2 capture finished: 0 failures' "$LOG"; then
+		echo "AMD FSR2 capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_fsr2.py" "$OUT"
+elif [ "$RIG" = "amd_gi_dirty_materials" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD dirty material capture finished: 0 failures' "$LOG"; then
+		echo "AMD dirty material capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_dirty_materials.py" "$OUT"
+elif [ "$RIG" = "amd_gi_reflections" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD reflection capture finished: 0 failures' "$LOG"; then
+		echo "AMD reflection capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_reflections.py" "$OUT"
+elif [ "$RIG" = "amd_gi_sky" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD sky capture finished: 0 failures' "$LOG"; then
+		echo "AMD sky capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_sky.py" "$OUT"
+elif [ "$RIG" = "amd_gi_bounces" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD multibounce capture finished: 0 failures' "$LOG"; then
+		echo "AMD multibounce capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_bounces.py" "$OUT"
+elif [ "$RIG" = "amd_gi_lights" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD light sampling capture finished: 0 failures' "$LOG"; then
+		echo "AMD light sampling failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_lights.py" "$OUT"
+elif [ "$RIG" = "amd_gi_materials" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD material preparation capture finished: 0 failures' "$LOG"; then
+		echo "AMD material preparation failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_materials.py" "$OUT"
+elif [ "$RIG" = "amd_gi_cache" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD cache capture finished: 0 failures' "$LOG"; then
+		echo "AMD cache capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_cache.py" "$OUT"
+elif [ "$RIG" = "amd_gi_sampling" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD sampling capture finished: 0 failures' "$LOG"; then
+		echo "AMD sampling capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_sampling.py" "$OUT"
+elif [ "$RIG" = "amd_gi" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD GI progress capture finished: 0 failures' "$LOG"; then
+		echo "AMD GI progress capture failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi.py" "$OUT"
+elif [ "$RIG" = "gi_compare" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'GI comparison capture finished: 0 failures' "$LOG"; then
+		echo "GI comparison failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_gi_compare.py" "$OUT"
+elif [ "$RIG" = "gi" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'GI validation capture finished: 0 failures' "$LOG"; then
+		echo "GI validation failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_gi.py" "$OUT"
+elif [ "$RIG" = "material" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'material capture checks finished: 0 failures' "$LOG"; then
+		echo "material capture validation failed; inspect $LOG" >&2
+		exit 1
+	fi
+	echo "material capture analytical checks passed"
+elif [ "$RIG" = "geometry" ]; then
+	if ! grep -aqE 'RT_DEBUG pre_opaque: .*tlas=1' "$LOG"; then
+		echo "geometry validation did not establish a traceable TLAS" >&2
+		exit 1
+	fi
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG"; then
+		echo "geometry validation logged an error; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score.py" "$OUT" --geometry "$@"
 else
 	python3 "$HERE/score.py" "$OUT" "$@"
 fi

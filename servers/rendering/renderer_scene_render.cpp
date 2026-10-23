@@ -30,6 +30,7 @@
 
 #include "renderer_scene_render.h"
 
+#include "core/io/image.h"
 #include "core/variant/typed_array.h"
 
 /////////////////////////////////////////////////////////////////////////////
@@ -741,4 +742,8 @@ bool RendererSceneRender::environment_get_use_1d_color_correction(RID p_env) con
 
 RID RendererSceneRender::environment_get_color_correction(RID p_env) const {
 	return environment_storage.environment_get_color_correction(p_env);
+}
+
+TypedArray<Image> RendererSceneRender::bake_render_triangle_material(RID p_mesh, int p_surface, int p_first_triangle, int p_triangle_count, int p_tile_size, const Transform3D &p_transform, RID p_material_override) {
+	return TypedArray<Image>();
 }

@@ -65,6 +65,9 @@ a run silently stops reproducing — it happened while this directory was being 
 | `field` | 4,504 blades, 1.0 × 1.5 cm × 25 cm, clustered | High | 1600×900 | what a game actually scatters. The `surface_thickness` question |
 | `field_thin` | 15,000 blades, 2.2 cm × 4 mm | Medium | 1280×720 | nearly razor thin — the far end of the size range |
 | `opacity` | boxes on open ground | — | 800×450 | is `shadow_opacity` linear on a raytraced sun, with the shadow-map control |
+| `geometry` | shared ArrayMeshes, compressed and non-indexed variants, 16/32-bit indices, buffer replacement, blend shapes, eviction | — | 641×359 | exact image regression against a baseline engine for changes to geometry storage |
+| `material` | indexed/non-indexed and compressed ArrayMeshes with known shader inputs | — | 16×16 capture tiles, 641×359 window | explicit triangle-material capture checks; no GI lighting or performance measurement |
+| `gi` | colored room, two white boxes, one hard-shadow omni light | — | 641×359 | uncached diffuse transport validation; enabled/disabled stills and material/energy controls |
 
 `probe` also carries the controls that ruled out explanations before the cause was found:
 `SSS_SUN_AZ`, `SSS_SUN_EL`, `SSS_BLADE_W`, `SSS_BLADE_D`, `SSS_RANDOM_YAW`, `SSS_BIAS`,
@@ -73,6 +76,57 @@ what a *width* measurement needs; it does not give the same numbers as the defau
 substitute for it.
 
 ## Getting a binary
+
+### Geometry cache regression
+
+`material` calls `RenderingServer.bake_render_triangle_material()` and compares the
+returned channels with analytically known values. It checks original UV0/UV2, colors,
+custom attributes, original indexed vertex IDs, tangent-space normals, transforms,
+cutouts, HDR emission, parameter and texture updates, surface material selection,
+page clipping, and existing UV2 baking after a triangle capture. Normals must be
+normalized after decoding the native best-fit representation. The rig exits nonzero
+on an assertion or engine error. It requires Forward+ but does not itself trace rays;
+RT shadow support advertised by the project is not evidence of GI. See
+[the capture contract](../../internals/rt-materials.md) for unsupported cases.
+
+`gi` is a separate transport validation checkpoint for the GI port, not AMD's
+screen-probe/radiance-cache implementation. `RTGI_SAMPLES` sets its paths per pixel
+(default 1). It captures disabled, one-encounter, three-encounter, zero-indirect-energy,
+changed-wall-material, and disabled-again images. `score_gi.py` verifies extra light,
+color transfer from a non-shadow-casting wall onto a white box, and exact restoration
+of the direct-only control. The printed RGB gains are display-space diagnostics,
+not linear-light energy measurements. See [the mode's documentation](../../features/rtgi-validation.md).
+
+`gi_compare` reuses the same room to compare the cached AMD diffuse path with
+native VoxelGI and SDFGI. Run `./run.sh gi_compare`. AMD captures use approximately
+1/4 and 1 primary ray per pixel per frame, with multibounce and denoising on.
+Native geometry is marked static, VoxelGI is baked at 128 and 256 subdivisions
+(including a normal-bias variant), and SDFGI is captured at default and finer
+occlusion-enabled settings. Native setups get 120 settling frames, an early
+capture, 60 additional frames, and a final capture. `score_gi_compare.py` checks
+exact disabled restoration and reports remaining native settling differences.
+See [comparison settings](../../features/amd-gi.md#native-comparisons).
+These are neither accuracy scores against a perfect reference nor GPU benchmarks.
+
+`geometry` requires ray queries and rejects shadow-map fallback. It also requires the
+`RT_DEBUG pre_opaque` log to establish a traceable TLAS. The runner enables that diagnostic
+automatically and fails on engine errors or missing captures. A control checks that shadows
+actually change the image, and two others check that replacement and deformation change it.
+
+Run once with a baseline engine and preserve `out/geometry` outside `out/` before running
+the modified engine. Then use:
+
+```
+GODOT_BIN=/path/to/modified/godot ./run.sh geometry --reference /path/to/baseline-captures
+```
+
+Each of the 11 captures must match the corresponding baseline pixel for pixel. This compares
+engines, not compressed geometry against uncompressed geometry. Both engines must use the same
+driver and resolution. A run without `--reference` checks controls and capture completeness only.
+The rig exercises blend-shape deformation, not skeletal skinning; neither this rig nor software
+Vulkan can establish the game's hardware performance or future GI fidelity.
+
+### Engine build
 
 `run.sh` looks for `bin/godot.linuxbsd.editor.x86_64` at the repository root, or wherever
 `GODOT_BIN` points. The binary is gitignored, so a fresh clone has none. Build one with:
@@ -195,3 +249,77 @@ linear; the sRGB column of `--srgb` is in `../../HISTORY.md` beside them.
 The harness is byte-for-byte deterministic under lavapipe: two consecutive runs of the same binary
 and scene differ by zero pixels. So a difference of even a few hundred pixels is a real change, not
 noise, and is worth explaining rather than dismissing.
+
+### Sparse AMD GI progress
+
+`./run.sh amd_gi_sampling` compares uniform and radiance-guided sampling at a fixed
+camera and approximately 1/4 primary ray per pixel per frame. Multibounce and
+denoising stay enabled. It verifies black-history recovery when an emissive
+ceiling turns on, decay after emission is removed, unchanged allocation on
+sampling switches, and exact disabled restoration. Each stage settles for 64
+frames plus capture synchronization. Adaptive placement and cache toggles retain
+the primary-ray budget. A short camera sweep and return separately exercises
+displaced-probe reuse. The diagnostic GPU readback checks queue ownership and
+LRU permutations; it is not a hardware performance benchmark.
+
+`./run.sh amd_gi_cache` focuses on small camera motion, displacement/reuse, and
+history lifetime. It requires exactly one initialization reset across a camera
+sweep and return plus 64 stationary frames. GPU ownership checks run every frame;
+the disabled image must restore exactly.
+
+`./run.sh amd_gi_materials` checks retained preparation with a vertex-colored
+non-caster wall. An attribute-buffer edit must change indirect light on a separate
+box and match a freshly rebuilt surface within the stated stochastic tolerance.
+The diagnostic preparation log requires only the seven initial pages and the two
+changed wall pages to prepare. Unchanged frames reuse geometry and targets while
+rendering current material pixels. The geometry rig separately requires an
+in-place vertex/index-buffer edit to match a freshly rebuilt BLAS exactly.
+
+`./run.sh amd_gi_lights` compares exhaustive light evaluation with world-cache
+reservoir resampling at the same 1/4 primary-ray budget, with multibounce and
+denoising on. Four identical lights check normalization; varied positions, colors,
+and energy exercise nonuniform targets and visibility. GPU readback validates
+stored light indices, finite RIS weights, and confidence bounds, and requires
+temporal reuse. Exact direct-only controls and reservoir allocation release are
+checked separately. This does not compare GPU performance or a high-sample reference.
+
+`./run.sh amd_gi_bounces` toggles multibounce off/on/off while keeping the 1/4
+primary-ray budget and denoiser fixed. It requires extra indirect energy, restores
+the single-bounce result within stochastic tolerance, and checks exact buffer
+release. Diagnostic GPU readback verifies secondary hits originate from unique
+primary cache owners and create additional cache receivers. Continuation probability
+stays at 0.3. Disabled direct-only restoration must be exact.
+
+`./run.sh amd_gi` renders the cached diffuse pipeline at approximately 1/4 and 1
+primary GI ray per internal pixel per frame, with multibounce and denoising on.
+It includes startup/settled captures, material and light controls, camera cuts,
+and disabled restoration. See [settings and limitations](../../features/amd-gi.md).
+The historical high-sample `gi` / `gi_compare` images are debugging references,
+not representative progress or equal-budget comparisons.
+
+
+AMD GI sky/reflection integration checks: `run.sh amd_gi_sky` and
+`run.sh amd_gi_reflections`. Both keep diffuse at 1/4 primary ray/pixel with
+multibounce and denoising enabled. Sky checks removal, color, orientation, ambient
+occlusion and disabled restoration. Glossy checks half/full sampling, an emitter
+behind the camera, motion, and buffer release; synchronous GPU sample validation
+is diagnostic-only. See the AMD GI feature document for remaining limitations.
+
+`run.sh amd_gi_dirty_materials` verifies static page reuse, image updates in place,
+material emission and TIME/global-uniform refresh. `run.sh amd_gi_fsr2` checks a
+jittered FSR2 Performance viewport at odd internal dimensions with both GI lobes,
+multibounce and denoising enabled. Neither harness measures target-hardware speed.
+
+AMD GI scene compatibility checks: `run.sh amd_gi_atlas` exercises packed small
+surfaces and relocation across layers; `run.sh amd_gi_dynamic_lighting` checks
+continuous sky/light changes; `GODOT_AMD_GI_VALIDATE_CACHE=1 run.sh amd_gi_deformation`
+compares native skeleton/blend-shape output with independently baked geometry and
+checks local motion invalidation, including FSR2. These are lavapipe correctness
+checks, not target-hardware performance measurements.
+
+`run.sh amd_gi_material_sharing` exercises 300 repeated mesh instances and compares
+local-normal captures against independent world captures. `run.sh amd_gi_multimesh`
+compares per-element colors/custom data/IDs against separate MeshInstances and
+checks movement and live updates. `amd_gi_atlas` also grows beyond the old capacity
+and shrinks its live budget. Keep denoising and the quarter-ray diffuse budget on;
+these are native rendering checks, not hardware performance estimates.

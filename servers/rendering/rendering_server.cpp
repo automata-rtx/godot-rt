@@ -3301,6 +3301,7 @@ void RenderingServer::_bind_methods() {
 	/* Bake 3D Object */
 
 	ClassDB::bind_method(D_METHOD("bake_render_uv2", "base", "material_overrides", "image_size"), &RenderingServer::bake_render_uv2);
+	ClassDB::bind_method(D_METHOD("bake_render_triangle_material", "mesh", "surface", "first_triangle", "triangle_count", "tile_size", "transform", "material_override"), &RenderingServer::bake_render_triangle_material, DEFVAL(0), DEFVAL(0), DEFVAL(64), DEFVAL(16), DEFVAL(Transform3D()), DEFVAL(RID()));
 
 	BIND_ENUM_CONSTANT(RSE::BAKE_CHANNEL_ALBEDO_ALPHA);
 	BIND_ENUM_CONSTANT(RSE::BAKE_CHANNEL_NORMAL);

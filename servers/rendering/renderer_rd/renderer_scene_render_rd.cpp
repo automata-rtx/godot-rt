@@ -36,6 +36,7 @@
 #include "core/os/os.h"
 #include "servers/rendering/renderer_rd/effects/dlss.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
+#include "servers/rendering/renderer_rd/environment/rt_material_capture.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
 #include "servers/rendering/renderer_rd/shaders/decal_data_inc.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/light_data_inc.glsl.gen.h"
@@ -1696,6 +1697,14 @@ float RendererSceneRenderRD::screen_space_roughness_limiter_get_limit() const {
 	return screen_space_roughness_limiter_limit;
 }
 
+TypedArray<Image> RendererSceneRenderRD::bake_render_triangle_material(RID p_mesh, int p_surface, int p_first_triangle, int p_triangle_count, int p_tile_size, const Transform3D &p_transform, RID p_material_override) {
+	RendererRD::RaytracingMaterialCapture capture;
+	if (capture.capture(p_mesh, p_surface, p_first_triangle, p_triangle_count, p_tile_size, p_transform, p_material_override) != OK) {
+		return TypedArray<Image>();
+	}
+	return capture.readback();
+}
+
 TypedArray<Image> RendererSceneRenderRD::bake_render_uv2(RID p_base, const TypedArray<RID> &p_material_overrides, const Size2i &p_image_size) {
 	ERR_FAIL_COND_V_MSG(p_image_size.width <= 0, TypedArray<Image>(), "Image width must be greater than 0.");
 	ERR_FAIL_COND_V_MSG(p_image_size.height <= 0, TypedArray<Image>(), "Image height must be greater than 0.");
@@ -1938,11 +1947,71 @@ bool RendererSceneRenderRD::is_raytraced_shadow_mask_available(const Ref<RenderS
 	return rb.is_valid() && rb->get_view_count() == 1;
 }
 
-void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances) {
+bool RendererSceneRenderRD::is_rtgi_enabled(RID p_environment, const Ref<RenderSceneBuffers> &p_buffers) const {
+	if ((!RendererRD::RTGIValidation::is_enabled() && !RendererRD::AMDGI::is_enabled()) || !is_raytracing_scene_available()) {
+		return false;
+	}
+	Ref<RenderSceneBuffersRD> rb = p_buffers;
+	if (RD::get_singleton()->get_device_api_name() != "Vulkan" || rb.is_null() || rb->get_view_count() != 1 || rb->get_msaa_3d() != RSE::VIEWPORT_MSAA_DISABLED) {
+		WARN_PRINT_ONCE("RT GI requires Vulkan Forward+, a single view, and MSAA disabled.");
+		return false;
+	}
+	if (p_environment.is_null()) {
+		WARN_PRINT_ONCE("RT GI requires a WorldEnvironment.");
+		return false;
+	}
+	if (p_environment.is_valid() && (environment_get_sdfgi_enabled(p_environment) || environment_get_ssil_enabled(p_environment))) {
+		WARN_PRINT_ONCE("RT GI requires SDFGI and SSIL disabled; native settings have not been changed.");
+		return false;
+	}
+	return true;
+}
+
+void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances, const LocalVector<RaytracingGIInstance> &p_gi_instances, const LocalVector<RID> &p_gi_lights) {
 	if (raytracing_scene == nullptr) {
 		return;
 	}
+	RendererRD::RaytracingGeometry &geometry = raytracing_scene->get_geometry();
+	geometry.begin_update();
 	raytracing_scene->update(p_instances);
+	if (!p_gi_instances.is_empty()) {
+		if (!rtgi_scene) {
+			rtgi_scene = memnew(RendererRD::RaytracingGIScene);
+		}
+		rtgi_scene->update_scene(geometry, p_gi_instances, p_gi_lights);
+		if (RendererRD::AMDGI::is_enabled()) {
+			if (!amd_gi) {
+				amd_gi = memnew(RendererRD::AMDGI);
+			}
+			if (rtgi_validation) {
+				memdelete(rtgi_validation);
+				rtgi_validation = nullptr;
+			}
+		} else {
+			if (!rtgi_validation) {
+				rtgi_validation = memnew(RendererRD::RTGIValidation);
+			}
+			if (amd_gi) {
+				memdelete(amd_gi);
+				amd_gi = nullptr;
+			}
+		}
+	} else {
+		if (rtgi_scene) {
+			memdelete(rtgi_scene);
+			rtgi_scene = nullptr;
+			geometry.release_gi_only();
+		}
+		if (rtgi_validation) {
+			memdelete(rtgi_validation);
+			rtgi_validation = nullptr;
+		}
+		if (amd_gi) {
+			memdelete(amd_gi);
+			amd_gi = nullptr;
+		}
+	}
+	geometry.end_update();
 }
 
 void RendererSceneRenderRD::init() {
@@ -2101,6 +2170,15 @@ RendererSceneRenderRD::~RendererSceneRenderRD() {
 	}
 	if (screen_space_shadows) {
 		memdelete(screen_space_shadows);
+	}
+	if (rtgi_validation) {
+		memdelete(rtgi_validation);
+	}
+	if (amd_gi) {
+		memdelete(amd_gi);
+	}
+	if (rtgi_scene) {
+		memdelete(rtgi_scene);
 	}
 	if (raytracing_scene) {
 		memdelete(raytracing_scene);

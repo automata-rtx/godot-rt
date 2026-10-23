@@ -6,6 +6,82 @@ alone — several of these already were, and failed. Not here: using a feature (
 one works (`docs/internals/`), running the harnesses (`docs/VALIDATION.md`), diagnosing a symptom
 (`docs/TROUBLESHOOTING.md`).
 
+## AMD GI shared materials and instancing — 2026-10-23
+
+`[code]` Compatible mesh instances now share native captures, using local normals
+transformed at the triangle hit. Context-dependent materials keep separate native
+evaluation. Atlas layers and scene buffers grow on demand; the live atlas budget
+is separate from capture targets and geometry. CPU-managed 3D MultiMeshes preserve
+element transforms, colors, custom data and shader instance IDs.
+
+`[shadow_validation]` The sharing rig covers 300 repeated spheres, exceeding the old
+instance and duplicated-triangle limits. Fewer than 12 capture chunks remain, with
+zero redraws through 78 transform/settle frames. Motion restoration and independent
+world-capture display-RGB MAE are 0.000881 and 0.000931. Disabled restoration is exact.
+
+`[shadow_validation]` Atlas growth reaches 64 layers, then a live 8 MiB budget shrinks
+it to six. Growth/shrink room MAE is 0.000748/0.000711, with exact disabled restoration.
+The MultiMesh rig matches independently shaded MeshInstances exactly with GI off;
+GI correspondence/motion-restoration MAE is 0.000338/0.000664. Color/custom updates
+change the image. Its initial reference incorrectly used Color shader uniforms,
+which Godot converted to linear while MultiMesh supplied raw values; explicit
+Vector4 reference inputs corrected that direct-only mismatch before comparison.
+
+`[shadow_validation]` Native material and legacy UV2 baking pass with the 64-byte
+capture header. Shared RT-shadow geometry remains pixel-identical to its baseline.
+Native four/eight-weight deformation GI MAE is 0.001297/0.002410, including FSR2.
+Affected release translation units compile. These are software-Vulkan correctness
+checks, not 780M/5090 speed measurements or completion of the AMD port.
+
+`[shadow_validation]` The final regression pass also covers FSR2 at awkward internal
+sizes, matched 64-draw quarter/one histories, and half/full glossy reflections.
+Quarter/one display-RGB GI gain is 0.036495/0.036686 in the controlled matte room.
+The off-screen reflection emitter moves 15.256 pixels and returns with 0.774 mask
+overlap; vacated-region residuals remain 2.6%/0.5%. All filters stay enabled.
+Original PNGs and a phone-readable intermediate PDF are refreshed in the preview
+folder. This remains an intermediate comparison, not the all-work-complete result.
+
+## AMD GI atlas and deformation checkpoint — 2026-10-22
+
+`[shadow_validation]` Under Vulkan lavapipe, the packed-atlas rig fits 48 small
+surfaces, relocates retained pixels when an earlier mesh grows, and spans layers
+when that surface grows again. Shift/split display-RGB MAE against the unchanged
+room is 0.000724/0.000721; disabling restores the baseline exactly. The changed
+source redraws, while relocated unchanged captures only copy.
+
+`[shadow_validation]` The deformation rig uses native four/eight-weight skeletons
+combined with a blend shape. Independently CPU-baked static geometry supplies a
+separate correspondence check. With local motion invalidation, four-weight direct/GI
+MAE is 0.000008/0.001449; eight-weight with FSR2 is 0.001046/0.002290. Each animation
+section initializes history once, then reports 11/12 local motion updates without
+further global resets. Source captures do not re-prepare during pose animation.
+These are correctness/image metrics, not timings or a guarantee against motion
+artifacts. The native material/UV2 rig and one-primary-sample transport checks also
+pass; the latter restores disabled textures and pixels exactly.
+
+`[shadow_validation]` The final build of this checkpoint also passes the exact
+shadow geometry baseline (including in-place vertex/index changes) and affected
+release translation units. The matched-budget rig verifies 64 actual uninterrupted
+GI draws in each fresh history: quarter/one display-RGB gains are 0.036655/0.036626.
+These are mean image differences, not quality scores. Original PNGs and a PDF are
+in `/workspace/preview/current-amd-gi-checkpoint` and
+`/workspace/preview/00-current-amd-gi-checkpoint.pdf`; the backend remains unfinished.
+
+`[shadow_validation]` The moving-reflection rig verifies the off-screen emitter
+shifts 15.294 pixels in the mirror, returns within 0.2 pixels of its initial center,
+and leaves 2.6%/0.5% bright residual pixels in the tested vacated regions. The return
+mask overlap is 0.775. There are no global history resets during this motion;
+310 GPU sample checks exercise both glossy traces and rough-probe reuse. A first
+whole-mirror MAE gate also measured unrelated stochastic lighting (0.022916 after
+return), so it was replaced with emitter correspondence and vacated-region checks.
+The original captures were rescored; no renderer change or image processing was
+used to obtain that result. This does not establish noise-free reflections.
+
+`[code]` Current GI pose capture reads the same native GPU deformation output used
+by RT geometry. No duplicate skinning pass or per-frame pose readback is added.
+Swept old/new bounds invalidate affected cache tiles and reused connections;
+object motion-vector reprojection remains separate unfinished work.
+
 ## Provenance tags
 
 Every number carries one; a number with no tag is an opinion and does not belong in this file.
@@ -25,6 +101,315 @@ Every number carries one; a number with no tag is an opinion and does not belong
 
 All four `denoiser_sim.py` modes (no flag, `--kernels`, `--radius`, `--window`) were re-run against
 this document; every figure below matches what the script prints.
+
+---
+
+# AMD GI preparation
+
+## Continuous lighting history and FSR2, 2026-10-22
+
+`[code]` Continuous sky redraws and tiny sun/light changes initially reset all GI
+history. Dynamic skies now retain history, and light identities/masks and large
+parameter discontinuities are handled separately from smooth parameter updates.
+Geometry transform changes remain conservative resets.
+
+`[shadow_validation]` The dynamic-lighting rig retains history over 132 frames
+with exactly one initialization reset, while animating sky TIME/rotation, a sun
+and a local light. Abrupt light/sky removal resets once and produces black.
+The static sky regression still passes. FSR2 Performance at 641×359 display /
+320×179 internal resolution passes with both GI lobes, multibounce and denoising:
+quarter/one primary-ray display-RGB gains 0.034171/0.034717, restored difference
+0.002290, disabled difference 0.001247. This is Vulkan integration on lavapipe,
+not DLSS verification or a 780M timing result.
+
+
+## Static material pixel reuse, 2026-10-22
+
+`[code]` Native material pages now retain pixels as well as prepared geometry.
+Local material/shader changes, tracked image uploads/replacement, source-data edits,
+and transforms invalidate them. TIME, global/instance uniforms, viewport/drawable
+textures and external GPU textures keep per-frame evaluation. Proxies follow the
+actual image owner; comparing a texture RID alone would miss updates in place.
+
+`[shadow_validation]` The dirty-material rig drew seven pages on initialization,
+then zero on unchanged frames. Updating the wall image in place drew one page;
+changing emission drew one page. TIME refreshed exactly one page on all 26 frames,
+and global-uniform shading one on all 132 frames. Restoring the static material
+drew one page, then stopped. Receiver green-channel emission gain was 0.011635;
+texture/global changes reached indirect receivers and disabled restoration was
+exact. These are draw-count/visual checks on lavapipe, not GPU timing results.
+
+
+## Native sky and initial glossy reflections, 2026-10-22
+
+`[code]` Sky misses reuse Godot's native unfiltered octahedral radiance, orientation,
+border and IBL normalization. Sky rebuilds invalidate cached lighting. The glossy
+path adds GGX visible-normal rays, rough directional-probe reuse, BRDF/PDF ratio
+reconstruction, virtual/surface temporal reprojection and variance-guided a-trous
+filtering. It has independent half/full sampling, roughness threshold, filter-count
+and enable controls. Native material DFG/Fresnel remains in Forward+.
+
+`[shadow_validation]` The sky rig at 1/4 primary rays, with denoising and multibounce
+on, reports display-RGB gain 0.285756, occlusion versus native ambient 0.165225,
+and orientation-change difference 0.076784. Black sky removes the contribution;
+green sky shifts receiver color and disabled restoration is exact. The initial
+reflection rig shows an emissive object behind the camera in the mirror. Half/full
+mean absolute display-RGB difference is 0.003132, restored half-resolution difference
+0.002607, and reflection-off difference 0.000505. The reflection buffers release
+on disable. These are integration checks on lavapipe, not target-GPU performance
+or proof of final image quality. A subsequent full-resolution resolve adjustment
+removes unnecessary upsample blur and is being checked separately.
+
+Layered/anisotropic lobes, nested specular, adaptive glossy compaction and the
+complete Capsaicin firefly cleanup remain; half-resolution mirrors show artifacts.
+
+
+## Secondary world-cell population and separate indirect history, 2026-10-22
+
+`[code]` Multibounce now explicitly traces, allocates, registers, and shades
+secondary world receivers. Current secondary direct light and previous secondary
+indirect light update separate primary indirect histories, with probability
+compensation and independent sample-count-selected mips. Uncached/short connections
+retain local evaluation. Disabling multibounce skips seven stages and releases
+both indirect buffers and the secondary-hit buffer. The shared pipeline has 30
+specialized stages. Primary-ray budgets remain unchanged.
+
+This still schedules one hit per cache cell rather than accumulating every visible
+hit, and feeds back world indirect lighting rather than Capsaicin's combined screen
+lighting. Secondary-only receivers clear stale indirect history when they have no
+scheduled continuation; higher-order feedback depends on primary coverage over time.
+
+`[shadow_validation]` At 1/4 primary ray/pixel and continuation probability 0.3,
+the bounce rig's mean indirect display-RGB gains are 0.024697 (single), 0.036580
+(multibounce), and 0.024737 (single restored). Actual GPU ownership checks pass
+on 66 multibounce frames, including populated secondary-only cells. The exact
+resource delta is released on disabling multibounce, and the disabled image
+restores exactly. The repeated light-reservoir test also passes: resampled versus
+exhaustive indirect-gain ratios are 0.999056 for identical lights and 0.954071 for
+varied lights, with mean absolute display-RGB differences 0.000624 and 0.001817.
+These are software Vulkan integration checks, not target-hardware timings.
+
+## World-cell light reservoirs, 2026-10-22
+
+`[code]` The diffuse cache shades hits with eight unshadowed light candidates,
+RIS selection, and up to four distinct normal-compatible previous world-cell
+reservoirs. Previous confidence is capped at 20 and the selected light's visibility
+is traced at the current hit. The live `light_resampling` toggle releases its
+double-buffered 8 MiB storage and switches to exhaustive light evaluation; scenes
+with zero or one light bypass resampling automatically. Primary probe-ray budgets
+are unchanged: candidate evaluation is shader arithmetic, not eight traced rays.
+
+This adapts Capsaicin's reservoir construction/merge to the existing directional
+world grid and bounded Godot light list. Its separate hash of hit reservoirs,
+light-sampling hierarchy, full multibounce cache population, and reflections are
+not implemented by this stage.
+
+`[shadow_validation]` At approximately 1/4 primary ray per pixel, with multibounce
+and denoising on, `amd_gi_lights` compares resampling with exhaustive lighting.
+The mean indirect display-RGB gain ratio is 1.004198 for four identical lights
+and 1.011975 for varied positions/colors/energy. Mean absolute image differences
+are 0.000637 and 0.001643 respectively. Actual GPU buffer checks establish valid
+light indices, finite weights, bounded confidence, and temporal reuse. The
+reservoir allocation toggle and exact direct-only controls pass. These integrated
+display-space metrics are not per-pixel accuracy guarantees or hardware timings.
+
+## Dense probe reuse and temporal-history invalidation, 2026-10-22
+
+`[code]` Stored probes now use an 8-pixel grid independently of the sparse
+tracing budget. Adaptive scheduling redirects existing updates into uncovered
+tiles; neighborhood reprojection, hierarchical mask lookup, four-probe
+interpolation, and a bounded displaced-probe LRU cache retain useful history.
+Interpolation uses Capsaicin's blue-noise spatial lookup with its temporal
+rotation. Emission bypasses the world radiance cache, and short connections
+bypass filtered cache readback to reduce thin-wall leaks. Primary-ray budgets
+remain approximately 1/4 or 1 per internal pixel per frame.
+
+`[shadow_validation]` Adding actual-GPU ownership validation exposed a preexisting
+history bug: the controlled static scene advanced its GI revision every frame.
+Diagnostic input records showed identical geometry, materials, transforms, and
+lights in changing BVH traversal order. The order-dependent signature interpreted
+those permutations as scene changes. Consequently, previous images and response
+checks did **not** establish working temporal accumulation, cache feedback, or
+reprojection, despite the corresponding controls being enabled. Earlier claims
+about those mechanisms must be read with this correction.
+
+`[code]` GI collection now sorts by stable instance and light IDs before capture,
+TLAS assembly, and signature calculation. The focused `amd_gi_cache` regression
+requires exactly one initialization reset during small camera movement and
+stationary rendering, alongside GPU scheduling/LRU checks and visible cache reuse.
+The final requested 1/4-versus-1 comparison remains pending the remaining backend
+work; historical preview files are not the completed implementation.
+
+`[shadow_validation]` The stable-order implementation passes `amd_gi_cache` with
+one initialization reset and GPU queue/ownership/LRU checks over 128 frames.
+Displacement and reuse are exercised, and the disabled image restores exactly.
+The sampling rig passes the same GPU invariants on 694 active-cache frames,
+including sampling/adaptive/cache switches and an emissive material uniform
+change. Its box-front emission gain is 0.390962 in mean display RGB; residual
+after removal is 0.042719. Unlike the earlier zero-residual record, this run has
+working temporal feedback. The residual is below the rig's 20% response threshold,
+but demonstrates that temporal lighting decay still needs visual evaluation.
+
+## Retained material preparation and source revisions, 2026-10-22
+
+`[code]` `RaytracingMaterialCapture` separates preparation of expanded geometry
+and targets from rendering current native material pixels. The GI adapter retains
+bounded preparation pages and invalidates only changed source pages. This removes
+per-frame geometry readback, decoding, mesh expansion, and target allocation from
+unchanged pages. Material pixels still redraw every active frame; this is not
+dirty-material scheduling or a completed material cache.
+
+`[code]` Mesh surface revisions detect in-place edits. Vertex/index updates
+invalidate the shared BLAS and prepared material data; attribute/skin updates
+invalidate prepared material data without an unnecessary BLAS rebuild. Stable
+buffer RIDs alone were insufficient for this contract.
+
+`[shadow_validation]` `amd_gi_materials` verifies 198 frames with exactly seven
+initial page preparations and two single-page rebuilds. A non-caster wall's
+vertex-color buffer changes from green to blue; the separate box-front RGB delta
+is `[0.00270924, -0.05354846, 0.0430902]`. The edited-buffer result differs from a
+freshly rebuilt source by 0.002729 mean absolute display RGB, below the rig's
+0.015 stochastic tolerance. The disabled image restores exactly. The native
+material capture analytical rig also passes. These are software Vulkan correctness
+checks, not target-GPU performance measurements.
+
+## Guided diffuse probe sampling, 2026-10-22
+
+`[code]` The Vulkan diffuse path now ports GI-1's radiance-times-cosine sampling
+distribution, hit-position reprojection, angular sample rebinning, empty-cell
+backup, and shadow-preserving probe hysteresis. The live `importance_sampling`
+control defaults on and keeps the primary ray budget unchanged. It adds no
+persistent allocation or dispatch, but does add shader work. The Godot port uses
+bounded workgroup-local integer lists with floating-point sums in place of
+upstream fixed-point atomics. Reuse currently selects the nearest compatible
+previous probe; neighborhood/LRU reuse and adaptive placement remain unfinished.
+
+`[shadow_validation]` At 641x359 and approximately 1/4 primary ray/pixel/frame,
+the `amd_gi_sampling` rig passes off/on/off sampling switches with unchanged GPU
+allocation, black-history discovery, emissive removal, and exact disabled
+restoration. Multibounce and denoising stay on. After 64 settling frames, an
+emissive ceiling raises the box-front region's mean display RGB by 0.408730; after
+removing emission and another 64 frames, that region matches its baseline exactly.
+This measures response in one controlled scene, not radiometric accuracy.
+
+`[shadow_validation]` The standard sparse progress rig also passes at approximately
+1/4 and 1 primary ray/pixel/frame, including material transfer, camera movement,
+resize, and disabled restoration. Appearance in this room remains broadly similar;
+the coarse indirect gradients are not solved by this sampling stage. The full
+Linux editor and AMD release translation unit compile. No target-GPU performance
+or upscaler compatibility claim follows from software Vulkan captures.
+
+## Sparse cached diffuse pipeline, 2026-10-22
+
+`[code]` The first AMD GI diffuse slice now implements sparse directional probes,
+a bounded world hash with directional tiles and mip levels, previous-frame cache
+feedback for multibounce, SH reconstruction, and adaptive temporal/spatial GI
+denoising. It is an incomplete GI-1.x adaptation, not the completed backend.
+[The feature document](features/amd-gi.md) records each implemented stage and
+remaining source-port gaps, including reflections and persistent material caching.
+
+`[shadow_validation]` Progress captures now use approximately 1/4 and 1 primary
+probe ray per internal pixel per frame, with multibounce probability 0.3, probe
+filtering, and the GI denoiser enabled. Secondary/visibility rays are additional.
+The 641x359 rig passes indirect-energy-zero, non-caster material-transfer, exact
+disabled-restoration, and texture-release checks. It also renders camera cuts,
+small camera movement, and an awkward 637x353 resize without engine errors; this
+is not exhaustive motion/upscaler validation. Texture bytes return from 55,714,560
+while active to the 10,017,536 baseline. Native bake buffer pools retain 761,760
+bytes above the cold buffer baseline after disabling.
+
+`[shadow_validation]` All 11 existing RT-shadow geometry images remain pixel-identical,
+and native material checks pass. The separate uncached diagnostic controls also
+pass at one sample per pixel. The full Linux editor and affected release objects
+compile. No 780M/5090 GPU performance or DLSS/FSR compatibility is established.
+
+**Presentation correction:** The earlier 128/512-sample transport images were
+inappropriately presented as implementation progress. They are expensive debugging
+references, not representative runtime results. Progress uses an explicit low
+tracing budget and keeps implemented reconstruction/denoising enabled. The current
+`gi_compare` rig now follows that rule too.
+
+## Native GI still comparison, 2026-10-22
+
+`[shadow_validation]` The original `gi_compare` run (since replaced by the sparse pipeline comparison) rendered the same 641x359 matte room with
+the uncached diffuse validation mode (512 paths/pixel, three secondary encounters),
+baked native VoxelGI at 128 and 256 subdivisions, and native SDFGI. Camera, direct
+light, RT shadows, materials, and exposure are unchanged. See the
+[complete protocol](features/rtgi-validation.md#compare-with-native-godot-gi).
+
+The RT validation image has localized colored fill on the shadowed white box faces,
+with residual sampling grain. VoxelGI provides stronger overall fill but visible
+bands on the box faces and ceiling. Increasing subdivisions and testing bias 0 /
+normal bias 1.5 do not remove these artifacts in this view. SDFGI leaves the
+shadowed faces substantially darker, both with default spatial settings and with
+minimum cell size 0.1 / occlusion enabled. The camera is outside the room, so the
+minimum cell size is not the cell size throughout the room; this is not evidence
+that SDFGI behaves identically from an interior first-person camera.
+
+All three disabled controls match the initial image exactly. After 120 settling
+frames, another 60 frames leave every native capture unchanged except default
+SDFGI, whose largest change is one 8-bit channel step. The observed differences
+are not an unsettled-startup comparison.
+
+These are different transport approximations with their native energy/feedback
+settings, not radiometric accuracy rankings. Native GI supplies capabilities such
+as approximate specular reflections that the current diffuse validator lacks.
+The captures do not establish eventual AMD cache/reconstruction quality, motion
+behavior, thin-geometry handling, upscaler compatibility, or target-GPU cost.
+
+## Diffuse transport stills, 2026-10-22
+
+An explicit `rt_validation` mode now connects a separate GI scene TLAS, shared shadow
+BLASes, native material captures, and uncached diffuse path integration. This is a
+transport checkpoint, not AMD's radiance-cache/screen-probe implementation. See
+[features/rtgi-validation.md](features/rtgi-validation.md) for reproduction and limits.
+
+| Result | Evidence | Tag |
+| --- | --- | --- |
+| Actual indirect illumination and extra-bounce energy | The 641x359 room rig passes at 128 and 512 paths/pixel under Mesa lavapipe 25.0.7 / LLVM 19.1.7. One and three secondary encounters brighten occluded white box faces; three recover more energy. | `[shadow_validation]` |
+| Reflector selection is independent of shadow casting | The right wall does not cast shadows. Changing its material from green to blue reduces green and increases blue on the unchanged white box front. | `[shadow_validation]` |
+| The effect is not an ambient/exposure offset | Zero indirect light energy restores the disabled image byte-for-byte. Disabling validation and restoring scene inputs also restores it exactly. | `[shadow_validation]` |
+| Validation textures are released after deferred destruction | An 8-path lifecycle run waits 12 frames after disabling. Engine-reported texture bytes are 10,017,536 before, 53,848,320 while active, and 10,017,536 afterward. Buffer bytes remain 761,760 above the cold baseline; native material-bake buffer pools remain warm. This is not complete memory equivalence or hardware profiling. | `[shadow_validation]` |
+| Existing rendering remains unchanged in the exercised cases | All 11 geometry regression images remain identical to the original shadow-scene baseline, and native material/legacy UV2 checks pass. | `[shadow_validation]` |
+
+The Linux editor and affected release translation units build. No target-machine
+performance, glossy reflection quality, AMD cache behavior, denoising, or DLSS/FSR
+compatibility is established by this validation mode.
+
+## Native material capture, 2026-10-22
+
+Added explicit paged triangle capture through the native Forward+ material shaders.
+The capture preserves source UV2 and vertex IDs using a separate placement buffer;
+it is not invoked by frame rendering and does not enable GI. The public
+`RenderingServer.bake_render_triangle_material()` method is a diagnostic readback
+entry point. Representation and limits: [internals/rt-materials.md](internals/rt-materials.md).
+
+| Result | Evidence | Tag |
+| --- | --- | --- |
+| Analytical material checks pass | Vulkan/Mesa lavapipe 25.0.7, LLVM 19.1.7: indexed/non-indexed and compressed source data, original UVs/colors/custom attributes/vertex IDs, tangent-space normals, transforms, cutouts, HDR emission, parameter/texture updates, surface-material selection, page clipping, and legacy UV2 baking. | `[shadow_validation]` |
+| Normal frame images remain unchanged | All 11 geometry captures at 641x359 again match the original shadow-scene baseline with zero changed RGB pixels after the material-pass changes. | `[shadow_validation]` |
+| Surface data readback does not include the material RID | The first test run caught fallback to default gray. Capture now queries `mesh_surface_get_material()` separately. | `[code]` |
+| Native bake normals require normalization after decoding | Best-fit encoding changes the stored vector length. The normal-map test decodes with `normalize(rgb * 2 - 1)`; comparing raw RGB with a unit vector's encoding was incorrect. | `[code]` |
+
+The full Linux editor build, affected release translation units, class-reference
+generation, and changed-file hooks pass. These results do not establish hardware
+performance, complete scene material support, or a functioning AMD GI backend.
+
+## Geometry extraction, 2026-10-22
+
+`RaytracingGeometry` now owns the BLAS cache and dequantization code previously inside
+`RaytracingScene`. The shadow scene retains selection, layer masks, and TLAS ownership.
+This is infrastructure only: AMD GI lighting, reflections, multibounce, denoising, and
+settings are not implemented. Current scope: [AMD_GI_IMPLEMENTATION.md](AMD_GI_IMPLEMENTATION.md).
+
+| Result | Evidence | Tag |
+| --- | --- | --- |
+| No image change in the geometry regression | All 11 corresponding captures at 641x359 had zero changed RGB pixels against the original shadow-scene implementation at `e4e8d844470786e631b4d61ec622a5e0a2732aa1`, using Mesa lavapipe 25.0.7 / LLVM 19.1.7. The rig covers shared meshes, compression, 16/32-bit and non-indexed geometry, buffer replacement, blend shapes, eviction, and destruction. | `[shadow_validation]` |
+| Reuse requires more than sharing the shadow TLAS | GI needs its own visibility and ordered hit metadata. A BLAS can rebuild in place with the same RID, so the extracted surface descriptor also exposes a successful-build revision. No second geometry consumer is wired yet. | `[code]` |
+
+No hardware cost or GI quality result follows from this extraction. Older entries below
+refer to the geometry methods by their original `rt_scene` locations; those methods
+now live in `rt_geometry`.
 
 ---
 

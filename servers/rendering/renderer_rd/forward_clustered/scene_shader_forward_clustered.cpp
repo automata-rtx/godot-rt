@@ -81,6 +81,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	uses_time = false;
 	writes_modelview_or_projection = false;
 	uses_world_coordinates = false;
+	uses_instance_transform = false;
 	uses_particle_trails = false;
 	uses_z_clip_scale = false;
 
@@ -146,6 +147,13 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	actions.usage_flag_pointers["BINORMAL"] = &uses_tangent;
 	actions.usage_flag_pointers["ANISOTROPY"] = &uses_tangent;
 	actions.usage_flag_pointers["ANISOTROPY_FLOW"] = &uses_tangent;
+
+	// Native GI captures can be shared only when evaluating them with an
+	// identity model transform does not change shader inputs. Keep this
+	// conservative: normal/tangent-dependent shaders retain per-instance capture.
+	for (const char *input : { "MODEL_MATRIX", "MODEL_NORMAL_MATRIX", "MODELVIEW_MATRIX", "MODELVIEW_NORMAL_MATRIX", "VIEW_MATRIX", "INV_VIEW_MATRIX", "PROJECTION_MATRIX", "INV_PROJECTION_MATRIX", "MAIN_CAM_INV_VIEW_MATRIX", "NODE_POSITION_WORLD", "NODE_POSITION_VIEW", "CAMERA_POSITION_WORLD", "CAMERA_DIRECTION_WORLD", "CAMERA_VISIBLE_LAYERS", "VERTEX", "VIEW", "FRAGCOORD", "SCREEN_UV", "INSTANCE_ID", "INSTANCE_CUSTOM" }) {
+		actions.usage_flag_pointers[input] = &uses_instance_transform;
+	}
 
 	actions.write_flag_pointers["MODELVIEW_MATRIX"] = &writes_modelview_or_projection;
 	actions.write_flag_pointers["PROJECTION_MATRIX"] = &writes_modelview_or_projection;
@@ -727,7 +735,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.renames["UV2"] = "uv2_interp";
 		actions.renames["COLOR"] = "color_interp";
 		actions.renames["POINT_SIZE"] = "point_size";
-		actions.renames["INSTANCE_ID"] = "INSTANCE_INDEX";
+		actions.renames["INSTANCE_ID"] = "MATERIAL_INSTANCE_INDEX";
 		actions.renames["VERTEX_ID"] = "VERTEX_INDEX";
 		actions.renames["Z_CLIP_SCALE"] = "z_clip_scale";
 

@@ -21,6 +21,9 @@
 > - **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — how to measure a change, and what the harnesses
 >   cannot tell you.
 >
+> **AMD GI integration is in progress:** [scope and implementation status](docs/AMD_GI_IMPLEMENTATION.md).
+> The first [cached diffuse pipeline](docs/features/amd-gi.md) now runs with sparse probes, multibounce feedback, and denoising. Sky lighting and initial glossy reflections are implemented; full AMD sampling/cache scheduling and shipping performance validation remain unfinished.
+>
 > Everything below is the upstream Godot README.
 
 <p align="center">

@@ -73,6 +73,7 @@ public:
 	float dual_paraboloid_side = 0.0;
 	float opaque_prepass_threshold = 0.0;
 	bool material_uv2_mode = false;
+	bool material_triangle_mode = false;
 	float emissive_exposure_normalization = 0.0;
 	bool shadow_pass = false;
 	// True while drawing the transparent list. A genuinely alpha blended fragment
@@ -116,6 +117,7 @@ private:
 		SCENE_DATA_FLAGS_USE_PANCAKE_SHADOWS = 1 << 6,
 		SCENE_DATA_FLAGS_IN_SHADOW_PASS = 1 << 7, // Only used by Forward+ renderer.
 		SCENE_DATA_FLAGS_IN_ALPHA_PASS = 1 << 8, // Only used by the Forward+ renderer.
+		SCENE_DATA_FLAGS_USE_TRIANGLE_MATERIAL = 1 << 9,
 		SCENE_DATA_FLAGS_MAX
 	};
 

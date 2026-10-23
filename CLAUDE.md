@@ -2,7 +2,8 @@
 
 **Not vanilla Godot.** Four additions to the Forward+ renderer: hardware raytraced shadows, a
 GTAO/visibility-bitmask occlusion estimator, a Bend Studio screen space contact shadow, and NVIDIA
-Streamline (DLSS). Node defaults differ. Answering about lights, shadows, fog, occlusion or
+Streamline (DLSS). Experimental AMD GI is separately gated off; its implementation
+status and graphics controls are linked below. Node defaults differ. Answering about lights, shadows, fog, occlusion or
 upscaling from memory of stock Godot produces wrong code and wrong advice.
 
 This file is the router. It holds only what is needed to avoid a wrong answer without opening
@@ -18,6 +19,10 @@ anything else. **Open the file that covers the question before answering it.**
 | Has this been tried, what did it measure | `docs/HISTORY.md` — read before re-attempting anything |
 | How do I measure or validate a change | `docs/VALIDATION.md` |
 | Re-applying the fork to a newer Godot | `docs/PORTING.md` |
+| AMD GI implementation status and remaining work | `docs/AMD_GI_IMPLEMENTATION.md` — diffuse/sky/glossy implementation, not a completed shipping backend |
+| Triangle material capture / GI material preparation | `docs/internals/rt-materials.md` — shared native GI hit-material capture; synchronous readback is diagnostic only |
+| Sparse AMD GI progress and live controls | `docs/features/amd-gi.md` — actual low-budget captures, denoiser enabled |
+| GI enabled/disabled stills and validation controls | `docs/features/rtgi-validation.md` — uncached diffuse transport, not AMD GI-1.x |
 
 `<feature>` is one of `rt-shadows`, `ambient-occlusion`, `screen-space-shadows`, `dlss`.
 
@@ -31,11 +36,11 @@ is the right one even where a general answer would differ.
 
 - **Two target machines.** RTX 5090 desktop at 3440x1440, and a Ryzen 7 7840HS / Radeon 780M
   laptop. Every published measurement was taken on one of them. "Weak hardware" means the 780M.
-- **Never TAA. SMAA only when DLSS is off.** The two shipping AA configurations are exclusive: DLSS
-  on means DLSS does the antialiasing and SMAA/FXAA are off; DLSS off means SMAA. Never both.
-  Consequence: Godot fills the velocity buffer only for a viewport running a temporal upscaler, so
-  **anything that ghosts is a DLSS-on problem** — with SMAA there is no temporal reprojection of the
-  frame at all. The raytraced shadow denoiser is the exception; it accumulates in both.
+- **No standalone TAA.** DLSS or FSR2 supplies antialiasing when a temporal upscaler is
+  active; SMAA is the fallback when neither is active. Do not enable SMAA/FXAA alongside
+  temporal upscaling. Godot fills the velocity buffer for a viewport running a temporal
+  upscaler; temporal effects must explicitly handle the configuration without it.
+  The existing shadow denoiser accumulates with or without a temporal upscaler.
 - **MSAA off.** So "measure with MSAA off" is the shipping configuration, not a methodology note.
 - **Not VR.** Every multiview and stereo fallback in this fork is dead code here.
 - Builds come from **GitHub Actions**, not a local toolchain.
