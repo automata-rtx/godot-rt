@@ -33,14 +33,17 @@ def main():
         if not np.array_equal(load(name), load("varied_disabled")):
             raise SystemExit(f"{name}: direct-only restoration differs")
     log = (directory / "run.log").read_text()
+    for count, capacity in ((4, 4), (6, 8)):
+        if f"AMD GI light hierarchy: lights={count} capacity={capacity}" not in log:
+            raise SystemExit(f"Missing spatial hierarchy coverage for {count} lights")
     checks = re.findall(r"AMD GI reservoir validation: valid=(\d+) reused=(\d+)", log)
     if not checks or not any(int(reused) for _, reused in checks):
         raise SystemExit("World reservoir reuse was not exercised")
     memory = {
         name: int(buffers) for name, buffers in re.findall(r"GI memory lights_(\w+): textures=\d+ buffers=(\d+)", log)
     }
-    # Two base-cell reservoir buffers replace two 16-byte placeholders.
-    expected = 2 * 4096 * 64 * 16 - 32
+    # Two reservoir buffers and the four-light hierarchy replace placeholders.
+    expected = 2 * 4096 * 64 * 16 - 32 + 8 * 48 - 16
     if memory["resampled"] - memory["exhaustive_restored"] != expected:
         raise SystemExit("Light-resampling toggle did not release its reservoir buffers")
     print("World reservoir reuse and allocation toggle verified; direct-only controls exact.")

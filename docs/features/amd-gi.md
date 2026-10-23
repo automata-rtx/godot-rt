@@ -25,7 +25,7 @@ MSAA. All controls below are live `ProjectSettings` values under
 | `importance_sampling` | `true` | Guide diffuse probe rays using reprojected radiance times the surface cosine. Keeps the same primary ray count; disabling uses stratified angular samples. Switching resets history. |
 | `adaptive_sampling` | `true` | Redirect existing updates from reusable probes or empty sky slots to uncovered screen tiles. Does not add rays. Switching resets history. |
 | `probe_cache` | `true` | Retain up to 4,096 displaced probes with least-recently-used eviction. Turning this off releases the pool and skips its binning, ordering, and store stages; histories reset. |
-| `light_resampling` | `true` | Select a light using eight RIS candidates and compatible previous world-cell reservoirs, then trace its current visibility. With multiple lights, reserves 8 MiB for double-buffered proposals. Disabling releases them and evaluates every light; zero/one-light scenes bypass resampling automatically. |
+| `light_resampling` | `true` | Select a light using eight spatial-hierarchy RIS candidates and compatible previous world-cell reservoirs, then trace its current visibility. With multiple lights, reserves 8 MiB for double-buffered proposals plus a bounded light tree (up to 96 KiB). Disabling releases them and evaluates every light; zero/one-light scenes bypass resampling automatically. |
 | `reflections/enabled` | `true` | Enable the separate glossy path. Turning it off skips its five stages and releases reflection-sized resources. |
 | `reflections/half_resolution` | `true` | One glossy sample per 2×2 internal pixels, with rotating sample locations; disabling uses full internal resolution. Independent of diffuse probe spacing. |
 | `reflections/probe_roughness_threshold` | `0.6` | Reuse directional probe radiance above this roughness where compatible probes exist. Lower thresholds reduce tracing but lose reflected detail. Uncovered pixels still trace. |
@@ -66,7 +66,7 @@ stage dispatches once per mip level:
    Select sparse updates using a repeating Halton sequence, then match uncovered
    tiles to reusable update slots. Matching is one-to-one, with no duplicate
    destinations or extra rays. Bin cached world-space probes into the current
-   screen grid. Reproject hits from a compatible 3×3 previous-probe neighborhood
+   screen grid. Reproject hits from a compatible 3×3 current reprojected-probe neighborhood
    plus the closest compatible displaced probe into the selected probes. Build a
    64-cell cumulative distribution from radiance times the surface
    cosine. Trace 64 guided, jittered equal-area hemi-octahedral samples per probe,
@@ -84,7 +84,7 @@ stage dispatches once per mip level:
    reflected radiance only: emission is added at the exact ray hit so the spatial
    cache does not enlarge emitters. Rays shorter than a world-cache cell bypass
    filtered readback, including continuation rays, to reduce leaks at thin walls.
-   With light resampling enabled, eight uniform light proposals form a fresh RIS
+   With light resampling enabled, eight spatial-hierarchy light proposals form a fresh RIS
    reservoir. Merge up to four distinct normal-compatible previous world cells,
    re-evaluating their targets at this hit and clamping each previous confidence
    to 20. Trace only the chosen light's visibility; never reuse visibility from
@@ -160,8 +160,8 @@ hardware timing measurement.
 The current diffuse result is not the completed AMD GI-1.2 look. In particular:
 
 - Reprojection retains the visible 8-pixel grid, and guiding gathers a 3×3
-  previous-frame neighborhood plus the nearest compatible displaced-cache entry,
-  rather than AMD's current reprojected neighborhood plus LRU gather. The bounded
+  current reprojected neighborhood plus the nearest compatible displaced-cache entry.
+  Preparation finishes before any tracing workgroup publishes its new probe seed. The bounded
   pool keeps 4,096 entries and expires radiance after 50 frames without a trace
   refresh. Fine surfaces sharing a screen tile still compete for its stored probe.
   Material-BRDF specular sampling is not part of this diffuse stage. The cache
@@ -169,7 +169,11 @@ The current diffuse result is not the completed AMD GI-1.2 look. In particular:
 - Cache update selection currently chooses one hit per touched cell. Light
   reservoirs reuse the existing directional world-cell grid; Capsaicin uses a
   separate hash of multiple hit reservoirs and its light-sampling hierarchy. This
-  port uses uniform discrete proposals for its bounded point/spot/sun list.
+  port uses a balanced spatial hierarchy for its bounded point/spot/sun list.
+  Bounds and power guide eight fresh candidates; each RIS weight divides by the
+  actual tree-walk probability. A uniform component retains support for unusual
+  falloff and spot distributions. This is an adaptation of spatial light selection,
+  not Capsaicin's light-grid implementation.
   Continuations now populate additional cells with separate direct/indirect
   filtering. Scheduling still chooses one hit per cell rather than accumulating
   all visible-hit updates. Feedback uses the previous world indirect cache rather
@@ -180,7 +184,8 @@ The current diffuse result is not the completed AMD GI-1.2 look. In particular:
   mirror/glossy-floor rig. This is an adaptation, not an exact port of all Capsaicin
   reflection heuristics: separate firefly marking/cleanup, adaptive ray compaction,
   object velocity reprojection, and layered/anisotropic lobes remain. Reflection-only
-  hits can read the world cache but do not yet populate it. Hit shading currently
+  hits read the world cache; upstream Capsaicin also performs cache lookup here
+  rather than inserting those hits. Our uncached fallback evaluates hit lighting. Hit shading currently
   evaluates diffuse/emissive outgoing radiance, so nested specular transport is absent.
   Half-resolution mirrors can show reconstruction artifacts.
 - Expanded capture geometry and targets persist across frames with source-data
@@ -407,7 +412,13 @@ quality preset. Watch renderer warnings: unsupported materials/geometry or capac
 overflow suppress the contribution, so checking only the enabled setting is not
 proof that GI is running. Test FSR2 on the laptop and DLSS on the desktop, movement,
 lighting changes, scene transitions and disabling/re-enabling as well as a still.
-The whole `fps-proto` scene has not been validated in this workspace.
+A controlled run of `fps-proto`'s `levels/test_level.tscn` now passes with the native
+extension, three NPCs, RT shadows, VBAO and FSR2 Performance. It uses a 641×359
+window (320×179 internal), grass and RT soft shadows off, and frozen gameplay for
+matched 64-draw quarter/one stills. Its material atlas grows to 64 layers for 34,464
+triangle tiles. This is software-Vulkan integration evidence, not full gameplay,
+all-map or target-hardware validation. Keep custom grass off: its opaque custom
+vertex deformation remains unsupported by GI.
 
 ### Forward-only transparency
 
@@ -418,3 +429,17 @@ Opaque/cutout surfaces retain normal transport; depth-writing transparency and
 multipass surfaces retain the strict support checks. This does not implement
 transparent/refraction transport or GI emission from forward-only effects.
 `amd_gi_overlays` checks that physical-scene GI and history survive these passes.
+
+### Light proposal hierarchy
+
+When resampling is active, each viewport retains a spatially ordered binary tree
+for the scene's analytic lights. Stable scene indices stay in the leaves, so tree
+reordering does not invalidate reused light identities. The CPU rebuilds/uploads
+only when light records change. Positional power and distance to a node's bounds,
+plus directional power, guide traversal; a 10% uniform-count component at each
+branch preserves proposal support. RIS uses the complete traversal probability and
+re-evaluates the actual material, mask, attenuation and visibility. The hierarchy
+is a proposal approximation, not a changed lighting model or an occlusion cache.
+Disabling resampling releases the tree with the reservoir buffers. Zero/one-light
+scenes bypass it. `amd_gi_lights` compares against exhaustive light evaluation,
+including a six-light incomplete tree with point, spot and directional lights.

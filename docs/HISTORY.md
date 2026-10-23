@@ -6,6 +6,55 @@ alone — several of these already were, and failed. Not here: using a feature (
 one works (`docs/internals/`), running the harnesses (`docs/VALIDATION.md`), diagnosing a symptom
 (`docs/TROUBLESHOOTING.md`).
 
+## AMD GI spatial light proposals — 2026-10-23
+
+`[code]` Fresh RIS candidates now traverse a bounded, spatially ordered light
+hierarchy instead of sampling uniformly. Stable light indices preserve reservoir
+identity across rebuilds. Exact traversal probabilities normalize the estimator;
+node bounds/power affect proposals only. Unchanged light records do not rebuild or
+upload the tree. Its 48-byte nodes use at most 96 KiB for 1,024 lights and release
+with the resampling toggle. Zero/one-light scenes bypass it.
+
+`[shadow_validation]` The identical four-light case gives a resampled/exhaustive
+indirect-gain ratio of 1.000350 and display-RGB MAE 0.000684. A six-light mixed
+point/spot/directional case, including empty tree leaves, gives ratio 0.926735 and
+MAE 0.002154. The resource-release check includes the new tree; zero-indirect and
+disabled images restore exactly. These finite-history image comparisons are not
+proof of universal variance improvement or GPU speed. Multibounce ownership and
+release also pass, with single/multiple indirect display-RGB gains 0.024716/0.036673.
+Both use the same quarter primary-ray budget and enabled denoiser.
+
+`[CI]` The first Windows Clang build exposed an inconsistent-missing-override
+error: the new culler capture declaration alone used `override` while the existing
+class declarations omit it. The declaration now follows its neighboring bake API;
+its virtual dispatch and signature are unchanged. The local editor and affected
+release translation units compile; Windows validation must be checked on the new
+commit, not inferred from these Linux results.
+
+## AMD GI game integration and probe preparation — 2026-10-23
+
+`[game/software Vulkan]` A temporary, ignored harness loads the actual
+`fps-proto` test level at source `307c068276f96dbd9fd130e85cd3b6dcff32df02`, using
+its locally built native extension and existing game settings. Grass and soft RT
+shadows are off; hard RT shadows, VBAO and FSR2 Performance remain on. Captures use
+641×359 display / 320×179 internal resolution, frozen gameplay, and matched 64-draw
+GI histories. The three NPCs and first-person presentation run without GI suppression.
+34,464 triangle tiles grow the atlas to 64 layers, beyond its previous fixed limit.
+These are integration stills, not gameplay or 780M/5090 performance results. Tracked
+game files remain unchanged. The original source-`8feba59` PDF/PNGs are in preview.
+
+`[code]` Displaced-probe motion rejection previously read a shared index initialized
+only in another shader pass. It now uses the cached probe's own origin. Preparation
+also gathers the current reprojected 3×3 grid, matching AMD's ordering. A separate
+PREPARE dispatch reads immutable probe/radiance data before TRACE publishes new
+seeds; it uses existing scratch storage and adds no rays.
+
+`[shadow_validation]` The strengthened cache rig combines camera return with a
+moving box; cache ownership, motion invalidation, history lifetime and exact disabled
+restoration pass. The current-grid change also passes native deformation, moving
+glossy reflections, FSR2 and equal-history quarter/one-budget checks. Denoisers and
+ordinary primary-ray budgets remain unchanged.
+
 ## AMD GI forward-only effects — 2026-10-23
 
 `[code]` Checking the game's presentation revealed that forward-only outline,

@@ -14,13 +14,17 @@ func _run() -> void:
 	await _settle(20)
 	var camera: Camera3D = get_viewport().get_camera_3d()
 	var original := camera.position
+	var box: MeshInstance3D = get_node("ShortBox")
+	var box_origin := box.position
 	for step in range(16):
 		camera.position.x += 0.06
 		await _settle(1)
 	for step in range(16):
 		camera.position.x -= 0.06
+		box.position.x += 0.02
 		await _settle(1)
 	camera.position = original
+	box.position = box_origin
 	await _settle(8)
 	await _capture("cache_returned")
 	await _settle(64)

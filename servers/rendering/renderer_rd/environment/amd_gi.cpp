@@ -239,14 +239,109 @@ AMDGI::~AMDGI() {
 	}
 }
 
+// Spatially ordered, balanced light proposals. Leaves retain the scene's stable
+// light indices, so rebuilding this tree does not invalidate reservoir identity.
+// The node estimate is only a proposal: RIS divides by the actual walk probability.
+bool AMDGI::ViewData::update_light_tree(const RaytracingGIScene &p_scene) {
+	RD *rd = RD::get_singleton();
+	if (!light_resampling) {
+		if (light_tree.is_null()) {
+			light_tree = rd->storage_buffer_create(16);
+		}
+		return light_tree.is_valid();
+	}
+	const LocalVector<RaytracingGIScene::LightData> &lights = p_scene.get_lights();
+	if (lights.size() == sampling_lights.size() && memcmp(lights.ptr(), sampling_lights.ptr(), lights.size() * sizeof(RaytracingGIScene::LightData)) == 0) {
+		return light_tree.is_valid();
+	}
+	struct Entry {
+		uint32_t morton;
+		uint32_t light;
+		bool operator<(const Entry &p_other) const {
+			return morton != p_other.morton ? morton < p_other.morton : light < p_other.light;
+		}
+	};
+	struct ProposalNode {
+		float minimum[3] = {};
+		uint32_t light = UINT32_MAX;
+		float maximum[3] = {};
+		uint32_t count = 0;
+		float power[4] = {}; // positional, directional, reserved
+	};
+	static_assert(sizeof(ProposalNode) == 48);
+	const uint32_t capacity = Math::next_power_of_2(lights.size());
+	LocalVector<ProposalNode> nodes;
+	nodes.resize(capacity * 2);
+	LocalVector<Entry> entries;
+	Vector3 minimum, maximum;
+	for (uint32_t i = 0; i < lights.size(); i++) {
+		Vector3 position(lights[i].position[0], lights[i].position[1], lights[i].position[2]);
+		minimum = i == 0 ? position : minimum.min(position);
+		maximum = i == 0 ? position : maximum.max(position);
+	}
+	const Vector3 extent = (maximum - minimum).max(Vector3(0.0001, 0.0001, 0.0001));
+	for (uint32_t i = 0; i < lights.size(); i++) {
+		Entry entry = { 0, i };
+		for (uint32_t axis = 0; axis < 3; axis++) {
+			uint32_t coordinate = CLAMP(int((lights[i].position[axis] - minimum[axis]) / extent[axis] * 1023.0f), 0, 1023);
+			for (uint32_t bit = 0; bit < 10; bit++) {
+				entry.morton |= ((coordinate >> bit) & 1u) << (bit * 3 + axis);
+			}
+		}
+		entries.push_back(entry);
+	}
+	entries.sort();
+	for (uint32_t i = 0; i < entries.size(); i++) {
+		const uint32_t light = entries[i].light;
+		ProposalNode &node = nodes[capacity + i];
+		node.light = light;
+		node.count = 1;
+		for (uint32_t axis = 0; axis < 3; axis++) {
+			node.minimum[axis] = lights[light].position[axis];
+			node.maximum[axis] = lights[light].position[axis];
+		}
+		node.power[lights[light].type == 0 ? 1 : 0] = Math::abs(lights[light].color[0]) * 0.2126f + Math::abs(lights[light].color[1]) * 0.7152f + Math::abs(lights[light].color[2]) * 0.0722f;
+	}
+	for (uint32_t i = capacity - 1; i > 0; i--) {
+		ProposalNode &node = nodes[i];
+		const ProposalNode &left = nodes[i * 2], &right = nodes[i * 2 + 1];
+		node.count = left.count + right.count;
+		for (uint32_t axis = 0; axis < 3; axis++) {
+			node.minimum[axis] = left.count == 0 ? right.minimum[axis] : (right.count == 0 ? left.minimum[axis] : MIN(left.minimum[axis], right.minimum[axis]));
+			node.maximum[axis] = left.count == 0 ? right.maximum[axis] : (right.count == 0 ? left.maximum[axis] : MAX(left.maximum[axis], right.maximum[axis]));
+		}
+		node.power[0] = left.power[0] + right.power[0];
+		node.power[1] = left.power[1] + right.power[1];
+	}
+	const uint32_t bytes = nodes.size() * sizeof(ProposalNode);
+	if (light_tree_capacity != capacity) {
+		RID replacement = rd->storage_buffer_create(bytes);
+		ERR_FAIL_COND_V(replacement.is_null(), false);
+		if (light_tree.is_valid()) {
+			rd->free_rid(light_tree);
+		}
+		light_tree = replacement;
+		light_tree_capacity = capacity;
+	}
+	rd->buffer_update(light_tree, 0, bytes, nodes.ptr());
+	sampling_lights = lights;
+	static const bool validate = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_RESERVOIRS").is_empty();
+	if (validate) {
+		print_line(vformat("AMD GI light hierarchy: lights=%d capacity=%d bytes=%d", lights.size(), capacity, bytes));
+	}
+	return true;
+}
+
 void AMDGI::ViewData::free_data() {
-	for (RID *handle : { &frame_uniform, &probes[0], &probes[1], &radiance[0], &radiance[1], &pixels[0], &pixels[1], &rays, &keys, &cache[0], &cache[1], &owners, &scratch, &spawn, &queues, &probe_mask, &cached_probes, &cached_state, &cached_order[0], &cached_order[1], &light_reservoirs[0], &light_reservoirs[1], &indirect_cache[0], &indirect_cache[1], &secondary_rays, &reflection_samples, &reflection_history[0], &reflection_history[1] }) {
+	for (RID *handle : { &frame_uniform, &probes[0], &probes[1], &radiance[0], &radiance[1], &pixels[0], &pixels[1], &rays, &keys, &cache[0], &cache[1], &owners, &scratch, &spawn, &queues, &probe_mask, &cached_probes, &cached_state, &cached_order[0], &cached_order[1], &light_reservoirs[0], &light_reservoirs[1], &indirect_cache[0], &indirect_cache[1], &secondary_rays, &reflection_samples, &reflection_history[0], &reflection_history[1], &light_tree }) {
 		if (handle->is_valid()) {
 			RD::get_singleton()->free_rid(*handle);
 			*handle = RID();
 		}
 	}
 	valid = false;
+	light_tree_capacity = 0;
+	sampling_lights.clear();
 	size = Size2i();
 }
 
@@ -343,6 +438,10 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 			data->light_reservoirs[i] = rd->storage_buffer_create(light_resampling ? CACHE_TILES * 64 * 16 : 16);
 		}
 	}
+	if (!data->update_light_tree(p_scene)) {
+		data->valid = false;
+		return false;
+	}
 	const bool camera_cut = data->valid && (p_camera.origin.distance_to(data->previous_camera.origin) > 1.0 || p_camera.basis.get_column(2).dot(data->previous_camera.basis.get_column(2)) < 0.5);
 	const bool reset = !data->valid || !p_environment.history_compatible(data->environment) || camera_cut || data->scene_revision != p_scene.get_revision() || data->configuration != configuration || data->cell_size != cell_size || data->continuation != probability || data->max_distance != max_distance || data->reflection_roughness != reflection_roughness || data->reflection_filter_passes != reflection_filter_passes;
 	FrameUniform frame = {};
@@ -427,6 +526,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 41, reflection_filter_a));
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 42, reflection_filter_b));
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 43, reflection_output));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 44, data->light_tree));
 	RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(shader.version_get_shader(version, 0), 0, uniforms);
 	if (set.is_null()) {
 		data->valid = false;
@@ -501,7 +601,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 			rd->compute_list_dispatch(list, (cells + 63) / 64, 1, 1);
 		} else if (pass == RESET || (pass >= MIP1 && pass <= MIP3) || (pass >= INDIRECT_MIP1 && pass <= INDIRECT_MIP3)) {
 			rd->compute_list_dispatch(list, CACHE_TILES, 1, 1);
-		} else if (pass == SELECT || pass == PATCH || pass == TRACE || pass == ALLOCATE || pass == REGISTER || pass == ALLOCATE_SECONDARY || pass == REGISTER_SECONDARY || pass == RESOLVE) {
+		} else if (pass == SELECT || pass == PATCH || pass == PREPARE || pass == TRACE || pass == ALLOCATE || pass == REGISTER || pass == ALLOCATE_SECONDARY || pass == REGISTER_SECONDARY || pass == RESOLVE) {
 			rd->compute_list_dispatch(list, update_count, 1, 1);
 		} else {
 			rd->compute_list_dispatch(list, probe_count, 1, 1);

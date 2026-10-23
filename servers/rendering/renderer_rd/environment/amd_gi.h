@@ -62,6 +62,7 @@ private:
 		BIN_CACHED,
 		SELECT,
 		PATCH,
+		PREPARE,
 		TRACE,
 		ALLOCATE,
 		REGISTER,
@@ -134,6 +135,10 @@ private:
 		RID spawn, queues, probe_mask;
 		RID cached_probes, cached_state, cached_order[2];
 		RID light_reservoirs[2];
+		RID light_tree;
+		uint32_t light_tree_capacity = 0;
+		LocalVector<RaytracingGIScene::LightData> sampling_lights;
+		bool update_light_tree(const RaytracingGIScene &p_scene);
 		RID indirect_cache[2], secondary_rays;
 		RID reflection_samples, reflection_history[2];
 		uint32_t reflection_stride = 0;

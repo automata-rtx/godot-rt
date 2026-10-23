@@ -1296,7 +1296,7 @@ pipeline when `amd_gi/enabled` is requested, otherwise the diagnostic pipeline.
 The host/shader contracts are a 128-byte transport push block, a 560-byte frame
 UBO, 192-byte probes (position, normal, SH9, seed/age/update slot), 80-byte ray records, 32-byte hash tiles,
 16-byte radiance cells, and 48-byte pixel histories. The shader specializes pass ID
-at constant 0; preserve all 35 stage boundaries and barriers, including each
+at constant 0; preserve all 36 stage boundaries and barriers, including each
 iteration of the probe-mask mip stage. Cache publication,
 lookup/update ownership, old/new radiance, mip generation, probe reconstruction,
 and temporal/spatial filtering must not become concurrent read/write operations.
@@ -1304,7 +1304,7 @@ and temporal/spatial filtering must not become concurrent read/write operations.
 Viewport custom data owns all histories and buffers; its cleanup must run on resize
 and disabling. Forward+ still consumes binding 34 before tone mapping/upscaling.
 Backend switching must clear the inactive output scope, and native-GI conflicts
-must not silently change authored environment settings. Port all fifteen live
+must not silently change authored environment settings. Port all sixteen live
 `amd_gi/*` controls and regenerate ProjectSettings documentation. The initial path
 still uses conservative scene invalidation and dynamic-material refresh.
 
@@ -1315,10 +1315,10 @@ and update-grid counts separate in allocation, dispatch, and ray indexing. Spawn
 and queue buffers are bindings 24/25; the hierarchical valid-probe mask is binding
 26. Mask dimensions round up so odd edge tiles survive every mip level.
 
-The frame UBO's `flags.y` enables radiance-guided diffuse sampling. TRACE writes
-reprojected angular history into scratch; RESOLVE reads it before FILTER_X reuses
+The frame UBO's `flags.y` enables radiance-guided diffuse sampling. PREPARE writes
+reprojected angular history into scratch; TRACE reads it for guiding; RESOLVE reads it before FILTER_X reuses
 that storage. Keep the 64-lane shared-memory scans and bin publication/read/reuse
-barriers uniform, including sky lanes. Angular bins gather a 3×3 previous-probe
+barriers uniform, including sky lanes. Angular bins gather a 3×3 current reprojected-probe
 neighborhood and use bounded integer linked
 lists with floating-point sums instead of upstream fixed-point radiance atomics.
 Changing sampling mode must reset history without allocating new GPU resources.
@@ -1328,7 +1328,7 @@ those estimates must not become trusted temporal history.
 Bindings 27–30 hold the displaced-probe pool, ownership/list state, and previous/current
 LRU order. The pool has 4,096 entries of 1,216 bytes each. Its single-workgroup
 exclusive scan stably partitions unused and reused entries, reserves untouched
-slots for deduplicated evictions, and appends new entries at the recent end. TRACE
+slots for deduplicated evictions, and appends new entries at the recent end. PREPARE
 only reads the pool and claims ownership; STORE_CACHED writes after all reuse.
 The frame UBO contains both previous and current view-projection matrices.
 Keep GI collection sorted by stable instance/light IDs before computing scene
@@ -1455,3 +1455,20 @@ shadow predicates before requesting a BLAS or material capture. Preserve this or
 outline shells may write vertices but do not describe transport geometry. Keep
 cutout, opaque, depth-writing and multipass support checks intact. Run
 `amd_gi_overlays` when changing that classification.
+
+### AMD GI current-grid preparation and light proposals
+
+PREPARE precedes TRACE, gathering immutable reprojected probes/radiance into the
+existing scratch buffer. TRACE publishes the new seeds only after that dispatch
+barrier; merging the stages would race neighboring readers. Cached motion rejection
+uses the cached probe's position, never REPROJECT's workgroup-local reused index.
+The moving-cache rig covers simultaneous camera return and geometry motion.
+
+Binding 44 is the optional light proposal hierarchy: 48-byte std430 nodes with
+vec3 minimum/uint leaf index, vec3 maximum/uint count, and vec4 power. Root is 1;
+children are `2*i`/`2*i+1`; leaves preserve the scene's stable light indices.
+The private scene adapter exposes a const CPU light view for constructing it.
+Rebuild only on changed records and free it with per-view GI resources. The shader
+must divide fresh RIS weights by the complete mixed tree-walk probability, not
+by uniform `1/light_count`. Keep the placeholder unreachable when resampling is
+disabled. There are now 31 storage-buffer bindings, within Vulkan's minimum 32.

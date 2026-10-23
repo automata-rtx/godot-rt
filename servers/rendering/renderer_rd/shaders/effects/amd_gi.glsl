@@ -35,36 +35,37 @@ const int PASS_REPROJECT = 1;
 const int PASS_BIN_CACHED = 2;
 const int PASS_SELECT = 3;
 const int PASS_PATCH = 4;
-const int PASS_TRACE = 5;
-const int PASS_ALLOCATE = 6;
-const int PASS_REGISTER = 7;
-const int PASS_POPULATE = 8;
-const int PASS_ALLOCATE_SECONDARY = 9;
-const int PASS_REGISTER_SECONDARY = 10;
-const int PASS_UPDATE = 11;
-const int PASS_MIP1 = 12;
-const int PASS_MIP2 = 13;
-const int PASS_MIP3 = 14;
-const int PASS_UPDATE_INDIRECT = 15;
-const int PASS_INDIRECT_MIP1 = 16;
-const int PASS_INDIRECT_MIP2 = 17;
-const int PASS_INDIRECT_MIP3 = 18;
-const int PASS_RESOLVE = 19;
-const int PASS_FILTER_X = 20;
-const int PASS_FILTER_Y = 21;
-const int PASS_PROJECT = 22;
-const int PASS_ORDER_CACHED = 23;
-const int PASS_STORE_CACHED = 24;
-const int PASS_MASK = 25;
-const int PASS_INTERPOLATE = 26;
-const int PASS_TEMPORAL = 27;
-const int PASS_BLUR_X = 28;
-const int PASS_BLUR_Y = 29;
-const int PASS_REFLECTION_TRACE = 30;
-const int PASS_REFLECTION_RESOLVE = 31;
-const int PASS_REFLECTION_TEMPORAL = 32;
-const int PASS_REFLECTION_FILTER = 33;
-const int PASS_REFLECTION_UPSAMPLE = 34;
+const int PASS_PREPARE = 5;
+const int PASS_TRACE = 6;
+const int PASS_ALLOCATE = 7;
+const int PASS_REGISTER = 8;
+const int PASS_POPULATE = 9;
+const int PASS_ALLOCATE_SECONDARY = 10;
+const int PASS_REGISTER_SECONDARY = 11;
+const int PASS_UPDATE = 12;
+const int PASS_MIP1 = 13;
+const int PASS_MIP2 = 14;
+const int PASS_MIP3 = 15;
+const int PASS_UPDATE_INDIRECT = 16;
+const int PASS_INDIRECT_MIP1 = 17;
+const int PASS_INDIRECT_MIP2 = 18;
+const int PASS_INDIRECT_MIP3 = 19;
+const int PASS_RESOLVE = 20;
+const int PASS_FILTER_X = 21;
+const int PASS_FILTER_Y = 22;
+const int PASS_PROJECT = 23;
+const int PASS_ORDER_CACHED = 24;
+const int PASS_STORE_CACHED = 25;
+const int PASS_MASK = 26;
+const int PASS_INTERPOLATE = 27;
+const int PASS_TEMPORAL = 28;
+const int PASS_BLUR_X = 29;
+const int PASS_BLUR_Y = 30;
+const int PASS_REFLECTION_TRACE = 31;
+const int PASS_REFLECTION_RESOLVE = 32;
+const int PASS_REFLECTION_TEMPORAL = 33;
+const int PASS_REFLECTION_FILTER = 34;
+const int PASS_REFLECTION_UPSAMPLE = 35;
 #include "../oct_inc.glsl"
 #include "rt_gi_transport_inc.glsl"
 layout(set = 0, binding = 37) uniform sampler2D sky_radiance;
@@ -795,14 +796,9 @@ void patch_probe(uint index) {
 	spawn.data[slot] = uvec4(hole, probes.data[hole].state.xy, 0u);
 }
 
-void trace_probe(uint slot, uint lane) {
-	uint ray_id = slot * 64u + lane;
-	if (params.bounces != 0u) {
-		secondary_rays.data[ray_id] = empty_ray();
-	}
+void prepare_probe(uint slot, uint lane) {
 	uint probe = spawn.data[slot].x;
 	if (probe == INVALID) {
-		rays.data[ray_id] = empty_ray();
 		return;
 	}
 	if (lane == 0u) {
@@ -840,27 +836,24 @@ void trace_probe(uint slot, uint lane) {
 				}
 			}
 		}
-		probes.data[probe].position = spawn_position;
-		probes.data[probe].normal = spawn_normal;
-		probes.data[probe].state = uvec4(spawn.data[slot].yz, params.padding, slot);
 	}
 	barrier();
 	clear_bins(lane);
-	vec4 clip = frame.previous_view_projection * vec4(spawn_position.xyz, 1);
-	vec2 uv = clip.xy / max(clip.w, 0.00001) * 0.5 + 0.5;
-	if (frame.grid.w == 0u && spawn_position.w > 0.0 && clip.w > 0.0 && all(greaterThanEqual(uv, vec2(0))) && all(lessThan(uv, vec2(1)))) {
-		ivec2 center = ivec2(uv * vec2(params.size) / 8.0);
+	// Read the immutable current-grid reprojection. TRACE publishes new seeds
+	// only after every workgroup has finished gathering its neighbors.
+	if (frame.grid.w == 0u && spawn_position.w > 0.0) {
+		ivec2 center = ivec2(spawn.data[slot].yz / 8u);
 		for (int y = -1; y <= 1; y++) {
 			for (int x = -1; x <= 1; x++) {
 				uint previous = probe_index(center + ivec2(x, y));
 				if (previous == INVALID) {
 					continue;
 				}
-				Probe old_probe = previous_probes.data[previous];
+				Probe old_probe = probes.data[previous];
 				if (old_probe.position.w == 0.0 || params.padding - old_probe.state.z > 50u || dot(old_probe.normal.xyz, spawn_normal.xyz) < 0.95 || abs(dot(old_probe.position.xyz - spawn_position.xyz, spawn_normal.xyz)) > footprint(spawn_position.xyz) * 0.1) {
 					continue;
 				}
-				vec4 old = previous_radiance.data[previous * 64u + lane];
+				vec4 old = radiance.data[previous * 64u + lane];
 				vec3 direction = basis(old_probe.normal.xyz) * hemi_direction((vec2(lane % 8u, lane / 8u) + 0.5) / 8.0);
 				vec3 delta = old_probe.position.xyz + direction * old.w - spawn_position.xyz;
 				float d = length(delta);
@@ -877,7 +870,7 @@ void trace_probe(uint slot, uint lane) {
 		vec3 direction = basis(cached.normal.xyz) * hemi_direction((vec2(lane % 8u, lane / 8u) + 0.5) / 8.0);
 		vec3 delta = cached.position.xyz + direction * old.w - spawn_position.xyz;
 		float d = length(delta);
-		if (old.w > 0.0 && d > 0.0001 && dot(delta, spawn_normal.xyz) > 0.0 && !motion_intersects(previous_probes.data[reused_probe].position.xyz, direction, old.w)) {
+		if (old.w > 0.0 && d > 0.0001 && dot(delta, spawn_normal.xyz) > 0.0 && !motion_intersects(cached.position.xyz, direction, old.w)) {
 			insert_bin(angular_index(delta / d, spawn_normal.xyz), 576u + lane, vec4(old.rgb, d));
 		}
 	}
@@ -887,6 +880,29 @@ void trace_probe(uint slot, uint lane) {
 	history = reused_count > 0u ? history / float(reused_count) : vec4(0, 0, 0, -1);
 	uint id = probe * 64u + lane;
 	scratch.data[id] = history;
+}
+
+void trace_probe(uint slot, uint lane) {
+	uint ray_id = slot * 64u + lane;
+	if (params.bounces != 0u) {
+		secondary_rays.data[ray_id] = empty_ray();
+	}
+	uint probe = spawn.data[slot].x;
+	if (probe == INVALID) {
+		rays.data[ray_id] = empty_ray();
+		return;
+	}
+	if (lane == 0u) {
+		vec3 p, n;
+		bool found = surface(ivec2(spawn.data[slot].yz), p, n);
+		spawn_position = vec4(p, found ? 1.0 : 0.0);
+		spawn_normal = vec4(n, 0);
+		probes.data[probe].position = spawn_position;
+		probes.data[probe].normal = spawn_normal;
+		probes.data[probe].state = uvec4(spawn.data[slot].yz, params.padding, slot);
+	}
+	barrier();
+	vec4 history = scratch.data[probe * 64u + lane];
 	if (frame.flags.y != 0u) {
 		vec3 local_direction = hemi_direction((vec2(lane % 8u, lane / 8u) + 0.5) / 8.0);
 		scan_radiance(lane, luma(history.rgb) * max(local_direction.z, 0.0));
@@ -897,7 +913,7 @@ void trace_probe(uint slot, uint lane) {
 		uint cell = lane;
 		// As in GI-1, cells without valid reprojected history retain their
 		// stratified sample. A black/empty CDF also falls back to uniform.
-		if (frame.flags.y != 0u && reused_count > 0u && sampling_total > 0.00001) {
+		if (frame.flags.y != 0u && history.w > 0.0 && sampling_total > 0.00001) {
 			cell = sample_cell(random_float(state));
 		}
 		vec2 jitter = vec2(random_float(state), random_float(state));
@@ -972,6 +988,40 @@ vec3 light_target(RayHit ray, uint light) {
 	float distance;
 	return ray.diffuse.rgb * unshadowed_irradiance(light, ray.position.xyz, ray.normal_mask.xyz, floatBitsToUint(ray.normal_mask.w), direction, distance) / PI;
 }
+struct LightNode {
+	vec3 minimum;
+	uint light;
+	vec3 maximum;
+	uint count;
+	vec4 power;
+};
+layout(set = 0, binding = 44, std430) restrict readonly buffer LightTree {
+	LightNode data[];
+}
+light_tree;
+
+float light_node_weight(LightNode node, vec3 position) {
+	vec3 delta = max(max(node.minimum - position, position - node.maximum), vec3(0));
+	return node.power.x / max(dot(delta, delta), 0.01) + node.power.y;
+}
+uint sample_light(vec3 position, inout uint state, out float probability) {
+	uint node = 1u;
+	probability = 1.0;
+	while (light_tree.data[node].light == INVALID) {
+		LightNode left = light_tree.data[node * 2u];
+		LightNode right = light_tree.data[node * 2u + 1u];
+		float uniform_probability = float(left.count) / float(left.count + right.count);
+		float lw = light_node_weight(left, position), rw = light_node_weight(right, position);
+		// Retain support for every light, including non-inverse-square falloff,
+		// unusual spot cones and black-light transitions. Exact targets and the
+		// walk PDF, not this approximate bound, determine the RIS contribution.
+		float p = lw + rw > 0.0 ? mix(uniform_probability, lw / (lw + rw), 0.9) : uniform_probability;
+		bool choose_left = random_float(state) < p;
+		probability *= choose_left ? p : 1.0 - p;
+		node = node * 2u + (choose_left ? 0u : 1u);
+	}
+	return light_tree.data[node].light;
+}
 void reservoir_add(uint light, float target, float weight, inout uint selected, inout float selected_target, inout float sum, inout uint state) {
 	if (weight <= 0.0 || isnan(weight) || isinf(weight)) {
 		return;
@@ -989,9 +1039,10 @@ vec3 resampled_direct(RayHit ray, inout uint state, out uvec4 packed) {
 	uint selected = INVALID;
 	float selected_target = 0.0, sum = 0.0;
 	for (uint i = 0u; i < 8u; i++) {
-		uint light = min(uint(random_float(state) * float(params.light_count)), params.light_count - 1u);
+		float proposal;
+		uint light = sample_light(ray.position.xyz, state, proposal);
 		float target = luma(abs(light_target(ray, light)));
-		reservoir_add(light, target, target * float(params.light_count), selected, selected_target, sum, state);
+		reservoir_add(light, target, target / proposal, selected, selected_target, sum, state);
 	}
 	sum /= 8.0;
 	float confidence = 1.0;
@@ -1605,6 +1656,8 @@ void main() {
 		if (lane == 0u) {
 			patch_probe(probe);
 		}
+	} else if (pass_id == PASS_PREPARE) {
+		prepare_probe(probe, lane);
 	} else if (pass_id == PASS_TRACE) {
 		trace_probe(probe, lane);
 	} else if (pass_id == PASS_ALLOCATE || pass_id == PASS_ALLOCATE_SECONDARY) {

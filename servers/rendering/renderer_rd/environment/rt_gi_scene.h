@@ -36,19 +36,7 @@
 namespace RendererRD {
 // Shared hit-material and light adapter for the reference and cached GI paths.
 class RaytracingGIScene {
-	// Tile layout must match atlas_position() in rt_gi_transport_inc.glsl.
-	static constexpr uint32_t PAGE_TRIANGLES = 1024;
-	static constexpr uint32_t TILE_SIZE = 8;
-	static constexpr uint32_t PAGE_SIZE = 256;
-	// Collection keeps one overflow entry beyond these limits to signal failure.
-	static constexpr uint32_t MAX_LIGHTS = RendererSceneRender::MAX_RT_GI_LIGHTS;
-	static constexpr uint32_t MAX_INSTANCES = RendererSceneRender::MAX_RT_GI_INSTANCES;
-	struct HitData {
-		uint32_t first_tile;
-		uint32_t triangles;
-		uint32_t mask;
-		uint32_t shadow_mask = 0;
-	};
+public:
 	struct LightData {
 		float position[3];
 		float range;
@@ -64,6 +52,23 @@ class RaytracingGIScene {
 		uint32_t shadow_mask;
 		uint32_t padding[2] = {};
 	};
+	const LocalVector<LightData> &get_lights() const { return previous_lights; }
+
+private:
+	// Tile layout must match atlas_position() in rt_gi_transport_inc.glsl.
+	static constexpr uint32_t PAGE_TRIANGLES = 1024;
+	static constexpr uint32_t TILE_SIZE = 8;
+	static constexpr uint32_t PAGE_SIZE = 256;
+	// Collection keeps one overflow entry beyond these limits to signal failure.
+	static constexpr uint32_t MAX_LIGHTS = RendererSceneRender::MAX_RT_GI_LIGHTS;
+	static constexpr uint32_t MAX_INSTANCES = RendererSceneRender::MAX_RT_GI_INSTANCES;
+	struct HitData {
+		uint32_t first_tile;
+		uint32_t triangles;
+		uint32_t mask;
+		uint32_t shadow_mask = 0;
+	};
+
 	static_assert(sizeof(HitData) == 16);
 	static_assert(sizeof(LightData) == 80);
 	LocalVector<LightData> previous_lights;
