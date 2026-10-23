@@ -408,9 +408,13 @@ No quality/performance advantage has been measured in this fork.
 
 Use an editor built from the experimental `feature/amd-gi` branch. Existing fork
 builds from before that branch do not contain these controls. The Windows CI
-artifacts are `windows-editor` and `windows-template`; select the matching commit,
+artifacts are `windows-editor` (MSVC), `windows-editor-clang` (clang-cl) and
+`windows-template`; select the matching commit,
 and use the release template for export (the fork has no debug export template).
-Keep the existing Streamline runtime setup when testing DLSS.
+Both editor builds target Windows x86-64; the Clang executable has `.llvm.exe`
+in its name. An editor job passing compilation does not by itself mean an artifact
+exists: check the run's uploaded artifacts. Keep the existing Streamline runtime
+setup when testing DLSS.
 
 Start with GI disabled and reproduce the game baseline. Then enable `amd_gi/enabled`
 and leave `probe_spacing=16`, denoising, importance/adaptive sampling and probe cache

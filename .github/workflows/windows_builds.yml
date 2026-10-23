@@ -118,13 +118,13 @@ jobs:
         continue-on-error: true
 
       - name: Prepare artifact
-        if: matrix.compiler == 'msvc'
+        if: matrix.compiler == 'msvc' || matrix.compiler == 'clang'
         run: |
           Remove-Item bin/build_deps -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item bin/* -Include *.exp,*.lib,*.pdb -Force
 
       - name: Upload artifact
-        if: matrix.compiler == 'msvc'
+        if: matrix.compiler == 'msvc' || matrix.compiler == 'clang'
         uses: ./.github/actions/upload-artifact
         with:
           name: ${{ matrix.cache-name }}
