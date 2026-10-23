@@ -54,8 +54,8 @@ bool RaytracingGIScene::resize_atlas(uint32_t p_layers) {
 	RID replacement[4];
 	RD::TextureFormat tf;
 	tf.texture_type = RD::TEXTURE_TYPE_2D_ARRAY;
-	tf.width = PAGE_SIZE;
-	tf.height = PAGE_SIZE;
+	tf.width = page_size;
+	tf.height = page_size;
 	tf.array_layers = p_layers;
 	tf.usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 	bool success = true;
@@ -64,7 +64,7 @@ bool RaytracingGIScene::resize_atlas(uint32_t p_layers) {
 		replacement[i] = rd->texture_create(tf, RD::TextureView());
 		success = replacement[i].is_valid();
 		for (uint32_t layer = 0; layer < MIN(atlas_layers, p_layers) && success; layer++) {
-			success = rd->texture_copy(atlas[i], replacement[i], Vector3(), Vector3(), Vector3(PAGE_SIZE, PAGE_SIZE, 1), 0, 0, layer, layer) == OK;
+			success = rd->texture_copy(atlas[i], replacement[i], Vector3(), Vector3(), Vector3(page_size, page_size, 1), 0, 0, layer, layer) == OK;
 		}
 	}
 	if (!success) {
@@ -193,6 +193,67 @@ void RaytracingGIScene::prune_materials(uint64_t p_minimum_frame) {
 	}
 }
 
+void RaytracingGIScene::add_motion_bounds(const AABB &p_bounds) {
+	const AABB bounds = p_bounds.grow(0.01);
+	for (AABB &existing : motion_bounds) {
+		if (existing.encloses(bounds)) {
+			return;
+		}
+	}
+	if (motion_bounds.size() < MAX_MOTION_BOUNDS) {
+		motion_bounds.push_back(bounds);
+		return;
+	}
+	// Keep overflow close to an existing dirty region instead of always
+	// bridging the last mover to every subsequent object in the scene.
+	uint32_t closest = 0;
+	real_t growth = Math::INF;
+	for (uint32_t i = 0; i < motion_bounds.size(); i++) {
+		const real_t candidate = motion_bounds[i].merge(bounds).get_volume() - motion_bounds[i].get_volume();
+		if (candidate < growth) {
+			growth = candidate;
+			closest = i;
+		}
+	}
+	motion_bounds[closest].merge_with(bounds);
+}
+
+void RaytracingGIScene::update_instance_history(const LocalVector<InstanceState> &p_instances) {
+	// Both lists are sorted by instance RID and MultiMesh element. Hit IDs and
+	// atlas offsets are frame-local; no persistent probe stores these indices.
+	// Match identities across collection changes rather than comparing slots.
+	if (!previous_instances.is_empty()) {
+		uint32_t old_index = 0;
+		uint32_t new_index = 0;
+		while (old_index < previous_instances.size() || new_index < p_instances.size()) {
+			if (old_index == previous_instances.size()) {
+				add_motion_bounds(p_instances[new_index++].bounds);
+				continue;
+			}
+			if (new_index == p_instances.size()) {
+				add_motion_bounds(previous_instances[old_index++].bounds);
+				continue;
+			}
+			const InstanceState &old = previous_instances[old_index];
+			const InstanceState &current = p_instances[new_index];
+			if (old.instance == current.instance && old.element == current.element) {
+				if (old.transform != current.transform || old.pose_signature != current.pose_signature || old.content_signature != current.content_signature) {
+					add_motion_bounds(old.bounds.merge(current.bounds));
+				}
+				old_index++;
+				new_index++;
+			} else if (old.instance < current.instance || (old.instance == current.instance && old.element < current.element)) {
+				add_motion_bounds(old.bounds);
+				old_index++;
+			} else {
+				add_motion_bounds(current.bounds);
+				new_index++;
+			}
+		}
+	}
+	previous_instances = p_instances;
+}
+
 void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights) {
 	ready = false;
 	feedback_compatible = true;
@@ -200,11 +261,25 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	motion_bounds.clear();
 	LocalVector<InstanceState> current_instances;
 	RD *rd = RD::get_singleton();
-	// Three RGBA8 planes and one RGBA16F plane: 1.25 MiB per layer.
+	const uint32_t requested_tile_size = int(GLOBAL_GET("rendering/global_illumination/amd_gi/material_tile_size")) == 4 ? 4 : 8;
+	if (requested_tile_size != tile_size) {
+		prune_materials(UINT64_MAX);
+		for (RID &texture : atlas) {
+			if (texture.is_valid()) {
+				rd->free_rid(texture);
+				texture = RID();
+			}
+		}
+		atlas_layers = 0;
+		tile_size = requested_tile_size;
+		page_size = tile_size * 32;
+		revision++;
+	}
+	// Three RGBA8 planes and one RGBA16F plane: 20 bytes per texel.
 	// Grow on demand; the setting limits the atlas, not the separate native
 	// capture targets, expanded geometry, or transport histories.
 	const uint32_t atlas_mb = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/material_atlas_mb")), 8, 512);
-	const uint32_t max_pages = MIN(uint32_t(rd->limit_get(RD::LIMIT_MAX_TEXTURE_ARRAY_LAYERS)), atlas_mb * 1024u * 1024u / (PAGE_SIZE * PAGE_SIZE * 20u));
+	const uint32_t max_pages = MIN(uint32_t(rd->limit_get(RD::LIMIT_MAX_TEXTURE_ARRAY_LAYERS)), atlas_mb * 1024u * 1024u / (page_size * page_size * 20u));
 	if (atlas_layers > max_pages && !resize_atlas(max_pages)) {
 		return;
 	}
@@ -246,6 +321,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			WARN_PRINT_ONCE("RT GI currently requires MeshInstance3D geometry without lightmaps or material overlays. GI is suppressed for this scene.");
 			return;
 		}
+		const uint32_t first_surface = instances.size();
 		for (int surface = 0; surface < meshes->mesh_get_surface_count(instance.mesh); surface++) {
 			RID material = instance.material_override;
 			if (material.is_null() && surface < instance.materials.size()) {
@@ -270,7 +346,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 					return;
 				}
 			}
-			bool share_capture = instance_color == Color(1, 1, 1, 1) && data && data->shader_data && !data->shader_data->uses_instance_transform && !data->shader_data->uses_world_coordinates && !data->shader_data->uses_normal && !data->shader_data->uses_tangent;
+			bool share_capture = data && data->shader_data && !data->shader_data->uses_instance_transform && !data->shader_data->uses_world_coordinates && !data->shader_data->uses_normal && !data->shader_data->uses_tangent;
 			if (share_capture) {
 				for (const auto &uniform : data->shader_data->uniforms) {
 					if (uniform.value.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_INSTANCE) {
@@ -280,7 +356,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 				}
 			}
 			const Transform3D capture_transform = share_capture ? Transform3D() : instance.transform;
-			const MaterialKey key{ instance.mesh, material, instance.mesh_instance, share_capture ? RID() : instance.instance, share_capture ? 0u : instance.element, uint32_t(surface) };
+			const MaterialKey key{ instance.mesh, material, instance.mesh_instance, share_capture ? RID() : instance.instance, share_capture ? 0u : instance.element, uint32_t(surface), share_capture ? instance_color : Color(1, 1, 1, 1) };
 			SurfaceMaterial **cached = material_cache.getptr(key);
 			const bool capture_surface = !cached || (*cached)->last_used != material_frame;
 			const uint64_t material_revision = materials->material_get_content_revision(material);
@@ -378,7 +454,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 						// A failed preparation must remain invalid on the next frame.
 						entry.source_vertices = RID();
 						entry.pixels_valid = false;
-						if (capture.prepare(instance.mesh, surface, first_triangle, count, TILE_SIZE) != OK) {
+						if (capture.prepare(instance.mesh, surface, first_triangle, count, tile_size) != OK) {
 							return;
 						}
 						entry.mesh = instance.mesh;
@@ -408,7 +484,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 					}
 					if (entry.atlas_tile != tile_cursor) {
 						const Size2i size = capture.get_size();
-						const Vector3 destination(0, (target_tile / 32) * TILE_SIZE, 0);
+						const Vector3 destination(0, (target_tile / 32) * tile_size, 0);
 						for (int channel = 0; channel < 4; channel++) {
 							if (rd->texture_copy(capture.get_texture(channel), atlas[channel], Vector3(), destination, Vector3(size.x, size.y, 1), 0, 0, 0, tile_cursor / PAGE_TRIANGLES) != OK) {
 								return;
@@ -428,41 +504,37 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 				resident_pages += material_pages.size();
 				surface_material.last_used = material_frame;
 			}
-			new_signature = hash_murmur3_one_64(instance.instance.get_id(), new_signature);
-			new_signature = hash_murmur3_one_64(instance.mesh.get_id(), new_signature);
-			new_signature = hash_murmur3_one_32(instance.element, new_signature);
-			new_signature = hash_murmur3_one_64(source_vertices.get_id(), new_signature);
-			new_signature = hash_murmur3_one_64(data_revision, new_signature);
-			new_signature = hash_murmur3_one_64(material.get_id(), new_signature);
-			new_signature = hash_murmur3_one_32(instance.layer_mask, new_signature);
-			new_signature = hash_murmur3_one_32(instance.shadow_surface_mask, new_signature);
+			state.content_signature = hash_murmur3_one_64(instance.mesh.get_id(), state.content_signature);
+			state.content_signature = hash_murmur3_one_32(surface, state.content_signature);
+			state.content_signature = hash_murmur3_one_64(source_vertices.get_id(), state.content_signature);
+			state.content_signature = hash_murmur3_one_64(data_revision, state.content_signature);
+			state.content_signature = hash_murmur3_one_64(material.get_id(), state.content_signature);
+			state.content_signature = hash_murmur3_one_64(material_revision, state.content_signature);
+			state.content_signature = hash_murmur3_one_32(instance.layer_mask, state.content_signature);
+			state.content_signature = hash_murmur3_one_32(instance.shadow_surface_mask, state.content_signature);
+			for (const Pair<RID, uint64_t> &texture : texture_revisions) {
+				state.content_signature = hash_murmur3_one_64(texture.first.get_id(), state.content_signature);
+				state.content_signature = hash_murmur3_one_64(texture.second, state.content_signature);
+			}
+			for (int component = 0; component < 4; component++) {
+				state.content_signature = hash_murmur3_one_float(instance_color[component], state.content_signature);
+				state.content_signature = hash_murmur3_one_float(instance_custom[component], state.content_signature);
+			}
 			instances.push_back(rd_instance);
 			const bool casts_shadow = surface < 32 ? (instance.shadow_surface_mask & (1u << surface)) != 0 : instance.shadow_surface_mask != 0;
 			hits.push_back({ surface_material.first_tile, triangles | (share_capture ? 0x80000000u : 0u) | (stochastic_alpha ? 0x40000000u : 0u), instance.layer_mask, casts_shadow ? instance.layer_mask : 0 });
 		}
-		const uint32_t index = current_instances.size();
-		if (index < previous_instances.size() && previous_instances[index].instance == state.instance && previous_instances[index].element == state.element) {
-			const InstanceState &previous = previous_instances[index];
-			if (previous.transform != state.transform || previous.pose_signature != state.pose_signature) {
-				// The swept bounds include both vacated and newly occupied space.
-				// Merge overflow conservatively instead of ignoring extra movers.
-				AABB swept = previous.bounds.merge(state.bounds).grow(0.01);
-				if (motion_bounds.size() < MAX_MOTION_BOUNDS) {
-					motion_bounds.push_back(swept);
-				} else {
-					motion_bounds[MAX_MOTION_BOUNDS - 1].merge_with(swept);
-				}
-			}
+		if (instances.size() != first_surface) {
+			current_instances.push_back(state);
 		}
-		current_instances.push_back(state);
 	}
-	previous_instances = current_instances;
+	update_instance_history(current_instances);
 	prune_materials(material_frame);
 	static const bool validate_materials = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_MATERIALS").is_empty();
 	if (validate_materials) {
 		print_line(vformat("GI material preparation: resident=%d prepared=%d", resident_pages, prepared_pages));
 		print_line(vformat("GI material pixels: resident=%d drawn=%d", resident_pages, drawn_pages));
-		print_line(vformat("GI material atlas: tiles=%d copied=%d layers=%d", tile_cursor, copied_pages, atlas_layers));
+		print_line(vformat("GI material atlas: tiles=%d copied=%d layers=%d tile_size=%d bytes=%d", tile_cursor, copied_pages, atlas_layers, tile_size, uint64_t(atlas_layers) * page_size * page_size * 20u));
 	}
 	if (instances.is_empty() || p_lights.size() > MAX_LIGHTS) {
 		WARN_PRINT_ONCE("RT GI needs geometry within its scene capacity.");
@@ -530,6 +602,10 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	}
 	previous_lights = lights;
 	if (signature != new_signature || lighting_cut) {
+		static const bool trace_history = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_HISTORY").is_empty();
+		if (trace_history) {
+			print_line(vformat("AMD GI scene change: light_membership=%s lighting=%s instances=%d lights=%d", signature != new_signature, lighting_cut, instances.size(), lights.size()));
+		}
 		signature = new_signature;
 		revision++;
 	}

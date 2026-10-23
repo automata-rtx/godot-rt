@@ -510,10 +510,18 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		return false;
 	}
 	const bool camera_cut = data->valid && (p_camera.origin.distance_to(data->previous_camera.origin) > 1.0 || p_camera.basis.get_column(2).dot(data->previous_camera.basis.get_column(2)) < 0.5);
-	const bool reset = !data->valid || !p_environment.history_compatible(data->environment) || camera_cut || data->scene_revision != p_scene.get_revision() || data->configuration != configuration || data->cell_size != cell_size || data->continuation != probability || data->max_distance != max_distance || data->reflection_roughness != reflection_roughness || data->reflection_filter_passes != reflection_filter_passes;
+	const bool configuration_changed = data->configuration != configuration || data->cell_size != cell_size || data->continuation != probability || data->max_distance != max_distance || data->reflection_roughness != reflection_roughness || data->reflection_filter_passes != reflection_filter_passes;
+	const bool reset = !data->valid || !p_environment.history_compatible(data->environment) || camera_cut || data->scene_revision != p_scene.get_revision() || configuration_changed;
+	static const bool trace_history = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_HISTORY").is_empty();
+	if (trace_history && reset) {
+		print_line(vformat("AMD GI reset reasons: frame=%d invalid=%s environment=%s camera=%s scene=%s configuration=%s distance=%f", data->frame, !data->valid, !p_environment.history_compatible(data->environment), camera_cut, data->scene_revision != p_scene.get_revision(), configuration_changed, p_camera.origin.distance_to(data->previous_camera.origin)));
+	}
 	FrameUniform frame = {};
 	frame.motion[0] = p_scene.get_motion_bounds().size();
 	frame.motion[1] = cache_all_hits;
+	if (trace_history && frame.motion[0]) {
+		print_line(vformat("AMD GI dirty regions: frame=%d count=%d", data->frame, frame.motion[0]));
+	}
 	for (uint32_t i = 0; i < frame.motion[0]; i++) {
 		const AABB &bounds = p_scene.get_motion_bounds()[i];
 		const Vector3 end = bounds.get_end();

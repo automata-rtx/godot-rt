@@ -1304,7 +1304,7 @@ and temporal/spatial filtering must not become concurrent read/write operations.
 Viewport custom data owns all histories and buffers; its cleanup must run on resize
 and disabling. Forward+ still consumes binding 34 before tone mapping/upscaling.
 Backend switching must clear the inactive output scope, and native-GI conflicts
-must not silently change authored environment settings. Port all eighteen live
+must not silently change authored environment settings. Port all nineteen live
 `amd_gi/*` controls and regenerate ProjectSettings documentation. The initial path
 still uses conservative scene invalidation and dynamic-material refresh.
 
@@ -1441,10 +1441,12 @@ revision. GI collection requests current poses for off-screen non-casters as wel
 as visible/shadow geometry; this remains under the GI gate. Do not add CPU readback
 of poses or build a duplicate skeleton/BLAS path.
 
-The scene signature includes immutable geometry identity, topology/material bindings
-and masks. Transform/pose changes instead emit swept old/new world bounds. Keep the
-CPU limit of eight synchronized with the shader's sixteen vec4 entries; merge
-additional movers into the last region. Invalidate both screen and displaced-probe
+Match sorted geometry histories by instance RID and MultiMesh element, not list
+position. Geometry membership, topology/material-content changes and transform/pose
+changes emit local old/new world bounds. Only light identity/content cuts remain
+in the global scene revision (reservoirs retain light indices). Keep the CPU limit
+of eight synchronized with the shader's sixteen vec4 entries; merge overflow into
+the region with the least extra bounding volume. Invalidate both screen and displaced-probe
 ray connections, world tiles and relevant pixel/reflection history. Retiring only
 currently visible probes permits stale entries to reappear from the displaced pool.
 Run deformation with cache diagnostics, native material/UV2 checks, and the exact
@@ -1525,3 +1527,13 @@ primitive and frame, independently of ray-query traversal order. Zero and one
 are exact endpoints. This is straight-through alpha coverage, not refraction.
 The alpha path belongs to GI's shared transport include, not the RT-shadow shader.
 Run `amd_gi_opacity` and `amd_gi_overlays` together when changing these classifications.
+
+### GI material capture density and tinted-instance reuse
+
+`material_tile_size` selects 4 or 8 texels, with a fixed 32×32 triangle layout per
+array layer. The page dimensions and byte-budget conversion must both track this
+setting; the shared trace shader derives addressing from `textureSize`. Destroy
+old capture pages and atlas textures and advance scene revision on a live change.
+This must not destroy shared RT-shadow BLASes. Retain exact instance color in the
+capture key and its hash when sharing transform-independent tinted instances.
+Context-dependent shaders still use their instance/element identity.

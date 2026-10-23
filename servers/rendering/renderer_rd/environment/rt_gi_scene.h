@@ -57,8 +57,8 @@ public:
 private:
 	// Tile layout must match atlas_position() in rt_gi_transport_inc.glsl.
 	static constexpr uint32_t PAGE_TRIANGLES = 1024;
-	static constexpr uint32_t TILE_SIZE = 8;
-	static constexpr uint32_t PAGE_SIZE = 256;
+	uint32_t tile_size = 8;
+	uint32_t page_size = 256;
 	// Collection keeps one overflow entry beyond these limits to signal failure.
 	static constexpr uint32_t MAX_LIGHTS = RendererSceneRender::MAX_RT_GI_LIGHTS;
 	static constexpr uint32_t MAX_INSTANCES = RendererSceneRender::MAX_RT_GI_INSTANCES;
@@ -99,8 +99,9 @@ private:
 		RID context;
 		uint32_t element = 0;
 		uint32_t surface = 0;
+		Color color = Color(1, 1, 1, 1);
 		bool operator==(const MaterialKey &p_other) const {
-			return mesh == p_other.mesh && material == p_other.material && mesh_instance == p_other.mesh_instance && context == p_other.context && element == p_other.element && surface == p_other.surface;
+			return mesh == p_other.mesh && material == p_other.material && mesh_instance == p_other.mesh_instance && context == p_other.context && element == p_other.element && surface == p_other.surface && color == p_other.color;
 		}
 	};
 	struct MaterialKeyHasher {
@@ -110,7 +111,11 @@ private:
 			h = hash_murmur3_one_64(p_key.mesh_instance.get_id(), h);
 			h = hash_murmur3_one_64(p_key.context.get_id(), h);
 			h = hash_murmur3_one_32(p_key.element, h);
-			return hash_fmix32(hash_murmur3_one_32(p_key.surface, h));
+			h = hash_murmur3_one_32(p_key.surface, h);
+			for (int i = 0; i < 4; i++) {
+				h = hash_murmur3_one_float(p_key.color[i], h);
+			}
+			return hash_fmix32(h);
 		}
 	};
 	struct SurfaceMaterial {
@@ -127,9 +132,12 @@ private:
 		Transform3D transform;
 		AABB bounds;
 		uint32_t pose_signature = HASH_MURMUR3_SEED;
+		uint32_t content_signature = HASH_MURMUR3_SEED;
 	};
 	LocalVector<InstanceState> previous_instances;
 	LocalVector<AABB> motion_bounds;
+	void add_motion_bounds(const AABB &p_bounds);
+	void update_instance_history(const LocalVector<InstanceState> &p_instances);
 
 	bool resize_atlas(uint32_t p_layers);
 	bool ensure_scene_buffers(uint32_t p_instances, uint32_t p_lights);

@@ -3126,6 +3126,9 @@
 		<member name="rendering/global_illumination/amd_gi/material_atlas_mb" type="int" setter="" getter="" default="128">
 			Maximum size in MiB of the triangle-material texture atlas used by AMD GI and its transport validator. Layers grow on demand; lowering this live limit shrinks the atlas. This excludes native capture targets, expanded geometry, acceleration structures, and lighting histories. Exceeding capacity suppresses GI with a warning instead of tracing an incomplete scene. Disabling GI releases the atlas.
 		</member>
+		<member name="rendering/global_illumination/amd_gi/material_tile_size" type="int" setter="" getter="" default="8">
+			Size in texels of each captured triangle's material tile. Use 8 for more hit-material and interpolated-normal detail or 4 to reduce atlas and native capture-target texel storage by four for the same geometry. Smaller tiles can lose texture/cutout detail and alter interpolated normals; geometry and primary ray counts are unchanged. Changes apply at run time, rebuild material captures, and reset GI history. The atlas still obeys [member rendering/global_illumination/amd_gi/material_atlas_mb]; expanded capture geometry and transport caches are separate allocations.
+		</member>
 		<member name="rendering/global_illumination/amd_gi/max_distance" type="float" setter="" getter="" default="50.0">
 			Half extent of the camera-centered GI scene collection volume and maximum ray distance, in world units. Rays are clipped to the collected volume. Changes apply at run time and reset cache/history state.
 		</member>

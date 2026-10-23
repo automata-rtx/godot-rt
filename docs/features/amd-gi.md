@@ -21,7 +21,7 @@ MSAA. All controls below are live `ProjectSettings` values under
 | `cache_all_hits` | `true` | Shade and accumulate every registered cache hit. Disabling keeps one selected hit per cell and releases hit lists/sample records. Primary ray count is unchanged; visibility, continuation, shading and memory costs can decrease. |
 | `screen_feedback` | `true` | Reuse previous native opaque lighting for compatible visible secondary/reflection hits. Adds one RGBA16F target and opaque attachment; disabling releases it. Requires multibounce or reflections. Per-light indirect-energy multipliers other than 1 select the explicit world-cache fallback. |
 | `multibounce` | `true` | Populate secondary world cells from a subset of primary cache updates, shade their direct light, and propagate indirect light through separate histories. Disabling skips seven stages and frees continuation/indirect storage. |
-| `continuation_probability` | `0.3` | Fraction of cache-cell updates tracing an additional diffuse continuation; contributions are probability compensated. |
+| `continuation_probability` | `0.3` | Probability of an additional continuation per registered primary hit (per selected cell hit with all-hit updates off); contributions are probability compensated. |
 | `minimum_cell_size` | `0.1` | Minimum world-space cache cell size. Actual size also depends on distance, resolution, and field of view. |
 | `denoiser` | `true` | Temporal reprojection and adaptive spatial GI denoising. Probe reconstruction/filtering remains part of the GI algorithm. Progress captures leave this enabled. |
 | `importance_sampling` | `true` | Guide diffuse probe rays using reprojected radiance times the surface cosine. Keeps the same primary ray count; disabling uses stratified angular samples. Switching resets history. |
@@ -33,6 +33,7 @@ MSAA. All controls below are live `ProjectSettings` values under
 | `reflections/probe_roughness_threshold` | `0.6` | Reuse directional probe radiance above this roughness where compatible probes exist. Lower thresholds reduce tracing but lose reflected detail. Uncovered pixels still trace. |
 | `reflections/filter_passes` | `3` | One to three variance-guided a-trous iterations. Lower values reduce filtering work and may retain noise. |
 | `material_atlas_mb` | `128` | Live atlas limit in MiB (8–512). Allocates layers on demand and shrinks when lowered. Excludes capture targets, expanded geometry, BLASes, and GI histories. Capacity overflow suppresses GI with a warning. |
+| `material_tile_size` | `8` | Material-capture texels per triangle side: 8 or 4. Using 4 quarters atlas/capture-target texel storage at the cost of texture, cutout and interpolated-normal detail. Geometry and primary ray budgets stay unchanged. Live changes recapture materials and reset GI history. |
 | `max_distance` | `50` | Camera-centered collection bounds and maximum tracing distance. |
 
 ```gdscript
@@ -146,8 +147,8 @@ The hash has 1,024 buckets, four tiles per bucket, and 85 cells per tile includi
 mips. Base-cell history is limited to 16 updates, tile lifetime to 50 unused frames,
 and final GI history to at most 64 samples with adaptive reduction. These are live
 temporal histories, not unlimited accumulation for screenshots. Histories reset on
-allocation, resize, quality changes, large camera cuts, topology changes, and discontinuous lighting
-changes. Object motion invalidates swept regions and cached ray connections;
+allocation, resize, quality changes, large camera cuts and discontinuous lighting
+changes. Geometry additions/removals, topology/material edits and object motion invalidate local regions and cached ray connections;
 unchanged regions retain history. Smooth lighting changes retain history; small camera motion reprojects existing histories. Material colors refresh
 through new cache samples and the lighting-change response.
 GI collection is sorted by stable instance and light IDs before building the
@@ -200,7 +201,7 @@ The current diffuse result is not the completed AMD GI-1.2 look. In particular:
   invalidation. Static local-uniform/image-texture materials retain their pixels;
   content/transform changes redraw only dirty pages. TIME, global/instance uniforms
   and GPU-written textures refresh each frame. Higher material fidelity and bounded
-  preparation scheduling remain; triangle material tiles are still only 8 pixels.
+  preparation scheduling remain; triangle material tiles are 8 pixels by default, with a coarser 4-pixel option.
 - Scene/material support still has the limits in
   [rtgi-validation.md](rtgi-validation.md#scope-and-limitations):
   MeshInstance3D geometry including native skeletons/blend shapes, bounded material
@@ -335,12 +336,13 @@ DLSS and target-device timings still require the Windows/NVIDIA and 780M machine
 
 `./run.sh amd_gi_dynamic_lighting` animates a TIME-driven sky, sky rotation,
 a directional sun and a local light. It requires exactly one initialization reset
-through the continuous segment and one reset for abrupt light/sky removal. Geometry
-transforms still conservatively reset history; this test does not certify moving meshes.
+through the continuous segment and one reset for abrupt light/sky removal. This lighting test does not certify moving meshes; deformation and scene-churn
+rigs separately check local invalidation.
 
-Material captures occupy 32-triangle rows across dynamically allocated 256×256
-atlas layers. A layer stores 1,024 triangle tiles and costs 1.25 MiB across four
-channels. `material_atlas_mb` bounds this atlas; native capture targets and expanded
+With the default 8-pixel material tiles, captures occupy 32-triangle rows across
+dynamically allocated 256×256 atlas layers. A layer stores 1,024 triangle tiles and
+costs 1.25 MiB across four channels. The 4-pixel option uses one quarter of those
+texels per layer. `material_atlas_mb` bounds this atlas; native capture targets and expanded
 source geometry are additional. The default permits 102 layers, allocated only as
 needed. Layers and scene buffers grow geometrically, retaining pixels during growth;
 lowering the live budget shrinks the atlas. The collection safety caps are 65,536
@@ -371,8 +373,8 @@ retained material preparation, FSR2 buffer swapping, and disabled restoration.
 `GODOT_AMD_GI_VALIDATE_CACHE=1` additionally checks that each enable initializes
 history once while subsequent animation reports local swept regions.
 
-Up to eight swept world bounds are supplied per frame; overflow merges into the
-last region, preserving coverage. World-cache tiles overlapping them are cleared.
+Up to eight dirty world bounds are supplied per frame; overflow merges into the
+region requiring the least extra bounding volume, preserving coverage. World-cache tiles overlapping them are cleared.
 Stored screen-ray connections crossing them are rejected, displaced cached probes
 with affected connections are retired, and newly evicted probes cannot restore
 stale connections. Diffuse receivers and glossy connections reject affected pixel
@@ -498,3 +500,41 @@ one-update-per-cell behavior. Primary diffuse rays are identical between modes;
 additional visibility and continuation rays must be included when profiling.
 `amd_gi_hit_updates` reads actual GPU lists to verify every registered hit is present
 exactly once, all samples are shaded, and toggling releases the extra buffers.
+
+### Dense-scene material memory
+
+Material capture is a separate quality/memory axis from screen-probe ray density.
+`material_tile_size=4` uses 128×128 array layers with the same 32×32 triangle layout;
+8 uses 256×256 layers. Addressing derives the tile size from the actual texture.
+Live changes discard old captures/atlas textures and invalidate GI history while
+retaining shared shadow geometry. The default remains 8; quality is not silently
+reduced when a scene exceeds its atlas budget. Capacity warnings report tile counts.
+
+Transform-independent captures also share repeated identical instance colors;
+the exact color is part of the capture key. Shader instance IDs/custom data,
+world/camera dependencies and other context-sensitive inputs retain their existing
+separate captures. Tint sharing changes storage, not rendered material values.
+
+Crossroads replaces TestLevel as the project's evaluation scene. Its Main Street
+camera currently needs 545,376 material tiles at 50 m trace distance, exceeding the
+8-pixel atlas's maximum 512 MiB budget. Four-pixel tiles fit with a 256 MiB budget
+(the current growing atlas allocates 268,369,920 bytes). Separate capture targets,
+expanded geometry, BLASes and GI histories are additional. This is a measured
+correctness-test footprint, not a validated 780M quality/performance preset.
+
+### Scene changes and history diagnostics
+
+Geometry is matched by stable instance RID and MultiMesh element across sorted
+collection lists. Entering/leaving the camera-centered collection, visibility
+changes and topology/material-content edits invalidate the old/new local bounds.
+They do not discard the entire screen history. Light identity changes still clear
+history because persistent reservoirs refer to light indices. Camera cuts, quality
+changes and discontinuous lighting retain their global invalidation rules.
+
+`GODOT_AMD_GI_TRACE_HISTORY=1` logs reset reasons and dirty-region counts without
+GPU readback; it is opt-in and only runs in the enabled GI path. `amd_gi_scene_churn`
+checks collection-boundary crossings, rotation, additions/removals and material
+edits. `amd_gi_flashlight` checks continuous spotlight movement, indirect light,
+resampling against exhaustive light shading and removal of light after switch-off.
+Both use the quarter primary budget with denoising enabled. They do not establish
+hardware timing or final gun-mounted flashlight quality in fps-proto.

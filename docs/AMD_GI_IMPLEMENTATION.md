@@ -90,7 +90,7 @@ This is not yet a complete material cache or ray-hit shading solution. Preparati
 reads and decodes the source surface before expanding the requested range; active
 GI retains that geometry and its targets until source revisions change. Material
 pixels persist for tracked static inputs, with dynamic inputs refreshed per frame. Output pages are bounded, but fixed
-per-triangle sampling can lose texture detail and waste memory. Cache residency,
+per-triangle sampling (4/8 texels, selectable live) can lose texture detail and waste memory. Cache residency,
 adaptive sampling, particle evaluation, cutout/detail fidelity,
 and integration with GI scene collection remain necessary. Screen/camera-dependent
 materials need a defined policy. See [internals/rt-materials.md](internals/rt-materials.md)
@@ -269,3 +269,9 @@ animated-instance capture, GI tracing, upscaler integration, or hardware cost.
 This validates the extraction's exercised rendering behavior. It does not validate
 AMD GI, GPU allocation/timing equivalence, skeletal animation, DLSS/FSR behavior,
 Windows builds, or performance on either target GPU.
+
+Scene-history regression coverage now includes flickering geometry and camera-centered
+collection changes. Stable instance/element matching supplies local dirty bounds for
+additions/removals and material/topology edits, retaining unrelated history. Global
+light-index changes and discontinuities still reset history. See the sandbox evidence
+in [HISTORY](HISTORY.md) and `amd_gi_scene_churn` / `amd_gi_flashlight` rigs.

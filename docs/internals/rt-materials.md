@@ -174,3 +174,11 @@ opaque vertex deformation remains unsupported. Depth-writing mix-alpha materials
 now use the captured alpha for stochastic coverage in GI ray queries. This retains
 opaque portions of imported mixed-opacity meshes without making glass solid.
 It does not implement refraction or tinted transmission.
+
+The GI adapter exposes 4/8-pixel triangle tiles separately from the native capture
+API. Four-pixel tiles use 128×128 array layers and one interior triangle sample;
+8-pixel tiles retain more barycentric detail. This is a material/normal fidelity
+tradeoff, not a lower geometry LOD or a different diffuse ray budget. Captures with
+identical non-white instance colors can share when their other inputs are context
+independent; exact color joins the material-cache key. Changes in live tile size
+release/recapture the atlas and advance history revision.

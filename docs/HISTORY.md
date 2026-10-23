@@ -6,6 +6,45 @@ alone — several of these already were, and failed. Not here: using a feature (
 one works (`docs/internals/`), running the harnesses (`docs/VALIDATION.md`), diagnosing a symptom
 (`docs/TROUBLESHOOTING.md`).
 
+## Sandbox scene changes repeatedly discarded GI history — 2026-10-23
+
+`[game]` fps-proto main `307c068`, launched through the actual main menu into
+Systems Sandbox, reproduced repeated global resets at the stationary spawn. The
+electrical field toggles visible emissive cylinder meshes; their changing collection
+membership altered the scene signature. The same mechanism reset history when
+walking across collection boundaries. A 48-frame stationary segment had 23 resets;
+the full launch/stationary/frozen/translation/rotation sequence had 29. After matching
+geometry by stable identity and invalidating local old/new bounds, the repeated
+sequence had one initialization reset. Hazard animation stayed enabled during the
+live segment. Vulkan lavapipe, FSR2 Performance, 641×359 output, default AMD GI
+settings; this establishes reset behavior, not target-GPU performance or complete
+visual acceptance. The game still reports its observed shutdown resource leaks.
+
+`[shadow_validation]` The collection-churn rig previously reset 15 times after
+initialization during boundary crossings and additions/removals. It now preserves
+history and emits one local region per change, including a material edit. Camera
+rotation emits none. A moving spotlight with the game's default 26-degree cone,
+45 m range and energy 6 has no movement resets. Linear-RGB indirect gains are
+0.003669/0.003838 for its two aim directions; resampled versus exhaustive lighting
+has MAE 0.000320 and mean ratio 0.994457. Switch-off matches the dark reference
+exactly. Quarter primary budget, denoising and multibounce enabled. This isolated
+spotlight test does not resolve every gun-mounted-light report.
+
+## Dense-scene material storage option — 2026-10-23
+
+`[shadow_validation]` `amd_gi_material_density` switches 8→4→8-pixel triangle
+material tiles without changing ray density. The fixture's atlas falls from 80 to
+20 MiB and returns to 80 MiB; 42 resident capture pages cover room geometry, a dense
+sphere and 200 tinted instances. Density, atlas, MultiMesh and quarter/one budget
+checks pass. Coarser material sampling loses texture/cutout/normal detail.
+
+`[game]` Crossroads main-street captures at 1280×720 FSR2 Performance use the 4-pixel
+option and a 256 MiB atlas cap: 545,376 triangle tiles, 1,617 resident capture chunks,
+268,369,920 allocated atlas bytes. Both quarter and one primary budgets receive
+64 actual GI frames, with denoisers, multibounce and reflections enabled. These
+captures predate the sandbox history fix. They do not establish a 780M preset or
+frame rate; native capture geometry and targets add memory outside that atlas.
+
 ## Crossroads exposes imported alpha-material support — 2026-10-23
 
 `[game]` The small TestLevel was not a sufficient project evaluation scene. At the

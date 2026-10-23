@@ -58,6 +58,8 @@ case "$RIG" in
 	amd_gi_multimesh) RIG_RES=641x359 ;;
 	amd_gi_overlays) RIG_RES=641x359 ;;
 	amd_gi_opacity) RIG_RES=641x359 ;;
+	amd_gi_material_density) RIG_RES=641x359 ;;
+	amd_gi_scene_churn|amd_gi_flashlight) RIG_RES=321x181 ;;
 	amd_gi_deformation) RIG_RES=641x359 ;;
 	amd_gi_budget_compare) RIG_RES=641x359 ;;
 	*)          RIG_RES=1280x720 ;;
@@ -108,12 +110,15 @@ export SHADOW_OUT_DIR="$OUT"
 if [ "$RIG" = "geometry" ]; then
 	export GODOT_RT_DEBUG=1
 fi
-if [ "$RIG" = "amd_gi_sampling" ] || [ "$RIG" = "amd_gi_cache" ] || [ "$RIG" = "amd_gi_dynamic_lighting" ] || [ "$RIG" = "amd_gi_deformation" ] || [ "$RIG" = "amd_gi_budget_compare" ] || [ "$RIG" = "amd_gi_reflections" ] || [ "$RIG" = "amd_gi_multimesh" ] || [ "$RIG" = "amd_gi_overlays" ]; then
+if [ "$RIG" = "amd_gi_scene_churn" ] || [ "$RIG" = "amd_gi_flashlight" ]; then
+	export GODOT_AMD_GI_TRACE_HISTORY=1
+fi
+if [ "$RIG" = "amd_gi_material_density" ] || [ "$RIG" = "amd_gi_sampling" ] || [ "$RIG" = "amd_gi_cache" ] || [ "$RIG" = "amd_gi_dynamic_lighting" ] || [ "$RIG" = "amd_gi_deformation" ] || [ "$RIG" = "amd_gi_budget_compare" ] || [ "$RIG" = "amd_gi_reflections" ] || [ "$RIG" = "amd_gi_multimesh" ] || [ "$RIG" = "amd_gi_overlays" ]; then
 	# Synchronous diagnostic readback validates actual GPU scheduling/LRU state.
 	# This rig is deliberately not a performance benchmark.
 	export GODOT_AMD_GI_VALIDATE_CACHE=1
 fi
-if [ "$RIG" = "amd_gi_materials" ] || [ "$RIG" = "amd_gi_dirty_materials" ] || [ "$RIG" = "amd_gi_material_sharing" ] || [ "$RIG" = "amd_gi_atlas" ] || [ "$RIG" = "amd_gi_deformation" ]; then
+if [ "$RIG" = "amd_gi_material_density" ] || [ "$RIG" = "amd_gi_materials" ] || [ "$RIG" = "amd_gi_dirty_materials" ] || [ "$RIG" = "amd_gi_material_sharing" ] || [ "$RIG" = "amd_gi_atlas" ] || [ "$RIG" = "amd_gi_deformation" ]; then
 	export GODOT_AMD_GI_VALIDATE_MATERIALS=1
 fi
 if [ "$RIG" = "amd_gi_lights" ]; then
@@ -155,6 +160,14 @@ mv "$HERE/out"/*.png "$OUT/" 2>/dev/null
 echo
 if [ "$RIG" = "opacity" ]; then
 	python3 "$HERE/score_opacity.py" "$OUT" "$@"
+elif [ "$RIG" = "amd_gi_scene_churn" ] || [ "$RIG" = "amd_gi_flashlight" ]; then
+	python3 "$HERE/score_$RIG.py" "$OUT"
+elif [ "$RIG" = "amd_gi_material_density" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:|GI is suppressed' "$LOG" || ! grep -aq 'AMD material density capture finished: 0 failures' "$LOG"; then
+		echo "GI material density validation failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_material_density.py" "$OUT"
 elif [ "$RIG" = "amd_gi_opacity" ]; then
 	if grep -aqE 'SCRIPT ERROR|ERROR:|GI is suppressed' "$LOG" || ! grep -aq 'AMD opacity capture finished: 0 failures' "$LOG"; then
 		echo "GI opacity validation failed; inspect $LOG" >&2

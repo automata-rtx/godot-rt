@@ -68,15 +68,17 @@ vec3 atlas_position(uint instance, uint triangle, vec2 bary) {
 	const uint columns = 32u;
 	// Use a covered texel within this triangle, never another triangle's data or
 	// an uncovered border. This small validation tile intentionally limits detail.
-	ivec2 sample_pixel = clamp(ivec2(floor(vec2(1.0) + bary * 6.0)), ivec2(1), ivec2(6));
-	int excess = max(sample_pixel.x + sample_pixel.y - 6, 0);
+	uint tile_size = uint(textureSize(albedo_atlas, 0).x) / columns;
+	int interior = int(tile_size) - 2;
+	ivec2 sample_pixel = clamp(ivec2(floor(vec2(1.0) + bary * float(interior))), ivec2(1), ivec2(interior));
+	int excess = max(sample_pixel.x + sample_pixel.y - interior, 0);
 	if (sample_pixel.x > sample_pixel.y) {
 		sample_pixel.x -= excess;
 	} else {
 		sample_pixel.y -= excess;
 	}
 	uvec2 tile = uvec2(local_triangle % columns, local_triangle / columns);
-	return vec3((vec2(tile * 8u) + vec2(sample_pixel) + 0.5) / 256.0, float(page));
+	return vec3((vec2(tile * tile_size) + vec2(sample_pixel) + 0.5) / float(tile_size * columns), float(page));
 }
 
 bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out uint instance, out vec3 position, out vec3 uv, out vec3 normal) {

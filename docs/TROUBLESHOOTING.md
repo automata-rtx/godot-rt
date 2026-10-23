@@ -157,3 +157,13 @@ GODOT_RT_DEBUG=1 ./godot ...       # Linux, macOS
 | A **bound property change breaks the class reference** and nothing catches it | CI was narrowed to Windows only, dropping the Linux `--doctool` class reference and GDExtension API compatibility checks (unit tests still run — the Windows job runs `--test`) | Run `godot --headless --doctool .` yourself and commit the result. `linux_builds.yml` still carries `workflow_dispatch` for on-demand runs. `docs/VALIDATION.md` |
 | An **exported game has none of the fork in it** | The renderer changes are in the binary, not in the project, so stock templates produce a running game with no fork in it | Export against this fork's own `windows-template` CI artifact via **Export -> preset -> Custom Template -> Release**, which sidesteps version matching. `docs/VALIDATION.md` |
 | **"Export With Debug", one-click deploy or remote debugging does not work** | There is no `template_debug` build anywhere in the CI matrix | Release exports only; adding the target is a matrix entry plus a CI job. It is also why no shippable configuration has `DEBUG_ENABLED`, which is what turns a push constant mismatch into a hard error — `CLAUDE.md`, and "The frame is black" above |
+
+## Experimental AMD GI history
+
+If GI repeatedly restarts while standing still or walking, enable the opt-in
+`GODOT_AMD_GI_TRACE_HISTORY=1` environment variable to distinguish camera,
+environment, configuration and scene resets from local dirty regions. The sandbox
+regression fixed global resets caused by flickering electrical-field mesh visibility
+and camera-centered geometry collection changes. Those events now invalidate local
+bounds. Light-list changes still reset reservoirs safely. See
+[AMD GI history diagnostics](features/amd-gi.md#scene-changes-and-history-diagnostics).

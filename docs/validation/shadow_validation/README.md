@@ -344,3 +344,15 @@ an opaque material, and fractional coverage between those endpoints. It keeps th
 quarter primary budget and denoiser enabled; multibounce/screen feedback are off
 to isolate transport. Disabled images must remain exact. This is a correctness
 rig, not a representative all-features-on progress capture or hardware benchmark.
+
+AMD GI scene-churn regression: `run.sh amd_gi_scene_churn` crosses collection
+boundaries, rotates the camera and adds/removes geometry, requiring only one global
+initialization and bounded local invalidation. `run.sh amd_gi_flashlight` checks
+moving spotlight GI with a quarter primary budget and denoising; its image scorer
+decodes sRGB and compares resampled with exhaustive light shading. Switch-off must
+restore the dark reference exactly. These tests use the lightweight
+`GODOT_AMD_GI_TRACE_HISTORY` diagnostic, not synchronous GPU cache readback.
+
+`run.sh amd_gi_material_density` switches 8→4→8-pixel hit-material tiles live,
+checks a fourfold atlas byte reduction, tinted-instance sharing and restoration.
+Triangle geometry, primary ray density and denoising stay unchanged.
