@@ -81,7 +81,9 @@ def main():
         for name, buffers in re.findall(r"GI memory reflections_(\w+): textures=\d+ buffers=(\d+)", log)
     }
     height, width = half.shape[:2]
-    expected = ((width + 1) // 2) * ((height + 1) // 2) * (80 * 3 + 4) + 16 - 48
+    # Reference reconstruction traces at half resolution but accumulates history
+    # at full resolution: one half-resolution sample buffer, two full histories.
+    expected = ((width + 1) // 2) * ((height + 1) // 2) * (80 + 4) + width * height * 80 * 2 + 16 - 48
     if memory["restored"] - memory["off_after"] != expected:
         raise SystemExit("Reflection buffers did not release on disable")
     checks = re.findall(r"AMD GI reflection validation: budget=(\d+) traced=(\d+) probes=(\d+)", log)

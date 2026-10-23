@@ -1150,6 +1150,7 @@ layout(location = 3) out vec4 gi_feedback;
 
 #ifdef GI_PREVIOUS_POSITION
 layout(location = 3) out vec4 gi_previous_position;
+layout(location = 4) out vec4 gi_geometry_normal;
 #endif
 
 #ifdef MOTION_VECTORS
@@ -3395,6 +3396,7 @@ void fragment_shader(in SceneData scene_data) {
 	// blend shapes and instance motion. This is produced before GI tracing.
 	vec4 previous_view = scene_data_block.prev_data.inv_projection_matrix * prev_screen_position;
 	// Positive alpha also carries native metallic for probe BRDF guiding.
+	gi_geometry_normal = vec4(normalize(mat3(inv_view_matrix) * geo_normal), 1.0);
 	gi_previous_position = vec4((previous_view / previous_view.w) * scene_data_block.prev_data.inv_view_matrix, 1.0 + clamp(metallic, 0.0, 1.0));
 #endif
 #endif

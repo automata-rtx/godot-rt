@@ -256,6 +256,16 @@ material emission and TIME/global-uniform refresh. `run.sh amd_gi_fsr2` checks a
 jittered FSR2 Performance viewport at odd internal dimensions with both GI lobes,
 multibounce and denoising enabled. Neither harness measures target-hardware speed.
 
+Reference-conformance checks: `run.sh amd_gi_reference` compiles the production
+diffuse-denoiser/GGX/cache-update helpers alongside an independent oracle extracted from
+Capsaicin `914b915`. It checks 4,096 cases and fails on nonfinite results or relative
+error above 1e-5. This verifies those equations, not complete renderer parity.
+`amd_gi_lights` additionally reads the independent reservoir hash and verifies every
+prefix, compacted hit, entry/slot ownership and packed confidence, including entries
+containing multiple hits. The light-proposal estimator remains under correction.
+See [the reference audit](AMD_GI_REFERENCE_AUDIT.md) before interpreting old results
+as evidence of fidelity to AMD.
+
 AMD GI scene compatibility checks: `run.sh amd_gi_atlas` exercises packed small
 surfaces and relocation across layers; `run.sh amd_gi_dynamic_lighting` checks
 continuous sky/light changes; `GODOT_AMD_GI_VALIDATE_CACHE=1 run.sh amd_gi_deformation`

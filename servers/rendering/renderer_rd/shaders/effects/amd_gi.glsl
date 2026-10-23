@@ -30,48 +30,54 @@ THE SOFTWARE.
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(constant_id = 0) const int pass_id = 0;
 // Keep in the same order as AMDGI::Pass.
-const int PASS_RESET = 0;
-const int PASS_REPROJECT = 1;
-const int PASS_BIN_CACHED = 2;
-const int PASS_SELECT = 3;
-const int PASS_PATCH = 4;
-const int PASS_PREPARE = 5;
-const int PASS_TRACE = 6;
-const int PASS_ALLOCATE = 7;
-const int PASS_REGISTER = 8;
-const int PASS_POPULATE = 9;
-const int PASS_ALLOCATE_SECONDARY = 10;
-const int PASS_REGISTER_SECONDARY = 11;
-const int PASS_SHADE_HITS = 12;
-const int PASS_UPDATE = 13;
-const int PASS_MIP1 = 14;
-const int PASS_MIP2 = 15;
-const int PASS_MIP3 = 16;
-const int PASS_SHADE_INDIRECT_HITS = 17;
-const int PASS_UPDATE_INDIRECT = 18;
-const int PASS_INDIRECT_MIP1 = 19;
-const int PASS_INDIRECT_MIP2 = 20;
-const int PASS_INDIRECT_MIP3 = 21;
-const int PASS_RESOLVE = 22;
-const int PASS_FILTER_X = 23;
-const int PASS_FILTER_Y = 24;
-const int PASS_PROJECT = 25;
-const int PASS_ORDER_CACHED = 26;
-const int PASS_STORE_CACHED = 27;
-const int PASS_MASK = 28;
-const int PASS_INTERPOLATE = 29;
-const int PASS_TEMPORAL = 30;
-const int PASS_BLUR_X = 31;
-const int PASS_BLUR_Y = 32;
-const int PASS_REFLECTION_CLASSIFY = 33;
-const int PASS_REFLECTION_BUILD_DISPATCH = 34;
-const int PASS_REFLECTION_TRACE = 35;
-const int PASS_REFLECTION_MARK_FIREFLIES = 36;
-const int PASS_REFLECTION_CLEAN_FIREFLIES = 37;
-const int PASS_REFLECTION_RESOLVE = 38;
-const int PASS_REFLECTION_TEMPORAL = 39;
-const int PASS_REFLECTION_FILTER = 40;
-const int PASS_REFLECTION_UPSAMPLE = 41;
+const int PASS_RESERVOIR_RESET = 0;
+const int PASS_RESET = 1;
+const int PASS_REPROJECT = 2;
+const int PASS_BIN_CACHED = 3;
+const int PASS_SELECT = 4;
+const int PASS_PATCH = 5;
+const int PASS_PREPARE = 6;
+const int PASS_TRACE = 7;
+const int PASS_ALLOCATE = 8;
+const int PASS_REGISTER = 9;
+const int PASS_POPULATE = 10;
+const int PASS_ALLOCATE_SECONDARY = 11;
+const int PASS_REGISTER_SECONDARY = 12;
+const int PASS_SHADE_HITS = 13;
+const int PASS_UPDATE = 14;
+const int PASS_RESERVOIR_SCAN = 15;
+const int PASS_RESERVOIR_SCAN_BLOCKS = 16;
+const int PASS_RESERVOIR_SCAN_TOP = 17;
+const int PASS_RESERVOIR_COMPACT = 18;
+const int PASS_MIP1 = 19;
+const int PASS_MIP2 = 20;
+const int PASS_MIP3 = 21;
+const int PASS_SHADE_INDIRECT_HITS = 22;
+const int PASS_UPDATE_INDIRECT = 23;
+const int PASS_INDIRECT_MIP1 = 24;
+const int PASS_INDIRECT_MIP2 = 25;
+const int PASS_INDIRECT_MIP3 = 26;
+const int PASS_RESOLVE = 27;
+const int PASS_FILTER_X = 28;
+const int PASS_FILTER_Y = 29;
+const int PASS_PROJECT = 30;
+const int PASS_ORDER_CACHED = 31;
+const int PASS_STORE_CACHED = 32;
+const int PASS_MASK = 33;
+const int PASS_INTERPOLATE = 34;
+const int PASS_TEMPORAL = 35;
+const int PASS_BLUR_X = 36;
+const int PASS_BLUR_Y = 37;
+const int PASS_REFLECTION_CLASSIFY = 38;
+const int PASS_REFLECTION_BUILD_DISPATCH = 39;
+const int PASS_REFLECTION_TRACE = 40;
+const int PASS_REFLECTION_MARK_FIREFLIES = 41;
+const int PASS_REFLECTION_CLEAN_FIREFLIES = 42;
+const int PASS_REFLECTION_FIRST = 43;
+const int PASS_REFLECTION_ITER = 44;
+const int PASS_REFLECTION_LAST = 45;
+const int PASS_REFLECTION_TEMPORAL = 46;
+const int PASS_REFLECTION_OUTPUT = 47;
 #include "../oct_inc.glsl"
 #include "rt_gi_transport_inc.glsl"
 layout(set = 0, binding = 37) uniform sampler2D sky_radiance;
@@ -81,13 +87,14 @@ layout(set = 0, binding = 31, std430) restrict readonly buffer BlueNoise {
 }
 blue_noise;
 
-// One light proposal per base world-cache cell, double-buffered independently
-// of radiance. Packed light index, octahedral normal, RIS weight W, confidence M.
+// Independent world-space reservoir hash, double-buffered each frame.
+// Logical arrays share a descriptor; see amd_gi_reservoirs_inc.glsl.
 layout(set = 0, binding = 32, std430) restrict buffer PreviousLightReservoirs {
-	uvec4 data[];
+	uint data[];
 }
 previous_light_reservoirs;
 layout(set = 0, binding = 48) uniform sampler2D previous_surface_position;
+layout(set = 0, binding = 52) uniform sampler2D geometry_normal_buffer;
 
 vec3 previous_surface(ivec2 pixel, vec3 current) {
 	vec4 previous = texelFetch(previous_surface_position, pixel, 0);
@@ -107,22 +114,23 @@ layout(set = 0, binding = 44, std430) restrict readonly buffer LightTree {
 light_tree;
 
 layout(set = 0, binding = 33, std430) restrict buffer LightReservoirs {
-	uvec4 data[];
+	uint data[];
 }
 light_reservoirs;
 
-vec2 lookup_jitter(ivec2 pixel) {
+// Capsaicin BlueNoiseSampler::rand2. Interpolation starts at dimension 1,
+// glossy rays at dimension 2, and reflection filtering at dimension 0.
+vec2 lookup_jitter(ivec2 pixel, uint dimension) {
 	uint index = uint((pixel.x & 127) + (pixel.y & 127) * 128);
-	uint packed = blue_noise.data[index >> 1u] >> ((index & 1u) * 16u);
+	uint packed = blue_noise.data[index] >> (dimension * 8u);
 	vec2 sample_value = (vec2(packed & 255u, (packed >> 8u) & 255u) + 0.5) / 256.0;
-	// Independent R2 increments cover the two-dimensional sample domain over
-	// time. Advancing both components by the same value confines each pixel to
-	// a wrapped diagonal and biases glossy VNDF sampling even after many frames.
-	return fract(sample_value + float(params.padding & 255u) * vec2(0.7548776662466927, 0.5698402909980532));
+	return fract(sample_value + float(params.padding & 255u) * 1.61803398874989484820);
 }
 
 layout(set = 0, binding = 10, std140) uniform Frame {
 	mat4 previous_view_projection;
+	vec4 previous_eye;
+	vec4 previous_forward;
 	mat4 view_projection;
 	uvec4 grid;
 	vec4 settings;
@@ -132,6 +140,7 @@ layout(set = 0, binding = 10, std140) uniform Frame {
 	vec4 sky;
 	vec4 ambient;
 	vec4 reflections;
+	vec4 glossy;
 	uvec4 motion;
 	uvec4 emitters;
 	vec4 motion_bounds[16];
@@ -220,6 +229,7 @@ layout(set = 0, binding = 22, std430) restrict buffer Pixels {
 }
 pixels;
 layout(rgba16f, set = 0, binding = 23) uniform restrict image2D filter_image;
+layout(r16f, set = 0, binding = 49) uniform restrict image2D denoiser_blur_mask;
 layout(set = 0, binding = 24, std430) restrict buffer Spawn {
 	uvec4 data[]; // dense probe index, seed pixel XY, unused
 }
@@ -269,9 +279,15 @@ float luma(vec3 v) {
 	return dot(v, vec3(0.2126, 0.7152, 0.0722));
 }
 mat3 basis(vec3 n) {
-	vec3 t = normalize(cross(abs(n.z) < 0.99 ? vec3(0, 0, 1) : vec3(0, 1, 0), n));
-	return mat3(t, cross(n, t), n);
+	// Capsaicin math/sampling.hlsl:GetOrthoVectors.
+	bool select_z = abs(n.z) > 0.0;
+	vec3 p = select_z ? n : n.zyx;
+	float k = inversesqrt(p.z * p.z + n.y * n.y);
+	vec3 b1 = vec3(0.0, -p.z * k, n.y * k);
+	b1 = select_z ? b1 : b1.zyx;
+	return mat3(b1, cross(n, b1), n);
 }
+
 // Capsaicin's equal-area hemi-octahedral mapping (sampling.hlsl).
 vec3 hemi_direction(vec2 uv) {
 	vec2 st = 2.0 * uv - 1.0;
@@ -303,7 +319,7 @@ void sh_coefficients(vec3 n, out float sh[9]) {
 	sh[7] = -1.092548430592079 * n.x * n.z;
 	sh[8] = 0.5462742152960395 * (n.x * n.x - n.y * n.y);
 }
-bool surface(ivec2 pixel, out vec3 position, out vec3 normal) {
+bool shading_surface(ivec2 pixel, out vec3 position, out vec3 normal) {
 	position = vec3(0);
 	normal = vec3(0);
 	if (any(lessThan(pixel, ivec2(0))) || any(greaterThanEqual(pixel, ivec2(params.size)))) {
@@ -321,8 +337,20 @@ bool surface(ivec2 pixel, out vec3 position, out vec3 normal) {
 	normal = normalize(n + 2.0 * cross(params.camera_rotation.xyz, cross(params.camera_rotation.xyz, n) + params.camera_rotation.w * n));
 	return true;
 }
+bool surface(ivec2 pixel, out vec3 position, out vec3 normal) {
+	if (!shading_surface(pixel, position, normal)) {
+		return false;
+	}
+	normal = normalize(texelFetch(geometry_normal_buffer, pixel, 0).xyz);
+	return true;
+}
+vec3 shading_normal(ivec2 pixel) {
+	vec3 position, normal;
+	shading_surface(pixel, position, normal);
+	return normal;
+}
 float footprint(vec3 p) {
-	return max(0.002, distance(p, params.camera_position.xyz) * tan(frame.settings.y * 8.0));
+	return distance(p, params.camera_position.xyz) * tan(frame.settings.y * 8.0);
 }
 uint probe_index(ivec2 p) {
 	if (any(lessThan(p, ivec2(0))) || any(greaterThanEqual(p, ivec2(frame.grid.xy)))) {
@@ -552,13 +580,6 @@ void reset_cache(uint lane) {
 				previous_indirect_cache.data[index] = vec4(0);
 			}
 			indirect_cache.data[index] = previous_indirect_cache.data[index];
-		}
-		if (frame.tracing.w != 0u && local < 64u) {
-			uint reservoir = tile * 64u + local;
-			uvec4 old = previous_light_reservoirs.data[reservoir];
-			uint mapped = !reset_tile && old.x < frame.motion.w ? light_tree.remap[old.x] : INVALID;
-			previous_light_reservoirs.data[reservoir] = mapped == INVALID ? uvec4(INVALID, 0, 0, 0) : uvec4(mapped, old.yzw);
-			light_reservoirs.data[reservoir] = previous_light_reservoirs.data[reservoir];
 		}
 	}
 	uint cached = tile * 64u + lane;
@@ -1047,21 +1068,12 @@ void register_ray(uint id) {
 		atomicMax(keys.data[cell / TILE_CELLS].state.y, params.padding);
 	}
 }
-uint pack_reservoir_normal(vec3 n) {
-	n /= abs(n.x) + abs(n.y) + abs(n.z);
-	vec2 p = n.xy;
-	if (n.z < 0.0) {
-		p = (1.0 - abs(p.yx)) * vec2(p.x >= 0.0 ? 1.0 : -1.0, p.y >= 0.0 ? 1.0 : -1.0);
-	}
-	return packSnorm2x16(p);
-}
-vec3 unpack_reservoir_normal(uint packed) {
-	vec2 p = unpackSnorm2x16(packed);
-	vec3 n = vec3(p, 1.0 - abs(p.x) - abs(p.y));
-	float t = max(-n.z, 0.0);
-	n.xy += vec2(n.x >= 0.0 ? -t : t, n.y >= 0.0 ? -t : t);
-	return normalize(n);
-}
+#include "amd_gi_cache_inc.glsl"
+#include "amd_gi_denoiser_inc.glsl"
+// Prefix-scan passes are mutually exclusive; share their workgroup scratch
+// to keep the complete shader within the 32 KiB shared-memory requirement.
+shared uint prefix_scan[4096];
+#include "amd_gi_reservoirs_inc.glsl"
 vec3 light_target(RayHit ray, uint light) {
 	vec3 direction;
 	float distance;
@@ -1103,7 +1115,8 @@ void reservoir_add(uint light, float target, float weight, inout uint selected, 
 // GI-1 reservoir construction: eight fresh RIS candidates, normalized to one
 // unit of confidence, then up to four compatible previous world reservoirs.
 // Proposals are re-evaluated at this hit and visibility is always traced here.
-vec3 resampled_direct(RayHit ray, inout uint state, out uvec4 packed) {
+vec3 resampled_direct(RayHit ray, inout uint state, uint hit_id) {
+	uint initial_state = state;
 	uint selected = INVALID;
 	float selected_target = 0.0, sum = 0.0;
 	for (uint i = 0u; i < 8u; i++) {
@@ -1112,45 +1125,52 @@ vec3 resampled_direct(RayHit ray, inout uint state, out uvec4 packed) {
 		float target = luma(abs(light_target(ray, light)));
 		reservoir_add(light, target, target / proposal, selected, selected_target, sum, state);
 	}
-	sum /= 8.0;
-	float confidence = 1.0;
-	uvec4 visited = uvec4(INVALID);
-	mat3 tangent = basis(ray.normal_mask.xyz);
-	for (uint i = 0u; i < 4u; i++) {
-		vec3 position = ray.position.xyz;
-		if (i > 0u) {
-			vec2 jitter = (vec2(random_float(state), random_float(state)) * 2.0 - 1.0) * cache_cell_size(position) * sqrt(2.0);
-			position += tangent[0] * jitter.x + tangent[1] * jitter.y;
-		}
-		uint cell = find_cell(position, ray.direction_cache.xyz, ray.position.w);
-		if (cell == INVALID || any(equal(visited, uvec4(cell)))) {
-			continue;
-		}
-		visited[i] = cell;
-		uvec4 old = previous_light_reservoirs.data[cell / TILE_CELLS * 64u + cell % TILE_CELLS];
-		if (old.x >= params.light_count || uintBitsToFloat(old.w) <= 0.0) {
-			continue;
-		}
-		float agreement = max(dot(ray.normal_mask.xyz, unpack_reservoir_normal(old.y)), 0.0);
-		if (agreement * agreement * agreement * agreement < 0.5) {
-			continue;
-		}
-		float count = min(uintBitsToFloat(old.w), 20.0);
-		float target = luma(abs(light_target(ray, old.x)));
-		reservoir_add(old.x, target, target * uintBitsToFloat(old.z) * count, selected, selected_target, sum, state);
-		confidence += count;
-	}
-	packed = uvec4(INVALID, 0, 0, 0);
 	if (selected == INVALID || selected_target <= 0.0) {
 		return vec3(0);
 	}
+	sum /= 8.0;
+	float confidence = 1.0;
+	if (hit_id != INVALID) {
+		// GenerateReservoirs publishes each surviving hit, independently of the
+		// radiance cache's cell owner. ResampleReservoirs restarts its RNG.
+		reservoir_insert(hit_id, reservoir_jitter(ray.position.xyz, ray.normal_mask.xyz, state));
+	}
+	state = initial_state;
+	uint entry = reservoir_find_previous(reservoir_jitter(ray.position.xyz, ray.normal_mask.xyz, state));
+	if (entry != INVALID) {
+		uint count = previous_light_reservoirs.data[RESERVOIR_ENTRIES + entry];
+		uint start = reservoir_previous_prefix(entry);
+		uint increment = (count + 3u) / 4u;
+		uint offset = random_bits(state) % increment;
+		for (uint i = 0u; i < count; i += increment) {
+			uint old_id = previous_light_reservoirs.data[reservoir_values_offset() + start + ((i + offset) % count)];
+			uvec4 old = reservoir_load_previous(old_id);
+			uint light = old.x < frame.motion.w ? light_tree.remap[old.x] : INVALID;
+			float old_count = unpackHalf2x16(old.w).x;
+			if (light >= params.light_count || old_count <= 0.0) {
+				continue;
+			}
+			vec3 old_normal = unpack_reservoir_normal(previous_light_reservoirs.data[reservoir_normals_offset() + old_id]);
+			float agreement = max(dot(ray.normal_mask.xyz, old_normal), 0.0);
+			if (agreement * agreement * agreement * agreement < 0.5) {
+				continue;
+			}
+			float merged_count = min(old_count, 20.0);
+			float target = luma(abs(light_target(ray, light)));
+			reservoir_add(light, target, target * uintBitsToFloat(old.z) * merged_count, selected, selected_target, sum, state);
+			confidence += merged_count;
+		}
+	}
 	float weight = sum / (confidence * selected_target);
-	packed = uvec4(selected, pack_reservoir_normal(ray.normal_mask.xyz), floatBitsToUint(weight), floatBitsToUint(confidence));
+	if (hit_id != INVALID) {
+		reservoir_store(hit_id, uvec4(selected, 0u, floatBitsToUint(weight), packHalf2x16(vec2(confidence, 1.0))), ray.normal_mask.xyz);
+	}
 	vec3 direction;
 	float distance;
 	vec3 irradiance = unshadowed_irradiance(selected, ray.position.xyz, ray.normal_mask.xyz, floatBitsToUint(ray.normal_mask.w), direction, distance);
 	return ray.diffuse.rgb * irradiance * (weight * light_visibility(selected, ray.position.xyz, ray.normal_mask.xyz, direction, distance) / PI);
 }
+
 float emitter_node_weight(uint index, vec3 position) {
 	Emitter node = lights.emitters[index];
 	vec3 lo = node.position_area.xyz, hi = node.edge1_power.xyz;
@@ -1233,40 +1253,53 @@ vec3 diffuse_hit_emission(RayHit ray) {
 
 // Cache reflected radiance only. Emission is evaluated at the actual ray hit:
 // spatial filtering it would enlarge emitters and leak their light across edges.
-vec3 shade_direct(RayHit ray, inout uint state, uint cell) {
+vec3 shade_direct(RayHit ray, inout uint state, uint hit_id) {
 	vec3 emitter_direction;
 	float emitter_distance;
 	float emitter_choice = random_float(state);
 	vec3 emitter_value = sample_emitter(ray.position.xyz, ray.normal_mask.xyz, state, emitter_choice, emitter_direction, emitter_distance);
 	emitter_value *= ray.diffuse.rgb * (max(dot(ray.normal_mask.xyz, emitter_direction), 0.0) / PI);
-	if (frame.tracing.w != 0u && params.light_count > 1u) {
-		uvec4 reservoir;
-		vec3 value = resampled_direct(ray, state, reservoir);
-		if (cell != INVALID) {
-			light_reservoirs.data[cell / TILE_CELLS * 64u + cell % TILE_CELLS] = reservoir;
-		}
-		return value + emitter_value;
-	}
-	if (frame.tracing.w != 0u && cell != INVALID) {
-		light_reservoirs.data[cell / TILE_CELLS * 64u + cell % TILE_CELLS] = uvec4(INVALID, 0, 0, 0);
+	if (frame.tracing.w != 0u && params.light_count > 0u) {
+		return resampled_direct(ray, state, hit_id) + emitter_value;
 	}
 	return emitter_value + ray.diffuse.rgb * direct_irradiance(ray.position.xyz, ray.normal_mask.xyz, floatBitsToUint(ray.normal_mask.w)) / PI;
 }
 layout(set = 0, binding = 45) uniform sampler2D previous_lighting;
 
-bool screen_lighting(RayHit hit, out vec3 outgoing) {
+bool screen_lighting(RayHit hit, bool glossy, out vec3 outgoing) {
 	outgoing = vec3(0);
-	if (frame.grid.w != 0u || frame.settings.w <= 0.0 || motion_overlaps(hit.position.xyz, hit.position.xyz)) {
+	if (frame.grid.w != 0u || frame.settings.w <= 0.0) {
 		return false;
 	}
-	vec4 clip = frame.previous_view_projection * vec4(hit.position.xyz, 1);
-	vec2 uv = clip.xy / max(clip.w, 0.00001) * 0.5 + 0.5;
-	if (clip.w <= 0.0 || any(lessThan(uv, vec2(0))) || any(greaterThanEqual(uv, vec2(1)))) {
+	vec4 clip = frame.view_projection * vec4(hit.position.xyz, 1);
+	vec2 current_uv = clip.xy / max(clip.w, 0.00001) * 0.5 + 0.5;
+	if (clip.w <= 0.0 || any(lessThanEqual(current_uv, vec2(0))) || any(greaterThanEqual(current_uv, vec2(1)))) {
+		return false;
+	}
+	ivec2 current_pixel = ivec2(current_uv * vec2(params.size));
+	vec3 visible_position, visible_normal;
+	if (!surface(current_pixel, visible_position, visible_normal)) {
+		return false;
+	}
+	// Equivalent to current UV minus AMD's velocity. Native previous-surface
+	// positions retain deformation and let us include both projections' jitter;
+	// Godot's RG velocity excludes jitter and uses the opposite sign convention.
+	vec4 visible_clip = frame.view_projection * vec4(visible_position, 1);
+	vec4 previous_clip = frame.previous_view_projection * vec4(previous_surface(current_pixel, visible_position), 1);
+	if (previous_clip.w <= 0.0) {
+		return false;
+	}
+	vec2 uv = current_uv + (previous_clip.xy / previous_clip.w - visible_clip.xy / visible_clip.w) * 0.5;
+	if (any(lessThanEqual(uv, vec2(0))) || any(greaterThanEqual(uv, vec2(1)))) {
 		return false;
 	}
 	ivec2 pixel = ivec2(uv * vec2(params.size));
 	Pixel old = previous_pixels.data[uint(pixel.x) + uint(pixel.y) * params.size.x];
-	if (old.position.w != 1.0 || dot(old.normal_delta.xyz, hit.normal_mask.xyz) < 0.95 || distance(old.position.xyz, hit.position.xyz) > footprint(hit.position.xyz) * 0.25) {
+	float expected_depth = dot(hit.position.xyz - frame.previous_eye.xyz, frame.previous_forward.xyz);
+	float previous_depth = dot(old.position.xyz - frame.previous_eye.xyz, frame.previous_forward.xyz);
+	float normal_threshold = glossy ? 0.95 : 0.5;
+	float depth_threshold = glossy ? 0.01 : 0.05;
+	if (old.position.w != 1.0 || expected_depth <= 0.0 || dot(old.normal_delta.xyz, hit.normal_mask.xyz) <= normal_threshold || abs(previous_depth - expected_depth) / expected_depth >= depth_threshold) {
 		return false;
 	}
 	vec4 value = texelFetch(previous_lighting, pixel, 0);
@@ -1291,7 +1324,7 @@ vec3 shade_transport(RayHit ray, uint state, uint cell) {
 			uint target = find_cell(secondary.position.xyz, direction, secondary.position.w);
 			vec4 cached = secondary.position.w < cache_cell_size(secondary.position.xyz) ? vec4(0) : read_cache(target, true);
 			vec3 outgoing;
-			bool feedback = screen_lighting(secondary, outgoing);
+			bool feedback = screen_lighting(secondary, false, outgoing);
 			if (!feedback) {
 				outgoing = diffuse_hit_emission(secondary) + (cached.w > 0.0 ? cached.rgb : shade_direct(secondary, state, INVALID));
 			}
@@ -1349,7 +1382,7 @@ void shade_hit(uint id) {
 		return;
 	}
 	uint state = pcg(id + params.padding * 2891336453u);
-	hit_samples.data[id].direct = vec4(clean_color(shade_direct(hit, state, owners.data[cell] == id ? cell : INVALID)), 1);
+	hit_samples.data[id].direct = vec4(clean_color(shade_direct(hit, state, id)), 1);
 }
 vec3 indirect_hit(uint hit) {
 	vec3 value = vec3(0);
@@ -1360,7 +1393,7 @@ vec3 indirect_hit(uint hit) {
 		vec4 direct = bypass ? vec4(0) : read_component(target, false, false);
 		uint state = pcg(hit + params.padding * 747796405u);
 		vec3 outgoing;
-		bool feedback = screen_lighting(secondary, outgoing);
+		bool feedback = screen_lighting(secondary, false, outgoing);
 		if (!feedback) {
 			outgoing = diffuse_hit_emission(secondary) + (direct.w > 0.0 ? direct.rgb : shade_direct(secondary, state, INVALID));
 			// Off-screen/disoccluded receivers retain world-cache feedback.
@@ -1384,16 +1417,13 @@ void shade_indirect_hit(uint id) {
 	}
 	hit_samples.data[id].indirect = vec4(indirect_hit(id), 1);
 }
-vec4 blend_hit_samples(vec4 old, vec3 sum, uint count, uint cell) {
-	// Refresh changed receivers without deleting neighboring cells or changing
-	// their spatial mip selection. Temporal weight and accumulated coverage are
-	// different quantities: a light toggle does not erase geometric coverage.
-	vec3 position = owned_hit(owners.data[cell]).position.xyz;
-	bool changed = frame.motion.z != 0u || motion_overlaps(position, position);
-	float previous_weight = min(old.w, changed ? 1.0 : max(16.0 - float(count), 0.0));
-	float total = previous_weight + float(count);
-	return vec4(clean_color((old.rgb * previous_weight + sum) / max(total, 1.0)), min(old.w + float(count), 16.0));
+vec4 blend_hit_samples(vec4 old, vec3 sum, uint count) {
+	// The current cache layout stores means; convert at this boundary so the
+	// reference UpdateTiles equation (including zero-update aging) is unchanged.
+	vec4 accumulated = gi_cache_accumulate(vec4(old.rgb * old.w, old.w), vec4(sum, float(count)), 16.0);
+	return vec4(accumulated.rgb / max(accumulated.w, 1.0), accumulated.w);
 }
+
 void update_indirect(uint cell) {
 	if (cell >= TILE_COUNT * TILE_CELLS || cell % TILE_CELLS >= 64u) {
 		return;
@@ -1407,24 +1437,27 @@ void update_indirect(uint cell) {
 				count++;
 			}
 		}
-		if (cell_head(cell) != INVALID) {
-			indirect_cache.data[cell] = count > 0u ? blend_hit_samples(previous_indirect_cache.data[cell], sum, count, cell) : vec4(0);
+		if (keys.data[cell / TILE_CELLS].state.y == params.padding) {
+			indirect_cache.data[cell] = blend_hit_samples(previous_indirect_cache.data[cell], sum, count);
 		}
 		return;
 	}
 	uint owner = owners.data[cell];
 	if (owner == INVALID) {
+		if (keys.data[cell / TILE_CELLS].state.y == params.padding) {
+			indirect_cache.data[cell] = blend_hit_samples(previous_indirect_cache.data[cell], vec3(0), 0u);
+		}
 		return;
 	}
 	if (owner >= primary_ray_count()) {
-		// No continuation was scheduled from this secondary-only receiver.
-		// Do not retain stale indirect light if it was a primary in the past.
-		indirect_cache.data[cell] = vec4(0);
+		// Updated tile without a continuation at this receiver: age its
+		// indirect history using the reference zero-update equation.
+		indirect_cache.data[cell] = blend_hit_samples(previous_indirect_cache.data[cell], vec3(0), 0u);
 		return;
 	}
 	vec3 value = indirect_hit(owner);
 	// A discarded/missed continuation is a zero sample, not stale lighting.
-	indirect_cache.data[cell] = blend_hit_samples(previous_indirect_cache.data[cell], value, 1u, cell);
+	indirect_cache.data[cell] = blend_hit_samples(previous_indirect_cache.data[cell], value, 1u);
 }
 void update_cell(uint cell) {
 	if (cell >= TILE_COUNT * TILE_CELLS || cell % TILE_CELLS >= 64u) {
@@ -1437,18 +1470,21 @@ void update_cell(uint cell) {
 			sum += hit_samples.data[hit].direct.rgb;
 			count++;
 		}
-		if (count > 0u) {
-			cache.data[cell] = blend_hit_samples(previous_cache.data[cell], sum, count, cell);
+		if (keys.data[cell / TILE_CELLS].state.y == params.padding) {
+			cache.data[cell] = blend_hit_samples(previous_cache.data[cell], sum, count);
 		}
 		return;
 	}
 	uint owner = owners.data[cell];
 	if (owner == INVALID) {
+		if (keys.data[cell / TILE_CELLS].state.y == params.padding) {
+			cache.data[cell] = blend_hit_samples(previous_cache.data[cell], vec3(0), 0u);
+		}
 		return;
 	}
 	uint state = pcg(owner + params.padding * 2891336453u);
-	vec3 value = shade_direct(owned_hit(owner), state, cell);
-	cache.data[cell] = blend_hit_samples(previous_cache.data[cell], value, 1u, cell);
+	vec3 value = shade_direct(owned_hit(owner), state, owner);
+	cache.data[cell] = blend_hit_samples(previous_cache.data[cell], value, 1u);
 }
 void build_mip(uint tile, uint lane, uint mip) {
 	bool indirect = pass_id >= PASS_INDIRECT_MIP1 && pass_id <= PASS_INDIRECT_MIP3;
@@ -1544,7 +1580,7 @@ void resolve_probe(uint slot, uint lane) {
 		result.rgb += emitter_sum.rgb;
 	}
 	vec4 history = scratch.data[id];
-	if (history.w > 0.0 && frame.motion.z == 0u) {
+	if (history.w > 0.0) {
 		// AMD's shadow-preserving temporal hysteresis suppresses abrupt bright
 		// outliers without dragging old bright values into newly dark cells.
 		float a = luma(result.rgb), b = luma(history.rgb);
@@ -1630,31 +1666,30 @@ vec3 probe_irradiance(uint probe, vec3 normal) {
 // A bounded 4096-element exclusive scan and stable partition maintain
 // frame-granularity LRU order without sorting or CPU readback. This scan and
 // the angular bins together fit the checked 32 KiB workgroup budget.
-shared uint lru_scan[4096];
 shared uint lru_used;
 void order_cached_probes(uint lane) {
 	for (uint index = lane; index < CACHED_PROBES; index += 64u) {
-		lru_scan[index] = cached_state.data[previous_cached_order.data[index]].y;
+		prefix_scan[index] = cached_state.data[previous_cached_order.data[index]].y;
 	}
 	barrier();
 	for (uint stride = 1u; stride < CACHED_PROBES; stride <<= 1u) {
 		for (uint index = lane; index < CACHED_PROBES / (2u * stride); index += 64u) {
-			lru_scan[2u * (index + 1u) * stride - 1u] += lru_scan[(2u * index + 1u) * stride - 1u];
+			prefix_scan[2u * (index + 1u) * stride - 1u] += prefix_scan[(2u * index + 1u) * stride - 1u];
 		}
 		barrier();
 	}
 	if (lane == 0u) {
-		lru_used = lru_scan[CACHED_PROBES - 1u];
-		lru_scan[CACHED_PROBES - 1u] = 0u;
+		lru_used = prefix_scan[CACHED_PROBES - 1u];
+		prefix_scan[CACHED_PROBES - 1u] = 0u;
 	}
 	barrier();
 	for (uint stride = CACHED_PROBES / 2u; stride > 0u; stride >>= 1u) {
 		for (uint index = lane; index < CACHED_PROBES / (2u * stride); index += 64u) {
 			uint a = (2u * index + 1u) * stride - 1u;
 			uint b = 2u * (index + 1u) * stride - 1u;
-			uint value = lru_scan[a];
-			lru_scan[a] = lru_scan[b];
-			lru_scan[b] += value;
+			uint value = prefix_scan[a];
+			prefix_scan[a] = prefix_scan[b];
+			prefix_scan[b] += value;
 		}
 		barrier();
 	}
@@ -1662,7 +1697,7 @@ void order_cached_probes(uint lane) {
 	uint allocated = min(queues.counts.z, unused);
 	for (uint index = lane; index < CACHED_PROBES; index += 64u) {
 		uint cached = previous_cached_order.data[index];
-		uint prefix = lru_scan[index];
+		uint prefix = prefix_scan[index];
 		uint destination;
 		if (cached_state.data[cached].y != 0u) {
 			destination = unused - allocated + prefix;
@@ -1751,12 +1786,12 @@ void interpolate_pixel(ivec2 pixel, uint id) {
 	vec3 p, n;
 	bool valid = surface(pixel, p, n);
 	result.position = vec4(p, valid ? 1.0 : 0.0);
-	result.normal_delta = vec4(n, 0);
-	result.color = vec4(0);
+	result.normal_delta = vec4(valid ? shading_normal(pixel) : vec3(0), 0);
+	result.color = vec4(0, 0, 0, 1);
 	if (valid) {
 		// GI-1 jitters the lookup only when the new point remains on the
 		// original surface plane. The source BRDF still uses the original pixel.
-		ivec2 jitter = ivec2((lookup_jitter(pixel) * 2.0 - 1.0) * float(frame.grid.z));
+		ivec2 jitter = ivec2((lookup_jitter(pixel, 1u) * 2.0 - 1.0) * float(frame.grid.z));
 		ivec2 sample_pixel = clamp(pixel + jitter, ivec2(0), ivec2(params.size) - 1);
 		vec3 sample_p, sample_n;
 		if (!surface(sample_pixel, sample_p, sample_n) || abs(dot(sample_p - p, n)) >= footprint(p) * 0.5) {
@@ -1799,115 +1834,101 @@ void interpolate_pixel(ivec2 pixel, uint id) {
 			vec3 sum = vec3(0);
 			for (uint i = 0u; i < 4u; i++) {
 				if (indices[i] != INVALID) {
-					sum += weights[i] * probe_irradiance(indices[i], n);
+					sum += weights[i] * probe_irradiance(indices[i], result.normal_delta.xyz);
 				}
 			}
-			result.color = vec4(sum, 1);
+			result.color = vec4(sum, result.position.w == 2.0 ? 0.0 : 1.0);
 		}
 	}
 	pixels.data[id] = result;
 }
 void reproject_pixel(ivec2 pixel, uint id) {
 	Pixel current = pixels.data[id];
-	if (current.position.w == 0.0 || frame.flags.x == 0u) {
+	if (frame.flags.x == 0u) {
+		imageStore(denoiser_blur_mask, pixel, vec4(0));
 		return;
 	}
-	vec4 old_sum = vec4(0);
+	bool sky = current.position.w == 0.0;
+	vec4 lighting = vec4(0);
 	float delta = 0.0, weight = 0.0;
+	// Native previous-surface data supplies Godot's velocity-based previous UV.
+	// AMD's world-space history rejection below compares CURRENT world position.
 	vec3 previous_position = previous_surface(pixel, current.position.xyz);
 	vec4 clip = frame.previous_view_projection * vec4(previous_position, 1);
 	vec2 uv = clip.xy / max(clip.w, 0.00001) * 0.5 + 0.5;
-	if (frame.grid.w == 0u && clip.w > 0.0 && all(greaterThan(uv, vec2(0))) && all(lessThan(uv, vec2(1)))) {
+	bool previous_uv_valid = !sky && frame.grid.w == 0u && clip.w > 0.0 && all(greaterThan(uv, vec2(0))) && all(lessThan(uv, vec2(1)));
+	if (previous_uv_valid) {
+		float cell_size = distance(params.camera_position.xyz, current.position.xyz) * tan(frame.settings.y * 8.0);
+		float grazing = 1.0 - max(dot(normalize(params.camera_position.xyz - current.position.xyz), current.normal_delta.xyz), 0.0);
+		cell_size *= mix(1.0, 5.0, pow(grazing, 6.0));
 		ivec2 center = ivec2(uv * vec2(params.size));
 		for (int y = -1; y <= 1; y++) {
 			for (int x = -1; x <= 1; x++) {
-				ivec2 p = center + ivec2(x, y);
-				if (any(lessThan(p, ivec2(0))) || any(greaterThanEqual(p, ivec2(params.size)))) {
-					continue;
-				}
+				// Reference uses a nearest clamp sampler at previous_uv + offset.
+				ivec2 tap = center + ivec2(x, y);
+				ivec2 p = clamp(tap, ivec2(0), ivec2(params.size) - 1);
 				Pixel old = previous_pixels.data[uint(p.x) + uint(p.y) * params.size.x];
-				if (old.position.w != 1.0 || old.color.w < 1.0) {
+				if (old.position.w == 0.0 || old.color.w < 1.0) {
 					continue;
 				}
-				if (dot(old.normal_delta.xyz, current.normal_delta.xyz) < 0.95 || distance(old.position.xyz, previous_position) > footprint(current.position.xyz) * 0.5) {
-					continue;
+				if (distance(current.position.xyz, old.position.xyz) < cell_size && dot(current.normal_delta.xyz, old.normal_delta.xyz) > 0.95) {
+					float w = clamp(1.0 - length(vec2(tap) + 0.5 - uv * vec2(params.size)) * 0.707107, 0.0, 1.0);
+					lighting += old.color * w;
+					delta += old.normal_delta.w * w;
+					weight += w;
 				}
-				float w = clamp(1.0 - length(vec2(p) + 0.5 - uv * vec2(params.size)) * 0.707107, 0.0, 1.0);
-				old_sum += old.color * w;
-				delta += old.normal_delta.w * w;
+			}
+		}
+		if (weight > 0.0) {
+			float delta_sign = sign(delta);
+			delta = gi_denoiser_remove_nans(vec4(abs(delta) / weight)).x * delta_sign;
+			lighting = gi_denoiser_remove_nans(lighting / weight);
+		}
+	}
+	float blur_mask;
+	vec2 current_uv = (vec2(pixel) + 0.5) / vec2(params.size);
+	current.color = gi_denoiser_accumulate(current.color, lighting, current_uv, sky, previous_uv_valid, delta, blur_mask);
+	current.normal_delta.w = delta;
+	pixels.data[id] = current;
+	imageStore(denoiser_blur_mask, pixel, vec4(blur_mask / 8.0));
+}
+
+float gi_view_depth(vec3 position) {
+	vec3 forward = vec3(0, 0, -1);
+	forward += 2.0 * cross(params.camera_rotation.xyz, cross(params.camera_rotation.xyz, forward) + params.camera_rotation.w * forward);
+	return dot(position - params.camera_position.xyz, forward);
+}
+
+void filter_pixel(ivec2 pixel, uint id) {
+	Pixel center = pixels.data[id];
+	vec4 lighting = pass_id == PASS_BLUR_X ? center.color : imageLoad(filter_image, pixel);
+	float blur_mask = imageLoad(denoiser_blur_mask, pixel).x * 8.0;
+	int radius = blur_mask > 0.0 ? int(max(blur_mask, 1.0) + 0.5) : 0;
+	if (radius > 0) {
+		float weight = 1.0;
+		vec3 color = lighting.rgb / max(lighting.w, 1.0);
+		float center_depth = gi_view_depth(center.position.xyz);
+		for (int r = -radius; r <= radius; r++) {
+			ivec2 p = clamp(pixel + (pass_id == PASS_BLUR_X ? ivec2(r, 0) : ivec2(0, r)), ivec2(0), ivec2(params.size) - 1);
+			uint other = uint(p.x) + uint(p.y) * params.size.x;
+			vec4 c = pass_id == PASS_BLUR_X ? pixels.data[other].color : imageLoad(filter_image, p);
+			if (c.w > 0.0) {
+				Pixel neighbor = pixels.data[other];
+				// Reversed-Z sky has infinite linear view depth in Godot.
+				float depth = neighbor.position.w > 0.0 ? gi_view_depth(neighbor.position.xyz) : 1e30;
+				float w = gi_denoiser_filter_weight(lighting.w, center_depth, depth, center.normal_delta.xyz, neighbor.normal_delta.xyz);
+				color += w * (c.rgb / max(c.w, 1.0));
 				weight += w;
 			}
 		}
+		lighting.rgb = (color / weight) * max(lighting.w, 1.0);
 	}
-	if (weight > 0.0) {
-		old_sum /= weight;
-		delta /= weight;
-		vec3 lo = vec3(1e10), hi = vec3(0);
-		// Clamp history to this frame's reconstructed neighborhood.
-		// Reads only the immutable interpolation image, not concurrently updated pixels.
-		for (int y = -1; y <= 1; y++) {
-			for (int x = -1; x <= 1; x++) {
-				ivec2 p = clamp(pixel + ivec2(x, y), ivec2(0), ivec2(params.size) - 1);
-				vec4 c = imageLoad(filter_image, p);
-				if (c.w > 0.0) {
-					lo = min(lo, c.rgb);
-					hi = max(hi, c.rgb);
-				}
-			}
-		}
-		if (all(greaterThanEqual(hi, lo))) {
-			old_sum.rgb = clamp(old_sum.rgb, lo, hi);
-		}
-	}
-	if (current.position.w == 2.0) {
-		if (old_sum.w > 0.0) {
-			current.color = vec4(old_sum.rgb, 1.0);
-		}
-	} else if (current.color.w > 0.0) {
-		float old_luma = luma(old_sum.rgb);
-		delta = mix(delta, luma(current.color.rgb) - old_luma, 0.125);
-		float blend = clamp(1.0 - abs(delta) / max(old_luma, 0.0001), 0.0, 1.0);
-		float count = min(old_sum.w + 1.0, mix(4.0, 64.0, blend));
-		current.color = vec4(mix(old_sum.rgb, current.color.rgb, 1.0 / max(count, 1.0)), count);
-	} else if (old_sum.w > 0.0) {
-		current.color = vec4(old_sum.rgb, max(old_sum.w - 1.0, 0.0));
-	}
-	current.normal_delta.w = delta;
-	pixels.data[id] = current;
-}
-void filter_pixel(ivec2 pixel, uint id) {
-	Pixel center = pixels.data[id];
-	vec4 color = pass_id == PASS_BLUR_X ? center.color : imageLoad(filter_image, pixel);
-	float weight = color.w > 0.0 ? 1.0 : 0.0;
-	vec3 sum = color.rgb * weight;
-	int radius = frame.flags.x == 0u ? 0 : int(clamp(8.0 - center.color.w, 0.0, 8.0));
-	if (center.position.w > 0.0) {
-		for (int r = -radius; r <= radius; r++) {
-			if (r == 0) {
-				continue;
-			}
-			ivec2 p = clamp(pixel + (pass_id == PASS_BLUR_X ? ivec2(r, 0) : ivec2(0, r)), ivec2(0), ivec2(params.size) - 1);
-			uint other = uint(p.x) + uint(p.y) * params.size.x;
-			vec4 neighbor_position = pixels.data[other].position;
-			vec3 neighbor_normal = pixels.data[other].normal_delta.xyz;
-			vec4 c = pass_id == PASS_BLUR_X ? pixels.data[other].color : imageLoad(filter_image, p);
-			if (neighbor_position.w == 0.0 || c.w <= 0.0) {
-				continue;
-			}
-			float plane = abs(dot(neighbor_position.xyz - center.position.xyz, center.normal_delta.xyz));
-			float w = exp(-plane / max(footprint(center.position.xyz) * 0.05, 0.001)) * pow(max(dot(center.normal_delta.xyz, neighbor_normal), 0.0), 4.0);
-			sum += c.rgb * w;
-			weight += w;
-		}
-	}
-	color.rgb = clean_color(sum / max(weight, 0.00001));
 	if (pass_id == PASS_BLUR_X) {
-		imageStore(filter_image, pixel, color);
+		imageStore(filter_image, pixel, lighting);
 	} else {
-		// Only color is written here. The neighborhood reads immutable geometry
-		// and the separate filter image, never another lane's output color.
-		pixels.data[id].color = color;
-		imageStore(output_diffuse, pixel, vec4((color.rgb + frame.ambient.rgb) * params.exposure, center.position.w > 0.0 ? frame.ambient.a : 0.0));
+		pixels.data[id].color = lighting;
+		vec3 irradiance = lighting.rgb / max(lighting.w, 1.0);
+		imageStore(output_diffuse, pixel, vec4((irradiance + frame.ambient.rgb) * params.exposure, center.position.w > 0.0 ? frame.ambient.a : 0.0));
 	}
 }
 #include "amd_gi_reflections_inc.glsl"
@@ -1915,6 +1936,18 @@ void main() {
 	uint lane = gl_LocalInvocationIndex;
 	uint probe = gl_WorkGroupID.x;
 	uint id = probe * 64u + lane;
+	if (pass_id == PASS_RESERVOIR_RESET) {
+		reservoir_reset((gl_WorkGroupID.y * gl_NumWorkGroups.x + probe) * 64u + lane);
+		return;
+	}
+	if (pass_id >= PASS_RESERVOIR_SCAN && pass_id <= PASS_RESERVOIR_SCAN_TOP) {
+		reservoir_scan(probe, lane, uint(pass_id - PASS_RESERVOIR_SCAN));
+		return;
+	}
+	if (pass_id == PASS_RESERVOIR_COMPACT) {
+		reservoir_compact((gl_WorkGroupID.y * gl_NumWorkGroups.x + probe) * 64u + lane);
+		return;
+	}
 	if (pass_id == PASS_REFLECTION_BUILD_DISPATCH) {
 		if (lane == 0u) {
 			uint groups = (queues.data[frame.emitters.z + 3u] + 63u) / 64u;
@@ -1935,11 +1968,11 @@ void main() {
 	}
 	if (pass_id >= PASS_REFLECTION_CLASSIFY) {
 		ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-		ivec2 size = pass_id == PASS_REFLECTION_UPSAMPLE ? ivec2(params.size) : reflection_size();
+		ivec2 size = pass_id >= PASS_REFLECTION_LAST ? ivec2(params.size) : reflection_size();
 		if (any(greaterThanEqual(pixel, size))) {
 			return;
 		}
-		uint reflection_id = reflection_index(pixel);
+		uint reflection_id = pass_id >= PASS_REFLECTION_LAST ? uint(pixel.x) + uint(pixel.y) * params.size.x : reflection_index(pixel);
 		if (pass_id == PASS_REFLECTION_CLASSIFY) {
 			classify_reflection(pixel, reflection_id);
 		} else if (pass_id == PASS_REFLECTION_TRACE) {
@@ -1948,14 +1981,12 @@ void main() {
 			mark_reflection_fireflies(pixel, reflection_id);
 		} else if (pass_id == PASS_REFLECTION_CLEAN_FIREFLIES) {
 			clean_reflection_fireflies(pixel, reflection_id);
-		} else if (pass_id == PASS_REFLECTION_RESOLVE) {
+		} else if (pass_id >= PASS_REFLECTION_FIRST && pass_id <= PASS_REFLECTION_LAST) {
 			resolve_reflection(pixel, reflection_id);
 		} else if (pass_id == PASS_REFLECTION_TEMPORAL) {
 			temporal_reflection(pixel, reflection_id);
-		} else if (pass_id == PASS_REFLECTION_FILTER) {
-			filter_reflection(pixel, reflection_id);
 		} else {
-			upsample_reflection(pixel);
+			output_reflection_pixel(pixel, reflection_id);
 		}
 	} else if (pass_id == PASS_RESET) {
 		reset_cache(lane);
@@ -2013,7 +2044,6 @@ void main() {
 		uint pixel_id = uint(pixel.x) + uint(pixel.y) * params.size.x;
 		if (pass_id == PASS_INTERPOLATE) {
 			interpolate_pixel(pixel, pixel_id);
-			imageStore(filter_image, pixel, vec4(pixels.data[pixel_id].color.rgb, pixels.data[pixel_id].position.w == 2.0 ? 0.0 : pixels.data[pixel_id].color.w));
 		} else if (pass_id == PASS_TEMPORAL) {
 			reproject_pixel(pixel, pixel_id);
 		} else {

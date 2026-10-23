@@ -1,6 +1,8 @@
 # AMD GI integration
 
-**Status: the scoped Vulkan Forward+ GI pipeline is implemented. Target-hardware qualification and shipping quality tiers are unverified.**
+**Status: reference audit and correction in progress. The requested AMD implementation is not complete.**
+The previous completion statement covered stage presence, not fidelity to AMD.
+See [the reference audit](AMD_GI_REFERENCE_AUDIT.md) for unapproved departures and corrections.
 Cached diffuse GI, sky lighting, and glossy reflections run on Vulkan Forward+.
 It implements sparse screen probes, directional hashed world radiance, multibounce
 feedback, reconstruction, and temporal/spatial GI denoising. Progress captures use
@@ -74,7 +76,7 @@ shadow entries survive. Normal cache age-out alone would not release GI-only res
 | --- | --- |
 | Automatic hit shading | Native capture retains prepared geometry/targets with source-revision invalidation; static pixels reuse material/texture revisions with dynamic-shader fallback; native poses reuse shared GPU deformation; CPU-managed MultiMesh inputs and shared static captures are supported. Triangle-tile material detail and unsupported shader/particle inputs are documented limits |
 | Scene collection | Independent bounded mesh/light collection includes native poses, off-screen non-casters and authored GI participation; explicit capacity/unsupported-input fallback |
-| World radiance cache | Bounded full-key directional tiles, sample-count-selected direct/indirect mips, lifetime, emission/short-ray bypass and double-buffered light reservoirs are implemented and tested; spatial light-hierarchy proposals are implemented; all-hit updates are implemented with an optional one-hit-per-cell mode; shared-grid reservoir reuse remains a port difference |
+| World radiance cache | Bounded full-key directional tiles, sample-count-selected direct/indirect mips, lifetime, emission/short-ray bypass and double-buffered light reservoirs are implemented and tested; spatial light-hierarchy proposals are implemented; all-hit updates are implemented with an optional one-hit-per-cell mode; reservoir storage now uses an independent multi-hit spatial hash; light-grid proposals and the flag’s semantics remain open corrections |
 | Screen probes | Dense stored grid with sparse updates, adaptive hole patching, current-grid neighborhood hit reprojection, bounded displaced-probe LRU reuse, radiance/BRDF guiding, angular rebinning/filtering, hierarchical mask lookup, two-dimensional temporal blue-noise sampling and SH9 reconstruction |
 | Multiple bounces | Continuations populate and shade secondary world receivers, then propagate current direct light and previous indirect feedback through separate histories; compatible combined native screen-lighting feedback is implemented; all-hit update scheduling is implemented with an optional lower-cost mode |
 | Reflections | GGX sampling, rough-probe reuse, compacted tracing, firefly cleanup, ratio reconstruction, virtual/surface temporal history and a-trous filtering implemented; secondary materials follow AMD's diffuse approximation rather than general nested specular transport; gameplay quality validation remains |

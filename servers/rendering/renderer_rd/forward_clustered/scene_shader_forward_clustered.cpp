@@ -488,7 +488,7 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 				blend_state = blend_state_depth_normal_roughness_giprobe;
 				break;
 			case PIPELINE_VERSION_DEPTH_PASS_WITH_GI_MOTION:
-				blend_state = RD::PipelineColorBlendState::create_disabled(4);
+				blend_state = RD::PipelineColorBlendState::create_disabled(5);
 				break;
 			case PIPELINE_VERSION_DEPTH_PASS_WITH_MATERIAL:
 				// Writes to normal and roughness in opaque way.

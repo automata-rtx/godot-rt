@@ -1853,8 +1853,11 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/light_resampling", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/reflections/enabled", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/reflections/half_resolution", true);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold", PROPERTY_HINT_RANGE, "0,1,0.05"), 0.2);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/reflections/firefly_low_threshold", PROPERTY_HINT_RANGE, "0,1,0.01"), 0.0);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/reflections/firefly_high_threshold", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold", PROPERTY_HINT_RANGE, "0.2,1,0.05"), 0.6);
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/reflections/filter_passes", PROPERTY_HINT_RANGE, "1,3,1"), 3);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/reflections/filter_passes", PROPERTY_HINT_RANGE, "2,8,1"), 4);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/reflections/firefly_filter", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/reflections/ray_compaction", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/emissive_sampling", true);

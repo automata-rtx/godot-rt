@@ -61,7 +61,7 @@ case "$RIG" in
 	amd_gi_material_density) RIG_RES=641x359 ;;
 	amd_gi_scene_churn|amd_gi_flashlight) RIG_RES=321x181 ;;
 	amd_gi_deformation) RIG_RES=641x359 ;;
-	amd_gi_emitters|amd_gi_gameplay_audit) RIG_RES=321x181 ;;
+	amd_gi_emitters|amd_gi_gameplay_audit|amd_gi_reference) RIG_RES=321x181 ;;
 	amd_gi_budget_compare) RIG_RES=641x359 ;;
 	*)          RIG_RES=1280x720 ;;
 esac
@@ -163,7 +163,13 @@ grep -aiE "SCRIPT ERROR|ERROR: Condition|not provided" "$LOG" | head -5
 mv "$HERE/out"/*.png "$OUT/" 2>/dev/null
 
 echo
-if [ "$RIG" = "opacity" ]; then
+if [ "$RIG" = "amd_gi_reference" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD reference equations: .* 0 failures' "$LOG"; then
+		cat "$LOG"
+		exit 1
+	fi
+	grep -a 'AMD reference equations:' "$LOG"
+elif [ "$RIG" = "opacity" ]; then
 	python3 "$HERE/score_opacity.py" "$OUT" "$@"
 elif [ "$RIG" = "amd_gi_scene_churn" ] || [ "$RIG" = "amd_gi_flashlight" ] || [ "$RIG" = "amd_gi_emitters" ]; then
 	python3 "$HERE/score_$RIG.py" "$OUT"

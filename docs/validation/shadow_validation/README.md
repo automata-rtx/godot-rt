@@ -356,3 +356,13 @@ restore the dark reference exactly. These tests use the lightweight
 `run.sh amd_gi_material_density` switches 8→4→8-pixel hit-material tiles live,
 checks a fourfold atlas byte reduction, tinted-instance sharing and restoration.
 Triangle geometry, primary ray density and denoising stay unchanged.
+
+## AMD reference correction checks
+
+`./run.sh amd_gi_reference` compares the compiled diffuse history/filter, cache-update and
+bounded-VNDF GGX helper equations with an independently extracted upstream oracle
+(4,096 cases). It does not render or establish full-pipeline reference parity.
+`./run.sh amd_gi_lights` checks the independent world reservoir hash on GPU through
+explicit readback: prefix sums, unique hit ownership, collision-slot compaction,
+multiple hits per entry and temporal reuse. See
+[the reference audit](../../AMD_GI_REFERENCE_AUDIT.md) for remaining differences.

@@ -58,6 +58,7 @@ private:
 	static constexpr uint32_t CACHE_CELLS_PER_TILE = 85;
 	static constexpr uint32_t CACHED_PROBES = 4096;
 	enum Pass {
+		RESERVOIR_RESET,
 		RESET,
 		REPROJECT,
 		BIN_CACHED,
@@ -72,6 +73,10 @@ private:
 		REGISTER_SECONDARY,
 		SHADE_HITS,
 		UPDATE,
+		RESERVOIR_SCAN,
+		RESERVOIR_SCAN_BLOCKS,
+		RESERVOIR_SCAN_TOP,
+		RESERVOIR_COMPACT,
 		MIP1,
 		MIP2,
 		MIP3,
@@ -96,10 +101,11 @@ private:
 		REFLECTION_TRACE,
 		REFLECTION_MARK_FIREFLIES,
 		REFLECTION_CLEAN_FIREFLIES,
-		REFLECTION_RESOLVE,
+		REFLECTION_FIRST,
+		REFLECTION_ITER,
+		REFLECTION_LAST,
 		REFLECTION_TEMPORAL,
-		REFLECTION_FILTER,
-		REFLECTION_UPSAMPLE,
+		REFLECTION_OUTPUT,
 		PASS_COUNT
 	};
 	struct PushConstant {
@@ -116,6 +122,8 @@ private:
 	};
 	struct FrameUniform {
 		float previous_view_projection[16];
+		float previous_eye[4];
+		float previous_forward[4];
 		float view_projection[16];
 		uint32_t grid[4]; // stored probe columns/rows, update stride, history reset
 		float settings[4]; // minimum cache cell, angular pixel footprint, continuation probability, previous feedback exposure
@@ -125,12 +133,13 @@ private:
 		float sky[4]; // diffuse and reflection energy, octahedral border, bit 0 firefly cleanup / bit 1 BRDF guiding
 		float ambient[4]; // remaining ambient color, replace native ambient
 		float reflections[4]; // sample stride, probe roughness threshold, filter iterations, unused
-		uint32_t motion[4]; // swept bound count, all-hit updates, lighting change, previous light count
+		float glossy[4]; // low roughness threshold, firefly low/high thresholds, unused
+		uint32_t motion[4]; // swept bound count, all-hit updates, reserved, previous light count
 		uint32_t emitters[4]; // emitter count/capacity, appended glossy queue offset, compact glossy dispatch
 		float motion_bounds[RaytracingGIScene::MAX_MOTION_BOUNDS][8]; // min/max, std140 vec4 pairs
 	};
 	static_assert(sizeof(PushConstant) == 128);
-	static_assert(sizeof(FrameUniform) == 576);
+	static_assert(sizeof(FrameUniform) == 624);
 	struct ViewData : public RenderBufferCustomDataRD {
 		GDCLASS(ViewData, RenderBufferCustomDataRD);
 
@@ -155,14 +164,15 @@ private:
 		RID reflection_samples, reflection_history[2];
 		uint32_t reflection_stride = 0;
 		float reflection_roughness = 0;
+		float reflection_trace_roughness = 0;
+		float firefly_low = 0;
+		float firefly_high = 1;
 		uint32_t reflection_filter_passes = 0;
 		Size2i size;
 		uint32_t stride = 0;
 		uint32_t frame = 0;
 		uint32_t index = 0;
 		uint64_t scene_revision = 0;
-		uint64_t lighting_revision = 0;
-		uint32_t lighting_reactive_frames = 0;
 		uint32_t configuration = 0;
 		float cell_size = 0;
 		float continuation = 0;

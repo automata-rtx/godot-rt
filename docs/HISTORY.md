@@ -6,6 +6,51 @@ alone — several of these already were, and failed. Not here: using a feature (
 one works (`docs/internals/`), running the harnesses (`docs/VALIDATION.md`), diagnosing a symptom
 (`docs/TROUBLESHOOTING.md`).
 
+## AMD GI reference-fidelity correction — 2026-10-23
+
+The earlier “scoped pipeline implemented” status is withdrawn. Passing the fork’s
+regressions did not establish that its estimators, history rules, material inputs
+or sampling matched AMD. No algorithmic departure has owner approval. The
+[source-by-source correction ledger](AMD_GI_REFERENCE_AUDIT.md) uses Capsaicin v1.3
+`914b91596cd119eda85fbc1d3c7ee6ac391b1452` as the reference and `d4b39f5` as the fork
+baseline. Earlier measurements below describe that earlier implementation.
+
+Corrections restore the diffuse denoiser’s radiance sums, sample eviction,
+vignette/fallback handling, pre-update blur radius, relative-depth weights and
+center tap; reference blue-noise dimensions and bounded-VNDF GGX sampling; the
+default reflection a-trous reconstruction and dual surface/virtual history;
+separate geometry/shading normal inputs; and a separate world-space hash of
+multiple hit reservoirs instead of one reservoir per directional radiance cell.
+Reference cache temporal weighting and zero-update aging replace the custom
+hit-count weighting and light-change override. Glossy cache lookup restores
+hit jitter, lifetime touch and the invalid-sample sentinel on cache misses.
+
+`[shadow_validation]` The numerical Vulkan oracle compares production helper
+functions with independently extracted upstream equations over 4,096 cases,
+including zero-update cache aging. Maximum observed difference is zero. The
+rendered reservoir test verifies every prefix, compacted hit owner/slot, packed
+confidence and allocation release, and exercises multi-hit entries and reuse.
+Its resampled/exhaustive indirect gain ratios are 1.001590 for identical lights
+and 0.985010 for varied lights. Primary budget remains approximately one quarter
+ray per internal pixel with multibounce and denoising enabled.
+
+The integrated diffuse, reflection and FSR2 regressions pass. Quarter/one diffuse
+display-RGB gains are 0.035895/0.035232; GI-off restores the diffuse fixture exactly
+and texture allocations return to baseline. The reflection rig checks 344 frames,
+with mirror-emitter return overlap 0.992 and compact/direct dispatch linear-RGB
+MAE 0.000422. FSR2 quarter/one gains are 0.039776/0.038269. These are fixture
+regressions on software Vulkan, not images matched against Capsaicin or gameplay
+quality/performance measurements. The Linux editor builds and updated property
+documentation is generated with doctool. A final 28-frame GPU check verifies
+reservoir and LRU scans after sharing their mutually exclusive workgroup scratch
+to stay within the 32 KiB shared-memory requirement. Repository hooks pass.
+
+The light-grid proposal sampler, integrated area-light estimator, hit-material
+representation/BRDF, remaining cache representation/defaults and probe/multibounce
+comparison remain unfinished. The reference reflection split-estimator alternative
+is also not ported. No final gameplay, Windows-build or 780M/5090 performance
+acceptance follows from this correction checkpoint.
+
 ## AMD GI sampling, motion and material integration — 2026-10-23
 
 `[shadow_validation]` Local implementation after the `3038a14` audit adds native

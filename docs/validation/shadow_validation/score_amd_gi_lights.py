@@ -39,11 +39,20 @@ def main():
     checks = re.findall(r"AMD GI reservoir validation: valid=(\d+) reused=(\d+)", log)
     if not checks or not any(int(reused) for _, reused in checks):
         raise SystemExit("World reservoir reuse was not exercised")
+    multiple = re.findall(r"AMD GI reservoir validation: .*multiple=(\d+)", log)
+    if not multiple or not any(int(count) for count in multiple):
+        raise SystemExit("Independent multi-reservoir hash entries were not exercised")
     memory = {
         name: int(buffers) for name, buffers in re.findall(r"GI memory lights_(\w+): textures=\d+ buffers=(\d+)", log)
     }
-    # Two reservoir buffers and the four-light hierarchy replace placeholders.
-    expected = 2 * 4096 * 64 * 16 - 32 + 8 * 48 - 16
+    # Independent reference hash, per-hit records and scan scratch. Quarter
+    # rate uses ceil(width/16)*ceil(height/16)*64 primary rays, plus secondary.
+    height, width = load("resampled").shape[:2]
+    capacity = ((width + 15) // 16) * ((height + 15) // 16) * 64 * 2
+    entries = 0x400000
+    blocks = entries // 256
+    reservoir_bytes = (3 * entries + 8 * capacity + 2 * blocks + 2 * (blocks // 256)) * 4
+    expected = 2 * reservoir_bytes - 32 + 8 * 48 - 16
     if memory["resampled"] - memory["exhaustive_restored"] != expected:
         raise SystemExit("Light-resampling toggle did not release its reservoir buffers")
     print("World reservoir reuse and allocation toggle verified; direct-only controls exact.")
