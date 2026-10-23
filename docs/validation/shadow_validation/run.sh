@@ -57,6 +57,7 @@ case "$RIG" in
 	amd_gi_material_sharing) RIG_RES=641x359 ;;
 	amd_gi_multimesh) RIG_RES=641x359 ;;
 	amd_gi_overlays) RIG_RES=641x359 ;;
+	amd_gi_opacity) RIG_RES=641x359 ;;
 	amd_gi_deformation) RIG_RES=641x359 ;;
 	amd_gi_budget_compare) RIG_RES=641x359 ;;
 	*)          RIG_RES=1280x720 ;;
@@ -154,6 +155,12 @@ mv "$HERE/out"/*.png "$OUT/" 2>/dev/null
 echo
 if [ "$RIG" = "opacity" ]; then
 	python3 "$HERE/score_opacity.py" "$OUT" "$@"
+elif [ "$RIG" = "amd_gi_opacity" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:|GI is suppressed' "$LOG" || ! grep -aq 'AMD opacity capture finished: 0 failures' "$LOG"; then
+		echo "GI opacity validation failed; inspect $LOG" >&2
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_opacity.py" "$OUT"
 elif [ "$RIG" = "amd_gi_overlays" ]; then
 	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG"; then
 		exit 1

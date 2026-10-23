@@ -1453,7 +1453,8 @@ shadow geometry baseline when porting these changes.
 GI collection excludes forward-only transparent surfaces through native depth/alpha/
 shadow predicates before requesting a BLAS or material capture. Preserve this order:
 outline shells may write vertices but do not describe transport geometry. Keep
-cutout, opaque, depth-writing and multipass support checks intact. Run
+cutout, opaque and multipass checks intact; depth-writing mix-alpha materials now
+use the opacity coverage path described below. Run
 `amd_gi_overlays` when changing that classification.
 
 ### AMD GI current-grid preparation and light proposals
@@ -1513,3 +1514,14 @@ separate. Only the stable owner writes a light reservoir in either mode. The tog
 reallocates/reset histories and releases all list/sample storage when disabled.
 `GODOT_AMD_GI_VALIDATE_HITS` checks actual GPU list coverage, cycles/duplicates,
 shading completion, finite values and cell identity; it is diagnostic readback only.
+
+### GI depth-writing alpha coverage
+
+Bit 30 of `HitData.triangles` enables stochastic opacity; bit 31 continues to mark
+local capture normals. Preserve both flags. Cutout captures retain their binary
+mask. Depth-writing mix-alpha materials retain their actual alpha and select ray
+candidate coverage with that probability. Candidate hashing uses the ray, instance,
+primitive and frame, independently of ray-query traversal order. Zero and one
+are exact endpoints. This is straight-through alpha coverage, not refraction.
+The alpha path belongs to GI's shared transport include, not the RT-shadow shader.
+Run `amd_gi_opacity` and `amd_gi_overlays` together when changing these classifications.

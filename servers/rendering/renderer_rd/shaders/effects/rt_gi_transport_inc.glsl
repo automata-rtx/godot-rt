@@ -107,7 +107,20 @@ bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out ui
 			}
 			uint triangle = rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
 			vec3 candidate_uv = atlas_position(candidate, triangle, rayQueryGetIntersectionBarycentricsEXT(query, false));
-			if (textureLod(albedo_atlas, candidate_uv, 0.0).a >= 0.5) {
+			float opacity = clamp(textureLod(albedo_atlas, candidate_uv, 0.0).a, 0.0, 1.0);
+			bool covered = opacity >= 0.5;
+			if ((hits.data[candidate].y & 0x40000000u) != 0u) {
+				// Depth-writing blend materials retain their opaque texels. Fractional
+				// alpha samples straight-through coverage, not refraction. Hash each
+				// candidate independently so traversal ordering cannot change its test.
+				uvec3 o = floatBitsToUint(origin);
+				uvec3 d = floatBitsToUint(direction);
+				uint state = o.x * 1597334677u ^ o.y * 3812015801u ^ o.z * 2798796415u;
+				state ^= d.x * 197830471u ^ d.y * 295559667u ^ d.z * 269805325u;
+				state ^= candidate * 747796405u ^ triangle * 2891336453u ^ params.padding * 277803737u;
+				covered = opacity > random_float(state);
+			}
+			if (covered) {
 				rayQueryConfirmIntersectionEXT(query);
 			}
 		}

@@ -6,6 +6,22 @@ alone — several of these already were, and failed. Not here: using a feature (
 one works (`docs/internals/`), running the harnesses (`docs/VALIDATION.md`), diagnosing a symptom
 (`docs/TROUBLESHOOTING.md`).
 
+## Crossroads exposes imported alpha-material support — 2026-10-23
+
+`[game]` The small TestLevel was not a sufficient project evaluation scene. At the
+user's direction, project captures now use Crossroads. Its imported Synty materials
+combine alpha blending with forced depth writes; the original strict adapter
+rejected them and suppressed GI. The adapter now preserves their opaque portions
+and samples fractional alpha as straight-through coverage. It does not replace
+these assets, modify their authored materials, or make glass an opaque occluder.
+
+`[shadow_validation]` An off-screen emitter/blocker rig checks the two coverage
+endpoints against hidden/opaque references. Display-RGB MAE is 0.000298 for zero
+versus hidden and 0.000215 for one versus opaque. Indirect gains at zero/half/one
+coverage are 0.050835/0.039761/0.024700. Denoising stays on at the quarter primary
+budget, with feedback/multibounce disabled to isolate this test. No refraction,
+tinted transmission or target-hardware performance is established by it.
+
 ## AMD GI all-hit cache accumulation — 2026-10-23
 
 `[code]` Registered primary and secondary hits now shade independently and reduce

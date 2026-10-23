@@ -86,7 +86,7 @@ high cost; the results say nothing about a viable 780M quality tier.
 
 It accepts MeshInstance3D geometry, including native skeleton/blend-shape output.
 CPU-managed 3D MultiMeshes are supported with per-element material inputs.
-GPU-indirect MultiMeshes, particles, material overlays, lightmaps, vertex-deforming, screen-reading, blended,
+GPU-indirect MultiMeshes, particles, material overlays, lightmaps, vertex-deforming, screen-reading, unsupported blend modes,
 unshaded, and multipass materials are not supported. Area lights are not supported;
 textured light projectors and distance fades also suppress the validation contribution. Unsupported
 geometry/materials and capacity overflow suppress the GI contribution instead of
@@ -127,7 +127,10 @@ evaluate actual implementation progress. Overall status remains in
 Transparent passes that neither write depth nor cast material shadows stay in the
 native raster path. This includes outline shells, stencil-only masks and additive
 effects. They do not become opaque GI occluders and do not disable GI for the scene.
-Opaque/cutout surfaces retain normal transport; depth-writing transparency and
-multipass surfaces retain the strict support checks. This does not implement
-transparent/refraction transport or GI emission from forward-only effects.
+Opaque/cutout surfaces retain normal transport. Depth-writing mix-alpha materials
+use stochastic opacity: fully opaque texels remain surfaces, zero-alpha texels
+transmit, and fractional texels select coverage probabilistically. The same test
+applies to GI visibility rays; native RT-shadow behavior is unchanged. This is
+straight-through opacity, not refraction or colored transmission. Multipass and
+unsupported deformation retain strict checks. Forward-only effects do not emit GI.
 `amd_gi_overlays` checks that physical-scene GI and history survive these passes.

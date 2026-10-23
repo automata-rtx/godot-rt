@@ -64,7 +64,7 @@ private:
 	static constexpr uint32_t MAX_INSTANCES = RendererSceneRender::MAX_RT_GI_INSTANCES;
 	struct HitData {
 		uint32_t first_tile;
-		uint32_t triangles;
+		uint32_t triangles; // Bits 31/30: local capture normals / stochastic opacity.
 		uint32_t mask;
 		uint32_t shadow_mask = 0;
 	};

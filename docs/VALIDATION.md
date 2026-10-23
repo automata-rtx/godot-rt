@@ -279,3 +279,10 @@ GPU lists: every registered hit exactly once, matching cells, acyclic links,
 finite complete samples. Its readbacks are diagnostic and must be off for timing.
 The matched `amd_gi_budget_compare` captures explicitly enable all-hit accumulation
 and native screen feedback at both budgets, with denoisers on and 64 fresh GI draws.
+
+`./run.sh amd_gi_opacity` places an emissive card and an alpha blocker behind the
+camera. It compares zero coverage against hiding the blocker, full coverage against
+an opaque material, and fractional coverage between those endpoints. It keeps the
+quarter primary budget and denoiser enabled; multibounce/screen feedback are off
+to isolate transport. Disabled images must remain exact. This is a correctness
+rig, not a representative all-features-on progress capture or hardware benchmark.

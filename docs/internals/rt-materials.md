@@ -170,5 +170,7 @@ Forward-only transparency is selected using the native shader predicates:
 `uses_alpha_pass()`, no `uses_depth_in_alpha_pass()`, no always-depth draw, and no
 material shadow casting. Only a single-pass surface can be excluded this way.
 This avoids capturing presentation-only shells or treating them as opaque blockers;
-it does not turn opaque vertex deformation or depth-writing transparency into
-supported transport.
+opaque vertex deformation remains unsupported. Depth-writing mix-alpha materials
+now use the captured alpha for stochastic coverage in GI ray queries. This retains
+opaque portions of imported mixed-opacity meshes without making glass solid.
+It does not implement refraction or tinted transmission.

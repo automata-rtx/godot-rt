@@ -255,16 +255,18 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 				material = meshes->mesh_surface_get_material(instance.mesh, surface);
 			}
 			auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(materials->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
+			bool stochastic_alpha = false;
 			if (data && data->shader_data) {
 				const auto &shader_data = *data->shader_data;
 				// Forward-only transparency includes outline shells, stencil masks
 				// and additive effects. It cannot supply opaque transport geometry.
-				// Depth-writing, cutout and multipass surfaces stay on the strict path.
+				// Depth-writing blend materials continue below for stochastic coverage.
 				if (data->next_pass.is_null() && shader_data.uses_alpha_pass() && !shader_data.uses_depth_in_alpha_pass() && shader_data.depth_draw != RendererSceneRenderImplementation::SceneShaderForwardClustered::ShaderData::DEPTH_DRAW_ALWAYS && !shader_data.casts_shadows()) {
 					continue;
 				}
-				if (data->next_pass.is_valid() || shader_data.uses_screen_texture || shader_data.uses_depth_texture || shader_data.uses_normal_texture || shader_data.uses_position || shader_data.uses_vertex || shader_data.writes_modelview_or_projection || shader_data.uses_blend_alpha || (shader_data.uses_alpha && !shader_data.uses_alpha_clip) || shader_data.unshaded) {
-					WARN_PRINT_ONCE("RT GI does not support vertex-deformed, screen-reading, blended, or multipass materials. GI is suppressed.");
+				stochastic_alpha = shader_data.uses_alpha && !shader_data.uses_alpha_clip && shader_data.blend_mode == MaterialStorage::ShaderData::BLEND_MODE_MIX;
+				if (data->next_pass.is_valid() || shader_data.uses_screen_texture || shader_data.uses_depth_texture || shader_data.uses_normal_texture || shader_data.uses_position || shader_data.uses_vertex || shader_data.writes_modelview_or_projection || shader_data.uses_blend_alpha || (shader_data.uses_alpha && !shader_data.uses_alpha_clip && !stochastic_alpha) || shader_data.unshaded) {
+					WARN_PRINT_ONCE(vformat("RT GI cannot transport material %s (shader '%s'): vertex=%s position=%s transform=%s screen=%s depth=%s normal_texture=%s blend=%s alpha=%s unshaded=%s multipass=%s. GI is suppressed.", material, shader_data.path, shader_data.uses_vertex, shader_data.uses_position, shader_data.writes_modelview_or_projection, shader_data.uses_screen_texture, shader_data.uses_depth_texture, shader_data.uses_normal_texture, shader_data.uses_blend_alpha, shader_data.uses_alpha && !shader_data.uses_alpha_clip, shader_data.unshaded, data->next_pass.is_valid()));
 					return;
 				}
 			}
@@ -331,7 +333,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			// array layer on every small mesh. Surface IDs still index one hit record.
 			const uint32_t surface_tiles = ((triangles + 31) / 32) * 32;
 			if (triangles == 0 || (capture_surface && tile_cursor + surface_tiles > max_pages * PAGE_TRIANGLES) || instances.size() == MAX_INSTANCES) {
-				WARN_PRINT_ONCE("RT GI scene exceeds its bounded material/instance capacity; GI is suppressed, not partially rendered.");
+				WARN_PRINT_ONCE(vformat("RT GI capacity exceeded: requested atlas tiles=%d, available=%d, surface triangles=%d, instances=%d/%d. GI is suppressed, not partially rendered.", tile_cursor + surface_tiles, max_pages * PAGE_TRIANGLES, triangles, instances.size(), MAX_INSTANCES));
 				return;
 			}
 			if (capture_surface) {
@@ -436,7 +438,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			new_signature = hash_murmur3_one_32(instance.shadow_surface_mask, new_signature);
 			instances.push_back(rd_instance);
 			const bool casts_shadow = surface < 32 ? (instance.shadow_surface_mask & (1u << surface)) != 0 : instance.shadow_surface_mask != 0;
-			hits.push_back({ surface_material.first_tile, triangles | (share_capture ? 0x80000000u : 0u), instance.layer_mask, casts_shadow ? instance.layer_mask : 0 });
+			hits.push_back({ surface_material.first_tile, triangles | (share_capture ? 0x80000000u : 0u) | (stochastic_alpha ? 0x40000000u : 0u), instance.layer_mask, casts_shadow ? instance.layer_mask : 0 });
 		}
 		const uint32_t index = current_instances.size();
 		if (index < previous_instances.size() && previous_instances[index].instance == state.instance && previous_instances[index].element == state.element) {
