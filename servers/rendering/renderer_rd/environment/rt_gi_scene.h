@@ -144,11 +144,13 @@ private:
 	uint32_t signature = 0;
 	uint64_t revision = 1;
 	bool ready = false;
+	bool feedback_compatible = true;
 
 public:
 	static constexpr uint32_t MAX_MOTION_BOUNDS = 8;
 	const LocalVector<AABB> &get_motion_bounds() const { return motion_bounds; }
 	bool is_ready() const { return ready; }
+	bool is_feedback_compatible() const { return feedback_compatible; }
 	uint32_t get_light_count() const { return light_count; }
 	uint64_t get_revision() const { return revision; }
 	void append_uniforms(LocalVector<RD::Uniform> &r_uniforms, RID p_sampler) const;

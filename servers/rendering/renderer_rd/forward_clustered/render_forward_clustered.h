@@ -246,6 +246,7 @@ private:
 		COLOR_PASS_FLAG_SEPARATE_SPECULAR = 1 << 1,
 		COLOR_PASS_FLAG_MULTIVIEW = 1 << 2,
 		COLOR_PASS_FLAG_MOTION_VECTORS = 1 << 3,
+		COLOR_PASS_FLAG_GI_FEEDBACK = 1 << 4,
 	};
 
 	struct GeometryInstanceSurfaceDataCache;

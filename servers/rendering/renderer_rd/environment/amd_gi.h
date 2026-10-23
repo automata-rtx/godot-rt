@@ -111,7 +111,7 @@ private:
 		float previous_view_projection[16];
 		float view_projection[16];
 		uint32_t grid[4]; // stored probe columns/rows, update stride, history reset
-		float settings[4]; // minimum cache cell, angular pixel footprint, continuation probability, unused
+		float settings[4]; // minimum cache cell, angular pixel footprint, continuation probability, previous feedback exposure
 		uint32_t flags[4]; // denoiser, importance sampling, mask mip count, cached probe reuse
 		uint32_t tracing[4]; // update columns/rows, adaptive scheduling, light resampling
 		float world_to_sky[12];
@@ -157,6 +157,8 @@ private:
 		bool probe_cache = false;
 		bool light_resampling = false;
 		bool multibounce = false;
+		bool screen_feedback = false;
+		float previous_exposure = 0;
 		Projection previous_view_projection;
 		Transform3D previous_camera;
 		Environment environment;

@@ -1841,6 +1841,7 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/probe_spacing", PROPERTY_HINT_ENUM, "1 ray/pixel:8,1/4 ray/pixel:16,1/16 ray/pixel:32"), 16);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/material_atlas_mb", PROPERTY_HINT_RANGE, "8,512,8,suffix:MiB"), 128);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/multibounce", true);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/screen_feedback", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/denoiser", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/importance_sampling", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/adaptive_sampling", true);

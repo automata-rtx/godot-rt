@@ -386,6 +386,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	const float probability = CLAMP(float(GLOBAL_GET("rendering/global_illumination/amd_gi/continuation_probability")), 0.05f, 1.0f);
 	const float max_distance = MAX(float(GLOBAL_GET("rendering/global_illumination/amd_gi/max_distance")), 1.0f);
 	const bool reflections = GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/enabled");
+	const bool screen_feedback = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/screen_feedback")) && (multibounce || reflections) && p_scene.is_feedback_compatible();
 	const uint32_t reflection_stride = reflections ? (bool(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/half_resolution")) ? 2 : 1) : 0;
 	const float reflection_roughness = CLAMP(float(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold")), 0.2f, 1.0f);
 	const uint32_t reflection_filter_passes = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/filter_passes")), 1, 3);
@@ -399,7 +400,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		data.instantiate();
 		p_buffers->set_custom_data(RB_SCOPE_AMD_GI, data);
 	}
-	if (data->size != size || data->stride != stride || data->probe_cache != probe_cache || data->light_resampling != light_resampling || data->multibounce != multibounce || data->reflection_stride != reflection_stride) {
+	if (data->size != size || data->stride != stride || data->probe_cache != probe_cache || data->light_resampling != light_resampling || data->multibounce != multibounce || data->reflection_stride != reflection_stride || data->screen_feedback != screen_feedback) {
 		data->free_data();
 		p_buffers->clear_context(RB_SCOPE_AMD_GI);
 		data->size = size;
@@ -407,6 +408,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		data->probe_cache = probe_cache;
 		data->light_resampling = light_resampling;
 		data->multibounce = multibounce;
+		data->screen_feedback = screen_feedback;
 		data->reflection_stride = reflection_stride;
 		const uint32_t reflection_bytes = reflections ? reflection_size.x * reflection_size.y * 80 : 16;
 		data->reflection_samples = rd->storage_buffer_create(reflection_bytes);
@@ -466,6 +468,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	const float fov_y = 2.0f * Math::atan(1.0f / Math::abs(p_projection.columns[1][1]));
 	frame.settings[1] = fov_y * MAX(1.0f / size.y, float(size.y) / (float(size.x) * size.x));
 	frame.settings[2] = probability;
+	frame.settings[3] = screen_feedback ? data->previous_exposure : 0.0f;
 	frame.flags[0] = denoiser;
 	frame.flags[1] = importance_sampling;
 	frame.flags[2] = mask_levels;
@@ -481,6 +484,8 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	frame.reflections[0] = MAX(reflection_stride, 1u);
 	frame.reflections[1] = reflection_roughness;
 	frame.reflections[2] = reflection_filter_passes;
+	static const bool validate_feedback = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_FEEDBACK").is_empty();
+	frame.reflections[3] = validate_feedback ? 1.0f : 0.0f;
 	for (int i = 0; i < 4; i++) {
 		frame.ambient[i] = p_environment.ambient[i];
 	}
@@ -492,6 +497,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	RID reflection_output = p_buffers->create_texture(RB_SCOPE_AMD_GI, reflections ? SNAME("reflection") : SNAME("reflection_placeholder"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, reflections ? size : Size2i(1, 1));
 	RID reflection_filter_a = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("reflection_filter_a"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, reflection_size);
 	RID reflection_filter_b = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("reflection_filter_b"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, reflection_size);
+	RID feedback = screen_feedback ? p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("feedback"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT) : TextureStorage::get_singleton()->texture_rd_get_default(TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
 	RID sampler = MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 	LocalVector<RD::Uniform> uniforms;
 	p_scene.append_uniforms(uniforms, sampler);
@@ -527,6 +533,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 42, reflection_filter_b));
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 43, reflection_output));
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 44, data->light_tree));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 45, Vector<RID>{ sampler, feedback }));
 	RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(shader.version_get_shader(version, 0), 0, uniforms);
 	if (set.is_null()) {
 		data->valid = false;
@@ -611,6 +618,28 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		}
 	}
 	rd->compute_list_end();
+	if (validate_feedback && screen_feedback && !reset) {
+		Vector<uint8_t> bytes = rd->texture_get_data(feedback, 0);
+		ERR_FAIL_COND_V(bytes.size() != int64_t(size.x) * size.y * 8, false);
+		const uint16_t *values = reinterpret_cast<const uint16_t *>(bytes.ptr());
+		double sum = 0;
+		uint32_t covered = 0;
+		for (uint32_t i = 0; i < uint32_t(size.x * size.y); i++) {
+			if (Math::half_to_float(values[4 * i + 3]) < 0.5f) {
+				continue;
+			}
+			covered++;
+			for (uint32_t channel = 0; channel < 3; channel++) {
+				float value = Math::half_to_float(values[4 * i + channel]);
+				ERR_FAIL_COND_V(!Math::is_finite(value), false);
+				sum += value;
+			}
+		}
+		Vector<uint8_t> counts = rd->buffer_get_data(data->queues, 12, 4);
+		ERR_FAIL_COND_V(counts.size() != 4, false);
+		uint32_t accepted = *reinterpret_cast<const uint32_t *>(counts.ptr());
+		print_line(vformat("AMD GI feedback validation: frame=%d covered=%d accepted=%d mean=%.8f", data->frame, covered, accepted, sum / (MAX(covered, 1u) * 3.0 * MAX(data->previous_exposure, 0.000001f))));
+	}
 	static const bool validate_glossy = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_REFLECTIONS").is_empty();
 	if (validate_glossy && reflections) {
 		ERR_FAIL_COND_V(!validate_reflections(data->reflection_samples, reflection_size.x * reflection_size.y), false);
@@ -637,6 +666,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	data->index = 1 - index;
 	data->previous_view_projection = view_projection;
 	data->previous_camera = p_camera;
+	data->previous_exposure = p_exposure;
 	data->scene_revision = p_scene.get_revision();
 	data->configuration = configuration;
 	data->cell_size = cell_size;

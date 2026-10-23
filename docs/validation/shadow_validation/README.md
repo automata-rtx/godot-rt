@@ -323,3 +323,9 @@ compares per-element colors/custom data/IDs against separate MeshInstances and
 checks movement and live updates. `amd_gi_atlas` also grows beyond the old capacity
 and shrinks its live budget. Keep denoising and the quarter-ray diffuse budget on;
 these are native rendering checks, not hardware performance estimates.
+
+`./run.sh amd_gi_feedback` validates the optional native screen-lighting feedback.
+It keeps quarter primary diffuse sampling and denoisers on, checks actual GPU
+acceptance, changes fog and exposure independently, and checks target release and
+per-light indirect-energy/disabled controls. Synchronous diagnostic readback means
+its timings must not be used as hardware performance measurements.

@@ -195,6 +195,7 @@ void RaytracingGIScene::prune_materials(uint64_t p_minimum_frame) {
 
 void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights) {
 	ready = false;
+	feedback_compatible = true;
 	prune_materials(material_frame++);
 	motion_bounds.clear();
 	LocalVector<InstanceState> current_instances;
@@ -498,6 +499,9 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 		data.shadows = storage->light_has_shadow(light) ? 1 : 0;
 		data.shadow_mask = storage->light_get_shadow_caster_mask(light);
 		data.shadow_opacity = storage->light_get_param(light, RSE::LIGHT_PARAM_SHADOW_OPACITY);
+		// Native combined lighting cannot separate per-light indirect multipliers.
+		// Retain explicit cache shading when those authored values differ.
+		feedback_compatible &= storage->light_get_param(light, RSE::LIGHT_PARAM_INDIRECT_ENERGY) == 1.0f;
 		float energy = storage->light_get_param(light, RSE::LIGHT_PARAM_ENERGY) * storage->light_get_param(light, RSE::LIGHT_PARAM_INDIRECT_ENERGY);
 		if (storage->light_is_negative(light)) {
 			energy = -energy;

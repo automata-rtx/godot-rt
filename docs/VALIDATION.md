@@ -265,3 +265,9 @@ compares per-element colors/custom data/IDs against separate MeshInstances and
 checks movement and live updates. `amd_gi_atlas` also grows beyond the old capacity
 and shrinks its live budget. Keep denoising and the quarter-ray diffuse budget on;
 these are native rendering checks, not hardware performance estimates.
+
+The `amd_gi_feedback` rig exercises native opaque HDR feedback before fog/upscaling.
+It verifies GPU hit acceptance, exposure removal, fog isolation, feedback texture
+release and exact zero-indirect/disabled controls at the ordinary quarter primary
+ray budget. Native feedback variants compile on demand; rerun the native material
+and shadow geometry rigs when changing that shader-group behavior.

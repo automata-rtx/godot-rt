@@ -259,6 +259,8 @@ void ShaderRD::_initialize_version(Version *p_version) {
 	p_version->variant_data.resize(variant_defines.size());
 	p_version->group_compilation_tasks.resize_initialized(group_enabled.size());
 	p_version->group_loaded_from_cache.resize_initialized(group_enabled.size());
+	p_version->group_started.resize(group_enabled.size());
+	p_version->group_started.fill(false);
 }
 
 void ShaderRD::_clear_version(Version *p_version) {
@@ -711,10 +713,11 @@ void ShaderRD::_allocate_placeholders(Version *p_version, int p_group) {
 // Try to compile all variants for a given group.
 // Will skip variants that are disabled.
 void ShaderRD::_compile_version_start(Version *p_version, int p_group) {
-	if (!group_enabled[p_group]) {
+	if (!group_enabled[p_group] && !group_on_demand[p_group]) {
 		return;
 	}
 
+	p_version->group_started.write[p_group] = true;
 	p_version->dirty = false;
 
 #if ENABLE_SHADER_CACHE
@@ -758,7 +761,7 @@ void ShaderRD::_compile_version_end(Version *p_version, int p_group) {
 	if (!all_valid) {
 		// Clear versions if they exist.
 		for (int i = 0; i < variant_defines.size(); i++) {
-			if (!variants_enabled[i] || !group_enabled[variant_defines[i].group]) {
+			if (!variants_enabled[i] || (!group_enabled[variant_defines[i].group] && !group_on_demand[variant_defines[i].group])) {
 				continue; // Disabled.
 			}
 			if (!p_version->variants[i].is_null()) {
@@ -945,6 +948,12 @@ void ShaderRD::enable_group(int p_group) {
 	}
 }
 
+void ShaderRD::set_group_on_demand(int p_group) {
+	ERR_FAIL_COND(version_owner.get_rid_count() > 0);
+	ERR_FAIL_INDEX(p_group, group_on_demand.size());
+	group_on_demand.write[p_group] = true;
+}
+
 bool ShaderRD::is_group_enabled(int p_group) const {
 	return group_enabled[p_group];
 }
@@ -994,6 +1003,7 @@ void ShaderRD::initialize(const Vector<String> &p_variant_defines, const String 
 	// When initialized this way, there is just one group and its always enabled.
 	group_to_variant_map.insert(0, LocalVector<int>{});
 	group_enabled.push_back(true);
+	group_on_demand.push_back(false);
 
 	for (int i = 0; i < p_variant_defines.size(); i++) {
 		variant_defines.push_back(VariantDefine(0, p_variant_defines[i], true));
@@ -1098,6 +1108,7 @@ void ShaderRD::initialize(const Vector<VariantDefine> &p_variant_defines, const 
 
 	// Set all to groups to false, then enable those that should be default.
 	group_enabled.resize_initialized(max_group_id + 1);
+	group_on_demand.resize_initialized(max_group_id + 1);
 	bool *enabled_ptr = group_enabled.ptrw();
 	for (int i = 0; i < p_variant_defines.size(); i++) {
 		if (p_variant_defines[i].default_enabled) {

@@ -18,6 +18,7 @@ MSAA. All controls below are live `ProjectSettings` values under
 | --- | --- | --- |
 | `enabled` | `false` | Creates the GI scene consumer and cached pipeline only when requested. |
 | `probe_spacing` | `16` | Budget one 64-ray probe update per 8×8, 16×16, or 32×32 screen tile: approximately 1, 1/4, or 1/16 primary GI ray per internal pixel per frame. Stored probes always use an 8-pixel grid. |
+| `screen_feedback` | `true` | Reuse previous native opaque lighting for compatible visible secondary/reflection hits. Adds one RGBA16F target and opaque attachment; disabling releases it. Requires multibounce or reflections. Per-light indirect-energy multipliers other than 1 select the explicit world-cache fallback. |
 | `multibounce` | `true` | Populate secondary world cells from a subset of primary cache updates, shade their direct light, and propagate indirect light through separate histories. Disabling skips seven stages and frees continuation/indirect storage. |
 | `continuation_probability` | `0.3` | Fraction of cache-cell updates tracing an additional diffuse continuation; contributions are probability compensated. |
 | `minimum_cell_size` | `0.1` | Minimum world-space cache cell size. Actual size also depends on distance, resolution, and field of view. |
@@ -93,8 +94,10 @@ stage dispatches once per mip level:
 6. Build the three coarser levels of each 8×8 cache tile. Preserve summed sample
    counts and select the finest mip with 16 accumulated samples, falling back to
    the coarsest level while evidence is sparse, as in AMD's filtered readback.
-   Then propagate current secondary direct light plus previous secondary indirect
-   light into the primary receiver's indirect history, with probability compensation.
+   Then reuse compatible previous native screen lighting at a secondary receiver,
+   or current secondary direct light plus previous secondary indirect cache data
+   when it is unavailable. Propagate that outgoing radiance into the primary
+   receiver's indirect history, with probability compensation.
    Discarded continuations contribute zero; actual misses sample the configured sky. Build independent indirect mips
    before resolving the sum. Secondary-only receivers have no newly traced indirect
    sample and clear stale indirect history; further bounce feedback therefore
@@ -176,8 +179,8 @@ The current diffuse result is not the completed AMD GI-1.2 look. In particular:
   not Capsaicin's light-grid implementation.
   Continuations now populate additional cells with separate direct/indirect
   filtering. Scheduling still chooses one hit per cell rather than accumulating
-  all visible-hit updates. Feedback uses the previous world indirect cache rather
-  than Capsaicin's reprojected combined screen lighting. Coarse cache reuse can
+  all visible-hit updates. Visible receivers can reuse reprojected combined native screen lighting;
+  other receivers use the previous world indirect cache. Coarse cache reuse can
   flatten indirect gradients.
 - Glossy transport, ratio reconstruction, temporal rejection, and a-trous denoising
   are implemented. The matte room alone cannot validate them; use the dedicated
@@ -185,8 +188,10 @@ The current diffuse result is not the completed AMD GI-1.2 look. In particular:
   reflection heuristics: separate firefly marking/cleanup, adaptive ray compaction,
   object velocity reprojection, and layered/anisotropic lobes remain. Reflection-only
   hits read the world cache; upstream Capsaicin also performs cache lookup here
-  rather than inserting those hits. Our uncached fallback evaluates hit lighting. Hit shading currently
-  evaluates diffuse/emissive outgoing radiance, so nested specular transport is absent.
+  rather than inserting those hits. Our uncached fallback evaluates hit lighting. Off-screen hit shading
+  evaluates diffuse/emissive outgoing radiance. Compatible screen hits can reuse
+  visible native specular lighting, but this is view-dependent feedback rather
+  than general nested specular transport.
   Half-resolution mirrors can show reconstruction artifacts.
 - Expanded capture geometry and targets persist across frames with source-data
   invalidation. Static local-uniform/image-texture materials retain their pixels;
@@ -443,3 +448,27 @@ is a proposal approximation, not a changed lighting model or an occlusion cache.
 Disabling resampling releases the tree with the reservoir buffers. Zero/one-light
 scenes bypass it. `amd_gi_lights` compares against exhaustive light evaluation,
 including a six-light incomplete tree with point, spot and directional lights.
+
+### Native screen-lighting feedback
+
+Opaque Forward+ draws optionally write their combined HDR lighting to a fourth
+color attachment before fog, tone mapping, and temporal upscaling. GI reads that
+texture on the following frame, matching the previous pixel geometry and removing
+the previous exposure. Background/transparent pixels have no valid coverage.
+Swept motion bounds, normal/position disagreement, disocclusion and history resets
+reject reuse. Reflections and continuation shading retain world-cache/explicit
+fallbacks; the system does not require everything to remain on screen.
+
+The texture exists only while feedback is active. Native feedback shader variants
+compile on demand for materials that request them. Disabling GI adds no feedback
+attachment, pass, trace or copy; ordinary native pipeline caches may remain warm,
+but new or edited materials do not compile feedback variants unless requested.
+The `ShaderRD` on-demand group is separate from global group enablement for this
+reason. Feedback includes the visible material's native lighting/AO; it is an
+approximate view-dependent radiance reuse, not a new exact path-tracing bounce.
+
+`amd_gi_feedback` checks actual GPU acceptance, unfogged/unexposed radiance,
+per-light indirect-energy fallback, texture release and exact disabled restoration.
+Its synchronous diagnostics are opt-in with `GODOT_AMD_GI_VALIDATE_FEEDBACK` and
+must not be enabled when measuring performance. The dedicated counter occupies
+previously unused queue-header space; ordinary rendering does not increment it.

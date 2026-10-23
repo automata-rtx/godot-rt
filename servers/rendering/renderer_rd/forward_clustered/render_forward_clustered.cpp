@@ -211,6 +211,14 @@ RID RenderForwardClustered::RenderBufferDataForwardClustered::get_color_pass_fb(
 
 	RID depth = use_msaa ? render_buffers->get_texture(RB_SCOPE_BUFFERS, RB_TEX_DEPTH_MSAA) : render_buffers->get_depth_texture();
 
+	if (p_color_pass_flags & COLOR_PASS_FLAG_GI_FEEDBACK) {
+		RID feedback = render_buffers->get_texture(RB_SCOPE_AMD_GI, SNAME("feedback"));
+		if (render_buffers->has_texture(RB_SCOPE_VRS, RB_TEXTURE)) {
+			return FramebufferCacheRD::get_singleton()->get_cache_multiview(v_count, color, specular, velocity_buffer, feedback, depth, render_buffers->get_texture(RB_SCOPE_VRS, RB_TEXTURE));
+		}
+		return FramebufferCacheRD::get_singleton()->get_cache_multiview(v_count, color, specular, velocity_buffer, feedback, depth);
+	}
+
 	if (render_buffers->has_texture(RB_SCOPE_VRS, RB_TEXTURE)) {
 		RID vrs_texture = render_buffers->get_texture(RB_SCOPE_VRS, RB_TEXTURE);
 		return FramebufferCacheRD::get_singleton()->get_cache_multiview(v_count, color, specular, velocity_buffer, depth, vrs_texture);
@@ -472,6 +480,10 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 					pipeline_specialization.use_forward_gi = element_info.uses_forward_gi;
 				}
 
+				if constexpr ((p_color_pass_flags & COLOR_PASS_FLAG_GI_FEEDBACK) != 0) {
+					pipeline_key.color_pass_flags |= SceneShaderForwardClustered::PIPELINE_COLOR_PASS_FLAG_GI_FEEDBACK;
+				}
+
 				if constexpr ((p_color_pass_flags & COLOR_PASS_FLAG_SEPARATE_SPECULAR) != 0) {
 					pipeline_key.color_pass_flags |= SceneShaderForwardClustered::PIPELINE_COLOR_PASS_FLAG_SEPARATE_SPECULAR;
 				}
@@ -673,6 +685,10 @@ void RenderForwardClustered::_render_list(RenderingDevice::DrawListID p_draw_lis
 		case PASS_MODE_COLOR: {
 			switch (p_params->color_pass_flags) {
 				VALID_FLAG_COMBINATION(0);
+				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_GI_FEEDBACK);
+				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_GI_FEEDBACK | COLOR_PASS_FLAG_MOTION_VECTORS);
+				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_GI_FEEDBACK | COLOR_PASS_FLAG_SEPARATE_SPECULAR);
+				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_GI_FEEDBACK | COLOR_PASS_FLAG_SEPARATE_SPECULAR | COLOR_PASS_FLAG_MOTION_VECTORS);
 				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_TRANSPARENT);
 				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_TRANSPARENT | COLOR_PASS_FLAG_MULTIVIEW);
 				VALID_FLAG_COMBINATION(COLOR_PASS_FLAG_TRANSPARENT | COLOR_PASS_FLAG_MOTION_VECTORS);
@@ -2842,6 +2858,16 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		base_specialization.cluster_has_area_light = current_cluster_builder->get_cluster_count_by_type(ClusterBuilderRD::ELEMENT_TYPE_AREA_LIGHT) != 0;
 	}
 
+	// GI has finished reading last frame's opaque lighting. Attach its optional
+	// target only now, after GI resource allocation/fallback has completed.
+	if (amd_gi && rb_data.is_valid() && rb->has_texture(RB_SCOPE_AMD_GI, SNAME("feedback"))) {
+		color_pass_flags |= COLOR_PASS_FLAG_GI_FEEDBACK;
+		color_framebuffer = rb_data->get_color_pass_fb(color_pass_flags);
+		if (load_color) {
+			RD::get_singleton()->texture_clear(rb->get_texture(RB_SCOPE_AMD_GI, SNAME("feedback")), Color(0, 0, 0, 0), 0, 1, 0, 1);
+		}
+	}
+
 	RENDER_TIMESTAMP("Render Opaque Pass");
 
 	RD::get_singleton()->draw_command_begin_label("Render Opaque Pass");
@@ -2871,6 +2897,9 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				if (rb_data.is_valid()) {
 					c.push_back(Color(0, 0, 0, 0)); // Separate specular.
 					c.push_back(Color(0, 0, 0, 0)); // Motion vector. Pushed to the clear color vector even if the framebuffer isn't bound.
+					if (color_pass_flags & COLOR_PASS_FLAG_GI_FEEDBACK) {
+						c.push_back(Color(0, 0, 0, 0)); // Unfogged opaque lighting; alpha marks written pixels.
+					}
 				}
 			}
 
@@ -3091,7 +3120,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_ALPHA, p_render_data, is_multiview, radiance_texture, samplers, transparent_pass_uniform_buffer_index, true);
 
 	{
-		uint32_t transparent_color_pass_flags = (color_pass_flags | uint32_t(COLOR_PASS_FLAG_TRANSPARENT)) & ~uint32_t(COLOR_PASS_FLAG_SEPARATE_SPECULAR);
+		uint32_t transparent_color_pass_flags = (color_pass_flags | uint32_t(COLOR_PASS_FLAG_TRANSPARENT)) & ~uint32_t(COLOR_PASS_FLAG_SEPARATE_SPECULAR | COLOR_PASS_FLAG_GI_FEEDBACK);
 		// Motion vectors should not be overwritten by transparent objects.
 		transparent_color_pass_flags &= ~uint32_t(COLOR_PASS_FLAG_MOTION_VECTORS);
 

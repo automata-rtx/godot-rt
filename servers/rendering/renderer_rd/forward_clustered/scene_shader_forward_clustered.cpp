@@ -321,6 +321,10 @@ uint16_t SceneShaderForwardClustered::ShaderData::_get_shader_version(PipelineVe
 				shader_flags |= SHADER_COLOR_PASS_FLAG_MOTION_VECTORS;
 			}
 
+			if (p_color_pass_flags & PIPELINE_COLOR_PASS_FLAG_GI_FEEDBACK) {
+				shader_flags |= SHADER_COLOR_PASS_FLAG_GI_FEEDBACK;
+			}
+
 			if (p_color_pass_flags & PIPELINE_COLOR_PASS_FLAG_LIGHTMAP) {
 				shader_flags |= SHADER_COLOR_PASS_FLAG_LIGHTMAP;
 			}
@@ -457,7 +461,7 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 				depth_stencil_state.enable_depth_write = false; //alpha does not draw depth
 			}
 		} else {
-			blend_state = blend_state_color_opaque;
+			blend_state = p_pipeline_key.color_pass_flags & PIPELINE_COLOR_PASS_FLAG_GI_FEEDBACK ? RD::PipelineColorBlendState::create_disabled(4) : blend_state_color_opaque;
 
 			if (depth_pre_pass_enabled) {
 				// We already have a depth from the depth pre-pass, there is no need to write it again.
@@ -675,6 +679,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 			"\n#define USE_LIGHTMAP\n", // SHADER_COLOR_PASS_FLAG_LIGHTMAP
 			"\n#define USE_MULTIVIEW\n", // SHADER_COLOR_PASS_FLAG_MULTIVIEW
 			"\n#define MOTION_VECTORS\n", // SHADER_COLOR_PASS_FLAG_MOTION_VECTORS
+			"\n#define GI_FEEDBACK\n", // SHADER_COLOR_PASS_FLAG_GI_FEEDBACK
 		};
 
 		for (int i = 0; i < SHADER_COLOR_PASS_FLAG_COUNT; i++) {
@@ -689,7 +694,9 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 			ShaderGroup group = SHADER_GROUP_BASE;
 			bool advanced_group = (i & SHADER_COLOR_PASS_FLAG_SEPARATE_SPECULAR) || (i & SHADER_COLOR_PASS_FLAG_LIGHTMAP) || (i & SHADER_COLOR_PASS_FLAG_MOTION_VECTORS);
 			bool multiview_group = i & SHADER_COLOR_PASS_FLAG_MULTIVIEW;
-			if (advanced_group && multiview_group) {
+			if (i & SHADER_COLOR_PASS_FLAG_GI_FEEDBACK) {
+				group = SHADER_GROUP_GI_FEEDBACK;
+			} else if (advanced_group && multiview_group) {
 				group = SHADER_GROUP_ADVANCED_MULTIVIEW;
 			} else if (advanced_group) {
 				group = SHADER_GROUP_ADVANCED;
@@ -703,6 +710,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		Vector<uint64_t> dynamic_buffers;
 		dynamic_buffers.push_back(ShaderRD::DynamicBuffer::encode(RenderForwardClustered::RENDER_PASS_UNIFORM_SET, 2));
 		shader.initialize(shader_versions, p_defines, Vector<RD::PipelineImmutableSampler>(), dynamic_buffers);
+		shader.set_group_on_demand(SHADER_GROUP_GI_FEEDBACK);
 
 		if (RendererCompositorRD::get_singleton()->is_xr_enabled()) {
 			shader.enable_group(SHADER_GROUP_MULTIVIEW);

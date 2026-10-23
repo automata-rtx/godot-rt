@@ -1304,7 +1304,7 @@ and temporal/spatial filtering must not become concurrent read/write operations.
 Viewport custom data owns all histories and buffers; its cleanup must run on resize
 and disabling. Forward+ still consumes binding 34 before tone mapping/upscaling.
 Backend switching must clear the inactive output scope, and native-GI conflicts
-must not silently change authored environment settings. Port all sixteen live
+must not silently change authored environment settings. Port all seventeen live
 `amd_gi/*` controls and regenerate ProjectSettings documentation. The initial path
 still uses conservative scene invalidation and dynamic-material refresh.
 
@@ -1472,3 +1472,25 @@ Rebuild only on changed records and free it with per-view GI resources. The shad
 must divide fresh RIS weights by the complete mixed tree-walk probability, not
 by uniform `1/light_count`. Keep the placeholder unreachable when resampling is
 disabled. There are now 31 storage-buffer bindings, within Vulkan's minimum 32.
+
+### AMD GI native screen-lighting feedback
+
+`screen_feedback` uses a fourth opaque color attachment (location 3), containing
+native combined HDR lighting before fog/tonemapping. The color-pass, pipeline and
+shader variant flags must agree. Enable the attachment only after GI resource
+setup has succeeded; strip it from transparent draws. Preserve the extra clear
+color and the explicit clear for load-color backgrounds. Feedback reads finish in
+pre-opaque compute before native draws overwrite the same texture; a second
+texture/copy is unnecessary. GI disable/resize clears its viewport texture scope.
+
+Binding 45 samples this previous lighting. Frame `settings.w` carries previous
+exposure (zero disables reads). Match previous pixel geometry and reject moving
+bounds; reset rejects the newly allocated texture. Preserve the explicit fallback
+when scene light indirect-energy multipliers differ from 1. The GPU diagnostic
+counter is queue-header `counts.w`, enabled only through `reflections.w`.
+
+`ShaderRD::set_group_on_demand()` marks the native feedback shader group without
+globally enabling it. Each version tracks whether compilation started for a group;
+shader replacement resets that state. Requesting the actual feedback variant starts
+only its material's group. This avoids compiling feedback for future materials
+after GI has been disabled. Other shader groups retain their prior behavior.

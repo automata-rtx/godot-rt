@@ -1142,6 +1142,10 @@ layout(location = 1) out vec4 specular_buffer; //specular and SSS (subsurface sc
 layout(location = 0) out vec4 frag_color;
 #endif // MODE_SEPARATE_SPECULAR
 
+#ifdef GI_FEEDBACK
+layout(location = 3) out vec4 gi_feedback;
+#endif
+
 #endif // RENDER DEPTH
 
 #ifdef MOTION_VECTORS
@@ -3320,6 +3324,16 @@ void fragment_shader(in SceneData scene_data) {
 	//restore fog
 	fog = vec4(unpackHalf2x16(fog_rg), unpackHalf2x16(fog_ba));
 #endif //!FOG_DISABLED
+
+#ifdef GI_FEEDBACK
+#ifdef MODE_UNSHADED
+	gi_feedback = vec4(albedo, 1.0);
+#else
+	// Store native outgoing HDR lighting before fog, tone mapping and upscaling.
+	// Alpha validates coverage; the GI reader removes the previous exposure.
+	gi_feedback = vec4(emission + ambient_light + diffuse_light + direct_specular_light + indirect_specular_light, 1.0);
+#endif
+#endif
 
 #ifdef MODE_SEPARATE_SPECULAR
 

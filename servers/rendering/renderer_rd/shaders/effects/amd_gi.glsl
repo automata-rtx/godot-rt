@@ -1096,6 +1096,34 @@ vec3 shade_direct(RayHit ray, inout uint state, uint cell) {
 	}
 	return ray.diffuse.rgb * direct_irradiance(ray.position.xyz, ray.normal_mask.xyz, floatBitsToUint(ray.normal_mask.w)) / PI;
 }
+layout(set = 0, binding = 45) uniform sampler2D previous_lighting;
+
+bool screen_lighting(RayHit hit, out vec3 outgoing) {
+	outgoing = vec3(0);
+	if (frame.grid.w != 0u || frame.settings.w <= 0.0 || motion_overlaps(hit.position.xyz, hit.position.xyz)) {
+		return false;
+	}
+	vec4 clip = frame.previous_view_projection * vec4(hit.position.xyz, 1);
+	vec2 uv = clip.xy / max(clip.w, 0.00001) * 0.5 + 0.5;
+	if (clip.w <= 0.0 || any(lessThan(uv, vec2(0))) || any(greaterThanEqual(uv, vec2(1)))) {
+		return false;
+	}
+	ivec2 pixel = ivec2(uv * vec2(params.size));
+	Pixel old = previous_pixels.data[uint(pixel.x) + uint(pixel.y) * params.size.x];
+	if (old.position.w != 1.0 || dot(old.normal_delta.xyz, hit.normal_mask.xyz) < 0.95 || distance(old.position.xyz, hit.position.xyz) > footprint(hit.position.xyz) * 0.25) {
+		return false;
+	}
+	vec4 value = texelFetch(previous_lighting, pixel, 0);
+	if (value.a < 0.5) {
+		return false;
+	}
+	if (frame.reflections.w > 0.0) {
+		atomicAdd(queues.counts.w, 1u);
+	}
+	outgoing = clean_color(value.rgb / frame.settings.w);
+	return true;
+}
+
 // Unregistered/short connections retain uncached evaluation. The normal cached
 // path populates and shades secondary cells in explicit ordered stages below.
 vec3 shade_transport(RayHit ray, uint state, uint cell) {
@@ -1106,8 +1134,11 @@ vec3 shade_transport(RayHit ray, uint state, uint cell) {
 		if (secondary.position.w > 0.0) {
 			uint target = find_cell(secondary.position.xyz, direction, secondary.position.w);
 			vec4 cached = secondary.position.w < cache_cell_size(secondary.position.xyz) ? vec4(0) : read_cache(target, true);
-			vec3 outgoing = cached.w > 0.0 ? cached.rgb : shade_direct(secondary, state, INVALID);
-			value += ray.diffuse.rgb * (secondary.emission.rgb + outgoing) / frame.settings.z;
+			vec3 outgoing;
+			if (!screen_lighting(secondary, outgoing)) {
+				outgoing = secondary.emission.rgb + (cached.w > 0.0 ? cached.rgb : shade_direct(secondary, state, INVALID));
+			}
+			value += ray.diffuse.rgb * outgoing / frame.settings.z;
 		} else {
 			value += ray.diffuse.rgb * environment_radiance(direction, false) / frame.settings.z;
 		}
@@ -1157,13 +1188,15 @@ void update_indirect(uint cell) {
 		bool bypass = secondary.position.w < cache_cell_size(secondary.position.xyz);
 		vec4 direct = bypass ? vec4(0) : read_component(target, false, false);
 		uint state = pcg(owner + params.padding * 747796405u);
-		vec3 outgoing = direct.w > 0.0 ? direct.rgb : shade_direct(secondary, state, INVALID);
-		// Current direct lighting plus previous indirect avoids a feedback race.
-		// Returning to a previously populated receiver carries further bounces.
-		if (!bypass) {
-			outgoing += read_component(target, true, true).rgb;
+		vec3 outgoing;
+		if (!screen_lighting(secondary, outgoing)) {
+			outgoing = secondary.emission.rgb + (direct.w > 0.0 ? direct.rgb : shade_direct(secondary, state, INVALID));
+			// Off-screen/disoccluded receivers retain world-cache feedback.
+			if (!bypass) {
+				outgoing += read_component(target, true, true).rgb;
+			}
 		}
-		value = rays.data[owner].diffuse.rgb * (outgoing + secondary.emission.rgb) / frame.settings.z;
+		value = rays.data[owner].diffuse.rgb * outgoing / frame.settings.z;
 	} else if (dot(secondary.direction_cache.xyz, secondary.direction_cache.xyz) > 0.5) {
 		// Empty unscheduled rays have a zero direction; only actual misses see sky.
 		value = rays.data[owner].diffuse.rgb * environment_radiance(secondary.direction_cache.xyz, false) / frame.settings.z;

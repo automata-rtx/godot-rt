@@ -6,6 +6,36 @@ alone — several of these already were, and failed. Not here: using a feature (
 one works (`docs/internals/`), running the harnesses (`docs/VALIDATION.md`), diagnosing a symptom
 (`docs/TROUBLESHOOTING.md`).
 
+## AMD GI native screen-lighting feedback — 2026-10-23
+
+`[code]` Continuation and glossy hits can now reuse the previous opaque native HDR
+lighting when geometry and motion checks accept it. A fourth opaque attachment
+captures before fog/tonemapping/upscaling; reuse removes previous exposure.
+Off-screen/disoccluded receivers retain explicit cache shading. Authored per-light
+indirect-energy multipliers other than 1 automatically disable combined feedback,
+since it cannot preserve separate light weights. A live toggle releases its target.
+
+`[code]` The native feedback shader group compiles per material on demand. It is
+never globally enabled, so future/newly edited materials do not compile unused
+feedback variants after GI is disabled. Native pipeline caches may remain warm;
+there are no feedback draws, attachments, copies or dispatches while GI is off.
+
+`[shadow_validation]` The feedback rig confirms actual GPU hit acceptance. Fog and
+exposure changes alter the final display image while the unexposed feedback mean
+differs by 0.000123/0.000127 relative to its control. The toggle releases 1,866,240
+texture bytes on lavapipe (driver-aligned allocation for a logical 1,840,952-byte
+RGBA16F image). Zero indirect energy and disabled images restore exactly. The
+initial scorer incorrectly equated driver allocation with logical texel bytes;
+it now requires release of at least the logical size and matching repeated
+allocations/fallbacks. No rendering code was changed to satisfy that correction.
+
+`[shadow_validation]` Multibounce, mixed-light resampling, moving reflections,
+FSR2 and matched 64-draw quarter/one comparisons pass with feedback enabled. The
+quarter/one room display-RGB gains are 0.036672/0.036890. Native material/UV2 capture
+and the exact RT-shadow geometry baseline also pass with on-demand shader groups.
+Affected release translation units compile. These remain software-Vulkan
+correctness checks, not target-hardware timing or a completed port claim.
+
 ## AMD GI spatial light proposals — 2026-10-23
 
 `[code]` Fresh RIS candidates now traverse a bounded, spatially ordered light

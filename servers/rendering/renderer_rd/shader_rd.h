@@ -64,6 +64,7 @@ private:
 	Vector<uint32_t> variant_to_group;
 	HashMap<int, LocalVector<int>> group_to_variant_map;
 	Vector<bool> group_enabled;
+	Vector<bool> group_on_demand;
 
 	Vector<RD::PipelineImmutableSampler> immutable_samplers;
 	Vector<uint64_t> dynamic_buffers;
@@ -83,6 +84,7 @@ private:
 		Vector<CharString> custom_defines;
 		Vector<WorkerThreadPool::GroupID> group_compilation_tasks;
 		Vector<bool> group_loaded_from_cache;
+		Vector<bool> group_started;
 
 		Vector<Vector<uint8_t>> variant_data;
 		Vector<RID> variants;
@@ -218,6 +220,9 @@ public:
 		}
 
 		uint32_t group = variant_to_group[p_variant];
+		if (group_on_demand[group] && !version->group_started[group]) {
+			_compile_version_start(version, group);
+		}
 		if (version->group_compilation_tasks[group] != 0) {
 			_compile_version_end(version, group);
 		}
@@ -241,6 +246,9 @@ public:
 
 	// Enable/disable groups for things that might be enabled at run time.
 	void enable_group(int p_group);
+	// Compile only when a version explicitly requests a shader from this group.
+	// Unlike enable_group(), this does not compile unrelated/new materials.
+	void set_group_on_demand(int p_group);
 	bool is_group_enabled(int p_group) const;
 	int64_t get_group_count() const;
 	const LocalVector<int> &get_group_to_variants(int p_group) const;

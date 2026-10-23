@@ -168,7 +168,9 @@ void trace_reflection(ivec2 pixel, uint id) {
 			uint cell = find_cell(hit.position.xyz, l, hit.position.w);
 			vec4 cached = hit.position.w < cache_cell_size(hit.position.xyz) ? vec4(0) : read_cache(cell, false);
 			uint state = pcg(id + params.padding * 2891336453u);
-			value = hit.emission.rgb + (cached.w > 0.0 ? cached.rgb : shade_transport(hit, state, INVALID));
+			if (!screen_lighting(hit, value)) {
+				value = hit.emission.rgb + (cached.w > 0.0 ? cached.rgb : shade_transport(hit, state, INVALID));
+			}
 			result.normal_distance.w = hit.position.w;
 			result.virtual_variance.xyz = p + reflect(l, n) * hit.position.w;
 		}
