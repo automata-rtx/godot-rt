@@ -408,3 +408,13 @@ overflow suppress the contribution, so checking only the enabled setting is not
 proof that GI is running. Test FSR2 on the laptop and DLSS on the desktop, movement,
 lighting changes, scene transitions and disabling/re-enabling as well as a still.
 The whole `fps-proto` scene has not been validated in this workspace.
+
+### Forward-only transparency
+
+Transparent passes that neither write depth nor cast material shadows stay in the
+native raster path. This includes outline shells, stencil-only masks and additive
+effects. They do not become opaque GI occluders and do not disable GI for the scene.
+Opaque/cutout surfaces retain normal transport; depth-writing transparency and
+multipass surfaces retain the strict support checks. This does not implement
+transparent/refraction transport or GI emission from forward-only effects.
+`amd_gi_overlays` checks that physical-scene GI and history survive these passes.

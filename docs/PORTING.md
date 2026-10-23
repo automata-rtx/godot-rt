@@ -1449,3 +1449,9 @@ ray connections, world tiles and relevant pixel/reflection history. Retiring onl
 currently visible probes permits stale entries to reappear from the displaced pool.
 Run deformation with cache diagnostics, native material/UV2 checks, and the exact
 shadow geometry baseline when porting these changes.
+
+GI collection excludes forward-only transparent surfaces through native depth/alpha/
+shadow predicates before requesting a BLAS or material capture. Preserve this order:
+outline shells may write vertices but do not describe transport geometry. Keep
+cutout, opaque, depth-writing and multipass support checks intact. Run
+`amd_gi_overlays` when changing that classification.

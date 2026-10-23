@@ -6,6 +6,20 @@ alone — several of these already were, and failed. Not here: using a feature (
 one works (`docs/internals/`), running the harnesses (`docs/VALIDATION.md`), diagnosing a symptom
 (`docs/TROUBLESHOOTING.md`).
 
+## AMD GI forward-only effects — 2026-10-23
+
+`[code]` Checking the game's presentation revealed that forward-only outline,
+stencil and blended effect surfaces could suppress GI. The shared adapter now uses
+native alpha/depth/shadow classification to leave these surfaces in rasterization.
+Opaque/cutout geometry remains in transport. This does not implement transparent
+transport or allow arbitrary opaque vertex deformation.
+
+`[shadow_validation]` `amd_gi_overlays` covers a vertex-expanded unlit shell, an
+invisible mask, lit alpha blending and an additive effect. GI remains active;
+untouched surfaces differ by 0.000701 display-RGB MAE, history does not reset when
+effects appear, and disabling restores the baseline exactly. Quarter primary-ray
+sampling, multibounce and denoising remain enabled. Affected release code compiles.
+
 ## AMD GI shared materials and instancing — 2026-10-23
 
 `[code]` Compatible mesh instances now share native captures, using local normals

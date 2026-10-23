@@ -256,6 +256,12 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(materials->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
 			if (data && data->shader_data) {
 				const auto &shader_data = *data->shader_data;
+				// Forward-only transparency includes outline shells, stencil masks
+				// and additive effects. It cannot supply opaque transport geometry.
+				// Depth-writing, cutout and multipass surfaces stay on the strict path.
+				if (data->next_pass.is_null() && shader_data.uses_alpha_pass() && !shader_data.uses_depth_in_alpha_pass() && shader_data.depth_draw != RendererSceneRenderImplementation::SceneShaderForwardClustered::ShaderData::DEPTH_DRAW_ALWAYS && !shader_data.casts_shadows()) {
+					continue;
+				}
 				if (data->next_pass.is_valid() || shader_data.uses_screen_texture || shader_data.uses_depth_texture || shader_data.uses_normal_texture || shader_data.uses_position || shader_data.uses_vertex || shader_data.writes_modelview_or_projection || shader_data.uses_blend_alpha || (shader_data.uses_alpha && !shader_data.uses_alpha_clip) || shader_data.unshaded) {
 					WARN_PRINT_ONCE("RT GI does not support vertex-deformed, screen-reading, blended, or multipass materials. GI is suppressed.");
 					return;

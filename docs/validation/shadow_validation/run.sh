@@ -54,6 +54,7 @@ case "$RIG" in
 	amd_gi_atlas) RIG_RES=641x359 ;;
 	amd_gi_material_sharing) RIG_RES=641x359 ;;
 	amd_gi_multimesh) RIG_RES=641x359 ;;
+	amd_gi_overlays) RIG_RES=641x359 ;;
 	amd_gi_deformation) RIG_RES=641x359 ;;
 	amd_gi_budget_compare) RIG_RES=641x359 ;;
 	*)          RIG_RES=1280x720 ;;
@@ -104,7 +105,7 @@ export SHADOW_OUT_DIR="$OUT"
 if [ "$RIG" = "geometry" ]; then
 	export GODOT_RT_DEBUG=1
 fi
-if [ "$RIG" = "amd_gi_sampling" ] || [ "$RIG" = "amd_gi_cache" ] || [ "$RIG" = "amd_gi_dynamic_lighting" ] || [ "$RIG" = "amd_gi_deformation" ] || [ "$RIG" = "amd_gi_budget_compare" ] || [ "$RIG" = "amd_gi_reflections" ] || [ "$RIG" = "amd_gi_multimesh" ]; then
+if [ "$RIG" = "amd_gi_sampling" ] || [ "$RIG" = "amd_gi_cache" ] || [ "$RIG" = "amd_gi_dynamic_lighting" ] || [ "$RIG" = "amd_gi_deformation" ] || [ "$RIG" = "amd_gi_budget_compare" ] || [ "$RIG" = "amd_gi_reflections" ] || [ "$RIG" = "amd_gi_multimesh" ] || [ "$RIG" = "amd_gi_overlays" ]; then
 	# Synchronous diagnostic readback validates actual GPU scheduling/LRU state.
 	# This rig is deliberately not a performance benchmark.
 	export GODOT_AMD_GI_VALIDATE_CACHE=1
@@ -145,6 +146,11 @@ mv "$HERE/out"/*.png "$OUT/" 2>/dev/null
 echo
 if [ "$RIG" = "opacity" ]; then
 	python3 "$HERE/score_opacity.py" "$OUT" "$@"
+elif [ "$RIG" = "amd_gi_overlays" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG"; then
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_overlays.py" "$OUT"
 elif [ "$RIG" = "amd_gi_multimesh" ]; then
 	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG"; then
 		echo "AMD MultiMesh capture failed; inspect $LOG" >&2

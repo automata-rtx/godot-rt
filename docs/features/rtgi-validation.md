@@ -121,3 +121,13 @@ The first bounded world-cache/screen-probe path is now implemented separately; u
 [AMD GI progress captures](amd-gi.md#progress-captures) with denoising enabled to
 evaluate actual implementation progress. Overall status remains in
 [AMD_GI_IMPLEMENTATION.md](../AMD_GI_IMPLEMENTATION.md).
+
+### Forward-only transparency
+
+Transparent passes that neither write depth nor cast material shadows stay in the
+native raster path. This includes outline shells, stencil-only masks and additive
+effects. They do not become opaque GI occluders and do not disable GI for the scene.
+Opaque/cutout surfaces retain normal transport; depth-writing transparency and
+multipass surfaces retain the strict support checks. This does not implement
+transparent/refraction transport or GI emission from forward-only effects.
+`amd_gi_overlays` checks that physical-scene GI and history survive these passes.
