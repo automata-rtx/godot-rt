@@ -27,6 +27,11 @@ def main():
         print(f"{name}: mean display-RGB gain={gain:.6f}")
         if gain <= 0.001:
             raise SystemExit(f"{name}: no substantial indirect-light contribution")
+    lit_gain = (load(directory, "amd_one_64") - baseline).mean()
+    zero_gain = (load(directory, "amd_indirect_zero_settled") - baseline).mean()
+    print(f"Zero-energy temporal residual after 128 frames: {zero_gain / lit_gain:.6f}")
+    if zero_gain < -0.001 or zero_gain > lit_gain * 0.1:
+        raise SystemExit("Zero-energy lighting did not decay through the reference cache history")
     region = (slice(230, 265), slice(240, 290))
     delta = (load(directory, "amd_material_changed")[region] - load(directory, "amd_one_64")[region]).mean(axis=(0, 1))
     print(f"Changed non-caster wall: box-front RGB delta={delta}")

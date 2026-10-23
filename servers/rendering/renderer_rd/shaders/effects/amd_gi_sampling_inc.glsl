@@ -62,3 +62,28 @@ float gi_ggx_bounded_pdf(float alpha, float alpha_squared, float nh, vec3 view) 
 	}
 	return ndf * (t - view.z) / (2.0 * length_squared);
 }
+
+// material_evaluation.hlsl::evaluateBRDF, with the GI-1 secondary-bounce
+// material override metallicity=0, roughness=1. Includes Fresnel compensation.
+vec3 gi_rough_brdf(vec3 albedo, vec3 n, vec3 v, vec3 l) {
+	float nl = clamp(dot(n, l), -1.0, 1.0), nv = clamp(dot(n, v), -1.0, 1.0);
+	vec3 half_vector = v + l;
+	if (dot(half_vector, half_vector) == 0.0 || nl <= 0.0) {
+		return vec3(0);
+	}
+	vec3 h = normalize(half_vector);
+	float hv = clamp(dot(h, v), 0.0, 1.0), nh = clamp(dot(n, h), -1.0, 1.0);
+	float f = 0.04 + 0.96 * pow(1.0 - hv, 5.0);
+	float denominator = (1.0 - nh * nh) / 1.00001 + nh * nh;
+	float d = nh < 0.0 ? 0.0 : 1.0 / (3.14159265358979323846 * denominator * denominator);
+	float visibility = (abs(nl) + 1.0) * (abs(nv) + 1.0);
+	return (vec3(f * d / visibility) + albedo / 3.14159265358979323846 * ((1.0 - f) * 1.05 * (1.0 - pow(1.0 - hv, 5.0)))) * nl;
+}
+
+// geometry/geometry.hlsl::offsetPosition (Ray Tracing Gems, chapter 6).
+vec3 gi_offset_position(vec3 position, vec3 normal) {
+	ivec3 integer_normal = ivec3(normal * 256.0);
+	ivec3 offset = mix(integer_normal, -integer_normal, lessThan(position, vec3(0)));
+	vec3 integer_position = intBitsToFloat(floatBitsToInt(position) + offset);
+	return mix(integer_position, position + normal / 65536.0, lessThan(abs(position), vec3(1.0 / 32.0)));
+}

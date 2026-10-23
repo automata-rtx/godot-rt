@@ -33,6 +33,16 @@ func _run() -> void:
 	await _settle(64)
 	await _capture("amd_one_64")
 	_light.light_indirect_energy = 0.0
+	await _capture("amd_indirect_zero_transition")
+	await _settle(128)
+	await _capture("amd_indirect_zero_settled")
+	# A changed light does not discard AMD's world/probe history. The exact
+	# direct-only control therefore starts with fresh history; temporal response
+	# above is scored independently rather than demanding a global reset.
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/enabled", false)
+	await _settle(12)
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/enabled", true)
+	await _settle(16)
 	await _capture("amd_indirect_zero")
 	_light.light_indirect_energy = 1.0
 	await _settle(64)

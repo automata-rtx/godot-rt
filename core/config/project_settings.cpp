@@ -1844,13 +1844,14 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/material_adaptive_resolution", true);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/material_preparation_budget", PROPERTY_HINT_RANGE, "1,4096,1"), 64);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/multibounce", true);
-	GLOBAL_DEF("rendering/global_illumination/amd_gi/screen_feedback", true);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/screen_feedback", false);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/cache_all_hits", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/cache_bucket_exponent", PROPERTY_HINT_RANGE, "8,14,1"), 14);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/denoiser", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/importance_sampling", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/adaptive_sampling", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/probe_cache", true);
-	GLOBAL_DEF("rendering/global_illumination/amd_gi/light_resampling", true);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/light_resampling", false);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/reflections/enabled", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/reflections/half_resolution", true);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold", PROPERTY_HINT_RANGE, "0,1,0.05"), 0.2);

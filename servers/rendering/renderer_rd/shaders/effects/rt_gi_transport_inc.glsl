@@ -54,8 +54,14 @@ params;
 const float PI = 3.14159265358979323846;
 
 uint random_bits(inout uint state) {
+#ifdef AMD_GI_REFERENCE_RANDOM
+	uint previous = state;
+	state = state * 747796405u + 2891336453u;
+	uint word = ((previous >> ((previous >> 28u) + 4u)) ^ previous) * 277803737u;
+#else
 	state = state * 747796405u + 2891336453u;
 	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+#endif
 	return (word >> 22u) ^ word;
 }
 float random_float(inout uint state) {
@@ -94,7 +100,11 @@ vec3 atlas_position(uint instance, uint triangle, vec2 bary) {
 	return atlas_tile_position(hits.data[instance].x + triangle, bary);
 }
 
-bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out uint instance, out vec3 position, out vec3 uv, out vec3 normal, out uint primitive) {
+#ifdef AMD_GI_REFERENCE_RANDOM
+vec3 gi_offset_position(vec3 position, vec3 normal);
+#endif
+
+bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out uint instance, out vec3 position, out vec3 uv, out vec3 normal, out uint primitive, out bool front_face) {
 	// Stay inside the volume actually gathered by the CPU. Missing out-of-range
 	// geometry must not be confused with a complete unbounded scene.
 	vec3 local = origin - params.camera_position.xyz;
@@ -107,13 +117,17 @@ bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out ui
 			distance = min(distance, (boundary - local[axis]) / direction[axis]);
 		}
 	}
-	if (distance <= 0.001) {
+	if (distance <= 0.0) {
 		return false;
 	}
 	rayQueryEXT query;
-	// Force candidate processing even though the shared shadow BLAS is opaque.
-	// This retains geometry sharing while alpha tests belong to this consumer.
+// Force candidate processing even though the shared shadow BLAS is opaque.
+// This retains geometry sharing while alpha tests belong to this consumer.
+#ifdef AMD_GI_REFERENCE_RANDOM
+	rayQueryInitializeEXT(query, scene, gl_RayFlagsNoOpaqueEXT, 0xFF, origin, 0.0, direction, distance);
+#else
 	rayQueryInitializeEXT(query, scene, gl_RayFlagsNoOpaqueEXT, 0xFF, origin, 0.001, direction, distance);
+#endif
 	while (rayQueryProceedEXT(query)) {
 		if (rayQueryGetIntersectionTypeEXT(query, false) == gl_RayQueryCandidateIntersectionTriangleEXT) {
 			uint candidate = rayQueryGetIntersectionInstanceCustomIndexEXT(query, false);
@@ -145,6 +159,7 @@ bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out ui
 	}
 	instance = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
 	primitive = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
+	front_face = rayQueryGetIntersectionFrontFaceEXT(query, true);
 	uv = atlas_position(instance, rayQueryGetIntersectionPrimitiveIndexEXT(query, true), rayQueryGetIntersectionBarycentricsEXT(query, true));
 	position = origin + direction * rayQueryGetIntersectionTEXT(query, true);
 	normal = vec3(0);
@@ -155,6 +170,11 @@ bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out ui
 		}
 	}
 	return true;
+}
+
+bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out uint instance, out vec3 position, out vec3 uv, out vec3 normal, out uint primitive) {
+	bool front_face;
+	return trace(origin, direction, distance, shadow_mask, instance, position, uv, normal, primitive, front_face);
 }
 
 bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out uint instance, out vec3 position, out vec3 uv, out vec3 normal) {
@@ -190,7 +210,17 @@ float light_visibility(uint index, vec3 position, vec3 normal, vec3 direction, f
 	Light light = lights.data[index];
 	uint blocker;
 	vec3 blocker_position, blocker_uv, blocker_normal;
-	if (light.shadows != 0u && light.shadow_mask != 0u && trace(position + normal * 0.002, direction, max(distance - 0.004, 0.001), light.shadow_mask, blocker, blocker_position, blocker_uv, blocker_normal)) {
+#ifdef AMD_GI_REFERENCE_RANDOM
+	vec3 origin = gi_offset_position(position, normal);
+	if (light.type != 0u) {
+		direction = light.position - origin;
+		distance = 1.0 - 1.0 / 16384.0;
+	}
+#else
+	vec3 origin = position + normal * 0.002;
+	distance = max(distance - 0.004, 0.001);
+#endif
+	if (light.shadows != 0u && light.shadow_mask != 0u && trace(origin, direction, distance, light.shadow_mask, blocker, blocker_position, blocker_uv, blocker_normal)) {
 		return 1.0 - light.shadow_opacity;
 	}
 	return 1.0;

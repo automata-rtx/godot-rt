@@ -112,6 +112,9 @@ void axis_angle_to_tbn(vec3 axis, float angle, out vec3 tangent, out vec3 binorm
 /* Varyings */
 
 layout(location = 0) out vec3 vertex_interp;
+#ifdef MODE_RENDER_MATERIAL
+layout(location = 9) out flat uint capture_flags_interp;
+#endif
 
 #ifdef NORMAL_USED
 layout(location = 1) out vec3 normal_interp;
@@ -713,6 +716,7 @@ void vertex_shader(vec3 vertex_input,
 	}
 #endif
 #ifdef MODE_RENDER_MATERIAL
+	capture_flags_interp = bool(scene_data.flags & SCENE_DATA_FLAGS_USE_TRIANGLE_MATERIAL) ? material_capture.layout_info.w : 0u;
 	if (bool(scene_data.flags & SCENE_DATA_FLAGS_USE_UV2_MATERIAL)) {
 		vec2 uv_dest_attrib;
 		if (uv_scale != vec4(0.0)) {
@@ -951,6 +955,9 @@ void main() {
 /* Varyings */
 
 layout(location = 0) in vec3 vertex_interp;
+#ifdef MODE_RENDER_MATERIAL
+layout(location = 9) in flat uint capture_flags_interp;
+#endif
 
 #ifdef NORMAL_USED
 layout(location = 1) in vec3 normal_interp;
@@ -1151,6 +1158,7 @@ layout(location = 3) out vec4 gi_feedback;
 #ifdef GI_PREVIOUS_POSITION
 layout(location = 3) out vec4 gi_previous_position;
 layout(location = 4) out vec4 gi_geometry_normal;
+layout(location = 5) out vec4 gi_primary_material;
 #endif
 
 #ifdef MOTION_VECTORS
@@ -3269,7 +3277,7 @@ void fragment_shader(in SceneData scene_data) {
 	albedo_output_buffer.rgb = albedo;
 	albedo_output_buffer.a = alpha;
 
-	normal_output_buffer.rgb = encode24(normal) * 0.5 + 0.5;
+	normal_output_buffer.rgb = encode24((capture_flags_interp & 8u) != 0u ? geo_normal : normal) * 0.5 + 0.5;
 	normal_output_buffer.a = 0.0;
 	depth_output_buffer.r = -vertex.z;
 
@@ -3397,6 +3405,7 @@ void fragment_shader(in SceneData scene_data) {
 	vec4 previous_view = scene_data_block.prev_data.inv_projection_matrix * prev_screen_position;
 	// Positive alpha also carries native metallic for probe BRDF guiding.
 	gi_geometry_normal = vec4(normalize(mat3(inv_view_matrix) * geo_normal), 1.0);
+	gi_primary_material = vec4(albedo, metallic);
 	gi_previous_position = vec4((previous_view / previous_view.w) * scene_data_block.prev_data.inv_view_matrix, 1.0 + clamp(metallic, 0.0, 1.0));
 #endif
 #endif

@@ -43,42 +43,48 @@ const int PASS_REGISTER = 9;
 const int PASS_POPULATE = 10;
 const int PASS_ALLOCATE_SECONDARY = 11;
 const int PASS_REGISTER_SECONDARY = 12;
-const int PASS_SHADE_HITS = 13;
-const int PASS_UPDATE = 14;
-const int PASS_RESERVOIR_SCAN = 15;
-const int PASS_RESERVOIR_SCAN_BLOCKS = 16;
-const int PASS_RESERVOIR_SCAN_TOP = 17;
-const int PASS_RESERVOIR_COMPACT = 18;
-const int PASS_MIP1 = 19;
-const int PASS_MIP2 = 20;
-const int PASS_MIP3 = 21;
-const int PASS_SHADE_INDIRECT_HITS = 22;
-const int PASS_UPDATE_INDIRECT = 23;
-const int PASS_INDIRECT_MIP1 = 24;
-const int PASS_INDIRECT_MIP2 = 25;
-const int PASS_INDIRECT_MIP3 = 26;
-const int PASS_RESOLVE = 27;
-const int PASS_FILTER_X = 28;
-const int PASS_FILTER_Y = 29;
-const int PASS_PROJECT = 30;
+const int PASS_LIGHT_BOUNDS_RESET = 13;
+const int PASS_LIGHT_BOUNDS = 14;
+const int PASS_LIGHT_GRID = 15;
+const int PASS_SHADE_HITS = 16;
+const int PASS_UPDATE = 17;
+const int PASS_RESERVOIR_SCAN = 18;
+const int PASS_RESERVOIR_SCAN_BLOCKS = 19;
+const int PASS_RESERVOIR_SCAN_TOP = 20;
+const int PASS_RESERVOIR_COMPACT = 21;
+const int PASS_MIP1 = 22;
+const int PASS_MIP2 = 23;
+const int PASS_MIP3 = 24;
+const int PASS_UPDATE_INDIRECT = 25;
+const int PASS_INDIRECT_MIP1 = 26;
+const int PASS_INDIRECT_MIP2 = 27;
+const int PASS_INDIRECT_MIP3 = 28;
+const int PASS_SHADE_INDIRECT_HITS = 29;
+const int PASS_RESOLVE = 30;
+const int PASS_FILTER_X = 33;
+const int PASS_FILTER_Y = 34;
+const int PASS_PROJECT = 35;
 const int PASS_ORDER_CACHED = 31;
 const int PASS_STORE_CACHED = 32;
-const int PASS_MASK = 33;
-const int PASS_INTERPOLATE = 34;
-const int PASS_TEMPORAL = 35;
-const int PASS_BLUR_X = 36;
-const int PASS_BLUR_Y = 37;
-const int PASS_REFLECTION_CLASSIFY = 38;
-const int PASS_REFLECTION_BUILD_DISPATCH = 39;
-const int PASS_REFLECTION_TRACE = 40;
-const int PASS_REFLECTION_MARK_FIREFLIES = 41;
-const int PASS_REFLECTION_CLEAN_FIREFLIES = 42;
-const int PASS_REFLECTION_FIRST = 43;
-const int PASS_REFLECTION_ITER = 44;
-const int PASS_REFLECTION_LAST = 45;
-const int PASS_REFLECTION_TEMPORAL = 46;
-const int PASS_REFLECTION_OUTPUT = 47;
+const int PASS_MASK = 36;
+const int PASS_INTERPOLATE = 37;
+const int PASS_TEMPORAL = 38;
+const int PASS_BLUR_X = 39;
+const int PASS_BLUR_Y = 40;
+const int PASS_REFLECTION_CLASSIFY = 41;
+const int PASS_REFLECTION_BUILD_DISPATCH = 42;
+const int PASS_REFLECTION_TRACE = 43;
+const int PASS_REFLECTION_MARK_FIREFLIES = 44;
+const int PASS_REFLECTION_CLEAN_FIREFLIES = 45;
+const int PASS_REFLECTION_FIRST = 46;
+const int PASS_REFLECTION_ITER = 47;
+const int PASS_REFLECTION_LAST = 48;
+const int PASS_REFLECTION_TEMPORAL = 49;
+const int PASS_REFLECTION_OUTPUT = 50;
 #include "../oct_inc.glsl"
+#define AMD_GI_REFERENCE_RANDOM
+#include "amd_gi_cache_inc.glsl"
+#include "amd_gi_sampling_inc.glsl"
 #include "rt_gi_transport_inc.glsl"
 layout(set = 0, binding = 37) uniform sampler2D sky_radiance;
 
@@ -95,23 +101,19 @@ layout(set = 0, binding = 32, std430) restrict buffer PreviousLightReservoirs {
 previous_light_reservoirs;
 layout(set = 0, binding = 48) uniform sampler2D previous_surface_position;
 layout(set = 0, binding = 52) uniform sampler2D geometry_normal_buffer;
+layout(set = 0, binding = 53) uniform sampler2D primary_material_buffer;
 
 vec3 previous_surface(ivec2 pixel, vec3 current) {
 	vec4 previous = texelFetch(previous_surface_position, pixel, 0);
 	return previous.w > 0.0 ? previous.xyz : current;
 }
-struct LightNode {
-	vec3 minimum;
-	uint light;
-	vec3 maximum;
-	uint count;
-	vec4 power;
-};
-layout(set = 0, binding = 44, std430) restrict readonly buffer LightTree {
-	uint remap[1024];
-	LightNode data[];
+layout(set = 0, binding = 44, std430) restrict buffer LightGrid {
+	uint remap[263172];
+	uvec4 minimum;
+	uvec4 maximum;
+	uvec4 data[]; // selected light, selected weight, total weight, reserved
 }
-light_tree;
+light_grid;
 
 layout(set = 0, binding = 33, std430) restrict buffer LightReservoirs {
 	uint data[];
@@ -140,10 +142,10 @@ layout(set = 0, binding = 10, std140) uniform Frame {
 	vec4 sky;
 	vec4 ambient;
 	vec4 reflections;
+	uvec4 cache_config;
 	vec4 glossy;
 	uvec4 motion;
 	uvec4 emitters;
-	vec4 motion_bounds[16];
 }
 frame;
 struct Probe {
@@ -193,23 +195,24 @@ layout(set = 0, binding = 15, std430) restrict readonly buffer PreviousRadiance 
 }
 previous_radiance;
 layout(set = 0, binding = 16, std430) coherent restrict buffer Keys {
+	uvec4 dispatch; // group XYZ, active_index tile count
 	Tile data[];
 }
 keys;
-layout(set = 0, binding = 17, std430) restrict buffer PreviousCache {
-	vec4 data[];
+layout(set = 0, binding = 17, std430) buffer PreviousCache {
+	uvec2 data[];
 }
 previous_cache;
-layout(set = 0, binding = 18, std430) restrict buffer Cache {
-	vec4 data[];
+layout(set = 0, binding = 18, std430) buffer Cache {
+	uvec2 data[];
 }
 cache;
-layout(set = 0, binding = 34, std430) restrict buffer PreviousIndirectCache {
-	vec4 data[];
+layout(set = 0, binding = 34, std430) coherent buffer PendingIndirectCache {
+	uvec4 data[];
 }
-previous_indirect_cache;
-layout(set = 0, binding = 35, std430) restrict buffer IndirectCache {
-	vec4 data[];
+pending_indirect_cache;
+layout(set = 0, binding = 35, std430) buffer IndirectCache {
+	uvec2 data[];
 }
 indirect_cache;
 layout(set = 0, binding = 19, std430) restrict buffer Owners {
@@ -247,15 +250,15 @@ struct CachedProbe {
 	Probe probe;
 	vec4 radiance[64];
 };
-layout(set = 0, binding = 27, std430) restrict buffer CachedProbes {
+layout(set = 0, binding = 27, std430) buffer CachedProbes {
 	CachedProbe data[];
 }
 cached_probes;
-layout(set = 0, binding = 28, std430) restrict buffer CachedState {
+layout(set = 0, binding = 28, std430) buffer CachedState {
 	uvec4 data[]; // unused, touched this frame, update owner, bin linked-list next
 }
 cached_state;
-layout(set = 0, binding = 29, std430) restrict buffer PreviousCachedOrder {
+layout(set = 0, binding = 29, std430) buffer PreviousCachedOrder {
 	uint data[];
 }
 previous_cached_order;
@@ -263,14 +266,20 @@ layout(set = 0, binding = 30, std430) restrict writeonly buffer CachedOrder {
 	uint data[];
 }
 cached_order;
-const uint CACHED_PROBES = 4096u;
+#define CACHED_PROBES (frame.grid.x * frame.grid.y)
 const uint INVALID = 0xffffffffu;
-const uint TILE_COUNT = 4096u;
+#define TILE_COUNT (frame.cache_config.x * frame.cache_config.y)
 const uint TILE_CELLS = 85u;
 const uint MIP_OFFSET[4] = uint[](0u, 64u, 80u, 84u);
 
 uint pcg(uint v) {
-	return random_bits(v);
+	v = v * 747796405u + 2891336453u;
+	uint word = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+	return (word >> 22u) ^ word;
+}
+uint gi_random(uint seed) {
+	uint increment = (params.padding << 1u) | 1u;
+	return (blue_noise.data[16385u + seed % blue_noise.data[16384u]] + increment) * 747796405u + increment;
 }
 vec3 clean_color(vec3 v) {
 	return any(isnan(v)) || any(isinf(v)) ? vec3(0) : clamp(v, vec3(0), vec3(60000));
@@ -364,7 +373,7 @@ uint angular_index(vec3 direction, vec3 normal) {
 }
 
 // GI-1's distance-quantized world tiles and direction-dependent 2D cell layout.
-// Full keys are retained, so hash collisions cannot alias unrelated tiles.
+// Reference bucket/checksum collision search; keys are retained for diagnostics.
 float cache_cell_size(vec3 position) {
 	float desired = max(distance(params.camera_position.xyz, position) * tan(frame.settings.y * 32.0), frame.settings.x);
 	return 0.001 * exp2(floor(log2(1000.0 * desired)));
@@ -386,13 +395,20 @@ ivec4 cache_key(vec3 position, vec3 direction, float hit_distance, out uvec2 cel
 	return ivec4(tile, int(packed));
 }
 uint key_hash(ivec4 key) {
-	return max(2u, pcg(uint(key.x) + pcg(uint(key.y) + pcg(uint(key.z) + pcg(uint(key.w))))));
+	uint bits = uint(key.w);
+	uint level = uint(int(bits << 24u) >> 24);
+	return max(1u, gi_cache_xxhash(level + gi_cache_xxhash(uint(key.x) + gi_cache_xxhash(uint(key.y) + gi_cache_xxhash(uint(key.z) + gi_cache_xxhash(((bits >> 8u) & 7u) + gi_cache_xxhash(((bits >> 11u) & 7u) + gi_cache_xxhash(((bits >> 14u) & 7u) + gi_cache_xxhash(bits >> 17u)))))))));
+}
+uint key_bucket(ivec4 key) {
+	uint bits = uint(key.w);
+	uint level = uint(int(bits << 24u) >> 24);
+	return pcg(level + pcg(uint(key.x) + pcg(uint(key.y) + pcg(uint(key.z) + pcg(((bits >> 8u) & 7u) + pcg(((bits >> 11u) & 7u) + pcg(((bits >> 14u) & 7u) + pcg(bits >> 17u)))))))) % frame.cache_config.x;
 }
 uint find_tile(ivec4 key) {
-	uint hash = key_hash(key), bucket = (hash % 1024u) * 4u;
-	for (uint i = 0u; i < 4u; i++) {
+	uint hash = key_hash(key), bucket = key_bucket(key) * frame.cache_config.y;
+	for (uint i = 0u; i < frame.cache_config.y; i++) {
 		uint t = bucket + i;
-		if (keys.data[t].state.x == hash && all(equal(keys.data[t].key, key))) {
+		if (keys.data[t].state.x == hash) {
 			return t;
 		}
 	}
@@ -414,11 +430,11 @@ vec4 read_component(uint cell, bool previous, bool indirect) {
 	for (uint mip = 0u; mip < 4u; mip++) {
 		uvec2 p = coord >> mip;
 		uint index = tile * TILE_CELLS + MIP_OFFSET[mip] + p.x + p.y * (8u >> mip);
-		vec4 value = indirect ? (previous ? previous_indirect_cache.data[index] : indirect_cache.data[index]) : (previous ? previous_cache.data[index] : cache.data[index]);
+		vec4 value = gi_cache_unpack(indirect ? indirect_cache.data[index] : (previous ? previous_cache.data[index] : cache.data[index]));
 		// GI-1 chooses the finest mip with enough accumulated samples.
 		// A merely nonempty fine cell still contains a noisy single estimate.
 		if (value.w >= 16.0 || mip == 3u) {
-			return value;
+			return vec4(value.rgb / max(value.w, 1.0), value.w);
 		}
 	}
 	return vec4(0);
@@ -454,8 +470,9 @@ RayHit trace_hit(vec3 origin, vec3 direction) {
 	RayHit ray = empty_ray();
 	ray.direction_cache.xyz = direction;
 	uint instance, primitive;
+	bool front_face;
 	vec3 position, uv, normal;
-	if (trace(origin, direction, params.max_distance, 0u, instance, position, uv, normal, primitive)) {
+	if (trace(origin, direction, params.max_distance, 0u, instance, position, uv, normal, primitive, front_face)) {
 		ray.position = vec4(position, length(position - origin));
 		ray.normal_mask = vec4(faceforward(normal, direction, normal), uintBitsToFloat(hits.data[instance].z));
 		// GI-1's GenerateReservoirs/GenerateMultibounceReservoirs force rough
@@ -464,7 +481,7 @@ RayHit trace_hit(vec3 origin, vec3 direction) {
 		// would make every off-screen metal receiver a black energy sink.
 		// The primary forward material still applies its native metalness/BRDF.
 		ray.diffuse = vec4(textureLod(albedo_atlas, uv, 0).rgb, 0);
-		ray.emission = textureLod(emission_atlas, uv, 0);
+		ray.emission = front_face ? textureLod(emission_atlas, uv, 0) : vec4(0);
 		uint emitter = hits.data[instance].y & 0x3fffffffu;
 		ray.emission.w = emitter != 0u ? float(emitter + primitive) : 0.0;
 	}
@@ -480,62 +497,6 @@ uint eviction_owners_offset() {
 uint eviction_queue_offset() {
 	return eviction_owners_offset() + frame.grid.x * frame.grid.y;
 }
-// Invalidate history only where moving geometry can have changed a cached
-// connection. This uses the same swept world bounds for surface, ray and tile
-// tests; the zero-mover path exits without any loop iterations.
-bool motion_overlaps(vec3 lo, vec3 hi) {
-	for (uint i = 0u; i < frame.motion.x; i++) {
-		if (all(lessThanEqual(lo, frame.motion_bounds[i * 2u + 1u].xyz)) && all(greaterThanEqual(hi, frame.motion_bounds[i * 2u].xyz))) {
-			return true;
-		}
-	}
-	return false;
-}
-bool motion_intersects(vec3 origin, vec3 direction, float distance, bool reprojected_receiver) {
-	for (uint i = 0u; i < frame.motion.x; i++) {
-		vec3 lo = frame.motion_bounds[i * 2u].xyz;
-		vec3 hi = frame.motion_bounds[i * 2u + 1u].xyz;
-		// A depth-tested receiver has independent previous-position validation.
-		// Its own swept bound is not evidence that the reflected path is blocked.
-		if (reprojected_receiver && all(greaterThanEqual(origin, lo)) && all(lessThanEqual(origin, hi))) {
-			continue;
-		}
-		float near_t = 0.0, far_t = max(distance, 0.0);
-		for (int axis = 0; axis < 3; axis++) {
-			if (abs(direction[axis]) < 1e-7) {
-				if (origin[axis] < lo[axis] || origin[axis] > hi[axis]) {
-					far_t = -1.0;
-				}
-			} else {
-				float a = (lo[axis] - origin[axis]) / direction[axis];
-				float b = (hi[axis] - origin[axis]) / direction[axis];
-				near_t = max(near_t, min(a, b));
-				far_t = min(far_t, max(a, b));
-			}
-		}
-		if (near_t <= far_t) {
-			return true;
-		}
-	}
-	return false;
-}
-bool motion_intersects(vec3 origin, vec3 direction, float distance) {
-	return motion_intersects(origin, direction, distance, false);
-}
-bool probe_motion(Probe p, uint source, bool cached) {
-	if (frame.motion.x == 0u || p.position.w == 0.0) {
-		return false;
-	}
-	mat3 tbn = basis(p.normal.xyz);
-	for (uint cell = 0u; cell < 64u; cell++) {
-		float distance = cached ? cached_probes.data[source].radiance[cell].w : previous_radiance.data[source * 64u + cell].w;
-		vec3 direction = tbn * hemi_direction((vec2(cell % 8u, cell / 8u) + 0.5) / 8.0);
-		if (distance > 0.0 && motion_intersects(p.position.xyz, direction, distance)) {
-			return true;
-		}
-	}
-	return false;
-}
 struct HitSample {
 	vec4 direct;
 	vec4 indirect;
@@ -549,56 +510,44 @@ uint cell_head(uint cell) {
 	return owners.data[TILE_COUNT * TILE_CELLS + cell];
 }
 
-shared bool reset_tile;
 void reset_cache(uint lane) {
-	uint tile = gl_WorkGroupID.x;
-	if (tile == 0u && lane == 0u) {
+	uint tile = gl_WorkGroupID.x * 64u + lane;
+	if (tile == 0u) {
 		queues.counts = uvec4(0);
+		keys.dispatch = uvec4(0, 1, 1, 0);
 		if (frame.emitters.w != 0u) {
 			queues.data[frame.emitters.z + 3u] = 0u;
 		}
 	}
-	if (lane == 0u) {
-		reset_tile = frame.grid.w != 0u || (keys.data[tile].state.x != 0u && params.padding - keys.data[tile].state.y > 50u);
-	}
-	barrier();
-	if (lane == 0u && reset_tile) {
+	bool reset_tile = tile < TILE_COUNT && (frame.grid.w != 0u || (keys.data[tile].state.x != 0u && params.padding - keys.data[tile].state.y > 50u));
+	if (reset_tile) {
 		keys.data[tile].state = uvec4(0);
-	}
-	for (uint local = lane; local < TILE_CELLS; local += 64u) {
-		uint index = tile * TILE_CELLS + local;
-		owners.data[index] = INVALID;
-		if (frame.motion.y != 0u) {
-			owners.data[TILE_COUNT * TILE_CELLS + index] = INVALID;
-		}
-		if (reset_tile) {
-			previous_cache.data[index] = vec4(0);
-		}
-		cache.data[index] = reset_tile ? vec4(0) : previous_cache.data[index];
-		if (params.bounces != 0u) {
-			if (reset_tile) {
-				previous_indirect_cache.data[index] = vec4(0);
+		for (uint local = 0u; local < TILE_CELLS; local++) {
+			uint index = tile * TILE_CELLS + local;
+			cache.data[index] = uvec2(0);
+			if (params.bounces != 0u) {
+				indirect_cache.data[index] = uvec2(0);
+				if (local < 64u) {
+					pending_indirect_cache.data[tile * 64u + local] = uvec4(0);
+				}
 			}
-			indirect_cache.data[index] = previous_indirect_cache.data[index];
 		}
 	}
-	uint cached = tile * 64u + lane;
+	uint cached = tile;
 	if (frame.flags.w != 0u && cached < CACHED_PROBES) {
 		cached_state.data[cached] = uvec4(0, 0, INVALID, INVALID);
 		if (frame.grid.w != 0u) {
 			previous_cached_order.data[cached] = cached;
 			cached_probes.data[cached].probe.position.w = 0.0;
-		} else if (cached_probes.data[cached].probe.position.w > 0.0 && (params.padding - cached_probes.data[cached].probe.state.z > 50u || probe_motion(cached_probes.data[cached].probe, cached, true))) {
-			cached_probes.data[cached].probe.position.w = 0.0;
 		}
 	}
 }
 uint previous_probe(vec3 p, vec3 normal, ivec2 pixel) {
-	p = previous_surface(pixel, p);
+	vec3 lookup_position = previous_surface(pixel, p);
 	if (frame.grid.w != 0u) {
 		return INVALID;
 	}
-	vec4 clip = frame.previous_view_projection * vec4(p, 1);
+	vec4 clip = frame.previous_view_projection * vec4(lookup_position, 1);
 	if (clip.w <= 0.0) {
 		return INVALID;
 	}
@@ -613,7 +562,7 @@ uint previous_probe(vec3 p, vec3 normal, ivec2 pixel) {
 	}
 	Probe old = previous_probes.data[other];
 	vec3 delta = old.position.xyz - p;
-	if (old.position.w == 0.0 || params.padding - old.state.z > 50u || dot(old.normal.xyz, normal) < 0.95 || abs(dot(delta, normal)) >= footprint(p) * 0.1 || length(delta) >= footprint(p) * 1.5) {
+	if (old.position.w == 0.0 || dot(old.normal.xyz, normal) < 0.95 || abs(dot(delta, normal)) >= footprint(p)) {
 		return INVALID;
 	}
 	return other;
@@ -621,33 +570,32 @@ uint previous_probe(vec3 p, vec3 normal, ivec2 pixel) {
 shared vec4 spawn_position;
 shared vec4 spawn_normal;
 shared uint reused_probe;
-// Rebin nine neighboring probes and one evicted-cache probe into 64 angular cells. Integer linked lists allow
-// full floating-point HDR accumulation without optional float atomics or
-// overflowing fixed-point sums. Each lane owns one sample per neighbor.
-shared uint bin_head[64];
-shared uint bin_next[640];
-shared vec4 bin_value[640];
+shared uint center_reuse_count;
+// Reference ScreenProbes_QuantizeRadiance: uint atomics support every
+// candidate in the cached-probe lists, without a fixed candidate-array limit.
+shared uvec4 bin_sum[64];
+shared uint bin_count[64];
+shared vec4 bin_value[64];
 shared uint cached_match;
 shared float sampling_cdf[64];
 shared float sampling_total;
 shared vec4 radiance_backup;
-
 void clear_bins(uint lane) {
-	bin_head[lane] = INVALID;
+	bin_sum[lane] = uvec4(0);
+	bin_count[lane] = 0u;
 	barrier();
 }
 void insert_bin(uint cell, uint lane, vec4 value) {
-	bin_value[lane] = value;
-	bin_next[lane] = atomicExchange(bin_head[cell], lane);
+	uvec4 quantized = uvec4(round(value * 10000.0));
+	atomicAdd(bin_sum[cell].x, quantized.x);
+	atomicAdd(bin_sum[cell].y, quantized.y);
+	atomicAdd(bin_sum[cell].z, quantized.z);
+	atomicAdd(bin_sum[cell].w, quantized.w);
+	atomicAdd(bin_count[cell], 1u);
 }
 vec4 sum_bin(uint cell, out uint count) {
-	vec4 value = vec4(0);
-	count = 0u;
-	for (uint sample_id = bin_head[cell]; sample_id != INVALID; sample_id = bin_next[sample_id]) {
-		value += bin_value[sample_id];
-		count++;
-	}
-	return value;
+	count = bin_count[cell];
+	return vec4(bin_sum[cell]) / 10000.0;
 }
 // Exclusive scan from GI-1's ScreenProbes_ScanRadiance. No subgroup-size
 // assumptions: all 64 lanes participate, including invalid/sky probes.
@@ -713,17 +661,15 @@ void reproject_probe(uint probe, uint lane) {
 		candidate_lane = INVALID;
 	}
 	barrier();
-	if (valid) {
-		// Reusable samples rank before disoccluded samples. The exact old
-		// seed wins on a static surface, avoiding unnecessary probe movement.
-		uint score = previous == INVALID ? (0x80000000u | (pcg(lane + probe * 64u + params.padding) & 0x7fffff80u) | lane) : ((floatBitsToUint(distance(position, previous_probes.data[previous].position.xyz) / footprint(position)) & 0x7fffffc0u) | lane);
+	if (valid && previous != INVALID) {
+		uint score = ((packHalf2x16(vec2(distance(position, previous_probes.data[previous].position.xyz) / footprint(position), 0.0)) & 0xffffu) << 16u) | lane;
 		atomicMin(candidate_score, score);
 	}
 	barrier();
 	if (lane == 0u) {
-		candidate_lane = candidate_score == INVALID ? INVALID : candidate_score & 63u;
-		vec4 p = candidate_lane == INVALID ? vec4(0) : candidate_position[candidate_lane];
-		vec4 n = candidate_lane == INVALID ? vec4(0) : candidate_normal[candidate_lane];
+		candidate_lane = candidate_score == INVALID ? INVALID : candidate_score & 0xffffu;
+		vec4 p = candidate_position[candidate_lane == INVALID ? 0u : candidate_lane];
+		vec4 n = candidate_normal[candidate_lane == INVALID ? 0u : candidate_lane];
 		reused_probe = candidate_lane == INVALID ? INVALID : previous_index[candidate_lane];
 		spawn_position = p;
 		spawn_normal = n;
@@ -731,7 +677,7 @@ void reproject_probe(uint probe, uint lane) {
 		probes.data[probe].normal = n;
 		queues.data[cached_heads_offset() + probe] = INVALID;
 		queues.data[eviction_owners_offset() + probe] = INVALID;
-		probes.data[probe].state = uvec4(candidate_lane == INVALID ? uvec2(0) : tile * 8u + uvec2(candidate_lane % 8u, candidate_lane / 8u), reused_probe == INVALID ? 0u : previous_probes.data[reused_probe].state.z, reused_probe);
+		probes.data[probe].state = uvec4(tile * 8u + (candidate_lane == INVALID ? uvec2(0) : uvec2(candidate_lane % 8u, candidate_lane / 8u)), reused_probe == INVALID ? 0u : previous_probes.data[reused_probe].state.z, reused_probe);
 	}
 	barrier();
 	clear_bins(lane);
@@ -740,7 +686,7 @@ void reproject_probe(uint probe, uint lane) {
 		vec3 direction = basis(previous_probes.data[reused_probe].normal.xyz) * hemi_direction((vec2(lane % 8u, lane / 8u) + 0.5) / 8.0);
 		vec3 delta = previous_probes.data[reused_probe].position.xyz + direction * old.w - spawn_position.xyz;
 		float d = length(delta);
-		if (old.w > 0.0 && d > 0.0001 && dot(delta, spawn_normal.xyz) > 0.0 && !motion_intersects(previous_probes.data[reused_probe].position.xyz, direction, old.w, true)) {
+		if (old.w > 0.0 && d > 0.0001 && dot(delta, spawn_normal.xyz) > 0.0) {
 			insert_bin(angular_index(delta / d, spawn_normal.xyz), lane, vec4(old.rgb, d));
 		}
 	}
@@ -757,11 +703,11 @@ void reproject_probe(uint probe, uint lane) {
 		barrier();
 	}
 	vec4 total = bin_value[63];
-	if (lane == 0u && total.w == 0.0) {
-		probes.data[probe].position.w = 0.0;
+	if (lane < 9u && reused_probe != INVALID) {
+		probes.data[probe].sh[lane] = previous_probes.data[reused_probe].sh[lane];
 	}
 	vec4 backup = vec4(total.rgb / (max(total.w, 1.0) * max(64.0 - total.w, 1.0)), params.max_distance);
-	radiance.data[probe * 64u + lane] = count > 0u ? sum / float(count) : backup;
+	radiance.data[probe * 64u + lane] = gi_cache_unpack(gi_cache_pack(count > 0u ? sum / float(count) : backup));
 }
 
 // Bin cached world positions into the current screen grid for bounded
@@ -772,7 +718,7 @@ void bin_cached_probe(uint index) {
 	}
 	vec4 clip = frame.view_projection * vec4(cached_probes.data[index].probe.position.xyz, 1);
 	vec2 uv = clip.xy / max(clip.w, 0.00001) * 0.5 + 0.5;
-	if (clip.w <= 0.0 || any(lessThan(uv, vec2(0))) || any(greaterThanEqual(uv, vec2(1)))) {
+	if (clip.w <= 0.0 || clip.z <= 0.0 || clip.z >= clip.w || any(lessThanEqual(uv, vec2(0))) || any(greaterThanEqual(uv, vec2(1)))) {
 		return;
 	}
 	uint cell = probe_index(ivec2(uv * vec2(params.size) / 8.0));
@@ -792,7 +738,7 @@ uint find_cached_probe(vec3 p, vec3 n, ivec2 pixel) {
 				Probe candidate = cached_probes.data[index].probe;
 				vec3 delta = candidate.position.xyz - p;
 				float distance = length(delta);
-				if (dot(candidate.normal.xyz, n) > 0.95 && abs(dot(delta, n)) < footprint(p) * 0.1 && distance < best) {
+				if (dot(candidate.normal.xyz, n) > 0.95 && abs(dot(delta, n)) < footprint(p) && distance < best) {
 					selected = index;
 					best = distance;
 				}
@@ -813,34 +759,14 @@ float radical_inverse(uint index, uint base) {
 }
 void select_probe(uint slot) {
 	uvec2 region = uvec2(slot % frame.tracing.x, slot / frame.tracing.x);
-	uvec2 jitter = min(uvec2(vec2(radical_inverse(((params.padding - 1u) & 255u) + 1u, 2u), radical_inverse(((params.padding - 1u) & 255u) + 1u, 3u)) * float(frame.grid.z)), uvec2(frame.grid.z - 1u));
+	uvec2 jitter = min(uvec2(vec2(radical_inverse((params.padding & 255u) + 1u, 2u), radical_inverse((params.padding & 255u) + 1u, 3u)) * float(frame.grid.z)), uvec2(frame.grid.z - 1u));
 	uvec2 seed = min(region * frame.grid.z + jitter, params.size - 1u);
 	uint selected = probe_index(ivec2(seed / 8u));
 	vec3 p, n;
 	bool found = surface(ivec2(seed), p, n);
 	uint span = frame.grid.z / 8u;
-	// Reuse a valid candidate if the low-discrepancy seed lands on sky.
-	if (!found) {
-		selected = INVALID;
-		for (uint y = 0u; y < span && selected == INVALID; y++) {
-			for (uint x = 0u; x < span; x++) {
-				uint candidate = probe_index(ivec2(region * span + uvec2(x, y)));
-				if (candidate != INVALID && dot(probes.data[candidate].normal.xyz, probes.data[candidate].normal.xyz) > 0.5) {
-					selected = candidate;
-					seed = probes.data[candidate].state.xy;
-					p = probes.data[candidate].position.xyz;
-					n = probes.data[candidate].normal.xyz;
-					break;
-				}
-			}
-		}
-	}
-	spawn.data[slot] = uvec4(selected, seed, 0u);
-	bool reusable = selected == INVALID;
-	if (selected != INVALID) {
-		Probe old = probes.data[selected];
-		reusable = old.position.w > 0.0 && dot(old.normal.xyz, n) > 0.95 && abs(dot(old.position.xyz - p, n)) < footprint(p) * 0.1;
-	}
+	spawn.data[slot] = uvec4(found ? selected : INVALID, seed, INVALID);
+	bool reusable = found && probes.data[selected].position.w > 0.0;
 	if (frame.tracing.z == 0u) {
 		return;
 	}
@@ -866,17 +792,30 @@ void select_probe(uint slot) {
 	}
 }
 void patch_probe(uint index) {
-	if (frame.tracing.z == 0u || index >= min(queues.counts.x, queues.counts.y)) {
+	if (frame.tracing.z == 0u || index >= queues.counts.x || queues.counts.y == 0u) {
 		return;
 	}
-	// One-to-one matching avoids duplicate destinations or extra rays. A
-	// rotating offset prevents a fixed prefix of holes winning every frame.
-	uint hole = queues.data[(index + pcg(params.padding) % queues.counts.x) % queues.counts.x];
-	uint slot = queues.data[frame.grid.x * frame.grid.y + index];
-	spawn.data[slot] = uvec4(hole, probes.data[hole].state.xy, 0u);
+	uint hole = queues.data[index];
+	uvec2 jitter = min(uvec2(vec2(radical_inverse((params.padding & 255u) + 1u, 2u), radical_inverse((params.padding & 255u) + 1u, 3u)) * 8.0), uvec2(7));
+	uvec2 seed = min(uvec2(hole % frame.grid.x, hole / frame.grid.x) * 8u + jitter, params.size - 1u);
+	vec3 p, n;
+	if (!surface(ivec2(seed), p, n)) {
+		return;
+	}
+	uint rng = gi_random(index);
+	uint slot = queues.data[frame.grid.x * frame.grid.y + random_bits(rng) % queues.counts.y];
+	// Reference atomic exchange permits competing holes to overwrite one slot.
+	// Publish one packed seed so competing invocations cannot tear the pair.
+	atomicExchange(spawn.data[slot].w, seed.x | (seed.y << 16u));
 }
 
 void prepare_probe(uint slot, uint lane) {
+	if (lane == 0u && spawn.data[slot].w != INVALID) {
+		uvec2 seed = uvec2(spawn.data[slot].w & 0xffffu, spawn.data[slot].w >> 16u);
+		spawn.data[slot] = uvec4(probe_index(ivec2(seed / 8u)), seed, INVALID);
+	}
+	memoryBarrierBuffer();
+	barrier();
 	uint probe = spawn.data[slot].x;
 	if (probe == INVALID) {
 		return;
@@ -888,34 +827,7 @@ void prepare_probe(uint slot, uint lane) {
 		spawn_normal = vec4(n, 0);
 		cached_match = INVALID;
 		spawn.data[slot].w = INVALID;
-		if (frame.flags.w != 0u && found) {
-			cached_match = find_cached_probe(p, n, ivec2(spawn.data[slot].yz));
-			if (cached_match != INVALID) {
-				atomicMax(cached_state.data[cached_match].y, 1u);
-				atomicMin(cached_state.data[cached_match].z, slot);
-			}
-			uint evicted = probes.data[probe].state.w;
-			// Disocclusion can reject the previous surface before TRACE sees
-			// it. Retain the old tile's world probe as well, otherwise these
-			// are precisely the histories that the cache would never receive.
-			if (evicted == INVALID) {
-				evicted = probe;
-			}
-			if (evicted != INVALID && frame.grid.w == 0u) {
-				Probe previous = previous_probes.data[evicted];
-				vec3 delta = previous.position.xyz - p;
-				bool valid_previous = previous.position.w > 0.0 && params.padding - previous.state.z <= 50u;
-				if (valid_previous && (dot(previous.normal.xyz, n) < 0.95 || abs(dot(delta, n)) > footprint(p) * 0.1 || length(delta) > footprint(p))) {
-					// Several reprojected tiles may refer to the same old probe.
-					// Publish it only once; eviction queue capacity is the update budget.
-					if (atomicCompSwap(queues.data[eviction_owners_offset() + evicted], INVALID, slot) == INVALID) {
-						uint index = atomicAdd(queues.counts.z, 1u);
-						spawn.data[slot].w = evicted;
-						queues.data[eviction_queue_offset() + index] = slot;
-					}
-				}
-			}
-		}
+		center_reuse_count = 0u;
 	}
 	barrier();
 	clear_bins(lane);
@@ -930,31 +842,73 @@ void prepare_probe(uint slot, uint lane) {
 					continue;
 				}
 				Probe old_probe = probes.data[previous];
-				if (old_probe.position.w == 0.0 || params.padding - old_probe.state.z > 50u || dot(old_probe.normal.xyz, spawn_normal.xyz) < 0.95 || abs(dot(old_probe.position.xyz - spawn_position.xyz, spawn_normal.xyz)) > footprint(spawn_position.xyz) * 0.1) {
+				if (old_probe.position.w == 0.0 || abs(dot(old_probe.position.xyz - spawn_position.xyz, spawn_normal.xyz)) > footprint(spawn_position.xyz)) {
 					continue;
 				}
 				vec4 old = radiance.data[previous * 64u + lane];
 				vec3 direction = basis(old_probe.normal.xyz) * hemi_direction((vec2(lane % 8u, lane / 8u) + 0.5) / 8.0);
 				vec3 delta = old_probe.position.xyz + direction * old.w - spawn_position.xyz;
 				float d = length(delta);
-				if (old.w > 0.0 && d > 0.0001 && dot(delta, spawn_normal.xyz) > 0.0 && !motion_intersects(old_probe.position.xyz, direction, old.w)) {
+				if (old.w > 0.0 && d > 0.0001 && dot(delta, spawn_normal.xyz) > 0.0) {
 					uint sample_index = uint(x + 1 + (y + 1) * 3) * 64u + lane;
 					insert_bin(angular_index(delta / d, spawn_normal.xyz), sample_index, vec4(old.rgb, d));
 				}
 			}
 		}
 	}
-	if (cached_match != INVALID) {
-		Probe cached = cached_probes.data[cached_match].probe;
-		vec4 old = cached_probes.data[cached_match].radiance[lane];
-		vec3 direction = basis(cached.normal.xyz) * hemi_direction((vec2(lane % 8u, lane / 8u) + 0.5) / 8.0);
-		vec3 delta = cached.position.xyz + direction * old.w - spawn_position.xyz;
-		float d = length(delta);
-		if (old.w > 0.0 && d > 0.0001 && dot(delta, spawn_normal.xyz) > 0.0 && !motion_intersects(cached.position.xyz, direction, old.w, true)) {
-			insert_bin(angular_index(delta / d, spawn_normal.xyz), 576u + lane, vec4(old.rgb, d));
+	if (frame.flags.w != 0u && spawn_position.w > 0.0) {
+		ivec2 center = ivec2(spawn.data[slot].yz / 8u);
+		for (int y = -1; y <= 1; y++) {
+			for (int x = -1; x <= 1; x++) {
+				uint cell = probe_index(center + ivec2(x, y));
+				if (cell == INVALID) {
+					continue;
+				}
+				for (uint index = queues.data[cached_heads_offset() + cell]; index != INVALID; index = cached_state.data[index].w) {
+					Probe cached = cached_probes.data[index].probe;
+					if (abs(dot(cached.position.xyz - spawn_position.xyz, spawn_normal.xyz)) >= footprint(spawn_position.xyz)) {
+						continue;
+					}
+					vec4 old = cached_probes.data[index].radiance[lane];
+					vec3 direction = basis(cached.normal.xyz) * hemi_direction((vec2(lane % 8u, lane / 8u) + 0.5) / 8.0);
+					vec3 delta = cached.position.xyz + direction * old.w - spawn_position.xyz;
+					float d = length(delta);
+					if (old.w > 0.0 && d > 0.0 && dot(delta, spawn_normal.xyz) > 0.0) {
+						insert_bin(angular_index(delta / d, spawn_normal.xyz), lane, vec4(old.rgb, d));
+					}
+				}
+			}
 		}
 	}
 	barrier();
+	if (frame.flags.w != 0u && spawn_position.w > 0.0) {
+		if (lane == 0u) {
+			Probe old = probes.data[probe];
+			if (center_reuse_count == 0u && old.position.w > 0.0) {
+				uint cached = find_cached_probe(old.position.xyz, old.normal.xyz, ivec2(spawn.data[slot].yz));
+				if (cached == INVALID) {
+					uint index = atomicAdd(queues.counts.z, 1u);
+					queues.data[eviction_queue_offset() + index] = slot;
+					spawn.data[slot].w = probe;
+				} else if (atomicCompSwap(cached_state.data[cached].z, INVALID, 0x40000000u | slot) == INVALID) {
+					cached_state.data[cached].y = 1u;
+					spawn.data[slot].w = probe;
+				}
+			}
+			cached_match = find_cached_probe(spawn_position.xyz, spawn_normal.xyz, ivec2(spawn.data[slot].yz));
+			if (cached_match != INVALID) {
+				atomicCompSwap(cached_state.data[cached_match].z, INVALID, slot);
+			}
+		}
+		memoryBarrierBuffer();
+		barrier();
+		if (spawn.data[slot].w != INVALID) {
+			if (lane == 0u) {
+				cached_probes.data[CACHED_PROBES + slot].probe = probes.data[probe];
+			}
+			cached_probes.data[CACHED_PROBES + slot].radiance[lane] = radiance.data[probe * 64u + lane];
+		}
+	}
 	uint reused_count;
 	vec4 history = sum_bin(lane, reused_count);
 	history = reused_count > 0u ? history / float(reused_count) : vec4(0, 0, 0, -1);
@@ -967,6 +921,14 @@ void prepare_probe(uint slot, uint lane) {
 float reflection_kernel(vec3 n, vec3 v, vec3 l, float roughness);
 void trace_probe(uint slot, uint lane) {
 	uint ray_id = slot * 64u + lane;
+	if (frame.motion.y != 0u) {
+		hit_samples.data[ray_id].direct = vec4(0);
+		hit_samples.data[ray_id].links.y = 0u;
+		hit_samples.data[ray_id].indirect = vec4(0);
+		if (params.bounces != 0u) {
+			hit_samples.data[ray_id + primary_ray_count()].direct = vec4(0);
+		}
+	}
 	if (params.bounces != 0u) {
 		secondary_rays.data[ray_id] = empty_ray();
 	}
@@ -988,33 +950,43 @@ void trace_probe(uint slot, uint lane) {
 	vec4 history = scratch.data[probe * 64u + lane];
 	if (frame.flags.y != 0u) {
 		vec3 local_direction = hemi_direction((vec2(lane % 8u, lane / 8u) + 0.5) / 8.0);
-		float brdf_weight = max(local_direction.z, 0.0);
-		if ((uint(frame.sky.w) & 2u) != 0u && spawn_position.w > 0.0) {
-			ivec2 pixel = ivec2(spawn.data[slot].yz);
-			float metalness = clamp(texelFetch(previous_surface_position, pixel, 0).w - 1.0, 0.0, 1.0);
-			float roughness = texelFetch(normal_buffer, pixel, 0).w;
-			roughness = clamp((roughness > 0.5 ? 1.0 - roughness : roughness) * (255.0 / 127.0), 0.0, 1.0);
-			vec3 direction = basis(spawn_normal.xyz) * local_direction;
-			vec3 view = normalize(params.camera_position.xyz - spawn_position.xyz);
-			float f0 = mix(0.04, 1.0, metalness);
-			float specular_probability = f0 / (f0 + 1.0 - metalness);
-			float specular = PI * reflection_kernel(spawn_normal.xyz, view, direction, roughness);
-			brdf_weight = mix(brdf_weight, specular, specular_probability);
-		}
-		scan_radiance(lane, luma(history.rgb) * brdf_weight);
+		scan_radiance(lane, luma(history.rgb) * max(local_direction.z, 0.0));
 	}
 	RayHit ray = empty_ray();
 	if (spawn_position.w > 0.0) {
-		uint state = pcg(ray_id + params.padding * 747796405u);
-		uint cell = lane;
-		// As in GI-1, cells without valid reprojected history retain their
-		// stratified sample. A black/empty CDF also falls back to uniform.
-		if (frame.flags.y != 0u && history.w > 0.0 && sampling_total > 0.00001) {
-			cell = sample_cell(random_float(state));
+		uint state = gi_random(ray_id);
+		vec2 samples = vec2(random_float(state), random_float(state));
+		ivec2 pixel = ivec2(spawn.data[slot].yz);
+		vec4 material = texelFetch(primary_material_buffer, pixel, 0);
+		float metalness = material.a;
+		float roughness = texelFetch(normal_buffer, pixel, 0).w;
+		roughness = clamp((roughness > 0.5 ? 1.0 - roughness : roughness) * (255.0 / 127.0), 0.0, 1.0);
+		vec3 view = normalize(params.camera_position.xyz - spawn_position.xyz);
+		vec3 shading = shading_normal(pixel);
+		float smoothness = clamp(1.0 - roughness, 0.0, 1.0);
+		vec3 specular_direction = normalize(mix(shading, reflect(-view, shading), smoothness * (sqrt(smoothness) + roughness)));
+		float hv = clamp(dot(normalize(view + specular_direction), view), 0.0, 1.0);
+		vec3 f0 = mix(vec3(0.04), material.rgb, metalness);
+		vec3 fresnel = f0 + (vec3(1) - f0) * pow(1.0 - hv, 5.0);
+		vec3 diffuse = material.rgb * (1.0 - metalness) * (vec3(1) - fresnel) * 1.05 * (1.0 - pow(1.0 - hv, 5.0));
+		float probability = luma(fresnel) / max(luma(fresnel + diffuse), 1e-20);
+		vec3 dir;
+		if ((uint(frame.sky.w) & 2u) != 0u && random_float(state) < probability) {
+			vec4 rotation = gi_rotation_z(spawn_normal.xyz);
+			vec3 local_view = gi_rotate(rotation, view);
+			vec3 microfacet = gi_sample_ggx_bounded(max(roughness * roughness, 1e-6), local_view, samples);
+			rotation.xyz = -rotation.xyz;
+			dir = normalize(gi_rotate(rotation, reflect(-local_view, microfacet)));
+		} else {
+			uint cell = lane;
+			if (frame.flags.y != 0u && history.w > 0.0 && sampling_total > 0.0) {
+				cell = sample_cell(random_float(state));
+			}
+			vec2 jitter = vec2(random_float(state), random_float(state));
+			dir = basis(spawn_normal.xyz) * hemi_direction((vec2(cell % 8u, cell / 8u) + jitter) / 8.0);
 		}
-		vec2 jitter = vec2(random_float(state), random_float(state));
-		vec3 dir = basis(spawn_normal.xyz) * hemi_direction((vec2(cell % 8u, cell / 8u) + jitter) / 8.0);
-		vec3 origin = spawn_position.xyz + spawn_normal.xyz * 0.002;
+		vec3 origin = gi_offset_position(spawn_position.xyz, spawn_normal.xyz);
+		dir = gi_cache_unpack(gi_cache_pack(vec4(dir, 0))).xyz;
 		ray = trace_hit(origin, dir);
 	}
 	rays.data[ray_id] = ray;
@@ -1026,23 +998,30 @@ void allocate_tile(uint id) {
 	}
 	uvec2 cell;
 	ivec4 key = cache_key(ray.position.xyz, ray.direction_cache.xyz, ray.position.w, cell);
-	uint hash = key_hash(key), bucket = (hash % 1024u) * 4u;
-	for (uint i = 0u; i < 4u; i++) {
+	uint hash = key_hash(key), bucket = key_bucket(key) * frame.cache_config.y;
+	for (uint i = 0u; i < frame.cache_config.y; i++) {
 		uint t = bucket + i;
-		uint old = atomicCompSwap(keys.data[t].state.x, 0u, 1u);
+		uint old = atomicCompSwap(keys.data[t].state.x, 0u, hash);
 		if (old == 0u) {
 			keys.data[t].key = key;
-			keys.data[t].state.y = params.padding;
-			memoryBarrierBuffer();
-			atomicExchange(keys.data[t].state.x, hash);
-			return;
 		}
-		// Another lane is publishing this slot. Resolve in the next dispatch;
-		// never spin, read an incomplete key, or allocate duplicates behind it.
-		if (old == 1u) {
-			return;
-		}
-		if (old == hash && all(equal(keys.data[t].key, key))) {
+		if (old == 0u || old == hash) {
+			uint last_frame = atomicExchange(keys.data[t].state.y, params.padding);
+			if (last_frame != params.padding) {
+				// First touch clears update ownership before the following
+				// register dispatch. No work scales with unused radiance cells.
+				for (uint local = 0u; local < 64u; local++) {
+					uint index = t * TILE_CELLS + local;
+					owners.data[index] = INVALID;
+					if (frame.motion.y != 0u) {
+						owners.data[TILE_COUNT * TILE_CELLS + index] = INVALID;
+					}
+				}
+				uint active_index = atomicAdd(keys.dispatch.w, 1u);
+				keys.data[TILE_COUNT + active_index].state.x = t;
+				atomicMax(keys.dispatch.x, min(active_index + 1u, 256u));
+				atomicMax(keys.dispatch.y, (active_index + 256u) / 256u);
+			}
 			return;
 		}
 	}
@@ -1068,202 +1047,15 @@ void register_ray(uint id) {
 		atomicMax(keys.data[cell / TILE_CELLS].state.y, params.padding);
 	}
 }
-#include "amd_gi_cache_inc.glsl"
+
 #include "amd_gi_denoiser_inc.glsl"
 // Prefix-scan passes are mutually exclusive; share their workgroup scratch
 // to keep the complete shader within the 32 KiB shared-memory requirement.
 shared uint prefix_scan[4096];
 #include "amd_gi_reservoirs_inc.glsl"
-vec3 light_target(RayHit ray, uint light) {
-	vec3 direction;
-	float distance;
-	return ray.diffuse.rgb * unshadowed_irradiance(light, ray.position.xyz, ray.normal_mask.xyz, floatBitsToUint(ray.normal_mask.w), direction, distance) / PI;
-}
 
-float light_node_weight(LightNode node, vec3 position) {
-	vec3 delta = max(max(node.minimum - position, position - node.maximum), vec3(0));
-	return node.power.x / max(dot(delta, delta), 0.01) + node.power.y;
-}
-uint sample_light(vec3 position, inout uint state, out float probability) {
-	uint node = 1u;
-	probability = 1.0;
-	while (light_tree.data[node].light == INVALID) {
-		LightNode left = light_tree.data[node * 2u];
-		LightNode right = light_tree.data[node * 2u + 1u];
-		float uniform_probability = float(left.count) / float(left.count + right.count);
-		float lw = light_node_weight(left, position), rw = light_node_weight(right, position);
-		// Retain support for every light, including non-inverse-square falloff,
-		// unusual spot cones and black-light transitions. Exact targets and the
-		// walk PDF, not this approximate bound, determine the RIS contribution.
-		float p = lw + rw > 0.0 ? mix(uniform_probability, lw / (lw + rw), 0.9) : uniform_probability;
-		bool choose_left = random_float(state) < p;
-		probability *= choose_left ? p : 1.0 - p;
-		node = node * 2u + (choose_left ? 0u : 1u);
-	}
-	return light_tree.data[node].light;
-}
-void reservoir_add(uint light, float target, float weight, inout uint selected, inout float selected_target, inout float sum, inout uint state) {
-	if (weight <= 0.0 || isnan(weight) || isinf(weight)) {
-		return;
-	}
-	sum += weight;
-	if (random_float(state) * sum < weight) {
-		selected = light;
-		selected_target = target;
-	}
-}
-// GI-1 reservoir construction: eight fresh RIS candidates, normalized to one
-// unit of confidence, then up to four compatible previous world reservoirs.
-// Proposals are re-evaluated at this hit and visibility is always traced here.
-vec3 resampled_direct(RayHit ray, inout uint state, uint hit_id) {
-	uint initial_state = state;
-	uint selected = INVALID;
-	float selected_target = 0.0, sum = 0.0;
-	for (uint i = 0u; i < 8u; i++) {
-		float proposal;
-		uint light = sample_light(ray.position.xyz, state, proposal);
-		float target = luma(abs(light_target(ray, light)));
-		reservoir_add(light, target, target / proposal, selected, selected_target, sum, state);
-	}
-	if (selected == INVALID || selected_target <= 0.0) {
-		return vec3(0);
-	}
-	sum /= 8.0;
-	float confidence = 1.0;
-	if (hit_id != INVALID) {
-		// GenerateReservoirs publishes each surviving hit, independently of the
-		// radiance cache's cell owner. ResampleReservoirs restarts its RNG.
-		reservoir_insert(hit_id, reservoir_jitter(ray.position.xyz, ray.normal_mask.xyz, state));
-	}
-	state = initial_state;
-	uint entry = reservoir_find_previous(reservoir_jitter(ray.position.xyz, ray.normal_mask.xyz, state));
-	if (entry != INVALID) {
-		uint count = previous_light_reservoirs.data[RESERVOIR_ENTRIES + entry];
-		uint start = reservoir_previous_prefix(entry);
-		uint increment = (count + 3u) / 4u;
-		uint offset = random_bits(state) % increment;
-		for (uint i = 0u; i < count; i += increment) {
-			uint old_id = previous_light_reservoirs.data[reservoir_values_offset() + start + ((i + offset) % count)];
-			uvec4 old = reservoir_load_previous(old_id);
-			uint light = old.x < frame.motion.w ? light_tree.remap[old.x] : INVALID;
-			float old_count = unpackHalf2x16(old.w).x;
-			if (light >= params.light_count || old_count <= 0.0) {
-				continue;
-			}
-			vec3 old_normal = unpack_reservoir_normal(previous_light_reservoirs.data[reservoir_normals_offset() + old_id]);
-			float agreement = max(dot(ray.normal_mask.xyz, old_normal), 0.0);
-			if (agreement * agreement * agreement * agreement < 0.5) {
-				continue;
-			}
-			float merged_count = min(old_count, 20.0);
-			float target = luma(abs(light_target(ray, light)));
-			reservoir_add(light, target, target * uintBitsToFloat(old.z) * merged_count, selected, selected_target, sum, state);
-			confidence += merged_count;
-		}
-	}
-	float weight = sum / (confidence * selected_target);
-	if (hit_id != INVALID) {
-		reservoir_store(hit_id, uvec4(selected, 0u, floatBitsToUint(weight), packHalf2x16(vec2(confidence, 1.0))), ray.normal_mask.xyz);
-	}
-	vec3 direction;
-	float distance;
-	vec3 irradiance = unshadowed_irradiance(selected, ray.position.xyz, ray.normal_mask.xyz, floatBitsToUint(ray.normal_mask.w), direction, distance);
-	return ray.diffuse.rgb * irradiance * (weight * light_visibility(selected, ray.position.xyz, ray.normal_mask.xyz, direction, distance) / PI);
-}
-
-float emitter_node_weight(uint index, vec3 position) {
-	Emitter node = lights.emitters[index];
-	vec3 lo = node.position_area.xyz, hi = node.edge1_power.xyz;
-	if (index >= frame.emitters.y) {
-		hi = max(lo, max(lo + node.edge1_power.xyz, lo + node.edge2.xyz));
-		lo = min(lo, min(lo + node.edge1_power.xyz, lo + node.edge2.xyz));
-	}
-	vec3 delta = max(max(lo - position, position - hi), vec3(0));
-	return node.edge1_power.w / max(dot(delta, delta), 0.01);
-}
-
-// Sample an area emitter with its exact selection/area PDF. Returned energy
-// is Le / pdf_solid_angle; callers supply the receiver cosine or angular-cell
-// integration. This never adds emission to the spatial world cache itself.
-vec3 sample_emitter(vec3 position, vec3 normal, inout uint state, float choice, out vec3 direction, out float distance) {
-	direction = normal;
-	distance = params.max_distance;
-	if (frame.emitters.x == 0u || lights.emitters[1].edge1_power.w <= 0.0) {
-		return vec3(0);
-	}
-	uint node = 1u;
-	float probability = 1.0;
-	while (node < frame.emitters.y) {
-		uint left = node * 2u, right = left + 1u;
-		float lp = lights.emitters[left].edge1_power.w, rp = lights.emitters[right].edge1_power.w;
-		float lw = emitter_node_weight(left, position), rw = emitter_node_weight(right, position);
-		// The power component preserves support where the spatial bound is
-		// loose. The estimator divides by the actual conditional tree PDF.
-		float p = mix(lp / max(lp + rp, 1e-20), lw / max(lw + rw, 1e-20), 0.9);
-		if (choice < p) {
-			probability *= p;
-			choice /= p;
-			node = left;
-		} else {
-			probability *= 1.0 - p;
-			choice = (choice - p) / max(1.0 - p, 1e-20);
-			node = right;
-		}
-		choice = min(choice, 0.99999994);
-	}
-	Emitter emitter = lights.emitters[node];
-	if (emitter.edge1_power.w <= 0.0 || emitter.position_area.w <= 0.0) {
-		return vec3(0);
-	}
-	float u = sqrt(random_float(state));
-	vec2 bary = vec2(1.0 - u, u * random_float(state));
-	vec3 target = emitter.position_area.xyz + bary.x * emitter.edge1_power.xyz + bary.y * emitter.edge2.xyz;
-	vec3 origin = position + normal * 0.002;
-	if (any(greaterThan(abs(target - params.camera_position.xyz), vec3(params.max_distance)))) {
-		return vec3(0);
-	}
-	vec3 delta = target - origin;
-	distance = length(delta);
-	direction = delta / max(distance, 0.00001);
-	// Ray-hit transport is two-sided; match its emission convention here.
-	float cosine = abs(dot(normalize(cross(emitter.edge1_power.xyz, emitter.edge2.xyz)), -direction));
-	if (distance <= 0.004 || dot(normal, direction) <= 0.0 || cosine <= 0.000001) {
-		return vec3(0);
-	}
-	vec3 uv = atlas_tile_position(floatBitsToUint(emitter.emission_tile.w), bary);
-	vec3 emitted = max(textureLod(emission_atlas, uv, 0).rgb, vec3(0)) * textureLod(albedo_atlas, uv, 0).a;
-	if (all(equal(emitted, vec3(0)))) {
-		return vec3(0);
-	}
-	uint blocker;
-	vec3 blocker_position, blocker_uv, blocker_normal;
-	if (trace(origin, direction, distance - 0.004, 0xffffffffu, blocker, blocker_position, blocker_uv, blocker_normal)) {
-		return vec3(0);
-	}
-	float pdf_area = probability / emitter.position_area.w;
-	return emitted * (cosine / (distance * distance * pdf_area));
-}
-
-vec3 diffuse_hit_emission(RayHit ray) {
-	// Supported emitters are estimated explicitly at diffuse receivers. Keeping
-	// their BRDF-hit emission too would count the same light path twice. Overflow
-	// emitters keep ordinary hit sampling; specular primary hits always keep Le.
-	return ray.emission.w > 0.0 ? vec3(0) : ray.emission.rgb;
-}
-
-// Cache reflected radiance only. Emission is evaluated at the actual ray hit:
-// spatial filtering it would enlarge emitters and leak their light across edges.
-vec3 shade_direct(RayHit ray, inout uint state, uint hit_id) {
-	vec3 emitter_direction;
-	float emitter_distance;
-	float emitter_choice = random_float(state);
-	vec3 emitter_value = sample_emitter(ray.position.xyz, ray.normal_mask.xyz, state, emitter_choice, emitter_direction, emitter_distance);
-	emitter_value *= ray.diffuse.rgb * (max(dot(ray.normal_mask.xyz, emitter_direction), 0.0) / PI);
-	if (frame.tracing.w != 0u && params.light_count > 0u) {
-		return resampled_direct(ray, state, hit_id) + emitter_value;
-	}
-	return emitter_value + ray.diffuse.rgb * direct_irradiance(ray.position.xyz, ray.normal_mask.xyz, floatBitsToUint(ray.normal_mask.w)) / PI;
-}
+// Light sampling calls the reservoir hash helpers above.
+#include "amd_gi_lights_inc.glsl"
 layout(set = 0, binding = 45) uniform sampler2D previous_lighting;
 
 bool screen_lighting(RayHit hit, bool glossy, out vec3 outgoing) {
@@ -1316,30 +1108,12 @@ bool screen_lighting(RayHit hit, bool glossy, out vec3 outgoing) {
 // Unregistered/short connections retain uncached evaluation. The normal cached
 // path populates and shades secondary cells in explicit ordered stages below.
 vec3 shade_transport(RayHit ray, uint state, uint cell) {
-	vec3 value = shade_direct(ray, state, cell);
-	if (params.bounces != 0u && random_float(state) < frame.settings.z) {
-		vec3 direction = cosine_direction(ray.normal_mask.xyz, state);
-		RayHit secondary = trace_hit(ray.position.xyz + ray.normal_mask.xyz * 0.002, direction);
-		if (secondary.position.w > 0.0) {
-			uint target = find_cell(secondary.position.xyz, direction, secondary.position.w);
-			vec4 cached = secondary.position.w < cache_cell_size(secondary.position.xyz) ? vec4(0) : read_cache(target, true);
-			vec3 outgoing;
-			bool feedback = screen_lighting(secondary, false, outgoing);
-			if (!feedback) {
-				outgoing = diffuse_hit_emission(secondary) + (cached.w > 0.0 ? cached.rgb : shade_direct(secondary, state, INVALID));
-			}
-			// Screen feedback includes visible emission; remove only the term
-			// already estimated by emitter NEE at this diffuse receiver.
-			if (secondary.emission.w > 0.0 && feedback) {
-				outgoing = max(outgoing - secondary.emission.rgb, vec3(0));
-			}
-			value += ray.diffuse.rgb * outgoing / frame.settings.z;
-		} else {
-			value += ray.diffuse.rgb * environment_radiance(direction, false) / frame.settings.z;
-		}
-	}
-	return clean_color(value);
+	// Cache misses and short primary connections use the same direct-light
+	// estimator. Continuations are exclusively scheduled by PopulateCells;
+	// retracing them here changed both the ray budget and path accounting.
+	return clean_color(shade_direct(ray, state, cell));
 }
+
 void populate_secondary(uint id) {
 	uint owner;
 	if (frame.motion.y != 0u) {
@@ -1356,13 +1130,17 @@ void populate_secondary(uint id) {
 			return;
 		}
 	}
-	uint state = pcg(owner + params.padding * 2891336453u);
+	uint state = gi_random(owner);
 	if (random_float(state) >= frame.settings.z) {
 		return;
 	}
 	RayHit source = rays.data[owner];
-	vec3 direction = cosine_direction(source.normal_mask.xyz, state);
-	secondary_rays.data[owner] = trace_hit(source.position.xyz + source.normal_mask.xyz * 0.002, direction);
+	vec2 samples = vec2(random_float(state), random_float(state));
+	float radius = sqrt(samples.x), angle = 2.0 * PI * samples.y;
+	vec4 rotation = gi_rotation_z(source.normal_mask.xyz);
+	rotation.xyz = -rotation.xyz;
+	vec3 direction = normalize(gi_rotate(rotation, vec3(radius * cos(angle), radius * sin(angle), sqrt(1.0 - samples.x))));
+	secondary_rays.data[owner] = trace_hit(gi_offset_position(source.position.xyz, source.normal_mask.xyz), direction);
 }
 RayHit owned_hit(uint owner) {
 	if (owner < primary_ray_count()) {
@@ -1381,94 +1159,72 @@ void shade_hit(uint id) {
 	if (hit.position.w <= 0.0 || cell == INVALID) {
 		return;
 	}
-	uint state = pcg(id + params.padding * 2891336453u);
-	hit_samples.data[id].direct = vec4(clean_color(shade_direct(hit, state, id)), 1);
-}
-vec3 indirect_hit(uint hit) {
-	vec3 value = vec3(0);
-	RayHit secondary = secondary_rays.data[hit];
-	if (secondary.position.w > 0.0) {
-		uint target = floatBitsToUint(secondary.direction_cache.w);
-		bool bypass = secondary.position.w < cache_cell_size(secondary.position.xyz);
-		vec4 direct = bypass ? vec4(0) : read_component(target, false, false);
-		uint state = pcg(hit + params.padding * 747796405u);
-		vec3 outgoing;
-		bool feedback = screen_lighting(secondary, false, outgoing);
-		if (!feedback) {
-			outgoing = diffuse_hit_emission(secondary) + (direct.w > 0.0 ? direct.rgb : shade_direct(secondary, state, INVALID));
-			// Off-screen/disoccluded receivers retain world-cache feedback.
-			if (!bypass) {
-				outgoing += read_component(target, true, true).rgb;
-			}
-		}
-		if (secondary.emission.w > 0.0 && feedback) {
-			outgoing = max(outgoing - secondary.emission.rgb, vec3(0));
-		}
-		value = rays.data[hit].diffuse.rgb * outgoing / frame.settings.z;
-	} else if (dot(secondary.direction_cache.xyz, secondary.direction_cache.xyz) > 0.5) {
-		// Empty unscheduled rays have a zero direction; only actual misses see sky.
-		value = rays.data[hit].diffuse.rgb * environment_radiance(secondary.direction_cache.xyz, false) / frame.settings.z;
-	}
-	return clean_color(value);
-}
-void shade_indirect_hit(uint id) {
-	if (id >= primary_ray_count() || floatBitsToUint(rays.data[id].direction_cache.w) == INVALID) {
+	vec3 feedback;
+	if (id < primary_ray_count() && dot(hit.emission.rgb, hit.emission.rgb) == 0.0 && screen_lighting(hit, false, feedback)) {
+		hit_samples.data[id].direct = vec4(feedback, 1);
+		hit_samples.data[id].links.y = 1u;
 		return;
 	}
-	hit_samples.data[id].indirect = vec4(indirect_hit(id), 1);
+	uint state = gi_random(id);
+	hit_samples.data[id].direct = id < primary_ray_count() && dot(hit.emission.rgb, hit.emission.rgb) > 0.0 ? vec4(0) : vec4(clean_color(shade_direct(hit, state, id)), 1);
 }
-vec4 blend_hit_samples(vec4 old, vec3 sum, uint count) {
-	// The current cache layout stores means; convert at this boundary so the
-	// reference UpdateTiles equation (including zero-update aging) is unchanged.
-	vec4 accumulated = gi_cache_accumulate(vec4(old.rgb * old.w, old.w), vec4(sum, float(count)), 16.0);
-	return vec4(accumulated.rgb / max(accumulated.w, 1.0), accumulated.w);
+vec3 indirect_hit(uint hit) {
+	RayHit secondary = secondary_rays.data[hit];
+	uint target = floatBitsToUint(secondary.direction_cache.w);
+	if (secondary.position.w <= 0.0 || target == INVALID) {
+		return vec3(0);
+	}
+	// UpdateMultibounceCells consumes the freshly updated direct cache only.
+	// Emission and sky at this vertex are already included by NEE at its parent.
+	vec3 outgoing = read_component(target, false, false).rgb;
+	RayHit source = rays.data[hit];
+	return clean_color(gi_rough_brdf(source.diffuse.rgb, source.normal_mask.xyz, -source.direction_cache.xyz, secondary.direction_cache.xyz) * outgoing / max(dot(source.normal_mask.xyz, secondary.direction_cache.xyz) / PI * frame.settings.z, 1e-20));
+}
+void shade_indirect_hit(uint id) {
+	if (id >= primary_ray_count()) {
+		return;
+	}
+	uint cell = floatBitsToUint(rays.data[id].direction_cache.w);
+	RayHit secondary = secondary_rays.data[id];
+	bool valid = cell != INVALID && secondary.position.w > 0.0 && floatBitsToUint(secondary.direction_cache.w) != INVALID;
+	vec3 value = valid ? indirect_hit(id) : vec3(0);
+	if (frame.motion.y != 0u) {
+		hit_samples.data[id].indirect = vec4(value, valid ? 1.0 : 0.0);
+	}
+	if (!valid || (frame.motion.y == 0u && owners.data[cell] != id)) {
+		return;
+	}
+	uint index = (cell / TILE_CELLS) * 64u + cell % TILE_CELLS;
+	uvec3 quantized = gi_cache_quantize(value);
+	atomicAdd(pending_indirect_cache.data[index].x, quantized.x);
+	atomicAdd(pending_indirect_cache.data[index].y, quantized.y);
+	atomicAdd(pending_indirect_cache.data[index].z, quantized.z);
+	atomicAdd(pending_indirect_cache.data[index].w, 1u);
+}
+uvec2 blend_hit_samples(uvec2 old, uvec3 sum, uint count) {
+	return gi_cache_pack(gi_cache_accumulate(gi_cache_unpack(old), vec4(vec3(sum) / 1000.0, float(count)), 16.0));
 }
 
 void update_indirect(uint cell) {
-	if (cell >= TILE_COUNT * TILE_CELLS || cell % TILE_CELLS >= 64u) {
+	uint local = cell % TILE_CELLS;
+	if (cell >= TILE_COUNT * TILE_CELLS || local >= 64u) {
 		return;
 	}
-	if (frame.motion.y != 0u) {
-		vec3 sum = vec3(0);
-		uint count = 0u;
-		for (uint hit = cell_head(cell); hit != INVALID; hit = hit_samples.data[hit].links.x) {
-			if (hit < primary_ray_count()) {
-				sum += hit_samples.data[hit].indirect.rgb;
-				count++;
-			}
-		}
-		if (keys.data[cell / TILE_CELLS].state.y == params.padding) {
-			indirect_cache.data[cell] = blend_hit_samples(previous_indirect_cache.data[cell], sum, count);
-		}
-		return;
-	}
-	uint owner = owners.data[cell];
-	if (owner == INVALID) {
-		if (keys.data[cell / TILE_CELLS].state.y == params.padding) {
-			indirect_cache.data[cell] = blend_hit_samples(previous_indirect_cache.data[cell], vec3(0), 0u);
-		}
-		return;
-	}
-	if (owner >= primary_ray_count()) {
-		// Updated tile without a continuation at this receiver: age its
-		// indirect history using the reference zero-update equation.
-		indirect_cache.data[cell] = blend_hit_samples(previous_indirect_cache.data[cell], vec3(0), 0u);
-		return;
-	}
-	vec3 value = indirect_hit(owner);
-	// A discarded/missed continuation is a zero sample, not stale lighting.
-	indirect_cache.data[cell] = blend_hit_samples(previous_indirect_cache.data[cell], value, 1u);
+	uint index = (cell / TILE_CELLS) * 64u + local;
+	uvec4 pending = pending_indirect_cache.data[index];
+	indirect_cache.data[cell] = blend_hit_samples(indirect_cache.data[cell], pending.xyz, pending.w);
+	pending_indirect_cache.data[index] = uvec4(0);
 }
 void update_cell(uint cell) {
 	if (cell >= TILE_COUNT * TILE_CELLS || cell % TILE_CELLS >= 64u) {
 		return;
 	}
 	if (frame.motion.y != 0u) {
-		vec3 sum = vec3(0);
+		uvec3 sum = uvec3(0);
 		uint count = 0u;
 		for (uint hit = cell_head(cell); hit != INVALID; hit = hit_samples.data[hit].links.x) {
-			sum += hit_samples.data[hit].direct.rgb;
-			count++;
+			sum += gi_cache_quantize(hit_samples.data[hit].direct.rgb);
+			count += uint(hit_samples.data[hit].direct.w);
 		}
 		if (keys.data[cell / TILE_CELLS].state.y == params.padding) {
 			cache.data[cell] = blend_hit_samples(previous_cache.data[cell], sum, count);
@@ -1478,13 +1234,13 @@ void update_cell(uint cell) {
 	uint owner = owners.data[cell];
 	if (owner == INVALID) {
 		if (keys.data[cell / TILE_CELLS].state.y == params.padding) {
-			cache.data[cell] = blend_hit_samples(previous_cache.data[cell], vec3(0), 0u);
+			cache.data[cell] = blend_hit_samples(previous_cache.data[cell], uvec3(0), 0u);
 		}
 		return;
 	}
-	uint state = pcg(owner + params.padding * 2891336453u);
+	uint state = gi_random(owner);
 	vec3 value = shade_direct(owned_hit(owner), state, owner);
-	cache.data[cell] = blend_hit_samples(previous_cache.data[cell], value, 1u);
+	cache.data[cell] = blend_hit_samples(previous_cache.data[cell], gi_cache_quantize(value), 1u);
 }
 void build_mip(uint tile, uint lane, uint mip) {
 	bool indirect = pass_id >= PASS_INDIRECT_MIP1 && pass_id <= PASS_INDIRECT_MIP3;
@@ -1498,13 +1254,13 @@ void build_mip(uint tile, uint lane, uint mip) {
 	for (uint y = 0u; y < 2u; y++) {
 		for (uint x = 0u; x < 2u; x++) {
 			uint index = source + pos.x + x + (pos.y + y) * (width * 2u);
-			vec4 value = indirect ? indirect_cache.data[index] : cache.data[index];
-			sum += vec4(value.rgb * value.w, value.w);
+			vec4 value = gi_cache_unpack(indirect ? indirect_cache.data[index] : cache.data[index]);
+			sum += value;
 		}
 	}
 	// Mips carry the sum of their children's evidence, not a second capped
 	// temporal history. Preserve it for both mip selection and parent weights.
-	vec4 value = vec4(sum.rgb / max(sum.w, 1.0), sum.w);
+	uvec2 value = gi_cache_pack(sum);
 	if (indirect) {
 		indirect_cache.data[tile * TILE_CELLS + MIP_OFFSET[mip] + lane] = value;
 	} else {
@@ -1524,7 +1280,15 @@ void resolve_probe(uint slot, uint lane) {
 		// A ray shorter than one world cell can connect opposite sides of a
 		// thin partition. AMD bypasses filtered readback for these samples.
 		vec4 c = ray.position.w < cache_cell_size(ray.position.xyz) ? vec4(0) : read_cache(floatBitsToUint(ray.direction_cache.w), false);
-		value = diffuse_hit_emission(ray) + (c.w > 0.0 ? c.rgb : shade_transport(ray, pcg(slot * 64u + lane + params.padding * 2891336453u), INVALID));
+		uint ray_id = slot * 64u + lane;
+		bool feedback = frame.motion.y != 0u && hit_samples.data[ray_id].links.y != 0u;
+		value = dot(ray.emission.rgb, ray.emission.rgb) > 0.0 ? ray.emission.rgb : (feedback ? hit_samples.data[ray_id].direct.rgb : (c.w > 0.0 ? c.rgb : (frame.motion.y != 0u ? hit_samples.data[ray_id].direct.rgb : shade_transport(ray, gi_random(ray_id), INVALID))));
+		if (params.bounces != 0u && !feedback && dot(ray.emission.rgb, ray.emission.rgb) == 0.0) {
+			RayHit secondary = secondary_rays.data[ray_id];
+			if (secondary.position.w > 0.0 && secondary.position.w < cache_cell_size(secondary.position.xyz)) {
+				value += frame.motion.y != 0u ? hit_samples.data[ray_id].indirect.rgb : indirect_hit(ray_id);
+			}
+		}
 	}
 	clear_bins(lane);
 	if (probes.data[probe].position.w > 0.0) {
@@ -1552,33 +1316,6 @@ void resolve_probe(uint slot, uint lane) {
 	}
 	barrier();
 	vec4 result = sample_count > 0u ? sum / float(sample_count) : radiance_backup;
-	// The probe stores average radiance per equal-area angular cell. Explicit
-	// light samples estimate its integral: sum(Le/pdf) / (64 * cell_solid_angle).
-	// With 64 cells and 64 samples this is sum(Le/pdf)/(2*PI), not an unweighted
-	// average that would artificially enlarge a tiny bright emitter.
-	if (frame.emitters.x != 0u) {
-		barrier();
-		clear_bins(lane);
-		if (probes.data[probe].position.w > 0.0) {
-			uint state = pcg(slot * 64u + lane + params.padding * 277803737u);
-			vec3 direction;
-			float distance;
-			float emitter_choice = (float(lane) + random_float(state)) / 64.0;
-			vec3 emitted = sample_emitter(probes.data[probe].position.xyz, probes.data[probe].normal.xyz, state, emitter_choice, direction, distance);
-			if (any(greaterThan(emitted, vec3(0)))) {
-				vec3 energy = emitted / (2.0 * PI);
-				insert_bin(angular_index(direction, probes.data[probe].normal.xyz), lane, vec4(energy, distance * luma(energy)));
-			}
-		}
-		barrier();
-		uint emitter_samples;
-		vec4 emitter_sum = sum_bin(lane, emitter_samples);
-		float total_energy = luma(result.rgb) + luma(emitter_sum.rgb);
-		if (emitter_samples > 0u && total_energy > 0.0) {
-			result.w = (result.w * luma(result.rgb) + emitter_sum.w) / total_energy;
-		}
-		result.rgb += emitter_sum.rgb;
-	}
 	vec4 history = scratch.data[id];
 	if (history.w > 0.0) {
 		// AMD's shadow-preserving temporal hysteresis suppresses abrupt bright
@@ -1587,7 +1324,7 @@ void resolve_probe(uint slot, uint lane) {
 		float blend = clamp(max(a - b - min(a, b), 0.0) / max(max(a, b), 0.0001), 0.0, 0.95);
 		result = mix(result, history, blend * blend);
 	}
-	radiance.data[id] = vec4(clean_color(result.rgb), result.w);
+	radiance.data[id] = gi_cache_unpack(gi_cache_pack(vec4(clean_color(result.rgb), result.w)));
 }
 vec4 filter_source(uint id) {
 	return pass_id == PASS_FILTER_X ? radiance.data[id] : scratch.data[id];
@@ -1629,16 +1366,16 @@ void filter_probe(uint probe, uint lane) {
 		}
 	}
 	if (pass_id == PASS_FILTER_X) {
-		scratch.data[id] = value / weight;
+		scratch.data[id] = gi_cache_unpack(gi_cache_pack(value / weight));
 	} else {
-		radiance.data[id] = value / weight;
+		radiance.data[id] = gi_cache_unpack(gi_cache_pack(value / weight));
 	}
 }
 void project_probe(uint probe, uint lane) {
 	if (lane == 0u) {
 		probe_mask.data[probe] = probes.data[probe].position.w > 0.0 ? probe : INVALID;
 	}
-	if (lane >= 9u) {
+	if (lane >= 9u || probes.data[probe].state.z != params.padding) {
 		return;
 	}
 	vec3 value = vec3(0);
@@ -1651,7 +1388,7 @@ void project_probe(uint probe, uint lane) {
 			value += radiance.data[probe * 64u + cell].rgb * sh[lane] * (2.0 * PI / 64.0);
 		}
 	}
-	probes.data[probe].sh[lane] = vec4(value, 0);
+	probes.data[probe].sh[lane] = gi_cache_unpack(gi_cache_pack(vec4(value, 0)));
 }
 vec3 probe_irradiance(uint probe, vec3 normal) {
 	float sh[9];
@@ -1663,41 +1400,56 @@ vec3 probe_irradiance(uint probe, vec3 normal) {
 	}
 	return max(value, vec3(0));
 }
-// A bounded 4096-element exclusive scan and stable partition maintain
-// frame-granularity LRU order without sorting or CPU readback. This scan and
-// the angular bins together fit the checked 32 KiB workgroup budget.
+// Stable LRU partition over the reference screen-sized cached-probe pool.
+// A chunked exclusive scan retains bounded workgroup scratch at every resolution.
 shared uint lru_used;
+shared uint lru_chunk_count;
 void order_cached_probes(uint lane) {
-	for (uint index = lane; index < CACHED_PROBES; index += 64u) {
-		prefix_scan[index] = cached_state.data[previous_cached_order.data[index]].y;
-	}
-	barrier();
-	for (uint stride = 1u; stride < CACHED_PROBES; stride <<= 1u) {
-		for (uint index = lane; index < CACHED_PROBES / (2u * stride); index += 64u) {
-			prefix_scan[2u * (index + 1u) * stride - 1u] += prefix_scan[(2u * index + 1u) * stride - 1u];
-		}
-		barrier();
-	}
 	if (lane == 0u) {
-		lru_used = prefix_scan[CACHED_PROBES - 1u];
-		prefix_scan[CACHED_PROBES - 1u] = 0u;
+		lru_used = 0u;
 	}
 	barrier();
-	for (uint stride = CACHED_PROBES / 2u; stride > 0u; stride >>= 1u) {
-		for (uint index = lane; index < CACHED_PROBES / (2u * stride); index += 64u) {
-			uint a = (2u * index + 1u) * stride - 1u;
-			uint b = 2u * (index + 1u) * stride - 1u;
-			uint value = prefix_scan[a];
-			prefix_scan[a] = prefix_scan[b];
-			prefix_scan[b] += value;
+	for (uint base = 0u; base < CACHED_PROBES; base += 4096u) {
+		for (uint index = lane; index < 4096u; index += 64u) {
+			prefix_scan[index] = base + index < CACHED_PROBES ? cached_state.data[previous_cached_order.data[base + index]].y : 0u;
+		}
+		barrier();
+		for (uint stride = 1u; stride < 4096u; stride <<= 1u) {
+			for (uint index = lane; index < 4096u / (2u * stride); index += 64u) {
+				prefix_scan[2u * (index + 1u) * stride - 1u] += prefix_scan[(2u * index + 1u) * stride - 1u];
+			}
+			barrier();
+		}
+		if (lane == 0u) {
+			lru_chunk_count = prefix_scan[4095];
+			prefix_scan[4095] = 0u;
+		}
+		barrier();
+		for (uint stride = 2048u; stride > 0u; stride >>= 1u) {
+			for (uint index = lane; index < 4096u / (2u * stride); index += 64u) {
+				uint a = (2u * index + 1u) * stride - 1u, b = 2u * (index + 1u) * stride - 1u;
+				uint value = prefix_scan[a];
+				prefix_scan[a] = prefix_scan[b];
+				prefix_scan[b] += value;
+			}
+			barrier();
+		}
+		for (uint index = lane; index < min(4096u, CACHED_PROBES - base); index += 64u) {
+			cached_state.data[previous_cached_order.data[base + index]].x = lru_used + prefix_scan[index];
+		}
+		barrier();
+		if (lane == 0u) {
+			lru_used += lru_chunk_count;
 		}
 		barrier();
 	}
+	memoryBarrierBuffer();
+	barrier();
 	uint unused = CACHED_PROBES - lru_used;
 	uint allocated = min(queues.counts.z, unused);
 	for (uint index = lane; index < CACHED_PROBES; index += 64u) {
 		uint cached = previous_cached_order.data[index];
-		uint prefix = prefix_scan[index];
+		uint prefix = cached_state.data[cached].x;
 		uint destination;
 		if (cached_state.data[cached].y != 0u) {
 			destination = unused - allocated + prefix;
@@ -1714,20 +1466,24 @@ void order_cached_probes(uint lane) {
 	}
 }
 void store_cached_probe(uint cached, uint lane) {
+	if (cached >= CACHED_PROBES) {
+		return;
+	}
 	uint owner = cached_state.data[cached].z;
 	if (owner == INVALID) {
 		return;
 	}
-	bool evicted = (owner & 0x80000000u) != 0u;
-	uint slot = evicted ? queues.data[eviction_queue_offset() + (owner & 0x7fffffffu)] : owner;
-	uint probe = evicted ? spawn.data[slot].w : spawn.data[slot].x;
-	if (lane == 0u) {
-		cached_probes.data[cached].probe = evicted ? previous_probes.data[probe] : probes.data[probe];
-		if (evicted && probe_motion(previous_probes.data[probe], probe, false)) {
-			cached_probes.data[cached].probe.position.w = 0.0;
+	bool allocated = (owner & 0x80000000u) != 0u;
+	bool evicted = (owner & 0xc0000000u) != 0u;
+	uint slot = allocated ? queues.data[eviction_queue_offset() + (owner & 0x7fffffffu)] : owner & 0x3fffffffu;
+	if (evicted) {
+		if (lane == 0u) {
+			cached_probes.data[cached].probe = cached_probes.data[CACHED_PROBES + slot].probe;
 		}
+		cached_probes.data[cached].radiance[lane] = cached_probes.data[CACHED_PROBES + slot].radiance[lane];
+	} else {
+		cached_probes.data[cached].radiance[lane] = radiance.data[spawn.data[slot].x * 64u + lane];
 	}
-	cached_probes.data[cached].radiance[lane] = evicted ? previous_radiance.data[probe * 64u + lane] : radiance.data[probe * 64u + lane];
 }
 
 uvec2 mask_dimensions(uint level) {
@@ -1936,6 +1692,29 @@ void main() {
 	uint lane = gl_LocalInvocationIndex;
 	uint probe = gl_WorkGroupID.x;
 	uint id = probe * 64u + lane;
+	if (pass_id == PASS_UPDATE || pass_id == PASS_UPDATE_INDIRECT || (pass_id == PASS_POPULATE && frame.motion.y == 0u) || (pass_id >= PASS_MIP1 && pass_id <= PASS_MIP3) || (pass_id >= PASS_INDIRECT_MIP1 && pass_id <= PASS_INDIRECT_MIP3)) {
+		uint active_index = gl_WorkGroupID.y * 256u + gl_WorkGroupID.x;
+		if (active_index >= keys.dispatch.w) {
+			return;
+		}
+		probe = keys.data[TILE_COUNT + active_index].state.x;
+		id = probe * TILE_CELLS + lane;
+	}
+	if (pass_id == PASS_LIGHT_BOUNDS_RESET) {
+		if (id == 0u) {
+			light_grid.minimum = uvec4(0xffffffffu);
+			light_grid.maximum = uvec4(0u);
+		}
+		return;
+	}
+	if (pass_id == PASS_LIGHT_BOUNDS) {
+		light_grid_bounds(id);
+		return;
+	}
+	if (pass_id == PASS_LIGHT_GRID) {
+		build_light_grid(probe, lane);
+		return;
+	}
 	if (pass_id == PASS_RESERVOIR_RESET) {
 		reservoir_reset((gl_WorkGroupID.y * gl_NumWorkGroups.x + probe) * 64u + lane);
 		return;
@@ -2033,7 +1812,7 @@ void main() {
 	} else if (pass_id == PASS_ORDER_CACHED) {
 		order_cached_probes(lane);
 	} else if (pass_id == PASS_STORE_CACHED) {
-		store_cached_probe(probe, lane);
+		store_cached_probe(gl_WorkGroupID.y * 65535u + probe, lane);
 	} else if (pass_id == PASS_MASK) {
 		filter_mask(gl_GlobalInvocationID.xy);
 	} else {

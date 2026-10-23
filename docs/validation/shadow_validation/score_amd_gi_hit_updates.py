@@ -32,7 +32,7 @@ if min(gains.values()) <= 0.001 or gains["all"] < gains["all_single"] + 0.002 or
 memory = {name: int(value) for name, value in re.findall(r"GI memory hits_(\w+): textures=\d+ buffers=(\d+)", log)}
 h, w = base.shape[:2]
 rays = ((w + 15) // 16) * ((h + 15) // 16) * 64
-expected = 4096 * 85 * 4 + rays * 2 * 48 - 16
+expected = 262144 * 85 * 4 + rays * 2 * 48 - 16
 if memory["all"] - memory["one_restored"] != expected:
     raise SystemExit("All-hit toggle did not release heads and sample records")
 if any(int(row[0]) > rays or int(row[1]) > rays for row in checks):

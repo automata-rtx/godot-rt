@@ -29,16 +29,17 @@ MSAA. All controls below are live `ProjectSettings` values under
 | `enabled` | `false` | Creates the GI scene consumer and cached pipeline only when requested. |
 | `probe_spacing` | `16` | Budget one 64-ray probe update per 8×8, 16×16, or 32×32 screen tile: approximately 1, 1/4, or 1/16 primary GI ray per internal pixel per frame. Stored probes always use an 8-pixel grid. |
 | `cache_all_hits` | `true` | Shade and accumulate every registered cache hit. Disabling keeps one selected hit per cell and releases hit lists/sample records. Primary ray count is unchanged; visibility, continuation, shading and memory costs can decrease. |
-| `screen_feedback` | `true` | Reuse previous native opaque lighting for compatible visible secondary/reflection hits. Adds one RGBA16F target and opaque attachment; disabling releases it. Requires multibounce or reflections. Per-light indirect-energy multipliers other than 1 select the explicit world-cache fallback. |
+| `screen_feedback` | `false` | Reuse previous native opaque lighting at compatible primary diffuse hits and reflection hits, bypassing fresh light sampling at accepted diffuse hits. Adds one RGBA16F target and opaque attachment; disabling releases it. Requires multibounce or reflections. Per-light indirect-energy multipliers other than 1 select the explicit world-cache fallback. |
 | `multibounce` | `true` | Populate secondary world cells from a subset of primary cache updates, shade their direct light, and propagate indirect light through separate histories. Disabling skips seven stages and frees continuation/indirect storage. |
 | `continuation_probability` | `0.3` | Probability of an additional continuation per registered primary hit (per selected cell hit with all-hit updates off); contributions are probability compensated. |
 | `minimum_cell_size` | `0.1` | Minimum world-space cache cell size. Actual size also depends on distance, resolution, and field of view. |
 | `denoiser` | `true` | Temporal reprojection and adaptive spatial GI denoising. Probe reconstruction/filtering remains part of the GI algorithm. Progress captures leave this enabled. |
 | `importance_sampling` | `true` | Guide diffuse probe rays using reprojected radiance times the surface cosine. Keeps the same primary ray count; disabling uses stratified angular samples. Switching resets history. |
-| `brdf_sampling` | `true` | Guide probe angular samples with native metalness/roughness and reprojected radiance, using diffuse cosine and GGX specular weights. Requires importance sampling; no extra primary rays. |
-| `adaptive_sampling` | `true` | Redirect existing updates from reusable probes or empty sky slots to uncovered screen tiles. Does not add rays. Switching resets history. |
-| `probe_cache` | `true` | Retain up to 4,096 displaced probes with least-recently-used eviction. Turning this off releases the pool and skips its binning, ordering, and store stages; histories reset. |
-| `light_resampling` | `true` | In-progress correction: eight fresh analytic-light candidates and up to four previous hit reservoirs from AMD’s independent spatial hash. Hash headers use 96 MiB across both frames, plus 64 bytes per hit slot across both frames and scan scratch. Disabling releases this storage and currently evaluates every analytic light. The proposal tree, this flag’s fresh-RIS semantics and its default still differ from AMD and remain open corrections. |
+| `brdf_sampling` | `true` | Use native albedo, metalness and roughness for AMD’s Fresnel-weighted choice between a bounded-VNDF GGX sample and diffuse radiance guiding. No extra primary rays. |
+| `adaptive_sampling` | `true` | Redirect existing updates from reusable probes to uncovered screen tiles. Does not add rays. Switching resets history. |
+| `probe_cache` | `true` | Retain one displaced-probe slot per internal 8×8 screen tile, with least-recently-used eviction. Turning this off releases the pool and skips its binning, ordering, and store stages; histories reset. |
+| `light_resampling` | `false` | Enable reuse of up to four previous hit reservoirs from AMD’s independent spatial hash. Fresh GridStream RIS remains enabled in both modes. Hash headers use 96 MiB across both frames, plus 64 bytes per hit slot and scan scratch; disabling releases that temporal storage. |
+| `cache_bucket_exponent` | `14` | World-cache bucket count is 2 to this power, with 16 tiles per bucket. AMD’s default is 16,384 buckets / 262,144 tiles. Values 8–14 expose the reference capacity tradeoff: fewer buckets reduce memory but increase collision overflow and missing cache coverage. Live changes recreate history. |
 | `reflections/enabled` | `true` | Enable the separate glossy path. Turning it off skips all glossy stages and releases reflection-sized resources. |
 | `reflections/half_resolution` | `true` | One glossy sample per 2×2 internal pixels, with rotating sample locations; disabling uses full internal resolution. Independent of diffuse probe spacing. |
 | `reflections/trace_roughness_threshold` | `0.2` | Trace below this roughness. Between this and the high threshold, use AMD’s stochastic GGX lookup in four screen probes. Missing probe coverage falls back to tracing. |
@@ -46,11 +47,11 @@ MSAA. All controls below are live `ProjectSettings` values under
 | `reflections/firefly_filter` | `true` | AMD’s rank-based marking and plane-weighted cleanup before reconstruction. Runs only with reflections and the denoiser enabled. |
 | `reflections/firefly_low_threshold` / `firefly_high_threshold` | `0.0` / `1.0` | Reference rank thresholds. The reference defaults do not reject ordinary rank outliers; narrower bounds enable more rejection. |
 | `reflections/ray_compaction` | `true` | Classify sky/probe-reused pixels, compact the remaining glossy samples on GPU, and dispatch tracing indirectly. Changes scheduling, not sample count or the estimator. |
-| `emissive_sampling` | `true` | Build/reuse a GPU triangle-emitter hierarchy and sample it explicitly at screen probes and world receivers. Adds visibility rays; avoids waiting for diffuse rays to hit thin bright geometry. |
+| `emissive_sampling` | `true` | Include GPU-built triangle emitters in the shared GridStream distribution for world receivers. Primary hits contribute emission directly. Adds selected visibility rays; disabling retains primary hit emission. |
 | `reflections/filter_passes` | `4` | Two to eight a-trous passes: first reconstruction, zero or more intermediate passes, then full-resolution reconstruction. Reference default is four. |
 | `material_atlas_mb` | `128` | Live atlas limit in MiB (8–512). Allocates layers on demand and shrinks when lowered. Excludes capture targets, expanded geometry, BLASes, and GI histories. Preflight adapts capture resolution when allowed; remaining overflow reports a warning before preparing pages. |
 | `material_preparation_budget` | `64` | Maximum new 1024-triangle capture chunks per scene update (1–4096). Retains completed chunks and starts GI once the whole collected scene is ready. Bounds preparation count, not time; existing dynamic material redraws are separate. |
-| `material_tile_size` | `8` | Maximum material-capture texels per triangle side: 8 or 4. Using 4 quarters atlas/capture-target texel storage at the cost of texture, cutout and interpolated-normal detail. Geometry and primary ray budgets stay unchanged. Live changes recapture materials and reset GI history. |
+| `material_tile_size` | `8` | Maximum material-capture texels per triangle side: 8 or 4. Using 4 quarters atlas/capture-target texel storage at the cost of texture, cutout and interpolated-normal detail. Geometry and primary ray budgets stay unchanged. Live changes recapture materials. |
 | `material_adaptive_resolution` | `true` | Automatically reduce material captures to 4 or 2 pixels per triangle side to stay within the atlas limit. Compact captures preserve geometry and native materials but lose within-triangle texture/alpha/normal detail. Disable for strict fixed-resolution comparisons. |
 | `max_distance` | `50` | Camera-centered collection bounds and maximum tracing distance. |
 
@@ -61,7 +62,7 @@ ProjectSettings.set_setting("rendering/global_illumination/amd_gi/probe_spacing"
 
 Primary probe rays are not the total ray count: cache updates also issue visibility
 rays for lights, and multibounce adds continuation rays and sometimes another light
-visibility query. Explicit emitter sampling adds up to one visibility ray per probe primary sample and one per shaded world receiver (zero when no eligible emitter contributes). Glossy primary, visibility, and fallback continuation rays are also additional. Partial screen tiles are rounded up. The controls are experimental
+visibility query. Unified light sampling adds at most one selected visibility ray per shaded world receiver. Glossy primary rays are also additional. Partial screen tiles are rounded up. The controls are experimental
 quality knobs, not measured 780M presets.
 
 Native SDFGI, VoxelGI, SSIL, and lightmaps must be absent when using this path. Native
@@ -77,24 +78,25 @@ and GI TLAS. It shares BLASes with RT shadows through `RaytracingGeometry`.
 
 `AMDGI` owns lazily compiled compute pipelines. Each viewport owns its caches,
 probe and pixel histories, and intermediate textures through render-buffer custom
-data. Forty-two specialized stages use explicitly ordered dispatches; the probe-mask
+data. Specialized stages use explicitly ordered dispatches; the probe-mask
 stage dispatches once per mip level:
 
 1. Age/clear world-cache tiles and reset update ownership.
 2. Reproject an 8-pixel stored probe grid using all 64 candidate screen positions
    per tile. Retain compatible histories independently of the tracing budget.
    Select sparse updates using a repeating Halton sequence, then match uncovered
-   tiles to reusable update slots. Matching is one-to-one, with no duplicate
-   destinations or extra rays. Bin cached world-space probes into the current
+   tiles to reusable update slots with the reference random atomic exchange.
+   Competing holes can overwrite a slot; sky seeds are culled and no extra rays are added. Bin cached world-space probes into the current
    screen grid. Reproject hits from a compatible 3×3 current reprojected-probe neighborhood
-   plus the closest compatible displaced probe into the selected probes. Build a
+   plus all qualifying displaced probes into the selected probes. Build a
    64-cell cumulative distribution from radiance times the surface
    cosine. Trace 64 guided, jittered equal-area hemi-octahedral samples per probe,
    reading native materials at triangle hits. Cells without reusable history and
    completely dark distributions fall back to stratified samples.
-3. Allocate directional world-space tiles in a bounded spatial hash. Keep complete
-   keys and four candidate slots per bucket; a hash collision cannot silently
-   identify unrelated geometry. Publication and subsequent lookup are separate passes.
+3. Allocate directional world-space tiles using AMD's PCG bucket hash, xxHash
+   checksum and 16 candidate slots per bucket. Publication and subsequent lookup
+   are separate passes. Checksums follow the reference collision behavior; full
+   keys are retained for diagnostics, not used to change identity matching.
 4. Register every primary hit in a bounded per-cell list. By default, shade each
    hit independently and accumulate its contribution/evidence in the cache. With
    multibounce on, each registered primary hit can schedule one continuation,
@@ -106,25 +108,22 @@ stage dispatches once per mip level:
    reflected radiance only: emission is added at the exact ray hit so the spatial
    cache does not enlarge emitters. Rays shorter than a world-cache cell bypass
    filtered readback, including continuation rays, to reduce leaks at thin walls.
-   With light resampling enabled, eight spatial-hierarchy light proposals form a fresh RIS
-   reservoir. Query AMD’s independent previous-frame spatial hash and merge up to four
-   normal-compatible hit reservoirs from the selected entry,
-   re-evaluating their targets at this hit and clamping each previous confidence
-   to 20. Trace only the chosen light's visibility; never reuse visibility from
-   another surface. Reservoir reads/writes are double-buffered, with one record per
-   shaded hit and multiple records per spatial entry. Compaction follows an integer
-   prefix scan. The fresh light-proposal distribution remains an open correction.
-6. Build the three coarser levels of each 8×8 cache tile. Preserve summed sample
-   counts and select the finest mip with 16 accumulated samples, falling back to
-   the coarsest level while evidence is sparse, as in AMD's filtered readback.
-   Then reuse compatible previous native screen lighting at a secondary receiver,
-   or current secondary direct light plus previous secondary indirect cache data
-   when it is unavailable. Propagate that outgoing radiance into the primary
-   receiver's indirect history, with probability compensation.
-   Discarded continuations contribute zero; actual misses sample the configured sky. Build independent indirect mips
-   before resolving the sum. Secondary-only receivers have no newly traced indirect
-   sample and clear stale indirect history; further bounce feedback therefore
-   depends on receivers also populated by primary probes over time.
+   Fresh light proposals use GridStream: 16 cells along the largest axis, up to 64
+   strided reservoirs per cell, expanded-cell volume weights, jittered lookup and
+   at most eight non-overlapping segments. Analytic lights, emissive triangles and
+   the environment share this distribution. Triangle samples retain barycentrics
+   and area-measure PDFs. One selected visibility ray evaluates each fresh reservoir.
+   Optional world-space reservoir reuse re-evaluates at most four compatible previous
+   reservoirs, caps their confidence at 20 and remaps light identities across changes.
+   Godot analytic attenuation, layers and shadow-opacity semantics remain native.
+6. Update packed-half direct and indirect cache sums using the reference temporal
+   equation and integer-quantized contributions. Build the three coarser mips and
+   choose the finest mip with 16 samples. Persistent storage updates only touched
+   tiles. Continuation rays read the updated secondary direct cache and write
+   probability-compensated contributions to the next frame’s indirect update buffer,
+   matching AMD’s one-frame multibounce handoff. Continuation misses and emissive hits
+   do not add another light estimator on top of NEE. Primary emissive hits inject Le
+   directly into probes; they bypass filtered cache radiance.
 7. Resolve probe radiance and average samples landing in each angular cell. Apply
    AMD's empty-cell radiance backup and shadow-preserving temporal hysteresis,
    followed by horizontal/vertical filters with plane and hit-direction rejection.
@@ -133,7 +132,7 @@ stage dispatches once per mip level:
    neighboring probes using AMD's depth/normal weights and plane-constrained lookup
    blue-noise jitter. Four spatial dimensions are precomputed from Capsaicin's
    Sobol/ranking/scrambling tables; the shader retains its golden-ratio temporal
-   rotation. This adds a shared 64 KiB buffer only while AMD GI is active.
+   rotation. The shared buffer contains the 64 KiB spatial table followed by deterministic MT19937 seed data, with a minimum 1920×1080 seed allocation. It exists only while AMD GI is active.
    Relaxed interpolation fills otherwise uncovered pixels, with a low-confidence
    hint that prevents those fallback estimates from growing temporal history.
    Cache displaced surface probes, update reused entries, and reorder the bounded
@@ -154,21 +153,20 @@ stage dispatches once per mip level:
 
 Sky misses sample the existing unfiltered native octahedral radiance view, including
 orientation, borders, and Forward+'s exposure normalization. No additional sky bake
-is created. Static sky material updates invalidate GI histories through the sky radiance
-version. TIME/position/light-driven skies update their lighting without resetting
-history on every redraw. Gradual light motion, intensity, color and sky orientation
-changes also retain history; large discontinuities and light-list/mask changes reset it. When sky ambient
+is created. Camera movement, sky/light changes and material-atlas repacking do not
+force a global history reset. AMD's surface reprojection, cache updates and decay
+handle scene changes. Initialization, resource recreation and explicit quality
+configuration changes reset the relevant history. When sky ambient
 is enabled, GI replaces that unoccluded ambient term and preserves the environment's
 remaining color-ambient mixture. Reflection sky selection follows the environment's
 reflection source independently.
 
-The hash has 1,024 buckets, four tiles per bucket, and 85 cells per tile including
-mips. Base-cell history is limited to 16 updates, tile lifetime to 50 unused frames,
+The default hash has 16,384 buckets, 16 tiles per bucket, and 85 cells per tile including
+mips. Bucket selection uses the reference PCG chain and checksum uses xxHash. Base-cell history is limited to 16 updates, tile lifetime to 50 unused frames,
 and final GI history to at most 64 samples with adaptive reduction. These are live
 temporal histories, not unlimited accumulation for screenshots. Histories reset on
 allocation, resize, quality changes, large camera cuts and discontinuous lighting
-changes. Geometry additions/removals, topology/material edits and object motion invalidate local regions and cached ray connections;
-unchanged regions retain history. Smooth lighting changes retain history; small camera motion reprojects existing histories. Material colors refresh
+changes. Native surface reprojection rejects incompatible geometry; the fork’s swept-bounding-box probe-history wipes have been removed. Smooth lighting changes retain history; small camera motion reprojects existing histories. Material colors refresh
 through new cache samples and the reference temporal weighting.
 GI collection is sorted by stable instance and light IDs before building the
 signature and material layout; spatial-tree traversal permutations must not
@@ -187,27 +185,22 @@ These are current implementation facts, not approved departures from AMD.
 The [reference audit](../AMD_GI_REFERENCE_AUDIT.md) tracks corrections and the
 evidence needed before reference fidelity can be claimed:
 
-- Reprojection retains the visible 8-pixel grid, and guiding gathers a 3×3
-  current reprojected neighborhood plus the nearest compatible displaced-cache entry.
-  Preparation finishes before any tracing workgroup publishes its new probe seed. The bounded
-  pool keeps 4,096 entries and expires radiance after 50 frames without a trace
-  refresh. Fine surfaces sharing a screen tile still compete for its stored probe.
-  Native metalness/roughness now guide the diffuse/specular angular mixture; the probe still stores incoming radiance independently of the receiving material. The cache
-  also retains the previous tile's surface when disocclusion prevents reprojection.
-- Cache updates now accumulate all registered primary/secondary hits by default.
-  The one-hit-per-cell option remains an unapproved departure. Light reservoirs
-  now use a separate hash of multiple hits, following Capsaicin’s lookup, collision
-  slots and compaction. The fork still uses a balanced spatial hierarchy for its
-  point/spot/sun list; replacing that proposal sampler remains necessary.
-  Bounds and power guide eight fresh candidates; each RIS weight divides by the
-  actual tree-walk probability. A uniform component retains support for unusual
-  falloff and spot distributions. This is an adaptation of spatial light selection,
-  not Capsaicin's light-grid implementation.
-  Continuations now populate additional cells with separate direct/indirect
-  filtering. Independent hit shading and per-cell reduction are ordered stages, so
-  shared cells accumulate samples without float atomics or concurrent radiance reads. Visible receivers can reuse reprojected combined native screen lighting;
-  other receivers use the previous world indirect cache. Coarse cache reuse can
-  flatten indirect gradients.
+- Reprojection retains the visible 8-pixel grid. Guiding gathers a 3×3 reprojected
+  neighborhood and every qualifying displaced-cache candidate in those bins.
+  Integer atomic angular accumulation uses AMD’s 10,000 quantization factor.
+  The displaced pool matches the screen-probe count; it no longer expires at an
+  arbitrary 50-frame age. World radiance tiles retain AMD’s separate 50-frame decay.
+  Primary albedo and metalness now come from a GI-only native prepass attachment,
+  supporting the reference diffuse/specular sampling choice.
+- Cache updates accumulate all registered primary/secondary hits by default.
+  The optional one-hit-per-cell control remains a non-reference quality mode.
+  The custom analytic and emissive proposal trees and probe-origin emitter estimator
+  are removed. GridStream unifies light selection; `light_resampling` controls previous
+  reservoir reuse only and defaults off, as does screen feedback.
+  Secondary shading evaluates AMD’s fully rough dielectric BRDF including Fresnel
+  compensation and specular energy. Multibounce sampling carries BRDF/PDF weights.
+  Reference deterministic MT19937 seeds and PCG output/state ordering replace the
+  previous ad hoc per-pass seeds.
 - Glossy transport, ratio reconstruction, temporal rejection, and a-trous denoising
   are implemented. The matte room alone cannot validate them; use the dedicated
   mirror/glossy-floor rig. This is an adaptation, not an exact port of all Capsaicin
@@ -233,7 +226,7 @@ evidence needed before reference fidelity can be claimed:
   pages/lights, ideal point/spot/sun lights, CPU-managed 3D MultiMesh elements, no particle or GPU-indirect MultiMesh geometry or
   custom vertex-deforming/screen-reading materials.
   Unsupported scenes suppress the contribution rather than silently omit objects.
-- Reprojection uses native previous-surface positions from the GI depth prepass, including previous native poses. Cached connections crossing moving geometry reject history locally. Controlled rotation/deformation, gold-weapon motion and first-person intersection sequences have software-Vulkan coverage; this is not an exhaustive gameplay guarantee. FSR2 has
+- Reprojection uses native previous-surface positions from the GI depth prepass, including previous native poses. Swept object bounds no longer erase probe history. Controlled rotation/deformation, gold-weapon motion and first-person intersection sequences have software-Vulkan coverage; this is not an exhaustive gameplay guarantee. FSR2 has
   software-Vulkan coverage; DLSS runtime compatibility remains untested.
 
 AMD's shader copyright/license is retained in `amd_gi.glsl` and `COPYRIGHT.txt`.
@@ -242,24 +235,18 @@ sampling/blending/filtering and their inputs are being compared against the cite
 reference stage by stage; matching stage names alone does not establish fidelity. See
 [AMD_GI_IMPLEMENTATION.md](../AMD_GI_IMPLEMENTATION.md) for the larger work plan.
 
-An open, unapproved difference is angular accumulation using bounded workgroup-local
-integer linked lists and floating-point sums instead of upstream fixed-point atomic
-radiance sums. The previous rationale was that
-HDR inputs do not overflow those sums and no optional floating-point atomics are
-required. Every lane inserts at most one sample per neighbor; a barrier separates publication
-from reads and another separates reads from shared-memory reuse. The existing
-scratch buffer holds reprojected angular history until resolve finishes; guiding
-adds no persistent GPU allocation or dispatch. Dense stored histories, scheduling
-queues, and the valid-probe mask hierarchy are allocated only while GI is active.
-Mask dimensions round up at each level to retain odd-sized edge tiles. Sampling adds
-work, so an unchanged ray budget does not establish unchanged GPU cost.
+Angular accumulation now uses the reference fixed-point uint atomic sums and
+counts. Radiance and SH round to half precision at storage boundaries. The
+reprojected angular buffer remains scratch until resolve finishes. Mask dimensions
+round up at each level to retain odd-sized edge tiles. An unchanged ray budget
+does not establish unchanged GPU cost.
 
-The displaced pool uses 1,216 bytes per entry (192-byte probe metadata/SH plus
-64 radiance cells), separate ownership/list state, and double-buffered order
-indices. Cache reads precede all writes. Reuse reserves one writer per entry;
-eviction requests are deduplicated by previous-probe index. The scan allocates
-only untouched slots and moves newly stored entries to the recent end. An
-out-of-screen cached probe stays resident until expiry or eviction.
+The displaced pool uses 1,216 bytes per entry, with one entry per stored screen
+probe plus transient snapshots for displaced updates. Separate ownership/list
+state and double-buffered order indices prevent competing writes. Eviction follows
+actual center-probe reuse, preserves reprojected radiance, and uses the reference
+LRU policy without the fork's former 50-frame cached-probe expiry. World radiance
+tiles retain AMD's separate decay policy.
 
 ## Progress captures
 
@@ -294,8 +281,7 @@ allocation counts; disabling must restore the exact image and texture allocation
 This is an integration/response check, not an accuracy ranking between samplers.
 
 Both that rig and `./run.sh amd_gi_cache` enable `GODOT_AMD_GI_VALIDATE_CACHE=1`.
-The focused cache rig sweeps the camera out and back within the cache's expiry
-window, then renders another 64 frames. It requires history to survive small
+The focused cache rig sweeps the camera out and back while keeping its displaced cache resident, then renders another 64 frames. It requires history to survive small
 camera motion, and checks the disabled image exactly. This diagnostic reads
 the actual GPU queues, spawn assignments, ownership, and LRU order every frame.
 It rejects duplicate/out-of-range assignments and invalid permutations, verifies
@@ -398,14 +384,11 @@ retained material preparation, FSR2 buffer swapping, and disabled restoration.
 `GODOT_AMD_GI_VALIDATE_CACHE=1` additionally checks that each enable initializes
 history once while subsequent animation reports local swept regions.
 
-Up to eight dirty world bounds are supplied per frame; overflow merges into the
-region requiring the least extra bounding volume, preserving coverage. World-cache lighting uses the reference UpdateTiles weighting. Every cell in a touched tile receives the update, including zero-update aging. The former dirty-bound/light-change temporal-weight override has been removed; the remaining local probe-motion rejection is still under reference audit.
-Stored screen-ray connections crossing them are rejected, displaced cached probes
-with affected connections are retired, and newly evicted probes cannot restore
-stale connections. Diffuse receivers and glossy connections reject affected pixel
-history. This is conservative invalidation, not motion-vector transport: moving
-surfaces must accumulate new samples. Shadow changes beyond those bounds converge
-through fresh light visibility and the existing temporal response.
+Swept bounds are collected only under `GODOT_AMD_GI_TRACE_HISTORY` for diagnostics.
+They do not reject probe, diffuse or glossy history. Native previous-surface
+positions provide reprojection; world-cache lighting uses AMD's UpdateTiles
+weighting, including zero-update aging in touched tiles. Geometry and lighting
+changes converge through fresh samples and the reference rejection/filter rules.
 
 ### Matched primary-ray comparison
 
@@ -472,20 +455,14 @@ straight-through opacity, not refraction or colored transmission. Multipass and
 unsupported deformation retain strict checks. Forward-only effects do not emit GI.
 `amd_gi_overlays` checks that physical-scene GI and history survive these passes.
 
-### Light proposal hierarchy
+### Light proposal grid
 
-When resampling is active, each viewport retains a spatially ordered binary tree
-for the scene's analytic lights. Stable scene indices stay in the leaves, so tree
-reordering does not invalidate reused light identities. The CPU rebuilds/uploads
-only when light records change. Positional power and distance to a node's bounds,
-plus directional power, guide traversal; a 10% uniform-count component at each
-branch preserves proposal support. RIS uses the complete traversal probability and
-re-evaluates the actual material, mask, attenuation and visibility. The hierarchy
-is a proposal approximation, not a changed lighting model or an occlusion cache.
-This tree remains an open correction to AMD’s light-grid sampler.
-Disabling resampling releases it with the reservoir buffers. Zero-light scenes
-bypass it; one-light scenes now construct a reservoir. `amd_gi_lights` compares against exhaustive light evaluation,
-including a six-light incomplete tree with point, spot and directional lights.
+GridStream builds volume-weighted strided reservoirs on GPU over current traced
+hit bounds. Analytic, area and environment lights share the grid. A jittered lookup
+merges disjoint segments into fresh RIS; optional previous-reservoir reuse is
+separate and off by default. The former analytic binary tree, emissive tree and
+probe-origin area-light estimator have been removed. See the pipeline above for
+proposal counts and remaining native material/cone-sampling limitations.
 
 ### Native screen-lighting feedback
 
@@ -535,7 +512,7 @@ exactly once, all samples are shaded, and toggling releases the extra buffers.
 Material capture is a separate quality/memory axis from screen-probe ray density.
 `material_tile_size=4` uses 128×128 array layers with the same 32×32 triangle layout;
 8 uses 256×256 layers. Addressing derives the tile size from the actual texture.
-Live changes discard old captures/atlas textures and invalidate GI history while
+Live changes discard old captures/atlas textures while
 retaining shared shadow geometry. The default remains 8; quality is not silently
 reduced when a scene exceeds its atlas budget. Capacity warnings report tile counts.
 
@@ -556,7 +533,7 @@ correctness-test footprint, not a validated 780M quality/performance preset.
 Geometry is matched by stable instance RID and MultiMesh element across sorted
 collection lists. Entering/leaving the camera-centered collection, visibility
 changes and topology/material-content edits invalidate the old/new local bounds.
-They do not discard the entire screen history. Light identities are remapped per viewport; membership changes do not clear unrelated history. Lighting changes use the reference cache accumulation; the former forced fast-refresh weighting has been removed. Camera cuts, quality changes and environment discontinuities still invalidate history.
+They do not discard the entire screen history. Light identities are remapped per viewport; membership changes do not clear unrelated history. Lighting changes use the reference cache accumulation; the former forced fast-refresh weighting has been removed. Explicit quality/resource changes reset history; camera and environment changes use reference reprojection and cache updates.
 
 `GODOT_AMD_GI_TRACE_HISTORY=1` logs reset reasons and dirty-region counts without
 GPU readback; it is opt-in and only runs in the enabled GI path. `amd_gi_scene_churn`

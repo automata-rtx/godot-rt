@@ -120,11 +120,9 @@ bool RaytracingGIScene::ensure_scene_buffers(uint32_t p_instances, uint32_t p_li
 	const uint32_t required_emitters = Math::next_power_of_2(MAX(emitter_count, 1u));
 	const bool retain_emitters = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/enabled")) && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/emissive_sampling"));
 	if (light_buffer.is_null() || required_emitters > emitter_storage_capacity || (!retain_emitters && emitter_storage_capacity > 1)) {
-		// Retain physical capacity across flickering emitters. Logical tree size
-		// still follows the current set, so a formerly large scene does not make
-		// a small emitter rebuild process all previously allocated leaves.
+		// Retain the flat triangle-light allocation across flickering emitters.
 		const uint32_t storage_capacity = retain_emitters ? MAX(required_emitters, emitter_storage_capacity) : 1;
-		RID replacement = rd->storage_buffer_create(MAX_LIGHTS * sizeof(LightData) + storage_capacity * 2u * 64u);
+		RID replacement = rd->storage_buffer_create(MAX_LIGHTS * sizeof(LightData) + storage_capacity * 64u);
 		if (replacement.is_null()) {
 			return false;
 		}
@@ -478,6 +476,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	const bool emissive_sampling = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/enabled")) && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/emissive_sampling"));
 	LocalVector<EmitterBatch> emitter_batches;
 	emitter_count = 0;
+	emissive_ranges.clear();
 	uint32_t resident_pages = 0;
 	uint32_t tile_cursor = 0;
 	uint32_t prepared_pages = 0;
@@ -610,7 +609,9 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			rd_instance.transform = instance.transform;
 			rd_instance.id = instances.size();
 			rd_instance.mask = 0xFF;
-			rd_instance.flags = RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT;
+			// Godot's native clockwise winding requires the Vulkan facing flip.
+			// BLAS front-face classification is independent of instance mirroring.
+			rd_instance.flags = RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT | RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FLIP_FACING_BIT;
 			rd_instance.hit_sbt_range = RD::HitShaderBindingTableRange(int64_t(1) << 32);
 			if (!cached) {
 				material_cache.insert(key, memnew(SurfaceMaterial));
@@ -663,7 +664,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 					}
 					if (!reusable_pixels || !entry.pixels_valid || entry.mesh_instance != instance.mesh_instance || entry.pose_revision != pose_revision || entry.material != material || entry.material_revision != material_revision || entry.texture_revisions != texture_revisions || entry.transform != capture_transform || entry.instance_color != instance_color || entry.instance_custom != instance_custom) {
 						entry.pixels_valid = false;
-						if (capture.render(capture_transform, material, instance.uniforms_offset, instance.mesh_instance, instance_color, instance_custom, instance.element) != OK) {
+						if (capture.render(capture_transform, material, instance.uniforms_offset, instance.mesh_instance, instance_color, instance_custom, instance.element, true) != OK) {
 							return;
 						}
 						entry.atlas_tile = UINT32_MAX;
@@ -732,6 +733,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			// remains visible to ordinary hit-emission sampling.
 			if (emissive_sampling && data && data->shader_data && data->shader_data->uses_emission && triangles <= 262144u - emitter_count) {
 				emitter_base = emitter_count + 1u;
+				emissive_ranges.push_back({ instance.instance, instance.mesh, instance.element, uint32_t(surface), emitter_count, triangles });
 				emitter_batches.push_back({ geometry->vertex_buffer, geometry->index_buffer, instance.transform, geometry->vertex_count, geometry->index_stride, triangles, surface_material.first_tile, emitter_count, geometry->revision, surface_material.pixels_revision });
 				emitter_count += triangles;
 			}
@@ -741,7 +743,12 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			current_instances.push_back(state);
 		}
 	}
-	update_instance_history(current_instances);
+	// Bounds are diagnostic only. Reference history uses surface reprojection,
+	// never a swept-box invalidation; avoid collecting this unused work normally.
+	static const bool trace_motion = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_HISTORY").is_empty();
+	if (trace_motion) {
+		update_instance_history(current_instances);
+	}
 	prune_materials(material_frame > 120 ? material_frame - 120 : 0, uint64_t(atlas_mb) * 1024 * 1024 / 4);
 	static const bool validate_materials = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_MATERIALS").is_empty();
 	if (validate_materials) {
@@ -852,7 +859,7 @@ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batch
 	}
 	previous_emitters = p_batches;
 	const uint32_t prefix = MAX_LIGHTS * sizeof(LightData);
-	rd->buffer_clear(light_buffer, prefix, emitter_capacity * 2u * 64u);
+	rd->buffer_clear(light_buffer, prefix, emitter_capacity * 64u);
 	if (emitter_count == 0) {
 		emitter_buffer_valid = true;
 		return true;
@@ -869,10 +876,8 @@ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batch
 	struct Push {
 		float transform[16];
 		uint32_t geometry[4]; // first tile, triangle count, index bytes, first emitter
-		uint32_t tree[4]; // leaf capacity, parent offset, parent count, pass
 	} push = {};
-	static_assert(sizeof(Push) == 96);
-	push.tree[0] = emitter_capacity;
+	static_assert(sizeof(Push) == 80);
 	RID last_set;
 	for (const EmitterBatch &batch : p_batches) {
 		LocalVector<RD::Uniform> uniforms;
@@ -905,29 +910,6 @@ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batch
 			last_set = RID();
 		}
 	}
-	// Bind live source descriptors for the tree-only dispatch (never read there).
-	if (last_set.is_null()) {
-		LocalVector<RD::Uniform> uniforms;
-		RID fallback = MeshStorage::get_singleton()->get_default_rd_storage_buffer();
-		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, fallback));
-		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, fallback));
-		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, light_buffer));
-		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 3, Vector<RID>{ sampler, atlas[3] }));
-		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 4, Vector<RID>{ sampler, atlas[0] }));
-		last_set = UniformSetCacheRD::get_singleton()->get_cache_vec(emitter_shader.version_get_shader(emitter_version, 0), 0, uniforms);
-	}
-	push.tree[3] = 1;
-	RD::ComputeListID list = rd->compute_list_begin();
-	rd->compute_list_bind_compute_pipeline(list, emitter_pipeline);
-	rd->compute_list_bind_uniform_set(list, last_set, 0);
-	for (uint32_t count = emitter_capacity / 2u; count > 0; count /= 2u) {
-		push.tree[1] = count;
-		push.tree[2] = count;
-		rd->compute_list_set_push_constant(list, &push, sizeof(push));
-		rd->compute_list_dispatch_threads(list, count, 1, 1);
-		rd->compute_list_add_barrier(list);
-	}
-	rd->compute_list_end();
 	emitter_buffer_valid = true;
 	return true;
 }

@@ -18,3 +18,8 @@ The compact precomputed table replaces the three larger runtime tables and uses
 64 KiB of GPU storage. It is allocated only when AMD GI is active.
 
 The upstream MIT license is preserved in `LICENSE.txt`.
+
+The renderer appends Capsaicin's deterministic `RandomNumberGenerator` seed data
+to the same storage buffer: MT19937 seed 5489, at least 1920×1080 uints, enlarged
+for larger render dimensions. This does not modify the generated blue-noise table.
+The runtime PCG emits the old state before advancing, as in the reference.

@@ -20,7 +20,7 @@ albedo/alpha, encoded normal, occlusion/roughness/metallic/SSS, and HDR emission
 It does not evaluate direct or indirect lighting. This primitive is independent of
 the eventual GI algorithm and does not create an acceleration structure.
 
-Normals use Forward+'s existing best-fit encoding. Decode with
+GI scene captures request the underlying geometry normal, before normal-map application, as required by GI-1 hit shading. The standalone material-bake diagnostic retains the shaded normal by default. Normals use Forward+'s existing best-fit encoding. Decode with
 `normalize(encoded.rgb * 2 - 1)`, not just `encoded.rgb * 2 - 1`. The captured camera
 transform is identity, so these normals include the supplied object's world transform.
 
@@ -81,7 +81,7 @@ targets remain separate allocations and belong in total memory measurements.
   data `vec4`, and instance information `uvec4`, followed by 32-bit source vertex IDs.
   Binding 1 borrows the current native pose buffer, or a dummy buffer for static
   captures. The first vector stores tile size, columns, source vertex count, and
-  normal/tangent/pose presence bits. Scene flag
+  normal/tangent/pose presence bits and bit 3 selecting geometry-normal output. Scene flag
   bit 9 selects triangle placement; regular UV2/projection baking binds an existing
   dummy buffer and does not read it. Ordinary scene shader variants have no new set.
 - UV0 and UV2 remain material inputs. Atlas placement must never overwrite them.

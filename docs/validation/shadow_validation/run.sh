@@ -163,7 +163,11 @@ grep -aiE "SCRIPT ERROR|ERROR: Condition|not provided" "$LOG" | head -5
 mv "$HERE/out"/*.png "$OUT/" 2>/dev/null
 
 echo
-if [ "$RIG" = "amd_gi_reference" ]; then
+if [ "$RIG" = "amd_gi_winding" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD native winding: 48 ray queries passed' "$LOG"; then
+		exit 1
+	fi
+elif [ "$RIG" = "amd_gi_reference" ]; then
 	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD reference equations: .* 0 failures' "$LOG"; then
 		cat "$LOG"
 		exit 1

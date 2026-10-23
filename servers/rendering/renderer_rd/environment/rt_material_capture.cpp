@@ -189,7 +189,7 @@ Error RaytracingMaterialCapture::prepare(RID p_mesh, int p_surface, int p_first_
 	return OK;
 }
 
-Error RaytracingMaterialCapture::render(const Transform3D &p_transform, RID p_material_override, int32_t p_instance_uniforms_offset, RID p_mesh_instance, const Color &p_color, const Color &p_custom, uint32_t p_element) {
+Error RaytracingMaterialCapture::render(const Transform3D &p_transform, RID p_material_override, int32_t p_instance_uniforms_offset, RID p_mesh_instance, const Color &p_color, const Color &p_custom, uint32_t p_element, bool p_geometry_normals) {
 	ERR_FAIL_COND_V(framebuffer.is_null() || mesh.is_null(), ERR_UNCONFIGURED);
 	ERR_FAIL_COND_V(!p_transform.is_finite() || p_transform.basis.determinant() == 0, ERR_INVALID_PARAMETER);
 	RendererSceneRenderRD *renderer = RendererSceneRenderRD::get_singleton();
@@ -200,7 +200,7 @@ Error RaytracingMaterialCapture::render(const Transform3D &p_transform, RID p_ma
 	// manually constructed compressed poses rather than reading a wrong stride.
 	ERR_FAIL_COND_V(pose_buffer.is_valid() && (meshes->mesh_surface_get_format(meshes->mesh_get_surface(source_mesh, uint32_t(source_surface))) & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES), ERR_UNAVAILABLE);
 	CaptureInfo updated = capture_info;
-	updated.layout_info[3] = (updated.layout_info[3] & 3u) | (pose_buffer.is_valid() ? 4u : 0u);
+	updated.layout_info[3] = (updated.layout_info[3] & 3u) | (pose_buffer.is_valid() ? 4u : 0u) | (p_geometry_normals ? 8u : 0u);
 	for (int i = 0; i < 4; i++) {
 		updated.color[i] = p_color[i];
 		updated.custom[i] = p_custom[i];

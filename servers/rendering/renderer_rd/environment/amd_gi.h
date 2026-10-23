@@ -50,13 +50,10 @@ public:
 		float reflection_energy = 0;
 		float border = 0;
 		uint64_t revision = 0;
-		bool history_compatible(const Environment &p_previous) const;
 	};
 
 private:
-	static constexpr uint32_t CACHE_TILES = 4096;
 	static constexpr uint32_t CACHE_CELLS_PER_TILE = 85;
-	static constexpr uint32_t CACHED_PROBES = 4096;
 	enum Pass {
 		RESERVOIR_RESET,
 		RESET,
@@ -71,6 +68,9 @@ private:
 		POPULATE,
 		ALLOCATE_SECONDARY,
 		REGISTER_SECONDARY,
+		LIGHT_BOUNDS_RESET,
+		LIGHT_BOUNDS,
+		LIGHT_GRID,
 		SHADE_HITS,
 		UPDATE,
 		RESERVOIR_SCAN,
@@ -80,17 +80,17 @@ private:
 		MIP1,
 		MIP2,
 		MIP3,
-		SHADE_INDIRECT_HITS,
 		UPDATE_INDIRECT,
 		INDIRECT_MIP1,
 		INDIRECT_MIP2,
 		INDIRECT_MIP3,
+		SHADE_INDIRECT_HITS,
 		RESOLVE,
+		ORDER_CACHED,
+		STORE_CACHED,
 		FILTER_X,
 		FILTER_Y,
 		PROJECT,
-		ORDER_CACHED,
-		STORE_CACHED,
 		MASK,
 		INTERPOLATE,
 		TEMPORAL,
@@ -133,13 +133,13 @@ private:
 		float sky[4]; // diffuse and reflection energy, octahedral border, bit 0 firefly cleanup / bit 1 BRDF guiding
 		float ambient[4]; // remaining ambient color, replace native ambient
 		float reflections[4]; // sample stride, probe roughness threshold, filter iterations, unused
+		uint32_t cache_config[4]; // bucket count, tiles/bucket, reserved
 		float glossy[4]; // low roughness threshold, firefly low/high thresholds, unused
 		uint32_t motion[4]; // swept bound count, all-hit updates, reserved, previous light count
 		uint32_t emitters[4]; // emitter count/capacity, appended glossy queue offset, compact glossy dispatch
-		float motion_bounds[RaytracingGIScene::MAX_MOTION_BOUNDS][8]; // min/max, std140 vec4 pairs
 	};
 	static_assert(sizeof(PushConstant) == 128);
-	static_assert(sizeof(FrameUniform) == 624);
+	static_assert(sizeof(FrameUniform) == 384);
 	struct ViewData : public RenderBufferCustomDataRD {
 		GDCLASS(ViewData, RenderBufferCustomDataRD);
 
@@ -152,13 +152,13 @@ private:
 		RID spawn, queues, probe_mask;
 		RID cached_probes, cached_state, cached_order[2];
 		RID light_reservoirs[2];
-		RID light_tree;
+		RID light_grid;
+		LocalVector<RaytracingGIScene::EmissiveRange> emissive_ranges;
+		uint32_t previous_analytic_count = 0;
 		uint32_t previous_light_count = 0;
 		LocalVector<uint64_t> light_identities;
 		void update_light_remap(const RaytracingGIScene &p_scene);
-		uint32_t light_tree_capacity = 0;
-		LocalVector<RaytracingGIScene::LightData> sampling_lights;
-		bool update_light_tree(const RaytracingGIScene &p_scene);
+		bool ensure_light_grid();
 		RID indirect_cache[2], secondary_rays;
 		RID hit_samples;
 		RID reflection_samples, reflection_history[2];
@@ -172,8 +172,8 @@ private:
 		uint32_t stride = 0;
 		uint32_t frame = 0;
 		uint32_t index = 0;
-		uint64_t scene_revision = 0;
 		uint32_t configuration = 0;
+		uint32_t cache_buckets = 0;
 		float cell_size = 0;
 		float continuation = 0;
 		float max_distance = 0;
@@ -186,7 +186,6 @@ private:
 		float previous_exposure = 0;
 		Projection previous_view_projection;
 		Transform3D previous_camera;
-		Environment environment;
 		void configure(RenderSceneBuffersRD *p_buffers) override { free_data(); }
 		void free_data() override;
 		~ViewData() { free_data(); }
@@ -194,6 +193,8 @@ private:
 	AmdGiShaderRD shader;
 	RID version;
 	RID blue_noise;
+	uint32_t random_seed_count = 0;
+	void ensure_sampling_data(const Size2i &p_size);
 	RID pipelines[PASS_COUNT];
 
 public:

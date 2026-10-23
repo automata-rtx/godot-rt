@@ -137,3 +137,32 @@ vec4 reference_cache_accumulate(vec4 direct_radiance, vec4 new_direct_radiance, 
 
 	return direct_radiance;
 }
+
+vec3 reference_rough_brdf(vec3 color, vec3 normal, vec3 view, vec3 light) {
+	vec3 half_vector = normalize(view + light);
+	float nl = clamp(dot(normal, light), -1.0, 1.0);
+	float nv = clamp(dot(normal, view), -1.0, 1.0);
+	float nh = clamp(dot(normal, half_vector), -1.0, 1.0);
+	float hv = clamp(dot(half_vector, view), 0.0, 1.0);
+	float fresnel = 0.04 + (1.0 - 0.04) * pow(1.0 - clamp(abs(hv), 0.0, 1.0), 5.0);
+	float denominator = (1.0 - nh * nh) / (1.0 + 1e-5) + nh * nh;
+	float ndf = nh < 0.0 ? 0.0 : 1.0 / (3.14159265358979323846 * denominator * denominator);
+	float reciprocal_visibility = (abs(nl) + sqrt(1.0)) * (abs(nv) + sqrt(1.0));
+	vec3 specular = vec3(fresnel * ndf) / reciprocal_visibility;
+	vec3 diffuse = color / 3.14159265358979323846;
+	diffuse *= (1.0 - fresnel) * 1.05 * (1.0 - pow(1.0 - clamp(abs(hv), 0.0, 1.0), 5.0));
+	return (specular + diffuse) * clamp(nl, 0.0, 1.0);
+}
+
+// geometry/geometry.hlsl::offsetPosition, scalar expansion independent of the
+// production vector-select implementation. Exercise both signs and near zero.
+vec3 reference_offset_position(vec3 position, vec3 normal) {
+	vec3 result;
+	for (int axis = 0; axis < 3; ++axis) {
+		int step = int(normal[axis] * 256.0);
+		int bits = floatBitsToInt(position[axis]);
+		bits += position[axis] < 0.0 ? -step : step;
+		result[axis] = abs(position[axis]) < 1.0 / 32.0 ? position[axis] + normal[axis] / 65536.0 : intBitsToFloat(bits);
+	}
+	return result;
+}

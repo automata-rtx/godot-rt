@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare low-ray-count light reservoirs against exhaustive light evaluation."""
+"""Compare low-ray-count light reservoirs against fresh light evaluation."""
 
 import argparse
 import re
@@ -19,23 +19,20 @@ def main():
 
     for prefix in ("", "varied_"):
         baseline = load(prefix + "disabled")
-        exhaustive = load(prefix + "exhaustive") - baseline
+        fresh = load(prefix + "fresh") - baseline
         resampled = load(prefix + "resampled") - baseline
-        gain = exhaustive.mean()
+        gain = fresh.mean()
         ratio = resampled.mean() / max(gain, 1e-8)
-        difference = np.abs(resampled - exhaustive).mean()
+        difference = np.abs(resampled - fresh).mean()
         print(
-            f"{prefix or 'identical_'}lights: resampled/exhaustive indirect gain={ratio:.6f}; mean absolute difference={difference:.6f}"
+            f"{prefix or 'identical_'}lights: resampled/fresh indirect gain={ratio:.6f}; mean absolute difference={difference:.6f}"
         )
         if gain <= 0.001 or not 0.8 < ratio < 1.2 or difference > 0.02:
-            raise SystemExit("Resampled lighting deviates excessively from exhaustive lighting")
+            raise SystemExit("Resampled lighting deviates excessively from fresh lighting")
     for name in ("indirect_zero", "disabled_after"):
         if not np.array_equal(load(name), load("varied_disabled")):
             raise SystemExit(f"{name}: direct-only restoration differs")
     log = (directory / "run.log").read_text()
-    for count, capacity in ((4, 4), (6, 8)):
-        if f"AMD GI light hierarchy: lights={count} capacity={capacity}" not in log:
-            raise SystemExit(f"Missing spatial hierarchy coverage for {count} lights")
     checks = re.findall(r"AMD GI reservoir validation: valid=(\d+) reused=(\d+)", log)
     if not checks or not any(int(reused) for _, reused in checks):
         raise SystemExit("World reservoir reuse was not exercised")
@@ -52,8 +49,8 @@ def main():
     entries = 0x400000
     blocks = entries // 256
     reservoir_bytes = (3 * entries + 8 * capacity + 2 * blocks + 2 * (blocks // 256)) * 4
-    expected = 2 * reservoir_bytes - 32 + 8 * 48 - 16
-    if memory["resampled"] - memory["exhaustive_restored"] != expected:
+    expected = 2 * reservoir_bytes - 32
+    if memory["resampled"] - memory["fresh_restored"] != expected:
         raise SystemExit("Light-resampling toggle did not release its reservoir buffers")
     print("World reservoir reuse and allocation toggle verified; direct-only controls exact.")
     print("All captures keep the 1/4 primary-ray budget, multibounce and denoising. Software Vulkan, not GPU timings.")

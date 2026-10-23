@@ -28,6 +28,16 @@ GI-1.x architecture, including the later reflection and multibounce work. This f
 separates that endpoint from implemented code. No performance or fidelity claim for
 AMD GI in this fork has been measured.
 
+## Reference corrections after 848af68
+
+The current working tree restores GridStream unified light proposals, primary
+emission bypass, the rough dielectric secondary BRDF, reference RNG, packed
+radiance sums and default cache capacity, delayed multibounce updates, and probe
+reuse/guiding. Both reference optional feedback flags now default off. A sixth
+GI-only prepass attachment supplies primary albedo/metalness. See the live
+[correction ledger](AMD_GI_REFERENCE_AUDIT.md) for evidence and remaining gaps;
+the older implementation/measurement notes below are not a completion claim.
+
 ## Implemented infrastructure
 
 `servers/rendering/renderer_rd/environment/rt_geometry.{h,cpp}` extracts geometry
@@ -76,7 +86,7 @@ shadow entries survive. Normal cache age-out alone would not release GI-only res
 | --- | --- |
 | Automatic hit shading | Native capture retains prepared geometry/targets with source-revision invalidation; static pixels reuse material/texture revisions with dynamic-shader fallback; native poses reuse shared GPU deformation; CPU-managed MultiMesh inputs and shared static captures are supported. Triangle-tile material detail and unsupported shader/particle inputs are documented limits |
 | Scene collection | Independent bounded mesh/light collection includes native poses, off-screen non-casters and authored GI participation; explicit capacity/unsupported-input fallback |
-| World radiance cache | Bounded full-key directional tiles, sample-count-selected direct/indirect mips, lifetime, emission/short-ray bypass and double-buffered light reservoirs are implemented and tested; spatial light-hierarchy proposals are implemented; all-hit updates are implemented with an optional one-hit-per-cell mode; reservoir storage now uses an independent multi-hit spatial hash; light-grid proposals and the flag’s semantics remain open corrections |
+| World radiance cache | Reference-capacity checksum-hashed tiles with packed sums, sample-count-selected mips, touched-tile updates and delayed indirect accumulation; unified GridStream proposals and independent multi-hit reservoir reuse. Hit-material representation and full-frame conformance remain open. |
 | Screen probes | Dense stored grid with sparse updates, adaptive hole patching, current-grid neighborhood hit reprojection, bounded displaced-probe LRU reuse, radiance/BRDF guiding, angular rebinning/filtering, hierarchical mask lookup, two-dimensional temporal blue-noise sampling and SH9 reconstruction |
 | Multiple bounces | Continuations populate and shade secondary world receivers, then propagate current direct light and previous indirect feedback through separate histories; compatible combined native screen-lighting feedback is implemented; all-hit update scheduling is implemented with an optional lower-cost mode |
 | Reflections | GGX sampling, rough-probe reuse, compacted tracing, firefly cleanup, ratio reconstruction, virtual/surface temporal history and a-trous filtering implemented; secondary materials follow AMD's diffuse approximation rather than general nested specular transport; gameplay quality validation remains |

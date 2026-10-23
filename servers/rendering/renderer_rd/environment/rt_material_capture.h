@@ -69,7 +69,7 @@ public:
 	// Retain immutable expanded geometry and render current material state into it.
 	// The caller must re-prepare after source geometry changes.
 	Error prepare(RID p_mesh, int p_surface, int p_first_triangle, int p_triangle_count, int p_tile_size);
-	Error render(const Transform3D &p_transform, RID p_material_override, int32_t p_instance_uniforms_offset = -1, RID p_mesh_instance = RID(), const Color &p_color = Color(1, 1, 1, 1), const Color &p_custom = Color(0, 0, 0, 0), uint32_t p_element = 0);
+	Error render(const Transform3D &p_transform, RID p_material_override, int32_t p_instance_uniforms_offset = -1, RID p_mesh_instance = RID(), const Color &p_color = Color(1, 1, 1, 1), const Color &p_custom = Color(0, 0, 0, 0), uint32_t p_element = 0, bool p_geometry_normals = false);
 	RID get_texture(int p_index) const;
 	Size2i get_size() const { return size; }
 	uint64_t get_memory_usage() const { return memory_usage; }

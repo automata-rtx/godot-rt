@@ -33,3 +33,23 @@ vec4 gi_cache_accumulate(vec4 radiance, vec4 update, float maximum_count) {
 	}
 	return radiance * count;
 }
+
+// hash_grid_cache.hlsl::QuantizeRadiance and Pack/UnpackRadiance.
+// The hit-list traversal adds these integers, preserving the reference
+// commutative uint accumulation (including its finite range).
+uvec3 gi_cache_quantize(vec3 value) {
+	return uvec3(round(value * 1000.0));
+}
+uvec2 gi_cache_pack(vec4 value) {
+	return uvec2(packHalf2x16(value.xy), packHalf2x16(value.zw));
+}
+vec4 gi_cache_unpack(uvec2 value) {
+	return vec4(unpackHalf2x16(value.x), unpackHalf2x16(value.y));
+}
+uint gi_cache_xxhash(uint value) {
+	uint result = value + 374761393u;
+	result = 668265263u * ((result << 17u) | (result >> 15u));
+	result = 2246822519u * (result ^ (result >> 15u));
+	result = 3266489917u * (result ^ (result >> 13u));
+	return result ^ (result >> 16u);
+}

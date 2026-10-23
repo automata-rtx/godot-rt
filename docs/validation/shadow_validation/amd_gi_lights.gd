@@ -25,13 +25,13 @@ func _run() -> void:
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/light_resampling", false)
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/enabled", true)
 	await _settle(64)
-	await _capture("lights_exhaustive")
+	await _capture("lights_fresh")
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/light_resampling", true)
 	await _settle(64)
 	await _capture("lights_resampled")
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/light_resampling", false)
 	await _settle(64)
-	await _capture("lights_exhaustive_restored")
+	await _capture("lights_fresh_restored")
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/enabled", false)
 	lights[1].position += Vector3(1.5, -0.4, -1.0)
 	lights[1].light_color = Color(0.2, 0.4, 1.0)
@@ -39,7 +39,7 @@ func _run() -> void:
 	lights[2].light_color = Color(1.0, 0.3, 0.1)
 	lights[3].position += Vector3(0.8, -1.5, -1.0)
 	lights[3].light_energy *= 2.0
-	# Six leaves exercise incomplete tree levels and all three analytic types.
+	# Six lights exercise segmented sampling and all three analytic types.
 	var spot := SpotLight3D.new()
 	spot.position = Vector3(0.0, 1.8, 0.0)
 	spot.rotation_degrees.x = -90.0
@@ -59,13 +59,18 @@ func _run() -> void:
 	await _capture("lights_varied_disabled")
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/enabled", true)
 	await _settle(64)
-	await _capture("lights_varied_exhaustive")
+	await _capture("lights_varied_fresh")
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/light_resampling", true)
 	await _settle(64)
 	await _capture("lights_varied_resampled")
 	for light in lights:
 		light.light_indirect_energy = 0.0
+	# Temporal decay is covered by amd_gi.gd. This control checks that zero
+	# indirect energy produces exactly no GI when starting with fresh history.
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/enabled", false)
 	await _settle(12)
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/enabled", true)
+	await _settle(16)
 	await _capture("lights_indirect_zero")
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/enabled", false)
 	await _settle(12)

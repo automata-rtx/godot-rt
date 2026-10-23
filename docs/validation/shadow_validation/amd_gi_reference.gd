@@ -40,7 +40,7 @@ void main() {
     vec3 normal = vec3(0, 0, 1), other_normal = normalize(vec3(float(id % 19u) / 10.0, 0, 1));
     float wa = gi_denoiser_filter_weight(count, depth, other_depth, normal, other_normal);
     float wb = reference_filter_weight(count, depth, other_depth, normal, other_normal);
-    errors[id * 3u] = vec4(max(max(difference.x, difference.y), max(difference.z, difference.w)), abs(delta_a-delta_b), abs(blur_a-blur_b), abs(wa-wb));
+    errors[id * 5u] = vec4(max(max(difference.x, difference.y), max(difference.z, difference.w)), abs(delta_a-delta_b), abs(blur_a-blur_b), abs(wa-wb));
     float alpha = max(pow(float(id % 67u) / 66.0, 2.0), 1e-6);
     vec3 view = normalize(vec3(float(id % 29u) / 28.0, 0.3, (id & 1u) == 0u ? 0.8 : -0.8));
     vec2 samples = vec2(float(id % 101u) + 0.5, float(id % 103u) + 0.5) / vec2(101, 103);
@@ -49,13 +49,20 @@ void main() {
     float nh = clamp(na.z, -1.0, 1.0);
     float pa = gi_ggx_bounded_pdf(alpha, max(alpha*alpha, 1e-6), nh, view);
     float pb = reference_bounded_pdf(alpha, max(alpha*alpha, 1e-6), nh, view);
-    errors[id * 3u + 1u] = vec4(abs(na-nb), abs(pa-pb) / max(abs(pb), 1.0));
+    errors[id * 5u + 1u] = vec4(abs(na-nb), abs(pa-pb) / max(abs(pb), 1.0));
     float update_count = float(id % 23u);
     vec4 cache_history = vec4(average * count, count);
     vec4 cache_update = vec4(average.yzx * update_count, update_count);
     vec4 ca = gi_cache_accumulate(cache_history, cache_update, 16.0);
     vec4 cb = reference_cache_accumulate(cache_history, cache_update, 16.0);
-    errors[id * 3u + 2u] = abs(ca - cb) / max(abs(cb), vec4(1.0));
+    errors[id * 5u + 2u] = abs(ca - cb) / max(abs(cb), vec4(1.0));
+    vec3 light = normalize(vec3(samples * 2.0 - 1.0, 0.3));
+    vec3 ba = gi_rough_brdf(average, normal, view, light);
+    vec3 bb = reference_rough_brdf(average, normal, view, light);
+    errors[id * 5u + 3u] = vec4(abs(ba-bb), 0);
+    vec3 origin = vec3(float(int(id % 73u) - 36), float(int(id % 89u) - 44), float(int(id % 97u) - 48)) * exp2(float(int(id % 32u) - 16));
+    vec3 offset_normal = normalize(vec3(samples * 2.0 - 1.0, 0.3));
+    errors[id * 5u + 4u] = vec4(abs(gi_offset_position(origin, offset_normal) - reference_offset_position(origin, offset_normal)), 0);
 }
 """
 	var spirv := rd.shader_compile_spirv_from_source(source)
@@ -65,7 +72,7 @@ void main() {
 		return
 	var shader := rd.shader_create_from_spirv(spirv)
 	var pipeline := rd.compute_pipeline_create(shader)
-	var buffer := rd.storage_buffer_create(CASES * 48)
+	var buffer := rd.storage_buffer_create(CASES * 80)
 	var uniform := RDUniform.new()
 	uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER
 	uniform.binding = 0

@@ -64,7 +64,7 @@ float surface_roughness(ivec2 pixel) {
 	float r = texelFetch(normal_buffer, pixel, 0).w;
 	return clamp((r > 0.5 ? 1.0 - r : r) * (255.0 / 127.0), 0.0, 1.0);
 }
-#include "amd_gi_sampling_inc.glsl"
+
 float reflection_kernel(vec3 n, vec3 v, vec3 l, float roughness) {
 	float nl = clamp(dot(n, l), -1.0, 1.0), nv = clamp(dot(n, v), -1.0, 1.0);
 	float alpha = max(roughness * roughness, 1e-6), a2 = max(alpha * alpha, 1e-6);
@@ -191,7 +191,7 @@ void trace_reflection(ivec2 pixel, uint id) {
 	float nh = clamp(normalize(local_view + local_light).z, -1.0, 1.0);
 	float pdf = gi_ggx_bounded_pdf(alpha, max(alpha * alpha, 1e-6), nh, local_view);
 	result.direction_pdf = vec4(l, pdf);
-	RayHit hit = trace_hit(p + n * 0.002, l);
+	RayHit hit = trace_hit(gi_offset_position(p, n), l);
 	vec3 value = environment_radiance(l, true);
 	result.normal_distance.w = 65519.0;
 	if (hit.position.w > 0.0) {

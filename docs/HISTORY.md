@@ -6,6 +6,30 @@ alone — several of these already were, and failed. Not here: using a feature (
 one works (`docs/internals/`), running the harnesses (`docs/VALIDATION.md`), diagnosing a symptom
 (`docs/TROUBLESHOOTING.md`).
 
+## AMD GI GridStream, cache and probe corrections — 2026-10-23
+
+Work after `848af68` replaces proposal trees with reference GridStream, restores
+front-face primary emission and rough secondary BRDF weighting, packed radiance
+sums/integer updates, reference cache capacity and RNG, delayed indirect updates,
+probe reprojection/guiding/eviction and removal of custom history wipes. The sixth
+GI-only native prepass attachment supplies primary albedo and metalness. Both
+optional temporal feedback and light-reservoir reuse now default off, as upstream.
+
+`[shadow_validation]` Intermediate integration passed diffuse quarter/one budgets,
+light-change decay and exact cold zero-energy/disabled controls. At 128 frames,
+zero-energy residual display-RGB gain was 0.005758 of its lit value. Fresh/reused
+light gain ratios were 1.004315 and 0.989611. Multibounce ownership passed 66 frames.
+The updated probe code passed 28 reservoir and LRU ownership scans. These are
+intermediate software-Vulkan regressions, not target-hardware performance results
+or proof that the final integrated revision has passed.
+
+The front-facing emission change exposed a native Vulkan winding mismatch in the
+mirror test. A separate 48-ray test confirmed the required instance-facing flip.
+A full-scene Crossroads trial exceeded the existing material atlas at 5,647,232
+padded triangles; the default collection change was withdrawn. The atlas and
+scene-range departures remain open, not approved. See the current
+[reference audit](AMD_GI_REFERENCE_AUDIT.md) before describing completion.
+
 ## AMD GI reference-fidelity correction — 2026-10-23
 
 The earlier “scoped pipeline implemented” status is withdrawn. Passing the fork’s

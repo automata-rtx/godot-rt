@@ -5,6 +5,20 @@ rig here can tell you. The shared layer above `docs/validation/`. Not here: what
 found or refuted (`docs/HISTORY.md`); diagnosing a symptom (`docs/TROUBLESHOOTING.md`); porting to a
 newer engine (`docs/PORTING.md`); how to run one rig (that rig's own README, the maintained copy).
 
+## AMD reference-correction controls
+
+`./run.sh amd_gi_winding` traces 48 rays through a native BoxMesh with normal and
+mirrored instance transforms. It establishes Vulkan's facing flag independently
+of lighting, so front-facing emission cannot silently disappear. Both inside and
+outside hits are checked, including a negative control without the facing flip.
+
+`amd_gi_reference` also compares the reference ray-origin offset and rough
+secondary BRDF, in addition to cache, denoiser and bounded-VNDF equations.
+The diffuse control now measures light-change decay separately from the exact
+zero-indirect-energy image. The latter starts with fresh history: an immediate
+clear after every light edit would contradict AMD's retained-cache behavior.
+The exact GI-disabled restoration check remains unchanged.
+
 ## The one rule: score in linear light
 
 **A PNG is sRGB encoded. Decode to linear before differencing anything.**

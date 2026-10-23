@@ -55,7 +55,23 @@ public:
 	};
 	const LocalVector<LightData> &get_lights() const { return previous_lights; }
 
+	struct EmissiveRange {
+		RID instance, mesh;
+		uint32_t element, surface, first, count;
+		bool operator==(const EmissiveRange &p_other) const {
+			return instance == p_other.instance && mesh == p_other.mesh && element == p_other.element && surface == p_other.surface;
+		}
+		static uint32_t hash(const EmissiveRange &p_key) {
+			uint32_t h = hash_murmur3_one_64(p_key.instance.get_id());
+			h = hash_murmur3_one_64(p_key.mesh.get_id(), h);
+			h = hash_murmur3_one_32(p_key.element, h);
+			return hash_murmur3_one_32(p_key.surface, h);
+		}
+	};
+	const LocalVector<EmissiveRange> &get_emissive_ranges() const { return emissive_ranges; }
+
 private:
+	LocalVector<EmissiveRange> emissive_ranges;
 	// Tile layout must match atlas_position() in rt_gi_transport_inc.glsl.
 	static constexpr uint32_t PAGE_TRIANGLES = 1024;
 	uint32_t tile_size = 8;

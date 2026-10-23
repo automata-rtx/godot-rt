@@ -268,7 +268,7 @@ RID RenderForwardClustered::RenderBufferDataForwardClustered::get_depth_fb(Depth
 				}
 				RID previous_position = render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("previous_position"), RD::DATA_FORMAT_R32G32B32A32_SFLOAT, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT);
 				RID geometry_normal = render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("geometry_normal"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT);
-				return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), depth, normal_roughness_buffer, sss_caster_buffer, velocity, previous_position, geometry_normal);
+				return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), depth, normal_roughness_buffer, sss_caster_buffer, velocity, previous_position, geometry_normal, render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("primary_material"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT));
 			}
 			return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), depth, normal_roughness_buffer, sss_caster_buffer);
 		} break;
@@ -2639,7 +2639,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			} break;
 			case PASS_MODE_DEPTH_GI_MOTION: {
 				depth_framebuffer = rb_data->get_depth_fb(RenderBufferDataForwardClustered::DEPTH_FB_GI_MOTION, motion_vectors_required, _using_restricted_sss_casters(p_render_data));
-				for (int i = 0; i < 5; i++) {
+				for (int i = 0; i < 6; i++) {
 					depth_pass_clear.push_back(Color(0, 0, 0, 0));
 				}
 			} break;
