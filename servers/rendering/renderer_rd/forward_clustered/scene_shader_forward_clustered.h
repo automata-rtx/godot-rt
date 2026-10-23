@@ -67,7 +67,8 @@ public:
 		// Must stay equal to the number of depth versions above: the color pass
 		// index is SHADER_VERSION_COLOR_PASS * 2 + flags, and the depth versions are
 		// pushed twice, once per ubershader.
-		constexpr static uint16_t SHADER_VERSION_COLOR_PASS = 10;
+		constexpr static uint16_t SHADER_VERSION_DEPTH_PASS_WITH_GI_MOTION = 10;
+		constexpr static uint16_t SHADER_VERSION_COLOR_PASS = 11;
 	};
 
 	enum ShaderColorPassFlags {
@@ -91,6 +92,7 @@ public:
 		PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_MULTIVIEW,
 		PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_VOXEL_GI_MULTIVIEW,
 		PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_SSS_CASTER,
+		PIPELINE_VERSION_DEPTH_PASS_WITH_GI_MOTION,
 		PIPELINE_VERSION_COLOR_PASS,
 		PIPELINE_VERSION_MAX
 	};
@@ -255,6 +257,7 @@ public:
 		bool uses_depth_prepass_alpha = false;
 		bool uses_discard = false;
 		bool uses_roughness = false;
+		bool uses_emission = false;
 		bool uses_normal = false;
 		bool uses_tangent = false;
 		bool writes_tangent = false;

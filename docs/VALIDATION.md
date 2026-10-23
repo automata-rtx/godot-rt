@@ -64,6 +64,10 @@ ICD, capture, move, score.
 | `docs/validation/shadow_validation/amd_gi_materials.gd` | retained capture preparation, in-place vertex-color edits versus surface rebuild, non-caster indirect color transfer and disabled restoration | `./run.sh amd_gi_materials` |
 | `docs/validation/shadow_validation/amd_gi_lights.gd` | light-reservoir normalization/reuse, exhaustive-light comparison at the same primary-ray budget, allocation and direct-only controls | `./run.sh amd_gi_lights` |
 | `docs/validation/shadow_validation/amd_gi_bounces.gd` | secondary receiver population/ownership, multibounce energy and allocation toggle at a fixed primary-ray budget | `./run.sh amd_gi_bounces` |
+| `docs/validation/shadow_validation/amd_gi_emitters.gd` | emission-only receiver energy, hit-sampling comparison, repeated flicker and removal without full resets, at quarter rate | `./run.sh amd_gi_emitters` |
+| `docs/validation/shadow_validation/amd_gi_gameplay_audit.gd` | moving-metal history, analytic-light membership pulses and retained flickering-mesh captures; continuity counters, not visual acceptance | `./run.sh amd_gi_gameplay_audit` |
+| `docs/validation/shadow_validation/amd_gi_atlas.gd` | persistent placements, cross-layer copies, live growth/shrink and bounded new material preparation | `./run.sh amd_gi_atlas` |
+| `docs/validation/shadow_validation/amd_gi_reflections.gd` | off-screen reflected emitter, motion/ghosting, half/full resolution, compacted/direct dispatch and allocation release | `./run.sh amd_gi_reflections` |
 | `docs/validation/shadow_validation/gi_compare.gd` | same-room diffuse stills against baked VoxelGI and settled SDFGI, with disabled controls and settling diagnostics | `./run.sh gi_compare` |
 | `docs/validation/ao_validation/` | both occlusion estimators against **two** CPU-traced references (real geometry, and a depth buffer from the camera's own view) | `./run.sh room gtao`, then `ao_truth.py` and `ao_compare.py` |
 

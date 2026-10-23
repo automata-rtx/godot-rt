@@ -35,7 +35,9 @@ func _run() -> void:
 	await _settle(64)
 	await _capture("flashlight_right_exhaustive")
 	flashlight.visible = false
-	await _settle(24)
+	await _settle(4)
+	await _capture("flashlight_off_6")
+	await _settle(18)
 	await _capture("flashlight_off_gi")
 	ProjectSettings.set_setting(GI + "enabled", false)
 	await _settle(8)

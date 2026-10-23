@@ -28,25 +28,34 @@ transform is identity, so these normals include the supplied object's world tran
 
 The caller selects a surface, starting triangle, triangle count, tile size, transform,
 and optional material override. A page contains at most 1024 triangles, at most 32
-columns, and square tiles from 4 to 64 pixels. Counts clip to the remaining surface
+columns, and square tiles of 2 pixels or from 4 to 64 pixels. Counts clip to the remaining surface
 triangles. Indexed triangles are expanded into a temporary non-indexed mesh while
-preserving decoded source attributes. Compressed meshes are decoded using Godot's
-existing surface conversion. Original vertex IDs travel in a separate SSBO.
+preserving native packed source attributes. `rt_material_expand.glsl` expands the
+selected index range directly from GPU vertex/normal, attribute, skin, and index
+buffers. The native material vertex shader decodes compressed attributes as usual.
+Original vertex IDs travel in a separate SSBO; no source-buffer readback occurs.
 
 Triangle `i` occupies tile `(i % columns, i / columns)`. Its corners, relative to the
 tile origin, are `(1, 1)`, `(tile_size - 1, 1)`, and `(1, tile_size - 1)` in pixel-edge
 coordinates. For barycentrics `(u, v)` corresponding to the second and third corners,
 the continuous position is `tile_origin + 1 + (tile_size - 2) * (u, v)`.
+For the compact 2-pixel fallback, corners are `(0,0)`, `(2,0)`, `(0,2)`;
+the hit sampler always selects pixel `(0,0)`, at barycentrics `(1/4,1/4)`.
+This retains one native material sample per triangle, with reduced texture,
+cutout, and smooth-normal detail. It never drops geometry.
 Rasterization samples pixel centers. Uncovered texels remain clear: there is no
-edge dilation, mip generation, or seam-safe filtering yet. A future ray-hit sampler
-must handle this explicitly; ordinary bilinear sampling near edges is insufficient.
+edge dilation or mip generation. The ray-hit sampler clamps/folds barycentric
+addresses to covered texel centers; ordinary bilinear sampling across tile edges
+would read another triangle or clear padding.
 
 The output attachments are three RGBA8 textures and one RGBA16F texture, plus R32F
 and depth attachments needed by the existing material pass. At the largest allowed
 page, the six attachments occupy approximately 112 MiB before driver overhead
 (2048 squared texels times 28 bytes, arithmetic only). This bound is not a sensible
-per-mesh default or a total cache budget. Resident material pages need a separate
-budget and eviction policy before use in a game.
+per-mesh default or a total cache budget. The GI adapter uses fixed 1024-triangle
+chunks, adaptive tile sizes and an unused-capture residency budget of one quarter
+of the atlas limit, with a 120-update age limit. Active source geometry and capture
+targets remain separate allocations and belong in total memory measurements.
 
 ## Renderer and lifetime contract
 
@@ -84,9 +93,26 @@ budget and eviction policy before use in a game.
 
 ## Limits before integration
 
-Preparation reads and decodes the entire source surface, including buffers
-unrelated to the selected page. Active GI retains the expanded pages, avoiding
-repeated geometry readback/decoding and target allocation in unchanged scenes.
+Preparation now uses metadata-only mesh accessors, GPU expansion, and native
+material rendering. The public `SurfaceData` readback/CPU decode path is no longer
+used by `prepare()`. The standalone diagnostic API still reads capture outputs.
+
+Active captures retain their atlas placements. New captures fill free intervals; only fragmentation or a tighter budget triggers compaction. Source chunks stay fixed at 1,024 triangles, independently of packed atlas offsets.
+Packing changes copy rows across atlas layers without preparing expanded geometry
+again. Unused captures survive for up to 120 scene updates, subject to an LRU
+unused-residency budget of one quarter of `material_atlas_mb`; active captures are
+retained. This bounds inactive native targets/expanded buffers separately from the
+packed atlas. It does not make active capture memory equal to the atlas budget.
+
+A metadata-only preflight counts unique material keys before capture begins.
+`material_adaptive_resolution` (default on) reduces the selected 8/4-pixel maximum
+to 4 or 2 as necessary to fit the atlas budget. Reduced resolution remains in use
+until the scene consumer is recreated or its size/budget/adaptation setting changes;
+visibility changes cannot alternate capture resolutions each frame. If even the
+compact representation cannot fit, preflight reports the limit without repeatedly
+preparing an incomplete scene. The source [gameplay audit](../AMD_GI_GAMEPLAY_AUDIT.md)
+records the former behavior at commit `3038a14`.
+
 Vertex/index/attribute/skin region edits advance the mesh's data revision;
 vertex/index edits also invalidate shared BLAS geometry. Surface replacement is
 detected through the shared geometry build revision. Attribute-only edits do not
@@ -104,7 +130,7 @@ GPU textures retain per-frame evaluation because their values are not covered by
 that static content contract. The other pages remain cached. The dirty-material
 rig verifies image updates in place, emission parameters, shader changes, TIME and
 global uniforms. Bounded preparation work per frame, higher material resolution,
-and reuse of source decoding across pages of a large surface remain work.
+and further capture-memory reduction remain work.
 
 The public API takes a mesh, not a scene instance. It does not apply skeleton poses,
 blend shapes, instance uniforms, MultiMesh colors/custom data, or particles. The
@@ -120,14 +146,17 @@ combined blend shapes, and FSR2 pose-buffer swapping have a separate deformation
 transform, but this does not prove correspondence with deformed RT geometry.
 
 There is no scene camera or scene screen texture in this pass. Camera-dependent,
-screen-reading, transparent, and multipass materials require further
-policy and validation. TIME-driven fragment shading refreshes each frame. Alpha output describes the captured surface; the shared GI query forces non-opaque candidate processing and accepts only
-captured alpha >= 0.5, retaining the same opaque BLAS used by RT shadows. Cutout
-fidelity is limited by the small material tiles.
+screen-reading and multipass hit materials are unsupported. Forward-only transparency
+stays in rasterization; depth-writing mix-alpha materials use stochastic coverage.
+TIME-driven fragment shading refreshes each frame. The shared GI query forces
+non-opaque candidate processing while retaining the same opaque BLAS used by RT
+shadows. Cutouts use captured alpha; fractional blend coverage uses a stochastic
+acceptance test. Texture/cutout fidelity is limited by the material tiles.
 
-Fixed tiles can undersample material detail. Capture is an available building block,
-not a decision to allocate a tile for every triangle in the world. Validate residency,
-sampling quality, and moving-instance behavior before selecting the final cache.
+Fixed tiles can undersample material detail. The adapter captures the bounded
+camera-centered GI collection, sharing compatible instances, rather than the entire
+world. The live preparation budget limits new chunks per scene update; a partial
+scene is never published as ready.
 
 ## Validation
 
@@ -145,8 +174,9 @@ remain necessary for an eventual zero-cost-when-disabled GI backend claim.
 
 The GI adapter packs capture chunks into 32-triangle rows across its atlas layers.
 The source captures keep their own pixels; moving a packed address requires only
-an atlas copy. A chunk's first triangle and requested count both participate in
-preparation invalidation, since preceding surfaces can change a layer boundary.
+an atlas copy. Fixed source chunks are independent of atlas placement. A chunk's
+first triangle and requested count both participate in preparation invalidation;
+only source range changes rebuild expanded geometry.
 The `amd_gi_atlas` rig covers relocation and surfaces spanning multiple layers.
 
 ## Shared captures

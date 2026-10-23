@@ -31,6 +31,7 @@
 #pragma once
 #include "servers/rendering/renderer_rd/environment/rt_geometry.h"
 #include "servers/rendering/renderer_rd/environment/rt_material_capture.h"
+#include "servers/rendering/renderer_rd/shaders/effects/rt_gi_emitters.glsl.gen.h"
 #include "servers/rendering/renderer_scene_render.h"
 
 namespace RendererRD {
@@ -50,7 +51,7 @@ public:
 		uint32_t shadows;
 		float shadow_opacity;
 		uint32_t shadow_mask;
-		uint32_t padding[2] = {};
+		uint32_t identity[2] = {}; // Full light-instance RID, for temporal remapping.
 	};
 	const LocalVector<LightData> &get_lights() const { return previous_lights; }
 
@@ -59,12 +60,17 @@ private:
 	static constexpr uint32_t PAGE_TRIANGLES = 1024;
 	uint32_t tile_size = 8;
 	uint32_t page_size = 256;
+	uint32_t configured_tile_size = 0;
+	uint32_t configured_atlas_mb = 0;
+	bool configured_adaptive_resolution = true;
+	static RID surface_material(const RendererSceneRender::RaytracingGIInstance &p_instance, int p_surface);
+	static bool can_share_capture(RID p_material);
 	// Collection keeps one overflow entry beyond these limits to signal failure.
 	static constexpr uint32_t MAX_LIGHTS = RendererSceneRender::MAX_RT_GI_LIGHTS;
 	static constexpr uint32_t MAX_INSTANCES = RendererSceneRender::MAX_RT_GI_INSTANCES;
 	struct HitData {
 		uint32_t first_tile;
-		uint32_t triangles; // Bits 31/30: local capture normals / stochastic opacity.
+		uint32_t flags_emitter; // Bits 31/30: local normals / stochastic opacity; low bits: emitter base + 1.
 		uint32_t mask;
 		uint32_t shadow_mask = 0;
 	};
@@ -118,14 +124,24 @@ private:
 			return hash_fmix32(h);
 		}
 	};
+	struct MaterialPlacement {
+		MaterialKey key;
+		uint32_t count = 0;
+		uint32_t first = UINT32_MAX;
+	};
+	uint64_t required_material_tiles(const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, LocalVector<MaterialPlacement> &r_placements) const;
+	uint32_t place_material_tiles(LocalVector<MaterialPlacement> &r_placements, uint32_t p_limit) const;
 	struct SurfaceMaterial {
 		LocalVector<MaterialPage> pages;
-		uint32_t first_tile = 0;
+		uint32_t first_tile = UINT32_MAX;
+		uint32_t allocated_tiles = 0;
 		uint64_t last_used = 0;
+		uint64_t pixels_revision = 0;
 	};
 	HashMap<MaterialKey, SurfaceMaterial *, MaterialKeyHasher> material_cache;
 	uint64_t material_frame = 0;
-	void prune_materials(uint64_t p_minimum_frame);
+	uint64_t pixels_revision = 0;
+	void prune_materials(uint64_t p_minimum_frame, uint64_t p_unused_budget = UINT64_MAX);
 	struct InstanceState {
 		RID instance;
 		uint32_t element = 0;
@@ -148,9 +164,27 @@ private:
 	RID atlas[4];
 	RID hit_buffer;
 	RID light_buffer;
+	RtGiEmittersShaderRD emitter_shader;
+	RID emitter_version, emitter_pipeline;
+	uint32_t emitter_count = 0;
+	uint32_t emitter_capacity = 0;
+	uint32_t emitter_storage_capacity = 0;
+	struct EmitterBatch {
+		RID vertices, indices;
+		Transform3D transform;
+		uint32_t vertex_count, index_stride, triangles, first_tile, first_emitter;
+		uint64_t geometry_revision, pixels_revision;
+		bool operator==(const EmitterBatch &p_other) const {
+			return vertices == p_other.vertices && indices == p_other.indices && transform == p_other.transform && vertex_count == p_other.vertex_count && index_stride == p_other.index_stride && triangles == p_other.triangles && first_tile == p_other.first_tile && first_emitter == p_other.first_emitter && geometry_revision == p_other.geometry_revision && pixels_revision == p_other.pixels_revision;
+		}
+	};
+	LocalVector<EmitterBatch> previous_emitters;
+	bool emitter_buffer_valid = false;
+	bool update_emitters(const LocalVector<EmitterBatch> &p_batches);
 	uint32_t light_count = 0;
 	uint32_t signature = 0;
 	uint64_t revision = 1;
+	uint64_t lighting_revision = 1;
 	bool ready = false;
 	bool feedback_compatible = true;
 
@@ -160,7 +194,10 @@ public:
 	bool is_ready() const { return ready; }
 	bool is_feedback_compatible() const { return feedback_compatible; }
 	uint32_t get_light_count() const { return light_count; }
+	uint32_t get_emitter_count() const { return emitter_count; }
+	uint32_t get_emitter_capacity() const { return emitter_capacity; }
 	uint64_t get_revision() const { return revision; }
+	uint64_t get_lighting_revision() const { return lighting_revision; }
 	void append_uniforms(LocalVector<RD::Uniform> &r_uniforms, RID p_sampler) const;
 	void update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights);
 	RaytracingGIScene();

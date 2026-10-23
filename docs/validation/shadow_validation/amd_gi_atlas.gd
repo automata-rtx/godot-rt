@@ -4,8 +4,8 @@ var _padding: MeshInstance3D
 
 
 func _ready() -> void:
-	# Allocate these before the room so resizing the first source shifts every
-	# later atlas row without changing those sources' materials or geometry.
+	# Allocate these before the room. Resizing the first source must retain
+	# the other atlas placements instead of shifting every later capture.
 	_padding = _box("Padding", Vector3(0, 0, 15), Vector3.ONE, Color.BLACK)
 	for index in 40:
 		_box("Padding%d" % index, Vector3(float(index % 10) - 5.0, 0, 18.0 + float(index / 10)), Vector3(0.3, 0.3, 0.3), Color.BLACK)
@@ -18,6 +18,7 @@ func _run() -> void:
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/denoiser", true)
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/multibounce", true)
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/max_distance", 20.0)
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/material_preparation_budget", 8)
 	await _settle(12)
 	await _capture("atlas_disabled")
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/enabled", true)

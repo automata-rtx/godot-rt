@@ -727,9 +727,9 @@ void vertex_shader(vec3 vertex_input,
 			uint corner = uint(gl_VertexIndex) % 3u;
 			uint side = material_capture.layout_info.x;
 			uint columns = material_capture.layout_info.y;
-			vec2 origin = vec2(triangle % columns, triangle / columns) * float(side) + vec2(1.0);
+			vec2 origin = vec2(triangle % columns, triangle / columns) * float(side) + vec2(side == 2u ? 0.0 : 1.0);
 			vec2 corner_uv = vec2(corner == 1u ? 1.0 : 0.0, corner == 2u ? 1.0 : 0.0);
-			uv_dest_attrib = (origin + corner_uv * float(side - 2u)) * scene_data.screen_pixel_size;
+			uv_dest_attrib = (origin + corner_uv * float(side == 2u ? 2u : side - 2u)) * scene_data.screen_pixel_size;
 			uv_offset = vec2(0.0);
 		}
 		gl_Position.xy = (uv_dest_attrib + uv_offset) * 2.0 - 1.0;
@@ -1147,6 +1147,10 @@ layout(location = 3) out vec4 gi_feedback;
 #endif
 
 #endif // RENDER DEPTH
+
+#ifdef GI_PREVIOUS_POSITION
+layout(location = 3) out vec4 gi_previous_position;
+#endif
 
 #ifdef MOTION_VECTORS
 layout(location = 2) out vec2 motion_vector;
@@ -3385,6 +3389,14 @@ void fragment_shader(in SceneData scene_data) {
 	vec2 prev_position_uv = prev_position_clip * vec2(0.5, 0.5);
 
 	motion_vector = prev_position_uv - position_uv;
+#ifdef GI_PREVIOUS_POSITION
+#undef inv_projection_matrix
+	// Preserve the actual previous surface position, including native skinning,
+	// blend shapes and instance motion. This is produced before GI tracing.
+	vec4 previous_view = scene_data_block.prev_data.inv_projection_matrix * prev_screen_position;
+	// Positive alpha also carries native metallic for probe BRDF guiding.
+	gi_previous_position = vec4((previous_view / previous_view.w) * scene_data_block.prev_data.inv_view_matrix, 1.0 + clamp(metallic, 0.0, 1.0));
+#endif
 #endif
 }
 

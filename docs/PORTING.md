@@ -1387,20 +1387,27 @@ recovery, and emissive removal. See [features/amd-gi.md](features/amd-gi.md) for
 
 ### AMD GI sky and glossy reflections
 
-Port `amd_gi_reflections_inc.glsl` with the main shader. The frame UBO is now 560
+Port `amd_gi_reflections_inc.glsl` with the main shader. The frame UBO is now 576
 bytes: the original 288-byte sky/reflection layout followed by one uvec4 and eight
-std140 min/max vec4 pairs for swept motion bounds.
+std140 min/max vec4 pairs for swept motion bounds, plus the emitter/queue uvec4
+inserted immediately before the bounds. Keep its C++ size assertion and GLSL order aligned.
 Binding 37 samples SkyRD's existing 2D base octahedral view for either sky layout;
 do not bind a cubemap or allocate a second sky bake. The sky radiance version
 increments only when its base is redrawn. Static sky edits invalidate GI history;
 TIME/position/light-driven skies use continuous sampling without per-redraw resets.
 Smooth light motion/energy/color and sky orientation changes retain history. Light
-identity/list/mask changes and large discontinuities reset it; previous light
-parameters are compared separately from the scene identity signature.
+identity/list/mask changes remap the previous reservoirs through a 1024-uint table
+at the beginning of binding 44, before its light-tree nodes. Removed lights invalidate
+only their proposals. Lighting changes reduce temporal weight for a sparse-probe
+refresh cycle without resetting geometric coverage or all screen history.
 
 Bindings 38–40 are 80-byte glossy sample/previous/current history records. Bindings
 41–42 are filtered radiance/variance images; 43 is the full-resolution reflection
-output. The last five stages trace, ratio-resolve, reproject, filter, and upsample.
+output. The glossy stages classify/compact rays, build indirect dispatch arguments,
+trace, mark/clean fireflies, ratio-resolve, reproject, filter, and upsample. The
+compacted queue is appended to the existing scheduling buffer; its indirect usage
+flag and byte offset must agree with the shader. Dispatch groups use a 2D layout
+when the sample count exceeds 65,535 groups in X.
 FILTER repeats with barriers at a-trous steps 1, 2, and 4 according to the control;
 its first iteration reads immutable history, subsequent iterations ping-pong images.
 No lane reads a neighbor's concurrently written history. Odd half-resolution sizes
@@ -1418,12 +1425,32 @@ as well as diffuse regression checks; the matte room cannot exercise specular ou
 
 The hit record's first uint is now an absolute triangle-tile address, not an array
 layer. `atlas_position()` adds the primitive index, divides by 1024 for the layer,
-and uses a fixed 32-tile row. CPU capture chunks end at layer boundaries and retain
-their requested triangle count in the preparation key. Each surface rounds its
+and uses a fixed 32-tile row. Capture chunks use fixed 1024-triangle source ranges
+independent of atlas placement; GPU copies split at destination layer boundaries.
+Each surface rounds its
 final row up; small meshes no longer reserve a full layer. Atlas address changes
 must copy retained capture pixels even when material content is unchanged. Keep
 copy destinations, layer bounds and the shader address calculation together.
 Run `amd_gi_atlas`, material transport and the one-sample uncached controls.
+
+### AMD GI native motion and GPU material preparation
+
+The lazy GI depth variant writes native previous-surface world position and metalness
+to binding 48's RGBA32F texture. Alpha is `1 + metallic`, with zero marking invalid
+pixels. Preserve native previous skin/blend-shape inputs, projection conventions,
+and the explicit GI motion-vector pipeline flags. GI owns its additional attachments
+in `RB_SCOPE_AMD_GI_GEOMETRY`; velocity and SSS-mask targets are shared only when a
+native consumer already needs them. Clear the GI scope on disable. FSR2/DLSS continue
+to receive native velocity; do not enable an extra color-pass motion target solely
+because GI requests previous-surface positions.
+
+`rt_material_expand.glsl` expands packed source attributes on GPU, preserving original
+vertex IDs and all native material inputs. Metadata surface lookups require the
+`uint32_t` overload; accidentally selecting the signed overload reads source buffers
+back to CPU. Keep capture residency, persistent atlas placements, adaptive 4/2-pixel
+capacity fallback, and bounded preparation together. A pending scene must not publish
+an incomplete TLAS. Emissive extraction reads the shared RT position/index buffers and
+native capture atlas; its tree shares binding 5 after the fixed analytic-light prefix.
 
 ### GI pose capture and local invalidation
 

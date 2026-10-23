@@ -4,7 +4,7 @@ layout(set = 0, binding = 1) uniform sampler2D depth_buffer;
 layout(set = 0, binding = 2) uniform sampler2D normal_buffer;
 layout(rgba16f, set = 0, binding = 3) uniform restrict writeonly image2D output_diffuse;
 layout(set = 0, binding = 4, std430) restrict readonly buffer Hits {
-	uvec4 data[]; // first material tile, triangle count, full render layer mask, shadow caster layers
+	uvec4 data[]; // first material tile, flags/emitter base, full render layer mask, shadow caster layers
 }
 hits;
 struct Light {
@@ -22,8 +22,15 @@ struct Light {
 	uint shadow_mask;
 	uvec2 padding;
 };
+struct Emitter {
+	vec4 position_area;
+	vec4 edge1_power;
+	vec4 edge2;
+	vec4 emission_tile;
+};
 layout(set = 0, binding = 5, std430) restrict readonly buffer Lights {
-	Light data[];
+	Light data[1024];
+	Emitter emitters[];
 }
 lights;
 layout(set = 0, binding = 6) uniform sampler2DArray albedo_atlas;
@@ -60,15 +67,17 @@ vec3 cosine_direction(vec3 normal, inout uint state) {
 	vec3 tangent = normalize(cross(abs(normal.z) < 0.99 ? vec3(0, 0, 1) : vec3(0, 1, 0), normal));
 	return tangent * (r * cos(angle)) + cross(normal, tangent) * (r * sin(angle)) + normal * sqrt(max(0.0, 1.0 - r * r));
 }
-vec3 atlas_position(uint instance, uint triangle, vec2 bary) {
-	uvec4 record = hits.data[instance];
-	uint material_tile = record.x + triangle;
+vec3 atlas_tile_position(uint material_tile, vec2 bary) {
 	uint page = material_tile / 1024u;
 	uint local_triangle = material_tile % 1024u;
 	const uint columns = 32u;
 	// Use a covered texel within this triangle, never another triangle's data or
 	// an uncovered border. This small validation tile intentionally limits detail.
 	uint tile_size = uint(textureSize(albedo_atlas, 0).x) / columns;
+	if (tile_size == 2u) {
+		uvec2 tile = uvec2(local_triangle % columns, local_triangle / columns);
+		return vec3((vec2(tile * tile_size) + 0.5) / float(tile_size * columns), float(page));
+	}
 	int interior = int(tile_size) - 2;
 	ivec2 sample_pixel = clamp(ivec2(floor(vec2(1.0) + bary * float(interior))), ivec2(1), ivec2(interior));
 	int excess = max(sample_pixel.x + sample_pixel.y - interior, 0);
@@ -81,7 +90,11 @@ vec3 atlas_position(uint instance, uint triangle, vec2 bary) {
 	return vec3((vec2(tile * tile_size) + vec2(sample_pixel) + 0.5) / float(tile_size * columns), float(page));
 }
 
-bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out uint instance, out vec3 position, out vec3 uv, out vec3 normal) {
+vec3 atlas_position(uint instance, uint triangle, vec2 bary) {
+	return atlas_tile_position(hits.data[instance].x + triangle, bary);
+}
+
+bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out uint instance, out vec3 position, out vec3 uv, out vec3 normal, out uint primitive) {
 	// Stay inside the volume actually gathered by the CPU. Missing out-of-range
 	// geometry must not be confused with a complete unbounded scene.
 	vec3 local = origin - params.camera_position.xyz;
@@ -131,6 +144,7 @@ bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out ui
 		return false;
 	}
 	instance = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+	primitive = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
 	uv = atlas_position(instance, rayQueryGetIntersectionPrimitiveIndexEXT(query, true), rayQueryGetIntersectionBarycentricsEXT(query, true));
 	position = origin + direction * rayQueryGetIntersectionTEXT(query, true);
 	normal = vec3(0);
@@ -141,6 +155,11 @@ bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out ui
 		}
 	}
 	return true;
+}
+
+bool trace(vec3 origin, vec3 direction, float distance, uint shadow_mask, out uint instance, out vec3 position, out vec3 uv, out vec3 normal) {
+	uint primitive;
+	return trace(origin, direction, distance, shadow_mask, instance, position, uv, normal, primitive);
 }
 
 // Keep proposal evaluation separate from visibility so resampled lighting can

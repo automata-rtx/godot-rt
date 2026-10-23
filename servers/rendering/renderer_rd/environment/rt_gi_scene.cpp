@@ -117,9 +117,14 @@ bool RaytracingGIScene::ensure_scene_buffers(uint32_t p_instances, uint32_t p_li
 		hit_buffer = replacement_hits;
 		instance_capacity = capacity;
 	}
-	if (MAX(1u, p_lights) > light_capacity) {
-		const uint32_t capacity = Math::next_power_of_2(MAX(1u, p_lights));
-		RID replacement = rd->storage_buffer_create(capacity * sizeof(LightData));
+	const uint32_t required_emitters = Math::next_power_of_2(MAX(emitter_count, 1u));
+	const bool retain_emitters = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/enabled")) && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/emissive_sampling"));
+	if (light_buffer.is_null() || required_emitters > emitter_storage_capacity || (!retain_emitters && emitter_storage_capacity > 1)) {
+		// Retain physical capacity across flickering emitters. Logical tree size
+		// still follows the current set, so a formerly large scene does not make
+		// a small emitter rebuild process all previously allocated leaves.
+		const uint32_t storage_capacity = retain_emitters ? MAX(required_emitters, emitter_storage_capacity) : 1;
+		RID replacement = rd->storage_buffer_create(MAX_LIGHTS * sizeof(LightData) + storage_capacity * 2u * 64u);
 		if (replacement.is_null()) {
 			return false;
 		}
@@ -127,12 +132,24 @@ bool RaytracingGIScene::ensure_scene_buffers(uint32_t p_instances, uint32_t p_li
 			rd->free_rid(light_buffer);
 		}
 		light_buffer = replacement;
-		light_capacity = capacity;
+		light_capacity = MAX_LIGHTS;
+		emitter_storage_capacity = storage_capacity;
+		emitter_buffer_valid = false;
+	}
+	if (emitter_capacity != required_emitters) {
+		emitter_capacity = required_emitters;
+		emitter_buffer_valid = false;
 	}
 	return true;
 }
 
 RaytracingGIScene::~RaytracingGIScene() {
+	if (emitter_pipeline.is_valid()) {
+		RD::get_singleton()->free_rid(emitter_pipeline);
+	}
+	if (emitter_version.is_valid()) {
+		emitter_shader.version_free(emitter_version);
+	}
 	prune_materials(UINT64_MAX);
 	for (RID handle : { tlas, hit_buffer, light_buffer, atlas[0], atlas[1], atlas[2], atlas[3] }) {
 		if (handle.is_valid()) {
@@ -177,19 +194,40 @@ bool RaytracingGIScene::light_history_compatible(const LightData &p_current, con
 	return true;
 }
 
-void RaytracingGIScene::prune_materials(uint64_t p_minimum_frame) {
-	LocalVector<MaterialKey> unused;
+void RaytracingGIScene::prune_materials(uint64_t p_minimum_frame, uint64_t p_unused_budget) {
+	struct Candidate {
+		MaterialKey key;
+		uint64_t age;
+		uint64_t bytes;
+		bool operator<(const Candidate &p_other) const { return age < p_other.age; }
+	};
+	LocalVector<Candidate> unused;
+	uint64_t unused_bytes = 0;
 	for (const KeyValue<MaterialKey, SurfaceMaterial *> &entry : material_cache) {
-		if (entry.value->last_used < p_minimum_frame) {
+		if (p_minimum_frame == UINT64_MAX || entry.value->last_used != material_frame) {
+			uint64_t bytes = 0;
 			for (MaterialPage &page : entry.value->pages) {
-				memdelete(page.capture);
+				bytes += page.capture->get_memory_usage();
+				// Packed atlas locations can be overwritten while a capture is not
+				// visible. Retain its native pixels, not ownership of the old slot.
+				page.atlas_tile = UINT32_MAX;
 			}
-			memdelete(entry.value);
-			unused.push_back(entry.key);
+			unused.push_back({ entry.key, entry.value->last_used, bytes });
+			unused_bytes += bytes;
 		}
 	}
-	for (const MaterialKey &key : unused) {
-		material_cache.erase(key);
+	unused.sort();
+	for (const Candidate &candidate : unused) {
+		if (candidate.age >= p_minimum_frame && unused_bytes <= p_unused_budget) {
+			break;
+		}
+		SurfaceMaterial *material = material_cache[candidate.key];
+		for (MaterialPage &page : material->pages) {
+			memdelete(page.capture);
+		}
+		memdelete(material);
+		material_cache.erase(candidate.key);
+		unused_bytes -= candidate.bytes;
 	}
 }
 
@@ -254,15 +292,159 @@ void RaytracingGIScene::update_instance_history(const LocalVector<InstanceState>
 	previous_instances = p_instances;
 }
 
+RID RaytracingGIScene::surface_material(const RendererSceneRender::RaytracingGIInstance &p_instance, int p_surface) {
+	if (p_instance.material_override.is_valid()) {
+		return p_instance.material_override;
+	}
+	if (p_surface < p_instance.materials.size() && p_instance.materials[p_surface].is_valid()) {
+		return p_instance.materials[p_surface];
+	}
+	return MeshStorage::get_singleton()->mesh_surface_get_material(p_instance.mesh, p_surface);
+}
+
+bool RaytracingGIScene::can_share_capture(RID p_material) {
+	auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(MaterialStorage::get_singleton()->material_get_data(p_material, MaterialStorage::SHADER_TYPE_3D));
+	if (!data || !data->shader_data) {
+		return false;
+	}
+	const auto &shader = *data->shader_data;
+	if (shader.uses_instance_transform || shader.uses_world_coordinates || shader.uses_normal || shader.uses_tangent) {
+		return false;
+	}
+	for (const auto &uniform : shader.uniforms) {
+		if (uniform.value.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_INSTANCE) {
+			return false;
+		}
+	}
+	return true;
+}
+
+uint64_t RaytracingGIScene::required_material_tiles(const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, LocalVector<MaterialPlacement> &r_placements) const {
+	// Metadata-only preflight: no BLAS construction, capture, allocation, or GPU
+	// readback. Count the same shared material keys as the capture loop below.
+	MeshStorage *meshes = MeshStorage::get_singleton();
+	HashSet<MaterialKey, MaterialKeyHasher> unique;
+	uint64_t tiles = 0;
+	for (const auto &instance : p_instances) {
+		if (instance.mesh.is_null()) {
+			continue; // The collection pass reports unsupported geometry.
+		}
+		Color color(1, 1, 1, 1);
+		if (instance.multimesh.is_valid() && !meshes->multimesh_uses_indirect(instance.multimesh) && meshes->multimesh_uses_colors(instance.multimesh)) {
+			color = meshes->multimesh_instance_get_color(instance.multimesh, instance.element);
+		}
+		for (int surface = 0; surface < meshes->mesh_get_surface_count(instance.mesh); surface++) {
+			RID material = surface_material(instance, surface);
+			auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(MaterialStorage::get_singleton()->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
+			if (data && data->shader_data && data->next_pass.is_null()) {
+				const auto &shader = *data->shader_data;
+				if (shader.uses_alpha_pass() && !shader.uses_depth_in_alpha_pass() && shader.depth_draw != RendererSceneRenderImplementation::SceneShaderForwardClustered::ShaderData::DEPTH_DRAW_ALWAYS && !shader.casts_shadows()) {
+					continue;
+				}
+			}
+			const bool shared = can_share_capture(material);
+			const MaterialKey key{ instance.mesh, material, instance.mesh_instance, shared ? RID() : instance.instance, shared ? 0u : instance.element, uint32_t(surface), shared ? color : Color(1, 1, 1, 1) };
+			if (unique.has(key)) {
+				continue;
+			}
+			unique.insert(key);
+			void *source = meshes->mesh_get_surface(instance.mesh, uint32_t(surface));
+			uint32_t count = meshes->mesh_surface_get_index_count(source);
+			if (count == 0) {
+				count = meshes->mesh_surface_get_vertex_count(source);
+			}
+			const uint32_t surface_tiles = ((count / 3u + 31u) / 32u) * 32u;
+			tiles += surface_tiles;
+			r_placements.push_back({ key, surface_tiles, UINT32_MAX });
+		}
+	}
+	return tiles;
+}
+
+uint32_t RaytracingGIScene::place_material_tiles(LocalVector<MaterialPlacement> &r_placements, uint32_t p_limit) const {
+	struct Interval {
+		uint32_t first, end;
+		bool operator<(const Interval &p_other) const { return first < p_other.first; }
+	};
+	LocalVector<Interval> occupied;
+	for (MaterialPlacement &placement : r_placements) {
+		SurfaceMaterial *const *cached = material_cache.getptr(placement.key);
+		// Only last frame's live captures own atlas space. Inactive captures
+		// retain their native pixels, but their old slot may already be reused.
+		if (cached && (*cached)->last_used + 1 == material_frame && (*cached)->allocated_tiles == placement.count && (*cached)->first_tile < p_limit && placement.count <= p_limit - (*cached)->first_tile) {
+			placement.first = (*cached)->first_tile;
+			occupied.push_back({ placement.first, placement.first + placement.count });
+		}
+	}
+	occupied.sort();
+	LocalVector<Interval> available;
+	bool compact = false;
+	uint32_t end = 0;
+	for (const Interval &span : occupied) {
+		compact |= span.first < end;
+		if (end < span.first) {
+			available.push_back({ end, span.first });
+		}
+		end = MAX(end, span.end);
+	}
+	if (end < p_limit) {
+		available.push_back({ end, p_limit });
+	}
+	for (MaterialPlacement &placement : r_placements) {
+		if (placement.first != UINT32_MAX) {
+			continue;
+		}
+		for (Interval &span : available) {
+			if (placement.count <= span.end - span.first) {
+				placement.first = span.first;
+				span.first += placement.count;
+				break;
+			}
+		}
+		if (placement.first == UINT32_MAX) {
+			compact = true; // Preflight proved total capacity; only fragmentation remains.
+			break;
+		}
+	}
+	end = 0;
+	for (MaterialPlacement &placement : r_placements) {
+		if (compact) {
+			placement.first = end;
+		}
+		end = MAX(end, placement.first + placement.count);
+	}
+	return end;
+}
+
 void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights) {
 	ready = false;
 	feedback_compatible = true;
-	prune_materials(material_frame++);
+	material_frame++;
 	motion_bounds.clear();
 	LocalVector<InstanceState> current_instances;
 	RD *rd = RD::get_singleton();
 	const uint32_t requested_tile_size = int(GLOBAL_GET("rendering/global_illumination/amd_gi/material_tile_size")) == 4 ? 4 : 8;
-	if (requested_tile_size != tile_size) {
+	const uint32_t atlas_mb = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/material_atlas_mb")), 8, 512);
+	const bool adaptive_resolution = GLOBAL_GET("rendering/global_illumination/amd_gi/material_adaptive_resolution");
+	// Keep reduced resolution until the settings or scene lifetime change. A
+	// flickering object at the budget boundary must not rebuild every capture.
+	uint32_t selected_size = configured_tile_size != requested_tile_size || configured_atlas_mb != atlas_mb || configured_adaptive_resolution != adaptive_resolution ? requested_tile_size : tile_size;
+	configured_tile_size = requested_tile_size;
+	configured_atlas_mb = atlas_mb;
+	configured_adaptive_resolution = adaptive_resolution;
+	LocalVector<MaterialPlacement> placements;
+	const uint64_t required_tiles = required_material_tiles(p_instances, placements);
+	const uint64_t required_pages = (required_tiles + PAGE_TRIANGLES - 1) / PAGE_TRIANGLES;
+	const uint64_t atlas_budget = uint64_t(atlas_mb) * 1024 * 1024;
+	while (adaptive_resolution && selected_size > 2 && required_pages * PAGE_TRIANGLES * selected_size * selected_size * 20u > atlas_budget) {
+		selected_size /= 2;
+	}
+	if (required_pages > rd->limit_get(RD::LIMIT_MAX_TEXTURE_ARRAY_LAYERS) || required_pages * PAGE_TRIANGLES * selected_size * selected_size * 20u > atlas_budget) {
+		WARN_PRINT_ONCE(vformat("RT GI material preflight exceeds the configured budget (%d triangles including row padding, %d MiB). Increase material_atlas_mb or reduce max_distance. No partial scene is traced.", required_tiles, atlas_mb));
+		prune_materials(material_frame, atlas_budget / 4);
+		return;
+	}
+	if (selected_size != tile_size) {
 		prune_materials(UINT64_MAX);
 		for (RID &texture : atlas) {
 			if (texture.is_valid()) {
@@ -271,17 +453,19 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			}
 		}
 		atlas_layers = 0;
-		tile_size = requested_tile_size;
+		tile_size = selected_size;
 		page_size = tile_size * 32;
 		revision++;
 	}
 	// Three RGBA8 planes and one RGBA16F plane: 20 bytes per texel.
-	// Grow on demand; the setting limits the atlas, not the separate native
-	// capture targets, expanded geometry, or transport histories.
-	const uint32_t atlas_mb = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/material_atlas_mb")), 8, 512);
-	const uint32_t max_pages = MIN(uint32_t(rd->limit_get(RD::LIMIT_MAX_TEXTURE_ARRAY_LAYERS)), atlas_mb * 1024u * 1024u / (page_size * page_size * 20u));
+	const uint32_t max_pages = MIN(uint32_t(rd->limit_get(RD::LIMIT_MAX_TEXTURE_ARRAY_LAYERS)), atlas_budget / (page_size * page_size * 20u));
 	if (atlas_layers > max_pages && !resize_atlas(max_pages)) {
 		return;
+	}
+	const uint32_t atlas_extent = place_material_tiles(placements, max_pages * PAGE_TRIANGLES);
+	HashMap<MaterialKey, uint32_t, MaterialKeyHasher> placement_offsets;
+	for (const MaterialPlacement &placement : placements) {
+		placement_offsets.insert(placement.key, placement.first);
 	}
 	MeshStorage *meshes = MeshStorage::get_singleton();
 	MaterialStorage *materials = MaterialStorage::get_singleton();
@@ -291,9 +475,13 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	}
 	LocalVector<RD::AccelerationStructureInstance> instances;
 	LocalVector<HitData> hits;
+	const bool emissive_sampling = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/enabled")) && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/emissive_sampling"));
+	LocalVector<EmitterBatch> emitter_batches;
+	emitter_count = 0;
 	uint32_t resident_pages = 0;
 	uint32_t tile_cursor = 0;
 	uint32_t prepared_pages = 0;
+	const uint32_t preparation_budget = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/material_preparation_budget")), 1, 4096);
 	uint32_t drawn_pages = 0;
 	uint32_t copied_pages = 0;
 	uint32_t new_signature = HASH_MURMUR3_SEED;
@@ -323,13 +511,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 		}
 		const uint32_t first_surface = instances.size();
 		for (int surface = 0; surface < meshes->mesh_get_surface_count(instance.mesh); surface++) {
-			RID material = instance.material_override;
-			if (material.is_null() && surface < instance.materials.size()) {
-				material = instance.materials[surface];
-			}
-			if (material.is_null()) {
-				material = meshes->mesh_surface_get_material(instance.mesh, surface);
-			}
+			RID material = RaytracingGIScene::surface_material(instance, surface);
 			auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(materials->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
 			bool stochastic_alpha = false;
 			if (data && data->shader_data) {
@@ -346,19 +528,14 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 					return;
 				}
 			}
-			bool share_capture = data && data->shader_data && !data->shader_data->uses_instance_transform && !data->shader_data->uses_world_coordinates && !data->shader_data->uses_normal && !data->shader_data->uses_tangent;
-			if (share_capture) {
-				for (const auto &uniform : data->shader_data->uniforms) {
-					if (uniform.value.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_INSTANCE) {
-						share_capture = false;
-						break;
-					}
-				}
-			}
+			const bool share_capture = can_share_capture(material);
 			const Transform3D capture_transform = share_capture ? Transform3D() : instance.transform;
 			const MaterialKey key{ instance.mesh, material, instance.mesh_instance, share_capture ? RID() : instance.instance, share_capture ? 0u : instance.element, uint32_t(surface), share_capture ? instance_color : Color(1, 1, 1, 1) };
 			SurfaceMaterial **cached = material_cache.getptr(key);
 			const bool capture_surface = !cached || (*cached)->last_used != material_frame;
+			if (capture_surface) {
+				tile_cursor = placement_offsets[key];
+			}
 			const uint64_t material_revision = materials->material_get_content_revision(material);
 			Vector<Pair<RID, uint64_t>> texture_revisions;
 			bool reusable_pixels = data && data->shader_data && !data->shader_data->uses_time;
@@ -409,6 +586,10 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			// array layer on every small mesh. Surface IDs still index one hit record.
 			const uint32_t surface_tiles = ((triangles + 31) / 32) * 32;
 			if (triangles == 0 || (capture_surface && tile_cursor + surface_tiles > max_pages * PAGE_TRIANGLES) || instances.size() == MAX_INSTANCES) {
+				static const bool trace_failure = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_MATERIALS").is_empty();
+				if (trace_failure) {
+					print_line(vformat("GI failed preparation: frame=%d prepared=%d drawn=%d copied=%d tiles=%d limit=%d", material_frame, prepared_pages, drawn_pages, copied_pages, tile_cursor, max_pages * PAGE_TRIANGLES));
+				}
 				WARN_PRINT_ONCE(vformat("RT GI capacity exceeded: requested atlas tiles=%d, available=%d, surface triangles=%d, instances=%d/%d. GI is suppressed, not partially rendered.", tile_cursor + surface_tiles, max_pages * PAGE_TRIANGLES, triangles, instances.size(), MAX_INSTANCES));
 				return;
 			}
@@ -437,12 +618,18 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			}
 			SurfaceMaterial &surface_material = **cached;
 			if (capture_surface) {
+				if (surface_material.last_used + 1 != material_frame) {
+					for (MaterialPage &page : surface_material.pages) {
+						page.atlas_tile = UINT32_MAX;
+					}
+				}
 				surface_material.first_tile = tile_cursor;
+				surface_material.allocated_tiles = surface_tiles;
 				uint32_t capture_index = 0;
 				LocalVector<MaterialPage> &material_pages = surface_material.pages;
 				for (uint32_t first_triangle = 0; first_triangle < triangles;) {
-					const uint32_t target_tile = tile_cursor % PAGE_TRIANGLES;
-					const uint32_t count = MIN(triangles - first_triangle, PAGE_TRIANGLES - target_tile);
+					// Source chunks stay fixed when preceding atlas surfaces enter/leave.
+					const uint32_t count = MIN(triangles - first_triangle, PAGE_TRIANGLES);
 					if (capture_index == material_pages.size()) {
 						MaterialPage entry;
 						entry.capture = memnew(RaytracingMaterialCapture);
@@ -451,6 +638,15 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 					MaterialPage &entry = material_pages[capture_index];
 					RaytracingMaterialCapture &capture = *entry.capture;
 					if (entry.mesh != instance.mesh || entry.source_vertices != source_vertices || entry.data_revision != data_revision || entry.surface != uint32_t(surface) || entry.first_triangle != first_triangle || entry.triangle_count != count) {
+						if (prepared_pages == preparation_budget) {
+							// Completed pages persist. Resume next scene update without
+							// publishing a partial TLAS or stale hit-material mapping.
+							static const bool trace_preparation = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_MATERIALS").is_empty();
+							if (trace_preparation) {
+								print_line(vformat("GI material preparation pending: prepared=%d budget=%d", prepared_pages, preparation_budget));
+							}
+							return;
+						}
 						// A failed preparation must remain invalid on the next frame.
 						entry.source_vertices = RID();
 						entry.pixels_valid = false;
@@ -481,15 +677,24 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 						entry.instance_custom = instance_custom;
 						entry.pixels_valid = reusable_pixels;
 						drawn_pages++;
+						surface_material.pixels_revision = ++pixels_revision;
 					}
 					if (entry.atlas_tile != tile_cursor) {
 						const Size2i size = capture.get_size();
-						const Vector3 destination(0, (target_tile / 32) * tile_size, 0);
-						for (int channel = 0; channel < 4; channel++) {
-							if (rd->texture_copy(capture.get_texture(channel), atlas[channel], Vector3(), destination, Vector3(size.x, size.y, 1), 0, 0, 0, tile_cursor / PAGE_TRIANGLES) != OK) {
-								return;
+						// A fixed capture chunk can straddle two packed atlas layers.
+						// Copy rows without rebuilding source geometry or material pixels.
+						for (uint32_t row = 0; row < uint32_t(size.y) / tile_size;) {
+							const uint32_t destination_tile = tile_cursor + row * 32u;
+							const uint32_t destination_row = (destination_tile % PAGE_TRIANGLES) / 32u;
+							const uint32_t rows = MIN(uint32_t(size.y) / tile_size - row, 32u - destination_row);
+							for (int channel = 0; channel < 4; channel++) {
+								if (rd->texture_copy(capture.get_texture(channel), atlas[channel], Vector3(0, row * tile_size, 0), Vector3(0, destination_row * tile_size, 0), Vector3(size.x, rows * tile_size, 1), 0, 0, 0, destination_tile / PAGE_TRIANGLES) != OK) {
+									return;
+								}
 							}
+							row += rows;
 						}
+
 						entry.atlas_tile = tile_cursor;
 						copied_pages++;
 					}
@@ -522,19 +727,27 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			}
 			instances.push_back(rd_instance);
 			const bool casts_shadow = surface < 32 ? (instance.shadow_surface_mask & (1u << surface)) != 0 : instance.shadow_surface_mask != 0;
-			hits.push_back({ surface_material.first_tile, triangles | (share_capture ? 0x80000000u : 0u) | (stochastic_alpha ? 0x40000000u : 0u), instance.layer_mask, casts_shadow ? instance.layer_mask : 0 });
+			uint32_t emitter_base = 0;
+			// Bound the optional light hierarchy independently of geometry. Overflow
+			// remains visible to ordinary hit-emission sampling.
+			if (emissive_sampling && data && data->shader_data && data->shader_data->uses_emission && triangles <= 262144u - emitter_count) {
+				emitter_base = emitter_count + 1u;
+				emitter_batches.push_back({ geometry->vertex_buffer, geometry->index_buffer, instance.transform, geometry->vertex_count, geometry->index_stride, triangles, surface_material.first_tile, emitter_count, geometry->revision, surface_material.pixels_revision });
+				emitter_count += triangles;
+			}
+			hits.push_back({ surface_material.first_tile, emitter_base | (share_capture ? 0x80000000u : 0u) | (stochastic_alpha ? 0x40000000u : 0u), instance.layer_mask, casts_shadow ? instance.layer_mask : 0 });
 		}
 		if (instances.size() != first_surface) {
 			current_instances.push_back(state);
 		}
 	}
 	update_instance_history(current_instances);
-	prune_materials(material_frame);
+	prune_materials(material_frame > 120 ? material_frame - 120 : 0, uint64_t(atlas_mb) * 1024 * 1024 / 4);
 	static const bool validate_materials = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_MATERIALS").is_empty();
 	if (validate_materials) {
 		print_line(vformat("GI material preparation: resident=%d prepared=%d", resident_pages, prepared_pages));
 		print_line(vformat("GI material pixels: resident=%d drawn=%d", resident_pages, drawn_pages));
-		print_line(vformat("GI material atlas: tiles=%d copied=%d layers=%d tile_size=%d bytes=%d", tile_cursor, copied_pages, atlas_layers, tile_size, uint64_t(atlas_layers) * page_size * page_size * 20u));
+		print_line(vformat("GI material atlas: tiles=%d copied=%d layers=%d tile_size=%d bytes=%d", atlas_extent, copied_pages, atlas_layers, tile_size, uint64_t(atlas_layers) * page_size * page_size * 20u));
 	}
 	if (instances.is_empty() || p_lights.size() > MAX_LIGHTS) {
 		WARN_PRINT_ONCE("RT GI needs geometry within its scene capacity.");
@@ -560,6 +773,8 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 		const Transform3D transform = storage->light_instance_get_base_transform(instance);
 		const Vector3 direction = transform.basis.get_column(2).normalized();
 		LightData data = {};
+		data.identity[0] = uint32_t(instance.get_id());
+		data.identity[1] = uint32_t(instance.get_id() >> 32);
 		for (int axis = 0; axis < 3; axis++) {
 			data.position[axis] = transform.origin[axis];
 			data.direction[axis] = direction[axis];
@@ -607,7 +822,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			print_line(vformat("AMD GI scene change: light_membership=%s lighting=%s instances=%d lights=%d", signature != new_signature, lighting_cut, instances.size(), lights.size()));
 		}
 		signature = new_signature;
-		revision++;
+		lighting_revision++;
 	}
 	if (!ensure_scene_buffers(instances.size(), lights.size())) {
 		return;
@@ -617,5 +832,102 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 		rd->buffer_update(light_buffer, 0, lights.size() * sizeof(LightData), lights.ptr());
 	}
 	rd->buffer_update(hit_buffer, 0, hits.size() * sizeof(HitData), hits.ptr());
-	ready = rd->tlas_build(tlas, instances) == OK;
+	ready = rd->tlas_build(tlas, instances) == OK && update_emitters(emitter_batches);
+}
+
+// Extract emissive triangle geometry and build a power hierarchy entirely on GPU.
+// Analytic lights occupy a fixed prefix of the same storage binding, keeping the
+// GI shader within the existing 32-storage-buffer device requirement.
+bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batches) {
+	RD *rd = RD::get_singleton();
+	bool changed = previous_emitters.size() != p_batches.size();
+	for (uint32_t i = 0; !changed && i < p_batches.size(); i++) {
+		changed = !(previous_emitters[i] == p_batches[i]);
+	}
+	if (!changed && emitter_buffer_valid) {
+		return true;
+	}
+	if (changed) {
+		lighting_revision++;
+	}
+	previous_emitters = p_batches;
+	const uint32_t prefix = MAX_LIGHTS * sizeof(LightData);
+	rd->buffer_clear(light_buffer, prefix, emitter_capacity * 2u * 64u);
+	if (emitter_count == 0) {
+		emitter_buffer_valid = true;
+		return true;
+	}
+	if (emitter_version.is_null()) {
+		Vector<String> modes;
+		modes.push_back("");
+		emitter_shader.initialize(modes);
+		emitter_version = emitter_shader.version_create();
+		emitter_pipeline = rd->compute_pipeline_create(emitter_shader.version_get_shader(emitter_version, 0));
+	}
+	ERR_FAIL_COND_V(emitter_pipeline.is_null(), false);
+	const RID sampler = MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
+	struct Push {
+		float transform[16];
+		uint32_t geometry[4]; // first tile, triangle count, index bytes, first emitter
+		uint32_t tree[4]; // leaf capacity, parent offset, parent count, pass
+	} push = {};
+	static_assert(sizeof(Push) == 96);
+	push.tree[0] = emitter_capacity;
+	RID last_set;
+	for (const EmitterBatch &batch : p_batches) {
+		LocalVector<RD::Uniform> uniforms;
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, batch.vertices));
+		RID indices = batch.indices.is_valid() ? batch.indices : MeshStorage::get_singleton()->get_default_rd_storage_buffer();
+		RID padded;
+		if (batch.index_stride == 2 && (batch.triangles * 3u) % 2u != 0) {
+			padded = rd->storage_buffer_create(batch.triangles * 6u + 2u);
+			rd->buffer_copy(indices, padded, 0, 0, batch.triangles * 6u);
+			indices = padded;
+		}
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, indices));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, light_buffer));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 3, Vector<RID>{ sampler, atlas[3] }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 4, Vector<RID>{ sampler, atlas[0] }));
+		last_set = UniformSetCacheRD::get_singleton()->get_cache_vec(emitter_shader.version_get_shader(emitter_version, 0), 0, uniforms);
+		MaterialStorage::store_transform(batch.transform, push.transform);
+		push.geometry[0] = batch.first_tile;
+		push.geometry[1] = batch.triangles;
+		push.geometry[2] = batch.index_stride;
+		push.geometry[3] = batch.first_emitter;
+		RD::ComputeListID list = rd->compute_list_begin();
+		rd->compute_list_bind_compute_pipeline(list, emitter_pipeline);
+		rd->compute_list_bind_uniform_set(list, last_set, 0);
+		rd->compute_list_set_push_constant(list, &push, sizeof(push));
+		rd->compute_list_dispatch_threads(list, batch.triangles, 1, 1);
+		rd->compute_list_end();
+		if (padded.is_valid()) {
+			rd->free_rid(padded);
+			last_set = RID();
+		}
+	}
+	// Bind live source descriptors for the tree-only dispatch (never read there).
+	if (last_set.is_null()) {
+		LocalVector<RD::Uniform> uniforms;
+		RID fallback = MeshStorage::get_singleton()->get_default_rd_storage_buffer();
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, fallback));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, fallback));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 2, light_buffer));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 3, Vector<RID>{ sampler, atlas[3] }));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 4, Vector<RID>{ sampler, atlas[0] }));
+		last_set = UniformSetCacheRD::get_singleton()->get_cache_vec(emitter_shader.version_get_shader(emitter_version, 0), 0, uniforms);
+	}
+	push.tree[3] = 1;
+	RD::ComputeListID list = rd->compute_list_begin();
+	rd->compute_list_bind_compute_pipeline(list, emitter_pipeline);
+	rd->compute_list_bind_uniform_set(list, last_set, 0);
+	for (uint32_t count = emitter_capacity / 2u; count > 0; count /= 2u) {
+		push.tree[1] = count;
+		push.tree[2] = count;
+		rd->compute_list_set_push_constant(list, &push, sizeof(push));
+		rd->compute_list_dispatch_threads(list, count, 1, 1);
+		rd->compute_list_add_barrier(list);
+	}
+	rd->compute_list_end();
+	emitter_buffer_valid = true;
+	return true;
 }

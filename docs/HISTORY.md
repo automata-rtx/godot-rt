@@ -6,6 +6,84 @@ alone — several of these already were, and failed. Not here: using a feature (
 one works (`docs/internals/`), running the harnesses (`docs/VALIDATION.md`), diagnosing a symptom
 (`docs/TROUBLESHOOTING.md`).
 
+## AMD GI sampling, motion and material integration — 2026-10-23
+
+`[shadow_validation]` Local implementation after the `3038a14` audit adds native
+previous-surface reprojection, stable light identity remapping, GPU material expansion,
+capture residency and persistent placements, explicit emissive-triangle sampling,
+BRDF-guided probes, and reflection classification/compaction and firefly cleanup.
+No primary-ray budget was increased to make the checks pass. The controls and port
+differences are in [features/amd-gi.md](features/amd-gi.md).
+
+The native material rig passes compressed/indexed/non-indexed inputs, custom attributes,
+UV2, normal maps and the compact two-pixel capture. The diffuse, native deformation
+and FSR2 rigs pass; GI-off texture allocation returns to the baseline. The MultiMesh
+rig passes native element inputs and live changes, including a 65,537-element
+procedural instance explicitly excluded from GI. Multibounce receiver ownership and
+allocation checks pass at quarter rate and continuation probability 0.3.
+
+Explicit emission-only sampling has linear receiver energy 0.029353, versus 0.032935
+with hit-only sampling at the same primary budget. The difference is a coarse-probe
+reconstruction/variance comparison, not proof of an unbiased final image. Repeated
+emitter flicker retains history and responds within the four-frame capture windows;
+removed-emitter receiver energy falls to 0.000001 after settling. Moving-flashlight
+indirect gains are 0.003707/0.003877 linear RGB. Its removal tail is 18.768% after six
+frames and 0.188% after 26, without a global reset. These runs use conventional
+denoising. These measurements precede the final two-dimensional sample-sequence and
+secondary-metal shading refinements. Software Vulkan establishes behavior, not hardware frame cost.
+
+`[game]` fps-proto `996f0f9`: default-budget Crossroads, Fieldway and Hideout reach a
+ready GI scene. Crossroads also passes with authored high grass enabled. With bounded
+preparation, its new captures are split into updates of at most 64 chunks; the
+completed scene retains 1,243 captures and prepares/draws none on subsequent static
+frames. Automatic capacity adaptation uses two-pixel triangle tiles in Crossroads
+and four in Fieldway, with the documented loss of hit-material detail. This is
+readiness/residency evidence, not final visual acceptance or 5090/780M performance.
+
+The subsequent complete 64-draw Crossroads translation covers 16 meters without
+global resets or pending material preparation. New capture preparation peaks at
+16 chunks per update. The gold-weapon and wall-intersection sequences run through
+the game's main-menu/sandbox path at fixed simulation time; they are visual
+diagnostics, not frame-time measurements.
+
+The final shader refinement uses independent two-dimensional temporal sampling
+increments and AMD's diffuse secondary-metal approximation. The full glossy rig
+passes with 863 reflected-emitter pixels, 14.859-pixel emitter displacement,
+0.936 return overlap, and 0.068/0.000 residual patch overlap after motion/return.
+Compacted versus direct dispatch has linear RGB MAE 0.000875. GPU reflection queue
+and sample checks pass over 344 frames. Moving-metal continuity improves to
+5 fresh samples out of 6,109 measured samples; light pulses do not globally reset
+history and flickering geometry prepares only once. The sampling rig validates
+ownership/LRU state over 694 frames at fixed primary budgets, including 1/16 rate.
+Native VoxelGI (128/256 and alternate normal bias) and SDFGI (default/fine) comparisons
+pass, and every disabled comparison image matches exactly. Linux editor and affected
+release translation units compile; Windows artifacts are built separately through CI.
+
+## Historical gameplay audit reproduces AMD GI blockers — 2026-10-23
+
+`[shadow_validation]` Engine `3038a14` plus opt-in logging: three light pulses
+caused six global resets. All 6,109 measured glossy samples across 16 moving-metal
+frames had history count 1; after stopping, the mean recovered to 11.50. A mesh
+hidden/shown six times was prepared on every appearance. These are failing-behavior
+reproductions, not visual acceptance passes. Quarter primary budget, denoising on.
+
+`[game]` fps-proto `996f0f9`, Vulkan lavapipe, FSR2 Performance at 641×359,
+grass/soft RT shadows off: the actual golden AK translated 1 mm per frame rejected
+all 21,225 measured glossy samples' history over 12 frames, without global resets.
+After stopping, mean history recovered to 13.41. Flashlight off/on caused two global
+resets. At stationary spawn, 406 material-page preparations occurred across 11 of
+24 draws before equipping the gold weapon. Preparation uses synchronous source
+GPU-buffer readback; these counters establish churn, not hardware stall times.
+Crossroads and Fieldway exceeded the default atlas cap and suppressed GI on all
+eight observed enabled frames. Hideout became ready; its reported missing lighting
+was not reproduced by this readiness check.
+
+The previous scene-membership fix and settled images did not establish gameplay
+quality. Emissive-triangle sampling, object velocity reprojection and separate
+reflection firefly cleanup are missing; local invalidation and material residency
+are defective. See [the full audit](AMD_GI_GAMEPLAY_AUDIT.md) for evidence, remaining
+unknowns. This paragraph records the old audit, not the status of the subsequent implementation.
+
 ## Sandbox scene changes repeatedly discarded GI history — 2026-10-23
 
 `[game]` fps-proto main `307c068`, launched through the actual main menu into

@@ -63,11 +63,15 @@ const int PASS_INTERPOLATE = 29;
 const int PASS_TEMPORAL = 30;
 const int PASS_BLUR_X = 31;
 const int PASS_BLUR_Y = 32;
-const int PASS_REFLECTION_TRACE = 33;
-const int PASS_REFLECTION_RESOLVE = 34;
-const int PASS_REFLECTION_TEMPORAL = 35;
-const int PASS_REFLECTION_FILTER = 36;
-const int PASS_REFLECTION_UPSAMPLE = 37;
+const int PASS_REFLECTION_CLASSIFY = 33;
+const int PASS_REFLECTION_BUILD_DISPATCH = 34;
+const int PASS_REFLECTION_TRACE = 35;
+const int PASS_REFLECTION_MARK_FIREFLIES = 36;
+const int PASS_REFLECTION_CLEAN_FIREFLIES = 37;
+const int PASS_REFLECTION_RESOLVE = 38;
+const int PASS_REFLECTION_TEMPORAL = 39;
+const int PASS_REFLECTION_FILTER = 40;
+const int PASS_REFLECTION_UPSAMPLE = 41;
 #include "../oct_inc.glsl"
 #include "rt_gi_transport_inc.glsl"
 layout(set = 0, binding = 37) uniform sampler2D sky_radiance;
@@ -83,6 +87,25 @@ layout(set = 0, binding = 32, std430) restrict buffer PreviousLightReservoirs {
 	uvec4 data[];
 }
 previous_light_reservoirs;
+layout(set = 0, binding = 48) uniform sampler2D previous_surface_position;
+
+vec3 previous_surface(ivec2 pixel, vec3 current) {
+	vec4 previous = texelFetch(previous_surface_position, pixel, 0);
+	return previous.w > 0.0 ? previous.xyz : current;
+}
+struct LightNode {
+	vec3 minimum;
+	uint light;
+	vec3 maximum;
+	uint count;
+	vec4 power;
+};
+layout(set = 0, binding = 44, std430) restrict readonly buffer LightTree {
+	uint remap[1024];
+	LightNode data[];
+}
+light_tree;
+
 layout(set = 0, binding = 33, std430) restrict buffer LightReservoirs {
 	uvec4 data[];
 }
@@ -92,7 +115,10 @@ vec2 lookup_jitter(ivec2 pixel) {
 	uint index = uint((pixel.x & 127) + (pixel.y & 127) * 128);
 	uint packed = blue_noise.data[index >> 1u] >> ((index & 1u) * 16u);
 	vec2 sample_value = (vec2(packed & 255u, (packed >> 8u) & 255u) + 0.5) / 256.0;
-	return fract(sample_value + float(params.padding & 255u) * 1.6180339887498948482);
+	// Independent R2 increments cover the two-dimensional sample domain over
+	// time. Advancing both components by the same value confines each pixel to
+	// a wrapped diagonal and biases glossy VNDF sampling even after many frames.
+	return fract(sample_value + float(params.padding & 255u) * vec2(0.7548776662466927, 0.5698402909980532));
 }
 
 layout(set = 0, binding = 10, std140) uniform Frame {
@@ -107,6 +133,7 @@ layout(set = 0, binding = 10, std140) uniform Frame {
 	vec4 ambient;
 	vec4 reflections;
 	uvec4 motion;
+	uvec4 emitters;
 	vec4 motion_bounds[16];
 }
 frame;
@@ -398,13 +425,20 @@ RayHit empty_ray() {
 RayHit trace_hit(vec3 origin, vec3 direction) {
 	RayHit ray = empty_ray();
 	ray.direction_cache.xyz = direction;
-	uint instance;
+	uint instance, primitive;
 	vec3 position, uv, normal;
-	if (trace(origin, direction, params.max_distance, 0u, instance, position, uv, normal)) {
+	if (trace(origin, direction, params.max_distance, 0u, instance, position, uv, normal, primitive)) {
 		ray.position = vec4(position, length(position - origin));
 		ray.normal_mask = vec4(faceforward(normal, direction, normal), uintBitsToFloat(hits.data[instance].z));
-		ray.diffuse = vec4(textureLod(albedo_atlas, uv, 0).rgb * (1.0 - textureLod(orm_atlas, uv, 0).b), 0);
+		// GI-1's GenerateReservoirs/GenerateMultibounceReservoirs force rough
+		// diffuse secondary shading, including metallic hits, to avoid nested
+		// specular sampling. Preserve base color here: multiplying by (1-metal)
+		// would make every off-screen metal receiver a black energy sink.
+		// The primary forward material still applies its native metalness/BRDF.
+		ray.diffuse = vec4(textureLod(albedo_atlas, uv, 0).rgb, 0);
 		ray.emission = textureLod(emission_atlas, uv, 0);
+		uint emitter = hits.data[instance].y & 0x3fffffffu;
+		ray.emission.w = emitter != 0u ? float(emitter + primitive) : 0.0;
 	}
 	return ray;
 }
@@ -429,10 +463,15 @@ bool motion_overlaps(vec3 lo, vec3 hi) {
 	}
 	return false;
 }
-bool motion_intersects(vec3 origin, vec3 direction, float distance) {
+bool motion_intersects(vec3 origin, vec3 direction, float distance, bool reprojected_receiver) {
 	for (uint i = 0u; i < frame.motion.x; i++) {
 		vec3 lo = frame.motion_bounds[i * 2u].xyz;
 		vec3 hi = frame.motion_bounds[i * 2u + 1u].xyz;
+		// A depth-tested receiver has independent previous-position validation.
+		// Its own swept bound is not evidence that the reflected path is blocked.
+		if (reprojected_receiver && all(greaterThanEqual(origin, lo)) && all(lessThanEqual(origin, hi))) {
+			continue;
+		}
 		float near_t = 0.0, far_t = max(distance, 0.0);
 		for (int axis = 0; axis < 3; axis++) {
 			if (abs(direction[axis]) < 1e-7) {
@@ -451,6 +490,9 @@ bool motion_intersects(vec3 origin, vec3 direction, float distance) {
 		}
 	}
 	return false;
+}
+bool motion_intersects(vec3 origin, vec3 direction, float distance) {
+	return motion_intersects(origin, direction, distance, false);
 }
 bool probe_motion(Probe p, uint source, bool cached) {
 	if (frame.motion.x == 0u || p.position.w == 0.0) {
@@ -484,14 +526,12 @@ void reset_cache(uint lane) {
 	uint tile = gl_WorkGroupID.x;
 	if (tile == 0u && lane == 0u) {
 		queues.counts = uvec4(0);
+		if (frame.emitters.w != 0u) {
+			queues.data[frame.emitters.z + 3u] = 0u;
+		}
 	}
 	if (lane == 0u) {
 		reset_tile = frame.grid.w != 0u || (keys.data[tile].state.x != 0u && params.padding - keys.data[tile].state.y > 50u);
-		if (!reset_tile && frame.motion.x > 0u && keys.data[tile].state.x != 0u) {
-			float extent = 0.008 * exp2(float(keys.data[tile].key.w & 255));
-			vec3 lo = vec3(keys.data[tile].key.xyz) * extent;
-			reset_tile = motion_overlaps(lo, lo + extent);
-		}
 	}
 	barrier();
 	if (lane == 0u && reset_tile) {
@@ -515,9 +555,9 @@ void reset_cache(uint lane) {
 		}
 		if (frame.tracing.w != 0u && local < 64u) {
 			uint reservoir = tile * 64u + local;
-			if (reset_tile) {
-				previous_light_reservoirs.data[reservoir] = uvec4(INVALID, 0, 0, 0);
-			}
+			uvec4 old = previous_light_reservoirs.data[reservoir];
+			uint mapped = !reset_tile && old.x < frame.motion.w ? light_tree.remap[old.x] : INVALID;
+			previous_light_reservoirs.data[reservoir] = mapped == INVALID ? uvec4(INVALID, 0, 0, 0) : uvec4(mapped, old.yzw);
 			light_reservoirs.data[reservoir] = previous_light_reservoirs.data[reservoir];
 		}
 	}
@@ -532,7 +572,8 @@ void reset_cache(uint lane) {
 		}
 	}
 }
-uint previous_probe(vec3 p, vec3 normal) {
+uint previous_probe(vec3 p, vec3 normal, ivec2 pixel) {
+	p = previous_surface(pixel, p);
 	if (frame.grid.w != 0u) {
 		return INVALID;
 	}
@@ -551,7 +592,7 @@ uint previous_probe(vec3 p, vec3 normal) {
 	}
 	Probe old = previous_probes.data[other];
 	vec3 delta = old.position.xyz - p;
-	if (old.position.w == 0.0 || motion_overlaps(p, p) || params.padding - old.state.z > 50u || dot(old.normal.xyz, normal) < 0.95 || abs(dot(delta, normal)) >= footprint(p) * 0.1 || length(delta) >= footprint(p) * 1.5) {
+	if (old.position.w == 0.0 || params.padding - old.state.z > 50u || dot(old.normal.xyz, normal) < 0.95 || abs(dot(delta, normal)) >= footprint(p) * 0.1 || length(delta) >= footprint(p) * 1.5) {
 		return INVALID;
 	}
 	return other;
@@ -642,7 +683,7 @@ void reproject_probe(uint probe, uint lane) {
 	uvec2 pixel = tile * 8u + uvec2(lane % 8u, lane / 8u);
 	vec3 position, normal;
 	bool valid = surface(ivec2(pixel), position, normal);
-	uint previous = valid ? previous_probe(position, normal) : INVALID;
+	uint previous = valid ? previous_probe(position, normal, ivec2(pixel)) : INVALID;
 	candidate_position[lane] = vec4(position, valid ? 1.0 : 0.0);
 	candidate_normal[lane] = vec4(normal, 0);
 	previous_index[lane] = previous;
@@ -678,7 +719,7 @@ void reproject_probe(uint probe, uint lane) {
 		vec3 direction = basis(previous_probes.data[reused_probe].normal.xyz) * hemi_direction((vec2(lane % 8u, lane / 8u) + 0.5) / 8.0);
 		vec3 delta = previous_probes.data[reused_probe].position.xyz + direction * old.w - spawn_position.xyz;
 		float d = length(delta);
-		if (old.w > 0.0 && d > 0.0001 && dot(delta, spawn_normal.xyz) > 0.0 && !motion_intersects(previous_probes.data[reused_probe].position.xyz, direction, old.w)) {
+		if (old.w > 0.0 && d > 0.0001 && dot(delta, spawn_normal.xyz) > 0.0 && !motion_intersects(previous_probes.data[reused_probe].position.xyz, direction, old.w, true)) {
 			insert_bin(angular_index(delta / d, spawn_normal.xyz), lane, vec4(old.rgb, d));
 		}
 	}
@@ -888,7 +929,7 @@ void prepare_probe(uint slot, uint lane) {
 		vec3 direction = basis(cached.normal.xyz) * hemi_direction((vec2(lane % 8u, lane / 8u) + 0.5) / 8.0);
 		vec3 delta = cached.position.xyz + direction * old.w - spawn_position.xyz;
 		float d = length(delta);
-		if (old.w > 0.0 && d > 0.0001 && dot(delta, spawn_normal.xyz) > 0.0 && !motion_intersects(cached.position.xyz, direction, old.w)) {
+		if (old.w > 0.0 && d > 0.0001 && dot(delta, spawn_normal.xyz) > 0.0 && !motion_intersects(cached.position.xyz, direction, old.w, true)) {
 			insert_bin(angular_index(delta / d, spawn_normal.xyz), 576u + lane, vec4(old.rgb, d));
 		}
 	}
@@ -900,6 +941,9 @@ void prepare_probe(uint slot, uint lane) {
 	scratch.data[id] = history;
 }
 
+// Shared with the separate glossy path below. Probe guiding changes angular
+// allocation only; radiance reconstruction still stores incident radiance.
+float reflection_kernel(vec3 n, vec3 v, vec3 l, float roughness);
 void trace_probe(uint slot, uint lane) {
 	uint ray_id = slot * 64u + lane;
 	if (params.bounces != 0u) {
@@ -923,7 +967,20 @@ void trace_probe(uint slot, uint lane) {
 	vec4 history = scratch.data[probe * 64u + lane];
 	if (frame.flags.y != 0u) {
 		vec3 local_direction = hemi_direction((vec2(lane % 8u, lane / 8u) + 0.5) / 8.0);
-		scan_radiance(lane, luma(history.rgb) * max(local_direction.z, 0.0));
+		float brdf_weight = max(local_direction.z, 0.0);
+		if ((uint(frame.sky.w) & 2u) != 0u && spawn_position.w > 0.0) {
+			ivec2 pixel = ivec2(spawn.data[slot].yz);
+			float metalness = clamp(texelFetch(previous_surface_position, pixel, 0).w - 1.0, 0.0, 1.0);
+			float roughness = texelFetch(normal_buffer, pixel, 0).w;
+			roughness = clamp((roughness > 0.5 ? 1.0 - roughness : roughness) * (255.0 / 127.0), 0.0, 1.0);
+			vec3 direction = basis(spawn_normal.xyz) * local_direction;
+			vec3 view = normalize(params.camera_position.xyz - spawn_position.xyz);
+			float f0 = mix(0.04, 1.0, metalness);
+			float specular_probability = f0 / (f0 + 1.0 - metalness);
+			float specular = PI * reflection_kernel(spawn_normal.xyz, view, direction, roughness);
+			brdf_weight = mix(brdf_weight, specular, specular_probability);
+		}
+		scan_radiance(lane, luma(history.rgb) * brdf_weight);
 	}
 	RayHit ray = empty_ray();
 	if (spawn_position.w > 0.0) {
@@ -1010,17 +1067,6 @@ vec3 light_target(RayHit ray, uint light) {
 	float distance;
 	return ray.diffuse.rgb * unshadowed_irradiance(light, ray.position.xyz, ray.normal_mask.xyz, floatBitsToUint(ray.normal_mask.w), direction, distance) / PI;
 }
-struct LightNode {
-	vec3 minimum;
-	uint light;
-	vec3 maximum;
-	uint count;
-	vec4 power;
-};
-layout(set = 0, binding = 44, std430) restrict readonly buffer LightTree {
-	LightNode data[];
-}
-light_tree;
 
 float light_node_weight(LightNode node, vec3 position) {
 	vec3 delta = max(max(node.minimum - position, position - node.maximum), vec3(0));
@@ -1105,18 +1151,106 @@ vec3 resampled_direct(RayHit ray, inout uint state, out uvec4 packed) {
 	vec3 irradiance = unshadowed_irradiance(selected, ray.position.xyz, ray.normal_mask.xyz, floatBitsToUint(ray.normal_mask.w), direction, distance);
 	return ray.diffuse.rgb * irradiance * (weight * light_visibility(selected, ray.position.xyz, ray.normal_mask.xyz, direction, distance) / PI);
 }
+float emitter_node_weight(uint index, vec3 position) {
+	Emitter node = lights.emitters[index];
+	vec3 lo = node.position_area.xyz, hi = node.edge1_power.xyz;
+	if (index >= frame.emitters.y) {
+		hi = max(lo, max(lo + node.edge1_power.xyz, lo + node.edge2.xyz));
+		lo = min(lo, min(lo + node.edge1_power.xyz, lo + node.edge2.xyz));
+	}
+	vec3 delta = max(max(lo - position, position - hi), vec3(0));
+	return node.edge1_power.w / max(dot(delta, delta), 0.01);
+}
+
+// Sample an area emitter with its exact selection/area PDF. Returned energy
+// is Le / pdf_solid_angle; callers supply the receiver cosine or angular-cell
+// integration. This never adds emission to the spatial world cache itself.
+vec3 sample_emitter(vec3 position, vec3 normal, inout uint state, float choice, out vec3 direction, out float distance) {
+	direction = normal;
+	distance = params.max_distance;
+	if (frame.emitters.x == 0u || lights.emitters[1].edge1_power.w <= 0.0) {
+		return vec3(0);
+	}
+	uint node = 1u;
+	float probability = 1.0;
+	while (node < frame.emitters.y) {
+		uint left = node * 2u, right = left + 1u;
+		float lp = lights.emitters[left].edge1_power.w, rp = lights.emitters[right].edge1_power.w;
+		float lw = emitter_node_weight(left, position), rw = emitter_node_weight(right, position);
+		// The power component preserves support where the spatial bound is
+		// loose. The estimator divides by the actual conditional tree PDF.
+		float p = mix(lp / max(lp + rp, 1e-20), lw / max(lw + rw, 1e-20), 0.9);
+		if (choice < p) {
+			probability *= p;
+			choice /= p;
+			node = left;
+		} else {
+			probability *= 1.0 - p;
+			choice = (choice - p) / max(1.0 - p, 1e-20);
+			node = right;
+		}
+		choice = min(choice, 0.99999994);
+	}
+	Emitter emitter = lights.emitters[node];
+	if (emitter.edge1_power.w <= 0.0 || emitter.position_area.w <= 0.0) {
+		return vec3(0);
+	}
+	float u = sqrt(random_float(state));
+	vec2 bary = vec2(1.0 - u, u * random_float(state));
+	vec3 target = emitter.position_area.xyz + bary.x * emitter.edge1_power.xyz + bary.y * emitter.edge2.xyz;
+	vec3 origin = position + normal * 0.002;
+	if (any(greaterThan(abs(target - params.camera_position.xyz), vec3(params.max_distance)))) {
+		return vec3(0);
+	}
+	vec3 delta = target - origin;
+	distance = length(delta);
+	direction = delta / max(distance, 0.00001);
+	// Ray-hit transport is two-sided; match its emission convention here.
+	float cosine = abs(dot(normalize(cross(emitter.edge1_power.xyz, emitter.edge2.xyz)), -direction));
+	if (distance <= 0.004 || dot(normal, direction) <= 0.0 || cosine <= 0.000001) {
+		return vec3(0);
+	}
+	vec3 uv = atlas_tile_position(floatBitsToUint(emitter.emission_tile.w), bary);
+	vec3 emitted = max(textureLod(emission_atlas, uv, 0).rgb, vec3(0)) * textureLod(albedo_atlas, uv, 0).a;
+	if (all(equal(emitted, vec3(0)))) {
+		return vec3(0);
+	}
+	uint blocker;
+	vec3 blocker_position, blocker_uv, blocker_normal;
+	if (trace(origin, direction, distance - 0.004, 0xffffffffu, blocker, blocker_position, blocker_uv, blocker_normal)) {
+		return vec3(0);
+	}
+	float pdf_area = probability / emitter.position_area.w;
+	return emitted * (cosine / (distance * distance * pdf_area));
+}
+
+vec3 diffuse_hit_emission(RayHit ray) {
+	// Supported emitters are estimated explicitly at diffuse receivers. Keeping
+	// their BRDF-hit emission too would count the same light path twice. Overflow
+	// emitters keep ordinary hit sampling; specular primary hits always keep Le.
+	return ray.emission.w > 0.0 ? vec3(0) : ray.emission.rgb;
+}
+
 // Cache reflected radiance only. Emission is evaluated at the actual ray hit:
 // spatial filtering it would enlarge emitters and leak their light across edges.
 vec3 shade_direct(RayHit ray, inout uint state, uint cell) {
-	if (frame.tracing.w != 0u) {
+	vec3 emitter_direction;
+	float emitter_distance;
+	float emitter_choice = random_float(state);
+	vec3 emitter_value = sample_emitter(ray.position.xyz, ray.normal_mask.xyz, state, emitter_choice, emitter_direction, emitter_distance);
+	emitter_value *= ray.diffuse.rgb * (max(dot(ray.normal_mask.xyz, emitter_direction), 0.0) / PI);
+	if (frame.tracing.w != 0u && params.light_count > 1u) {
 		uvec4 reservoir;
 		vec3 value = resampled_direct(ray, state, reservoir);
 		if (cell != INVALID) {
 			light_reservoirs.data[cell / TILE_CELLS * 64u + cell % TILE_CELLS] = reservoir;
 		}
-		return value;
+		return value + emitter_value;
 	}
-	return ray.diffuse.rgb * direct_irradiance(ray.position.xyz, ray.normal_mask.xyz, floatBitsToUint(ray.normal_mask.w)) / PI;
+	if (frame.tracing.w != 0u && cell != INVALID) {
+		light_reservoirs.data[cell / TILE_CELLS * 64u + cell % TILE_CELLS] = uvec4(INVALID, 0, 0, 0);
+	}
+	return emitter_value + ray.diffuse.rgb * direct_irradiance(ray.position.xyz, ray.normal_mask.xyz, floatBitsToUint(ray.normal_mask.w)) / PI;
 }
 layout(set = 0, binding = 45) uniform sampler2D previous_lighting;
 
@@ -1157,8 +1291,14 @@ vec3 shade_transport(RayHit ray, uint state, uint cell) {
 			uint target = find_cell(secondary.position.xyz, direction, secondary.position.w);
 			vec4 cached = secondary.position.w < cache_cell_size(secondary.position.xyz) ? vec4(0) : read_cache(target, true);
 			vec3 outgoing;
-			if (!screen_lighting(secondary, outgoing)) {
-				outgoing = secondary.emission.rgb + (cached.w > 0.0 ? cached.rgb : shade_direct(secondary, state, INVALID));
+			bool feedback = screen_lighting(secondary, outgoing);
+			if (!feedback) {
+				outgoing = diffuse_hit_emission(secondary) + (cached.w > 0.0 ? cached.rgb : shade_direct(secondary, state, INVALID));
+			}
+			// Screen feedback includes visible emission; remove only the term
+			// already estimated by emitter NEE at this diffuse receiver.
+			if (secondary.emission.w > 0.0 && feedback) {
+				outgoing = max(outgoing - secondary.emission.rgb, vec3(0));
 			}
 			value += ray.diffuse.rgb * outgoing / frame.settings.z;
 		} else {
@@ -1220,12 +1360,16 @@ vec3 indirect_hit(uint hit) {
 		vec4 direct = bypass ? vec4(0) : read_component(target, false, false);
 		uint state = pcg(hit + params.padding * 747796405u);
 		vec3 outgoing;
-		if (!screen_lighting(secondary, outgoing)) {
-			outgoing = secondary.emission.rgb + (direct.w > 0.0 ? direct.rgb : shade_direct(secondary, state, INVALID));
+		bool feedback = screen_lighting(secondary, outgoing);
+		if (!feedback) {
+			outgoing = diffuse_hit_emission(secondary) + (direct.w > 0.0 ? direct.rgb : shade_direct(secondary, state, INVALID));
 			// Off-screen/disoccluded receivers retain world-cache feedback.
 			if (!bypass) {
 				outgoing += read_component(target, true, true).rgb;
 			}
+		}
+		if (secondary.emission.w > 0.0 && feedback) {
+			outgoing = max(outgoing - secondary.emission.rgb, vec3(0));
 		}
 		value = rays.data[hit].diffuse.rgb * outgoing / frame.settings.z;
 	} else if (dot(secondary.direction_cache.xyz, secondary.direction_cache.xyz) > 0.5) {
@@ -1240,10 +1384,15 @@ void shade_indirect_hit(uint id) {
 	}
 	hit_samples.data[id].indirect = vec4(indirect_hit(id), 1);
 }
-vec4 blend_hit_samples(vec4 old, vec3 sum, uint count) {
-	float previous_weight = min(old.w, max(16.0 - float(count), 0.0));
+vec4 blend_hit_samples(vec4 old, vec3 sum, uint count, uint cell) {
+	// Refresh changed receivers without deleting neighboring cells or changing
+	// their spatial mip selection. Temporal weight and accumulated coverage are
+	// different quantities: a light toggle does not erase geometric coverage.
+	vec3 position = owned_hit(owners.data[cell]).position.xyz;
+	bool changed = frame.motion.z != 0u || motion_overlaps(position, position);
+	float previous_weight = min(old.w, changed ? 1.0 : max(16.0 - float(count), 0.0));
 	float total = previous_weight + float(count);
-	return vec4(clean_color((old.rgb * previous_weight + sum) / max(total, 1.0)), min(total, 16.0));
+	return vec4(clean_color((old.rgb * previous_weight + sum) / max(total, 1.0)), min(old.w + float(count), 16.0));
 }
 void update_indirect(uint cell) {
 	if (cell >= TILE_COUNT * TILE_CELLS || cell % TILE_CELLS >= 64u) {
@@ -1259,7 +1408,7 @@ void update_indirect(uint cell) {
 			}
 		}
 		if (cell_head(cell) != INVALID) {
-			indirect_cache.data[cell] = count > 0u ? blend_hit_samples(previous_indirect_cache.data[cell], sum, count) : vec4(0);
+			indirect_cache.data[cell] = count > 0u ? blend_hit_samples(previous_indirect_cache.data[cell], sum, count, cell) : vec4(0);
 		}
 		return;
 	}
@@ -1274,10 +1423,8 @@ void update_indirect(uint cell) {
 		return;
 	}
 	vec3 value = indirect_hit(owner);
-	vec4 old = previous_indirect_cache.data[cell];
-	float count = min(old.w + 1.0, 16.0);
 	// A discarded/missed continuation is a zero sample, not stale lighting.
-	indirect_cache.data[cell] = vec4(mix(old.rgb, clean_color(value), 1.0 / count), count);
+	indirect_cache.data[cell] = blend_hit_samples(previous_indirect_cache.data[cell], value, 1u, cell);
 }
 void update_cell(uint cell) {
 	if (cell >= TILE_COUNT * TILE_CELLS || cell % TILE_CELLS >= 64u) {
@@ -1291,7 +1438,7 @@ void update_cell(uint cell) {
 			count++;
 		}
 		if (count > 0u) {
-			cache.data[cell] = blend_hit_samples(previous_cache.data[cell], sum, count);
+			cache.data[cell] = blend_hit_samples(previous_cache.data[cell], sum, count, cell);
 		}
 		return;
 	}
@@ -1301,9 +1448,7 @@ void update_cell(uint cell) {
 	}
 	uint state = pcg(owner + params.padding * 2891336453u);
 	vec3 value = shade_direct(owned_hit(owner), state, cell);
-	vec4 old = previous_cache.data[cell];
-	float count = min(old.w + 1.0, 16.0);
-	cache.data[cell] = vec4(mix(old.rgb, clean_color(value), 1.0 / count), count);
+	cache.data[cell] = blend_hit_samples(previous_cache.data[cell], value, 1u, cell);
 }
 void build_mip(uint tile, uint lane, uint mip) {
 	bool indirect = pass_id >= PASS_INDIRECT_MIP1 && pass_id <= PASS_INDIRECT_MIP3;
@@ -1343,7 +1488,7 @@ void resolve_probe(uint slot, uint lane) {
 		// A ray shorter than one world cell can connect opposite sides of a
 		// thin partition. AMD bypasses filtered readback for these samples.
 		vec4 c = ray.position.w < cache_cell_size(ray.position.xyz) ? vec4(0) : read_cache(floatBitsToUint(ray.direction_cache.w), false);
-		value = ray.emission.rgb + (c.w > 0.0 ? c.rgb : shade_transport(ray, pcg(slot * 64u + lane + params.padding * 2891336453u), INVALID));
+		value = diffuse_hit_emission(ray) + (c.w > 0.0 ? c.rgb : shade_transport(ray, pcg(slot * 64u + lane + params.padding * 2891336453u), INVALID));
 	}
 	clear_bins(lane);
 	if (probes.data[probe].position.w > 0.0) {
@@ -1371,8 +1516,35 @@ void resolve_probe(uint slot, uint lane) {
 	}
 	barrier();
 	vec4 result = sample_count > 0u ? sum / float(sample_count) : radiance_backup;
+	// The probe stores average radiance per equal-area angular cell. Explicit
+	// light samples estimate its integral: sum(Le/pdf) / (64 * cell_solid_angle).
+	// With 64 cells and 64 samples this is sum(Le/pdf)/(2*PI), not an unweighted
+	// average that would artificially enlarge a tiny bright emitter.
+	if (frame.emitters.x != 0u) {
+		barrier();
+		clear_bins(lane);
+		if (probes.data[probe].position.w > 0.0) {
+			uint state = pcg(slot * 64u + lane + params.padding * 277803737u);
+			vec3 direction;
+			float distance;
+			float emitter_choice = (float(lane) + random_float(state)) / 64.0;
+			vec3 emitted = sample_emitter(probes.data[probe].position.xyz, probes.data[probe].normal.xyz, state, emitter_choice, direction, distance);
+			if (any(greaterThan(emitted, vec3(0)))) {
+				vec3 energy = emitted / (2.0 * PI);
+				insert_bin(angular_index(direction, probes.data[probe].normal.xyz), lane, vec4(energy, distance * luma(energy)));
+			}
+		}
+		barrier();
+		uint emitter_samples;
+		vec4 emitter_sum = sum_bin(lane, emitter_samples);
+		float total_energy = luma(result.rgb) + luma(emitter_sum.rgb);
+		if (emitter_samples > 0u && total_energy > 0.0) {
+			result.w = (result.w * luma(result.rgb) + emitter_sum.w) / total_energy;
+		}
+		result.rgb += emitter_sum.rgb;
+	}
 	vec4 history = scratch.data[id];
-	if (history.w > 0.0) {
+	if (history.w > 0.0 && frame.motion.z == 0u) {
 		// AMD's shadow-preserving temporal hysteresis suppresses abrupt bright
 		// outliers without dragging old bright values into newly dark cells.
 		float a = luma(result.rgb), b = luma(history.rgb);
@@ -1642,9 +1814,10 @@ void reproject_pixel(ivec2 pixel, uint id) {
 	}
 	vec4 old_sum = vec4(0);
 	float delta = 0.0, weight = 0.0;
-	vec4 clip = frame.previous_view_projection * vec4(current.position.xyz, 1);
+	vec3 previous_position = previous_surface(pixel, current.position.xyz);
+	vec4 clip = frame.previous_view_projection * vec4(previous_position, 1);
 	vec2 uv = clip.xy / max(clip.w, 0.00001) * 0.5 + 0.5;
-	if (frame.grid.w == 0u && !motion_overlaps(current.position.xyz, current.position.xyz) && clip.w > 0.0 && all(greaterThan(uv, vec2(0))) && all(lessThan(uv, vec2(1)))) {
+	if (frame.grid.w == 0u && clip.w > 0.0 && all(greaterThan(uv, vec2(0))) && all(lessThan(uv, vec2(1)))) {
 		ivec2 center = ivec2(uv * vec2(params.size));
 		for (int y = -1; y <= 1; y++) {
 			for (int x = -1; x <= 1; x++) {
@@ -1656,7 +1829,7 @@ void reproject_pixel(ivec2 pixel, uint id) {
 				if (old.position.w != 1.0 || old.color.w < 1.0) {
 					continue;
 				}
-				if (dot(old.normal_delta.xyz, current.normal_delta.xyz) < 0.95 || distance(old.position.xyz, current.position.xyz) > footprint(current.position.xyz) * 0.5) {
+				if (dot(old.normal_delta.xyz, current.normal_delta.xyz) < 0.95 || distance(old.position.xyz, previous_position) > footprint(current.position.xyz) * 0.5) {
 					continue;
 				}
 				float w = clamp(1.0 - length(vec2(p) + 0.5 - uv * vec2(params.size)) * 0.707107, 0.0, 1.0);
@@ -1742,15 +1915,39 @@ void main() {
 	uint lane = gl_LocalInvocationIndex;
 	uint probe = gl_WorkGroupID.x;
 	uint id = probe * 64u + lane;
-	if (pass_id >= PASS_REFLECTION_TRACE) {
+	if (pass_id == PASS_REFLECTION_BUILD_DISPATCH) {
+		if (lane == 0u) {
+			uint groups = (queues.data[frame.emitters.z + 3u] + 63u) / 64u;
+			queues.data[frame.emitters.z] = min(groups, 65535u);
+			queues.data[frame.emitters.z + 1u] = max((groups + 65534u) / 65535u, 1u);
+			queues.data[frame.emitters.z + 2u] = 1u;
+		}
+		return;
+	}
+	if (pass_id == PASS_REFLECTION_TRACE && frame.emitters.w != 0u) {
+		id = (gl_WorkGroupID.y * 65535u + gl_WorkGroupID.x) * 64u + lane;
+		if (id < queues.data[frame.emitters.z + 3u]) {
+			uint sample_id = queues.data[frame.emitters.z + 4u + id];
+			ivec2 pixel = ivec2(sample_id % uint(reflection_size().x), sample_id / uint(reflection_size().x));
+			trace_reflection(pixel, sample_id);
+		}
+		return;
+	}
+	if (pass_id >= PASS_REFLECTION_CLASSIFY) {
 		ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 		ivec2 size = pass_id == PASS_REFLECTION_UPSAMPLE ? ivec2(params.size) : reflection_size();
 		if (any(greaterThanEqual(pixel, size))) {
 			return;
 		}
 		uint reflection_id = reflection_index(pixel);
-		if (pass_id == PASS_REFLECTION_TRACE) {
+		if (pass_id == PASS_REFLECTION_CLASSIFY) {
+			classify_reflection(pixel, reflection_id);
+		} else if (pass_id == PASS_REFLECTION_TRACE) {
 			trace_reflection(pixel, reflection_id);
+		} else if (pass_id == PASS_REFLECTION_MARK_FIREFLIES) {
+			mark_reflection_fireflies(pixel, reflection_id);
+		} else if (pass_id == PASS_REFLECTION_CLEAN_FIREFLIES) {
+			clean_reflection_fireflies(pixel, reflection_id);
 		} else if (pass_id == PASS_REFLECTION_RESOLVE) {
 			resolve_reflection(pixel, reflection_id);
 		} else if (pass_id == PASS_REFLECTION_TEMPORAL) {

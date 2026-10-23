@@ -58,6 +58,34 @@ func _run() -> void:
 	ProjectSettings.set_setting(GI + "enabled", true)
 	await _settle(64)
 	await _capture("multimesh_on")
+	# Explicitly excluded procedural geometry must not consume the GI instance
+	# budget or suppress the scene because its vertex shader cannot be captured.
+	var excluded := MultiMeshInstance3D.new()
+	excluded.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+	excluded.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	excluded.position = Vector3(0, 1, 15)
+	var excluded_mesh := BoxMesh.new()
+	var excluded_shader := Shader.new()
+	excluded_shader.code = "shader_type spatial; void vertex() { VERTEX.x += sin(TIME) * 0.1; } void fragment() { ALBEDO=vec3(1.0); }"
+	var excluded_material := ShaderMaterial.new()
+	excluded_material.shader = excluded_shader
+	excluded_mesh.material = excluded_material
+	var excluded_multi := MultiMesh.new()
+	excluded_multi.transform_format = MultiMesh.TRANSFORM_3D
+	excluded_multi.mesh = excluded_mesh
+	excluded_multi.instance_count = 65537
+	var buffer := PackedFloat32Array()
+	buffer.resize(65537 * 12)
+	for index in 65537:
+		buffer[index * 12] = 1.0
+		buffer[index * 12 + 5] = 1.0
+		buffer[index * 12 + 10] = 1.0
+	excluded_multi.buffer = buffer
+	excluded.multimesh = excluded_multi
+	add_child(excluded)
+	await _settle(16)
+	await _capture("multimesh_excluded")
+	excluded.queue_free()
 	print("stage multimesh: move")
 	var moved := transforms[0]
 	for frame in 12:

@@ -183,5 +183,29 @@ void fragment() { ALBEDO = vec3(0.2); ALPHA = opacity; ALPHA_SCISSOR_THRESHOLD =
 		_near(images[0].get_pixel(4, 4).r, 4.5 / 16, "legacy UV2 placement")
 		_near(images[3].get_pixel(4, 4).r, 3 * 4.5 / 16, "legacy VERTEX_ID", 0.01)
 		_near(images[3].get_pixel(4, 4).b, 2, "legacy material uniforms")
+	# The automatic scene-budget fallback retains a native sample per triangle.
+	# Check all source attributes at its actual barycentric position (1/4,1/4).
+	var compact_material := _material("""
+shader_type spatial;
+varying float original_id;
+void vertex() { original_id = float(VERTEX_ID); }
+void fragment() {
+    ALBEDO = vec3(UV2, COLOR.r);
+    ROUGHNESS = UV.x;
+    METALLIC = UV.y;
+    EMISSION = vec3(original_id, 0.125, 2.0);
+}
+""")
+	for compressed in [false, true]:
+		var compact_mesh := _mesh(true, compressed)
+		images = RenderingServer.bake_render_triangle_material(compact_mesh.get_rid(), 0, 0, 2, 2, Transform3D.IDENTITY, compact_material.get_rid())
+		_check(images.size() == 4, "compact material capture must return all channels")
+		if images.size() == 4:
+			_check(images[0].get_size() == Vector2i(4, 2), "compact two-triangle placement")
+			_near(images[0].get_pixel(0, 0).r, 0.8, "compact source UV2")
+			_near(images[0].get_pixel(2, 0).r, 0.2, "compact second triangle UV2")
+			_near(images[0].get_pixel(0, 0).a, 1, "compact coverage")
+			_near(images[2].get_pixel(0, 0).g, 0.2, "compact UV roughness")
+			_near(images[3].get_pixel(0, 0).r, 3.75, "compact original vertex IDs", 0.01)
 	print("material capture checks finished: %d failures" % _failures)
 	get_tree().quit(1 if _failures else 0)

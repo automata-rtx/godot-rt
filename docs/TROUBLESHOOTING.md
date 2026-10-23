@@ -165,5 +165,11 @@ If GI repeatedly restarts while standing still or walking, enable the opt-in
 environment, configuration and scene resets from local dirty regions. The sandbox
 regression fixed global resets caused by flickering electrical-field mesh visibility
 and camera-centered geometry collection changes. Those events now invalidate local
-bounds. Light-list changes still reset reservoirs safely. See
+bounds. The subsequent implementation remaps light identities, reprojects native
+previous surfaces, retains native captures and atlas placements, and preflights
+material capacity. See the historical [gameplay audit](AMD_GI_GAMEPLAY_AUDIT.md)
+for the `3038a14` failures and the implementation status for current evidence.
+These changes are not a substitute for checking moving images and actual hardware.
+Default Crossroads/Fieldway scene preparation now adapts material resolution to fit
+its budget; the compact fallback reduces within-triangle material detail. See
 [AMD GI history diagnostics](features/amd-gi.md#scene-changes-and-history-diagnostics).

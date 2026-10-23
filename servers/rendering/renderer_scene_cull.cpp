@@ -3902,6 +3902,13 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 					if (instance->base_type == RSE::INSTANCE_LIGHT) {
 						lights.push_back(static_cast<InstanceLightData *>(instance->base_data)->instance);
 					} else if ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK) {
+						// Match the authored GI participation flag. Ordinary geometry
+						// defaults to STATIC; explicitly disabled objects (for example
+						// procedural grass) remain screen-space receivers without adding
+						// unsupported/deforming geometry to this transport scene.
+						if (!instance->baked_light && !instance->dynamic_gi) {
+							return false;
+						}
 						RendererSceneRender::RaytracingGIInstance gi;
 						gi.instance = instance->self;
 						gi.world_bounds = instance->transformed_aabb;

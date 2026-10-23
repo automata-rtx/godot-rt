@@ -42,6 +42,7 @@ namespace RendererRD {
 // Capture runs on the rendering thread before scene render lists are prepared.
 class RaytracingMaterialCapture {
 	RID mesh;
+	bool uses_expansion = false;
 	RID source_mesh;
 	int source_surface = -1;
 	RID capture_buffer;
@@ -49,6 +50,7 @@ class RaytracingMaterialCapture {
 	Vector<RID> textures;
 	Size2i size;
 	uint32_t triangle_count = 0;
+	uint64_t memory_usage = 0;
 	struct CaptureInfo {
 		uint32_t layout_info[4] = {};
 		float color[4] = { 1, 1, 1, 1 };
@@ -70,6 +72,7 @@ public:
 	Error render(const Transform3D &p_transform, RID p_material_override, int32_t p_instance_uniforms_offset = -1, RID p_mesh_instance = RID(), const Color &p_color = Color(1, 1, 1, 1), const Color &p_custom = Color(0, 0, 0, 0), uint32_t p_element = 0);
 	RID get_texture(int p_index) const;
 	Size2i get_size() const { return size; }
+	uint64_t get_memory_usage() const { return memory_usage; }
 	uint32_t get_triangle_count() const { return triangle_count; }
 	TypedArray<Image> readback() const;
 	void clear();

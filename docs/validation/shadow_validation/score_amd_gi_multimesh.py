@@ -27,6 +27,13 @@ def main():
     )
     assert direct < 0.001 and gi < 0.008 and restore < 0.008
     assert gain > 0.01 and update > 0.005
+
+    def linear(srgb):
+        return np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4)
+
+    excluded = np.abs(linear(on) - linear(load("excluded"))).mean()
+    print(f"Explicitly excluded 65,537-element procedural MultiMesh: linear RGB MAE={excluded:.6f}")
+    assert excluded < 0.004
     assert np.array_equal(off, load("disabled_after"))
     log = (directory / "run.log").read_text()
     assert "GI is suppressed" not in log

@@ -64,6 +64,14 @@ def main():
     print(f"Half/full resolution mean absolute display-RGB difference={resolution_error:.6f}")
     if resolution_error > 0.035:
         raise SystemExit("Reflection resolution variants differ excessively")
+
+    def linear(srgb):
+        return np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4)
+
+    compaction_error = np.abs(linear(full) - linear(load("uncompacted"))).mean()
+    print(f"Compacted/direct-dispatch reflection linear RGB MAE={compaction_error:.6f}")
+    if compaction_error > 0.005:
+        raise SystemExit("Ray compaction changed the reflection estimator")
     log = (directory / "run.log").read_text()
     motion = log.split("stage reflections: emitter motion\n")[-1].split("stage reflections: emitter motion finished")[0]
     if "AMD GI history reset:" in motion or motion.count("AMD GI local motion:") < 8:
@@ -73,7 +81,7 @@ def main():
         for name, buffers in re.findall(r"GI memory reflections_(\w+): textures=\d+ buffers=(\d+)", log)
     }
     height, width = half.shape[:2]
-    expected = ((width + 1) // 2) * ((height + 1) // 2) * 80 * 3 - 48
+    expected = ((width + 1) // 2) * ((height + 1) // 2) * (80 * 3 + 4) + 16 - 48
     if memory["restored"] - memory["off_after"] != expected:
         raise SystemExit("Reflection buffers did not release on disable")
     checks = re.findall(r"AMD GI reflection validation: budget=(\d+) traced=(\d+) probes=(\d+)", log)

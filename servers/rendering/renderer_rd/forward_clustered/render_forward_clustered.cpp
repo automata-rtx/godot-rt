@@ -227,7 +227,7 @@ RID RenderForwardClustered::RenderBufferDataForwardClustered::get_color_pass_fb(
 	}
 }
 
-RID RenderForwardClustered::RenderBufferDataForwardClustered::get_depth_fb(DepthFrameBufferType p_type) {
+RID RenderForwardClustered::RenderBufferDataForwardClustered::get_depth_fb(DepthFrameBufferType p_type, bool p_shared_velocity, bool p_shared_sss_caster) {
 	ERR_FAIL_NULL_V(render_buffers, RID());
 	bool use_msaa = render_buffers->get_msaa_3d() != RSE::VIEWPORT_MSAA_DISABLED;
 
@@ -244,13 +244,31 @@ RID RenderForwardClustered::RenderBufferDataForwardClustered::get_depth_fb(Depth
 
 			return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), depth, normal_roughness_buffer);
 		} break;
+		case DEPTH_FB_GI_MOTION:
 		case DEPTH_FB_ROUGHNESS_SSS_CASTER: {
 			ensure_normal_roughness_texture();
-			ensure_sss_caster_texture();
-
+			RID sss_caster_buffer;
+			if (p_type != DEPTH_FB_GI_MOTION || p_shared_sss_caster) {
+				ensure_sss_caster_texture();
+				sss_caster_buffer = render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSS_CASTER);
+			} else {
+				sss_caster_buffer = render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("sss_caster"), RD::DATA_FORMAT_R8_UNORM, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT);
+			}
 			RID normal_roughness_buffer = render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, use_msaa ? RB_TEX_NORMAL_ROUGHNESS_MSAA : RB_TEX_NORMAL_ROUGHNESS);
-			RID sss_caster_buffer = render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SSS_CASTER);
 
+			if (p_type == DEPTH_FB_GI_MOTION) {
+				RID velocity;
+				if (p_shared_velocity) {
+					render_buffers->ensure_velocity();
+					velocity = render_buffers->get_velocity_buffer(false);
+				} else {
+					// GI-only motion must not leave a native velocity allocation
+					// behind when GI is disabled without a temporal upscaler.
+					velocity = render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("velocity"), RenderSceneBuffersRD::get_velocity_format(), RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT);
+				}
+				RID previous_position = render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("previous_position"), RD::DATA_FORMAT_R32G32B32A32_SFLOAT, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT);
+				return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), depth, normal_roughness_buffer, sss_caster_buffer, velocity, previous_position);
+			}
 			return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), depth, normal_roughness_buffer, sss_caster_buffer);
 		} break;
 		case DEPTH_FB_ROUGHNESS_VOXELGI: {
@@ -522,6 +540,10 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 				ERR_FAIL_COND_MSG(p_params->view_count > 1, "Multiview not supported for the screen space shadow caster pass");
 				pipeline_key.version = SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_SSS_CASTER;
 			} break;
+			case PASS_MODE_DEPTH_GI_MOTION: {
+				pipeline_key.version = SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_GI_MOTION;
+				pipeline_key.color_pass_flags |= SceneShaderForwardClustered::PIPELINE_COLOR_PASS_FLAG_MOTION_VECTORS;
+			} break;
 			case PASS_MODE_DEPTH_MATERIAL: {
 				ERR_FAIL_COND_MSG(p_params->view_count > 1, "Multiview not supported for material pass");
 				pipeline_key.version = SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_MATERIAL;
@@ -723,6 +745,9 @@ void RenderForwardClustered::_render_list(RenderingDevice::DrawListID p_draw_lis
 		} break;
 		case PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI: {
 			_render_list_template<PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
+		} break;
+		case PASS_MODE_DEPTH_GI_MOTION: {
+			_render_list_template<PASS_MODE_DEPTH_GI_MOTION>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
 		} break;
 		case PASS_MODE_DEPTH_MATERIAL: {
 			_render_list_template<PASS_MODE_DEPTH_MATERIAL>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
@@ -2451,6 +2476,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	// check if we need motion vectors
 	bool motion_vectors_required;
+	const bool using_gi_motion = !is_reflection_probe && amd_gi && rtgi_scene && rtgi_scene->is_ready() && rb_data.is_valid() && rb->get_msaa_3d() == RSE::VIEWPORT_MSAA_DISABLED;
 	if (using_debug_mvs) {
 		motion_vectors_required = true;
 	} else if (ce_needs_motion_vectors) {
@@ -2464,7 +2490,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 
 	//p_render_data->scene_data->subsurface_scatter_width = subsurface_scatter_size;
-	p_render_data->scene_data->calculate_motion_vectors = motion_vectors_required;
+	p_render_data->scene_data->calculate_motion_vectors = motion_vectors_required || using_gi_motion;
 	p_render_data->scene_data->directional_light_count = 0;
 	p_render_data->scene_data->opaque_prepass_threshold = 0.99f;
 
@@ -2483,7 +2509,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	bool using_voxelgi = false;
 	bool reverse_cull = p_render_data->scene_data->cam_transform.basis.determinant() < 0;
 	bool using_ssil = !is_reflection_probe && p_render_data->environment.is_valid() && environment_get_ssil_enabled(p_render_data->environment);
-	bool using_motion_pass = rb_data.is_valid() && using_upscaling;
+	bool using_motion_pass = rb_data.is_valid() && using_upscaling && !using_gi_motion;
 
 	if (is_reflection_probe) {
 		uint32_t resolution = light_storage->reflection_probe_instance_get_resolution(p_render_data->reflection_probe);
@@ -2506,7 +2532,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	} else {
 		screen_size = rb->get_internal_size();
 
-		if (p_render_data->scene_data->calculate_motion_vectors) {
+		if (motion_vectors_required) {
 			color_pass_flags |= COLOR_PASS_FLAG_MOTION_VECTORS;
 			scene_shader.enable_advanced_shader_group();
 
@@ -2569,7 +2595,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	RD::get_singleton()->draw_command_end_label();
 
 	if (!is_reflection_probe) {
-		if (using_voxelgi) {
+		if (using_gi_motion) {
+			depth_pass_mode = PASS_MODE_DEPTH_GI_MOTION;
+			scene_shader.shader.enable_group(SceneShaderForwardClustered::SHADER_GROUP_GI_FEEDBACK);
+		} else if (using_voxelgi) {
 			depth_pass_mode = PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI;
 		} else if (_using_restricted_sss_casters(p_render_data)) {
 			// Same buffers as the plain normal/roughness pre-pass plus one byte per
@@ -2606,6 +2635,12 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			case PASS_MODE_DEPTH_NORMAL_ROUGHNESS: {
 				depth_framebuffer = rb_data->get_depth_fb(RenderBufferDataForwardClustered::DEPTH_FB_ROUGHNESS);
 				depth_pass_clear.push_back(Color(0, 0, 0, 0));
+			} break;
+			case PASS_MODE_DEPTH_GI_MOTION: {
+				depth_framebuffer = rb_data->get_depth_fb(RenderBufferDataForwardClustered::DEPTH_FB_GI_MOTION, motion_vectors_required, _using_restricted_sss_casters(p_render_data));
+				for (int i = 0; i < 4; i++) {
+					depth_pass_clear.push_back(Color(0, 0, 0, 0));
+				}
 			} break;
 			case PASS_MODE_DEPTH_NORMAL_ROUGHNESS_SSS_CASTER: {
 				depth_framebuffer = rb_data->get_depth_fb(RenderBufferDataForwardClustered::DEPTH_FB_ROUGHNESS_SSS_CASTER);

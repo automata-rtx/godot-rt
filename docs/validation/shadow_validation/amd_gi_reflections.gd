@@ -31,6 +31,10 @@ func _run() -> void:
 	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/reflections/half_resolution", false)
 	await _settle(64)
 	await _capture("reflections_full")
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/reflections/ray_compaction", false)
+	await _settle(32)
+	await _capture("reflections_uncompacted")
+	ProjectSettings.set_setting("rendering/global_illumination/amd_gi/reflections/ray_compaction", true)
 	print("stage reflections: emitter motion")
 	var emitter_origin := emitter.position
 	for frame in 8:

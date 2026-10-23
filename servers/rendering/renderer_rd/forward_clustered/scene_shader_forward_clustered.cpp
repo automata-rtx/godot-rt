@@ -66,6 +66,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	uses_depth_prepass_alpha = false;
 	uses_discard = false;
 	uses_roughness = false;
+	uses_emission = false;
 	uses_normal = false;
 	uses_tangent = false;
 	writes_tangent = false;
@@ -136,6 +137,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	actions.usage_flag_pointers["DISCARD"] = &uses_discard;
 	actions.usage_flag_pointers["TIME"] = &uses_time;
 	actions.usage_flag_pointers["ROUGHNESS"] = &uses_roughness;
+	actions.usage_flag_pointers["EMISSION"] = &uses_emission;
 	actions.usage_flag_pointers["NORMAL"] = &uses_normal;
 	actions.usage_flag_pointers["NORMAL_MAP"] = &uses_normal_map;
 	actions.usage_flag_pointers["BENT_NORMAL_MAP"] = &uses_bent_normal_map;
@@ -306,6 +308,8 @@ uint16_t SceneShaderForwardClustered::ShaderData::_get_shader_version(PipelineVe
 			return ShaderVersion::SHADER_VERSION_DEPTH_PASS_WITH_SDF + ubershader_base;
 		case PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_SSS_CASTER:
 			return ShaderVersion::SHADER_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_SSS_CASTER + ubershader_base;
+		case PIPELINE_VERSION_DEPTH_PASS_WITH_GI_MOTION:
+			return ShaderVersion::SHADER_VERSION_DEPTH_PASS_WITH_GI_MOTION + ubershader_base;
 		case PIPELINE_VERSION_COLOR_PASS: {
 			int shader_flags = 0;
 
@@ -482,6 +486,9 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 			case PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_SSS_CASTER:
 				// Two color attachments either way: normal/roughness plus one more.
 				blend_state = blend_state_depth_normal_roughness_giprobe;
+				break;
+			case PIPELINE_VERSION_DEPTH_PASS_WITH_GI_MOTION:
+				blend_state = RD::PipelineColorBlendState::create_disabled(4);
 				break;
 			case PIPELINE_VERSION_DEPTH_PASS_WITH_MATERIAL:
 				// Writes to normal and roughness in opaque way.
@@ -671,6 +678,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 			shader_versions.push_back(ShaderRD::VariantDefine(SHADER_GROUP_ADVANCED, base_define + "\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_MATERIAL\n", false)); // SHADER_VERSION_DEPTH_PASS_WITH_MATERIAL
 			shader_versions.push_back(ShaderRD::VariantDefine(SHADER_GROUP_ADVANCED, base_define + "\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_SDF\n", false)); // SHADER_VERSION_DEPTH_PASS_WITH_SDF
 			shader_versions.push_back(ShaderRD::VariantDefine(SHADER_GROUP_ADVANCED, base_define + "\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_NORMAL_ROUGHNESS\n#define MODE_RENDER_SSS_CASTER\n", false)); // SHADER_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_SSS_CASTER
+			shader_versions.push_back(ShaderRD::VariantDefine(SHADER_GROUP_GI_FEEDBACK, base_define + "\n#define MODE_RENDER_DEPTH\n#define MODE_RENDER_NORMAL_ROUGHNESS\n#define MODE_RENDER_SSS_CASTER\n#define MOTION_VECTORS\n#define GI_PREVIOUS_POSITION\n", false)); // SHADER_VERSION_DEPTH_PASS_WITH_GI_MOTION
 		}
 
 		Vector<String> color_pass_flags = {

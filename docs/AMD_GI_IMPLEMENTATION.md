@@ -1,12 +1,25 @@
 # AMD GI integration
 
-**Status: cached diffuse GI, sky lighting, and initial glossy reflections run on Vulkan Forward+.**
+**Status: the scoped Vulkan Forward+ GI pipeline is implemented. Target-hardware qualification and shipping quality tiers are unverified.**
+Cached diffuse GI, sky lighting, and glossy reflections run on Vulkan Forward+.
 It implements sparse screen probes, directional hashed world radiance, multibounce
 feedback, reconstruction, and temporal/spatial GI denoising. Progress captures use
 approximately 1/4 or 1 primary GI ray per internal pixel per frame, with denoising
 on. See [the implemented pipeline and explicit port gaps](features/amd-gi.md).
-Full AMD sampling/cache scheduling, broader material/scene support,
-and shipping quality/performance validation remain unfinished.
+Sampling, cache-update and glossy scheduling stages are implemented. Software-Vulkan
+integration, controlled motion and game-scene checks are recorded below. Engine-specific
+material and scene limits are documented explicitly; this is an adaptation, not a
+pixel-identical Capsaicin renderer or a general path tracer.
+
+The [2026-10-23 gameplay audit](AMD_GI_GAMEPLAY_AUDIT.md) reproduced full-history
+resets on light toggles, complete glossy-history rejection on a moving metal object,
+material-capture churn, and default-capacity suppression in Crossroads and Fieldway.
+Those findings apply to the audited `3038a14` build. Native previous-surface
+reprojection, explicit emitter sampling, reflection firefly cleanup/compaction,
+GPU material expansion/residency and capacity preflight are now implemented locally;
+combined gameplay checks now cover these paths. Settled stills and global reset
+counts did not establish gameplay quality. These are implementation defects and
+missing stages, not a justification to increase the primary ray budget.
 
 The requested endpoint remains an optional Vulkan Forward+ implementation of AMD's
 GI-1.x architecture, including the later reflection and multibounce work. This file
@@ -55,20 +68,20 @@ uses explicit consumer tracking: when validation is disabled, `release_gi_only()
 removes entries used by GI that the current shadow update did not request. Shared
 shadow entries survive. Normal cache age-out alone would not release GI-only resources.
 
-## Remaining implementation
+## Implementation coverage and limits
 
 | Work | Required result |
 | --- | --- |
-| Automatic hit shading | Native capture retains prepared geometry/targets with source-revision invalidation; static pixels reuse material/texture revisions with dynamic-shader fallback; native poses reuse shared GPU deformation; CPU-managed MultiMesh inputs and shared static captures are supported; particles, higher material fidelity, and broader material support remain |
-| Scene collection | Independent bounded mesh/light collection includes native poses and off-screen non-casters; extend beyond its deliberately limited scene support |
+| Automatic hit shading | Native capture retains prepared geometry/targets with source-revision invalidation; static pixels reuse material/texture revisions with dynamic-shader fallback; native poses reuse shared GPU deformation; CPU-managed MultiMesh inputs and shared static captures are supported. Triangle-tile material detail and unsupported shader/particle inputs are documented limits |
+| Scene collection | Independent bounded mesh/light collection includes native poses, off-screen non-casters and authored GI participation; explicit capacity/unsupported-input fallback |
 | World radiance cache | Bounded full-key directional tiles, sample-count-selected direct/indirect mips, lifetime, emission/short-ray bypass and double-buffered light reservoirs are implemented and tested; spatial light-hierarchy proposals are implemented; all-hit updates are implemented with an optional one-hit-per-cell mode; shared-grid reservoir reuse remains a port difference |
-| Screen probes | Dense stored grid with sparse updates, adaptive hole patching, current-grid neighborhood hit reprojection, bounded displaced-probe LRU reuse, diffuse radiance guiding, angular rebinning/filtering, hierarchical mask lookup, blue-noise jitter and SH9 reconstruction are implemented; specular BRDF sampling remains |
+| Screen probes | Dense stored grid with sparse updates, adaptive hole patching, current-grid neighborhood hit reprojection, bounded displaced-probe LRU reuse, radiance/BRDF guiding, angular rebinning/filtering, hierarchical mask lookup, two-dimensional temporal blue-noise sampling and SH9 reconstruction |
 | Multiple bounces | Continuations populate and shade secondary world receivers, then propagate current direct light and previous indirect feedback through separate histories; compatible combined native screen-lighting feedback is implemented; all-hit update scheduling is implemented with an optional lower-cost mode |
-| Reflections | GGX sampling, rough-probe reuse, ratio reconstruction, virtual/surface temporal history and a-trous filtering implemented; layered lobes, nested specular and further quality work remain |
-| Conventional denoising | Diffuse geometry reprojection, rejection, temporal clamping and adaptive spatial filtering are implemented; object motion-vector handling and further specular quality work remain |
+| Reflections | GGX sampling, rough-probe reuse, compacted tracing, firefly cleanup, ratio reconstruction, virtual/surface temporal history and a-trous filtering implemented; secondary materials follow AMD's diffuse approximation rather than general nested specular transport; gameplay quality validation remains |
+| Conventional denoising | Diffuse geometry reprojection, rejection, temporal clamping and adaptive spatial filtering; native previous-surface reprojection including native poses; glossy temporal/spatial variance, surface/virtual reprojection and outlier cleanup. No NRD or Ray Reconstruction |
 | Composition | Validation diffuse uses Forward+'s shared incoming-diffuse input before fog, tone mapping, and upscaling; specular shares the native incoming-reflection channel; FSR2 software-Vulkan checks pass, DLSS runtime testing remains |
 | Controls and comparisons | Script-accessible runtime controls and exclusive dynamic backend selection, retaining native Godot GI for comparisons |
-| Validation | Reference images, moving scenes, resource lifetime checks, and measurements on the two target machines |
+| Validation | Software-Vulkan reference/controlled images, moving scenes, resource lifetime checks and actual game-map collection checks pass. Measurements on the 780M/5090 and DLSS runtime validation are outstanding |
 
 ### Native material capture
 
@@ -86,14 +99,16 @@ opt-in transport validator calls it before preparing the main scene render lists
 ordinary frames with validation disabled do not. Capture resources exist only after
 an explicit call and are released by `clear()` or destruction.
 
-This is not yet a complete material cache or ray-hit shading solution. Preparation
-reads and decodes the source surface before expanding the requested range; active
+The material cache uses native shader capture rather than a separate authored hit
+material system. Preparation
+expands native packed source attributes on the GPU without source readback; active
 GI retains that geometry and its targets until source revisions change. Material
 pixels persist for tracked static inputs, with dynamic inputs refreshed per frame. Output pages are bounded, but fixed
-per-triangle sampling (4/8 texels, selectable live) can lose texture detail and waste memory. Cache residency,
-adaptive sampling, particle evaluation, cutout/detail fidelity,
-and integration with GI scene collection remain necessary. Screen/camera-dependent
-materials need a defined policy. See [internals/rt-materials.md](internals/rt-materials.md)
+per-triangle sampling (8/4-pixel maximum, automatic 4/2-pixel capacity adaptation) can lose texture detail and waste memory. New preparation is bounded by a live
+chunk budget; completed pages persist until the collected scene is ready.
+Particles and screen/camera-dependent hit materials are not supported. Explicitly
+excluded GI geometry stays outside transport; included unsupported geometry reports
+a fallback instead of silently disappearing from the traced scene. See [internals/rt-materials.md](internals/rt-materials.md)
 for the representation, limitations, and renderer contract.
 
 The discarded initial draft overwrote UV2 and had unbounded page allocation. Do not
@@ -151,11 +166,10 @@ report a clear fallback instead of accessing missing render buffers.
 
 ## Acceptance and performance
 
-The final requested visual comparison is **pending completion of the remaining
-backend work**: match approximately 1/4 versus 1 primary diffuse ray per internal
+The game visual-comparison protocol matches approximately 1/4 versus 1 primary diffuse ray per internal
 pixel per frame, keeping camera, materials, lighting, exposure, denoising, other
 features, and settling protocol identical. Save phone-readable PDFs and original
-PNGs in `/workspace/preview`. Intermediate stage captures are not that final
+PNGs in `/workspace/preview`. Historical intermediate stage captures are not that
 comparison. Record reflection, continuation, and visibility ray budgets separately.
 
 1. Build and shader ABI checks, including release builds and awkward internal sizes.
@@ -272,6 +286,5 @@ Windows builds, or performance on either target GPU.
 
 Scene-history regression coverage now includes flickering geometry and camera-centered
 collection changes. Stable instance/element matching supplies local dirty bounds for
-additions/removals and material/topology edits, retaining unrelated history. Global
-light-index changes and discontinuities still reset history. See the sandbox evidence
+additions/removals and material/topology edits, retaining unrelated history. Light indices are now remapped per viewport using stable identities; membership changes do not clear all histories. Camera/environment discontinuities still reset history. See the sandbox evidence
 in [HISTORY](HISTORY.md) and `amd_gi_scene_churn` / `amd_gi_flashlight` rigs.

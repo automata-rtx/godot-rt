@@ -19,8 +19,8 @@ anything else. **Open the file that covers the question before answering it.**
 | Has this been tried, what did it measure | `docs/HISTORY.md` — read before re-attempting anything |
 | How do I measure or validate a change | `docs/VALIDATION.md` |
 | Re-applying the fork to a newer Godot | `docs/PORTING.md` |
-| AMD GI implementation status and remaining work | `docs/AMD_GI_IMPLEMENTATION.md` — diffuse/sky/glossy implementation, not a completed shipping backend |
-| Triangle material capture / GI material preparation | `docs/internals/rt-materials.md` — shared native GI hit-material capture; synchronous readback is diagnostic only |
+| AMD GI implementation status and qualification | `docs/AMD_GI_IMPLEMENTATION.md` — implemented Vulkan diffuse/sky/glossy pipeline; target-hardware qualification unverified |
+| Triangle material capture / GI material preparation | `docs/internals/rt-materials.md` — native GI hit-material capture; GPU source expansion, native capture residency, adaptive atlas budgeting; readback is diagnostic |
 | Sparse AMD GI progress and live controls | `docs/features/amd-gi.md` — actual low-budget captures, denoiser enabled |
 | GI enabled/disabled stills and validation controls | `docs/features/rtgi-validation.md` — uncached diffuse transport, not AMD GI-1.x |
 

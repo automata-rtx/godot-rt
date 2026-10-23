@@ -35,6 +35,7 @@
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
 
 #define RB_SCOPE_AMD_GI SNAME("amd_gi")
+#define RB_SCOPE_AMD_GI_GEOMETRY SNAME("amd_gi_geometry")
 
 namespace RendererRD {
 
@@ -90,7 +91,11 @@ private:
 		TEMPORAL,
 		BLUR_X,
 		BLUR_Y,
+		REFLECTION_CLASSIFY,
+		REFLECTION_BUILD_DISPATCH,
 		REFLECTION_TRACE,
+		REFLECTION_MARK_FIREFLIES,
+		REFLECTION_CLEAN_FIREFLIES,
 		REFLECTION_RESOLVE,
 		REFLECTION_TEMPORAL,
 		REFLECTION_FILTER,
@@ -117,14 +122,15 @@ private:
 		uint32_t flags[4]; // denoiser, importance sampling, mask mip count, cached probe reuse
 		uint32_t tracing[4]; // update columns/rows, adaptive scheduling, light resampling
 		float world_to_sky[12];
-		float sky[4]; // diffuse and reflection energy, octahedral border, unused
+		float sky[4]; // diffuse and reflection energy, octahedral border, bit 0 firefly cleanup / bit 1 BRDF guiding
 		float ambient[4]; // remaining ambient color, replace native ambient
 		float reflections[4]; // sample stride, probe roughness threshold, filter iterations, unused
-		uint32_t motion[4]; // swept bound count, all-hit cache updates, reserved
+		uint32_t motion[4]; // swept bound count, all-hit updates, lighting change, previous light count
+		uint32_t emitters[4]; // emitter count/capacity, appended glossy queue offset, compact glossy dispatch
 		float motion_bounds[RaytracingGIScene::MAX_MOTION_BOUNDS][8]; // min/max, std140 vec4 pairs
 	};
 	static_assert(sizeof(PushConstant) == 128);
-	static_assert(sizeof(FrameUniform) == 560);
+	static_assert(sizeof(FrameUniform) == 576);
 	struct ViewData : public RenderBufferCustomDataRD {
 		GDCLASS(ViewData, RenderBufferCustomDataRD);
 
@@ -138,6 +144,9 @@ private:
 		RID cached_probes, cached_state, cached_order[2];
 		RID light_reservoirs[2];
 		RID light_tree;
+		uint32_t previous_light_count = 0;
+		LocalVector<uint64_t> light_identities;
+		void update_light_remap(const RaytracingGIScene &p_scene);
 		uint32_t light_tree_capacity = 0;
 		LocalVector<RaytracingGIScene::LightData> sampling_lights;
 		bool update_light_tree(const RaytracingGIScene &p_scene);
@@ -152,6 +161,8 @@ private:
 		uint32_t frame = 0;
 		uint32_t index = 0;
 		uint64_t scene_revision = 0;
+		uint64_t lighting_revision = 0;
+		uint32_t lighting_reactive_frames = 0;
 		uint32_t configuration = 0;
 		float cell_size = 0;
 		float continuation = 0;

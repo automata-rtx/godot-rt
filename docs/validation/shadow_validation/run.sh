@@ -61,6 +61,7 @@ case "$RIG" in
 	amd_gi_material_density) RIG_RES=641x359 ;;
 	amd_gi_scene_churn|amd_gi_flashlight) RIG_RES=321x181 ;;
 	amd_gi_deformation) RIG_RES=641x359 ;;
+	amd_gi_emitters|amd_gi_gameplay_audit) RIG_RES=321x181 ;;
 	amd_gi_budget_compare) RIG_RES=641x359 ;;
 	*)          RIG_RES=1280x720 ;;
 esac
@@ -110,8 +111,12 @@ export SHADOW_OUT_DIR="$OUT"
 if [ "$RIG" = "geometry" ]; then
 	export GODOT_RT_DEBUG=1
 fi
-if [ "$RIG" = "amd_gi_scene_churn" ] || [ "$RIG" = "amd_gi_flashlight" ]; then
+if [ "$RIG" = "amd_gi_scene_churn" ] || [ "$RIG" = "amd_gi_flashlight" ] || [ "$RIG" = "amd_gi_emitters" ] || [ "$RIG" = "amd_gi_gameplay_audit" ]; then
 	export GODOT_AMD_GI_TRACE_HISTORY=1
+fi
+if [ "$RIG" = "amd_gi_gameplay_audit" ]; then
+	export GODOT_AMD_GI_TRACE_REFLECTION_HISTORY=1
+	export GODOT_AMD_GI_VALIDATE_MATERIALS=1
 fi
 if [ "$RIG" = "amd_gi_material_density" ] || [ "$RIG" = "amd_gi_sampling" ] || [ "$RIG" = "amd_gi_cache" ] || [ "$RIG" = "amd_gi_dynamic_lighting" ] || [ "$RIG" = "amd_gi_deformation" ] || [ "$RIG" = "amd_gi_budget_compare" ] || [ "$RIG" = "amd_gi_reflections" ] || [ "$RIG" = "amd_gi_multimesh" ] || [ "$RIG" = "amd_gi_overlays" ]; then
 	# Synchronous diagnostic readback validates actual GPU scheduling/LRU state.
@@ -160,8 +165,10 @@ mv "$HERE/out"/*.png "$OUT/" 2>/dev/null
 echo
 if [ "$RIG" = "opacity" ]; then
 	python3 "$HERE/score_opacity.py" "$OUT" "$@"
-elif [ "$RIG" = "amd_gi_scene_churn" ] || [ "$RIG" = "amd_gi_flashlight" ]; then
+elif [ "$RIG" = "amd_gi_scene_churn" ] || [ "$RIG" = "amd_gi_flashlight" ] || [ "$RIG" = "amd_gi_emitters" ]; then
 	python3 "$HERE/score_$RIG.py" "$OUT"
+elif [ "$RIG" = "amd_gi_gameplay_audit" ]; then
+	python3 "$HERE/score_amd_gi_gameplay_audit.py" "$LOG"
 elif [ "$RIG" = "amd_gi_material_density" ]; then
 	if grep -aqE 'SCRIPT ERROR|ERROR:|GI is suppressed' "$LOG" || ! grep -aq 'AMD material density capture finished: 0 failures' "$LOG"; then
 		echo "GI material density validation failed; inspect $LOG" >&2
