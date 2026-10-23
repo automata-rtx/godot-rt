@@ -1951,6 +1951,10 @@ bool RendererSceneRenderRD::is_rtgi_enabled(RID p_environment, const Ref<RenderS
 	if ((!RendererRD::RTGIValidation::is_enabled() && !RendererRD::AMDGI::is_enabled()) || !is_raytracing_scene_available()) {
 		return false;
 	}
+	if (RendererRD::AMDGI::is_enabled() && !RendererRD::AMDGI::is_supported()) {
+		WARN_PRINT_ONCE("AMD GI requires 32 compute storage-buffer bindings and 32 KiB of workgroup memory; GI is disabled on this device.");
+		return false;
+	}
 	Ref<RenderSceneBuffersRD> rb = p_buffers;
 	if (RD::get_singleton()->get_device_api_name() != "Vulkan" || rb.is_null() || rb->get_view_count() != 1 || rb->get_msaa_3d() != RSE::VIEWPORT_MSAA_DISABLED) {
 		WARN_PRINT_ONCE("RT GI requires Vulkan Forward+, a single view, and MSAA disabled.");

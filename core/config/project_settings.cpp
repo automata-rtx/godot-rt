@@ -1842,6 +1842,7 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/material_atlas_mb", PROPERTY_HINT_RANGE, "8,512,8,suffix:MiB"), 128);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/multibounce", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/screen_feedback", true);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/cache_all_hits", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/denoiser", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/importance_sampling", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/adaptive_sampling", true);

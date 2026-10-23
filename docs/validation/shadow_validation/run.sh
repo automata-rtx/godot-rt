@@ -48,6 +48,7 @@ case "$RIG" in
 	amd_gi_lights) RIG_RES=641x359 ;;
 	amd_gi_bounces) RIG_RES=641x359 ;;
 	amd_gi_feedback) RIG_RES=641x359 ;;
+	amd_gi_hit_updates) RIG_RES=641x359 ;;
 	amd_gi_sky) RIG_RES=641x359 ;;
 	amd_gi_reflections) RIG_RES=641x359 ;;
 	amd_gi_fsr2) RIG_RES=641x359 ;;
@@ -116,6 +117,9 @@ if [ "$RIG" = "amd_gi_materials" ] || [ "$RIG" = "amd_gi_dirty_materials" ] || [
 fi
 if [ "$RIG" = "amd_gi_lights" ]; then
 	export GODOT_AMD_GI_VALIDATE_RESERVOIRS=1
+fi
+if [ "$RIG" = "amd_gi_hit_updates" ]; then
+	export GODOT_AMD_GI_VALIDATE_HITS=1
 fi
 if [ "$RIG" = "amd_gi_feedback" ]; then
 	export GODOT_AMD_GI_VALIDATE_FEEDBACK=1
@@ -215,6 +219,11 @@ elif [ "$RIG" = "amd_gi_sky" ]; then
 		exit 1
 	fi
 	python3 "$HERE/score_amd_gi_sky.py" "$OUT"
+elif [ "$RIG" = "amd_gi_hit_updates" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG"; then
+		exit 1
+	fi
+	python3 "$HERE/score_amd_gi_hit_updates.py" "$OUT"
 elif [ "$RIG" = "amd_gi_feedback" ]; then
 	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG"; then
 		exit 1

@@ -7,7 +7,7 @@ const GI := "rendering/global_illumination/amd_gi/"
 
 func _run() -> void:
 	ProjectSettings.set_setting(GI + "enabled", false)
-	for feature in ["denoiser", "importance_sampling", "adaptive_sampling", "probe_cache", "light_resampling", "multibounce", "reflections/enabled", "reflections/half_resolution"]:
+	for feature in ["cache_all_hits", "screen_feedback", "denoiser", "importance_sampling", "adaptive_sampling", "probe_cache", "light_resampling", "multibounce", "reflections/enabled", "reflections/half_resolution"]:
 		ProjectSettings.set_setting(GI + feature, true)
 	ProjectSettings.set_setting(GI + "max_distance", 20.0)
 	ProjectSettings.set_setting(GI + "continuation_probability", 0.3)

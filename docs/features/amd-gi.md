@@ -18,6 +18,7 @@ MSAA. All controls below are live `ProjectSettings` values under
 | --- | --- | --- |
 | `enabled` | `false` | Creates the GI scene consumer and cached pipeline only when requested. |
 | `probe_spacing` | `16` | Budget one 64-ray probe update per 8×8, 16×16, or 32×32 screen tile: approximately 1, 1/4, or 1/16 primary GI ray per internal pixel per frame. Stored probes always use an 8-pixel grid. |
+| `cache_all_hits` | `true` | Shade and accumulate every registered cache hit. Disabling keeps one selected hit per cell and releases hit lists/sample records. Primary ray count is unchanged; visibility, continuation, shading and memory costs can decrease. |
 | `screen_feedback` | `true` | Reuse previous native opaque lighting for compatible visible secondary/reflection hits. Adds one RGBA16F target and opaque attachment; disabling releases it. Requires multibounce or reflections. Per-light indirect-energy multipliers other than 1 select the explicit world-cache fallback. |
 | `multibounce` | `true` | Populate secondary world cells from a subset of primary cache updates, shade their direct light, and propagate indirect light through separate histories. Disabling skips seven stages and frees continuation/indirect storage. |
 | `continuation_probability` | `0.3` | Fraction of cache-cell updates tracing an additional diffuse continuation; contributions are probability compensated. |
@@ -76,9 +77,11 @@ stage dispatches once per mip level:
 3. Allocate directional world-space tiles in a bounded spatial hash. Keep complete
    keys and four candidate slots per bucket; a hash collision cannot silently
    identify unrelated geometry. Publication and subsequent lookup are separate passes.
-4. Register primary ray hits and select one update per touched cache cell. With
-   multibounce on, trace at most one scheduled continuation from each such owner,
-   according to `continuation_probability`. Allocate/register the secondary hits
+4. Register every primary hit in a bounded per-cell list. By default, shade each
+   hit independently and accumulate its contribution/evidence in the cache. With
+   multibounce on, each registered primary hit can schedule one continuation,
+   according to `continuation_probability`. `cache_all_hits=false` retains one
+   selected update/continuation candidate per touched cell as a lower-cost option. Allocate/register the secondary hits
    as additional world-cache receivers. Primary owners win when both reach a cell.
 5. Shade direct light for the primary and newly populated secondary receivers.
    Separate direct and indirect histories prevent feedback races. Store
@@ -90,7 +93,7 @@ stage dispatches once per mip level:
    re-evaluating their targets at this hit and clamping each previous confidence
    to 20. Trace only the chosen light's visibility; never reuse visibility from
    another surface. Reservoir reads/writes are double-buffered and have one writer
-   per base cache cell. Uncached continuation shading uses the same estimator.
+   per base cache cell; the remaining hits reuse proposals without writing them. Uncached continuation shading uses the same estimator.
 6. Build the three coarser levels of each 8×8 cache tile. Preserve summed sample
    counts and select the finest mip with 16 accumulated samples, falling back to
    the coarsest level while evidence is sparse, as in AMD's filtered readback.
@@ -169,8 +172,8 @@ The current diffuse result is not the completed AMD GI-1.2 look. In particular:
   refresh. Fine surfaces sharing a screen tile still compete for its stored probe.
   Material-BRDF specular sampling is not part of this diffuse stage. The cache
   also retains the previous tile's surface when disocclusion prevents reprojection.
-- Cache update selection currently chooses one hit per touched cell. Light
-  reservoirs reuse the existing directional world-cell grid; Capsaicin uses a
+- Cache updates now accumulate all registered primary/secondary hits by default.
+  The one-hit-per-cell option remains available for performance. Light reservoirs reuse the existing directional world-cell grid; Capsaicin uses a
   separate hash of multiple hit reservoirs and its light-sampling hierarchy. This
   port uses a balanced spatial hierarchy for its bounded point/spot/sun list.
   Bounds and power guide eight fresh candidates; each RIS weight divides by the
@@ -178,8 +181,8 @@ The current diffuse result is not the completed AMD GI-1.2 look. In particular:
   falloff and spot distributions. This is an adaptation of spatial light selection,
   not Capsaicin's light-grid implementation.
   Continuations now populate additional cells with separate direct/indirect
-  filtering. Scheduling still chooses one hit per cell rather than accumulating
-  all visible-hit updates. Visible receivers can reuse reprojected combined native screen lighting;
+  filtering. Independent hit shading and per-cell reduction are ordered stages, so
+  shared cells accumulate samples without float atomics or concurrent radiance reads. Visible receivers can reuse reprojected combined native screen lighting;
   other receivers use the previous world indirect cache. Coarse cache reuse can
   flatten indirect gradients.
 - Glossy transport, ratio reconstruction, temporal rejection, and a-trous denoising
@@ -472,3 +475,19 @@ per-light indirect-energy fallback, texture release and exact disabled restorati
 Its synchronous diagnostics are opt-in with `GODOT_AMD_GI_VALIDATE_FEEDBACK` and
 must not be enabled when measuring performance. The dedicated counter occupies
 previously unused queue-header space; ordinary rendering does not increment it.
+
+### All-hit cache updates
+
+`cache_all_hits` retains bounded lists of registered hits, shades them in parallel,
+and reduces their contributions per world cell. Primary hits contribute independent
+continuation estimates; secondary-only cells receive direct lighting. History counts
+now reflect contributing samples, capped to the existing 16-sample temporal window.
+One stable hit still publishes each cell's light reservoir, avoiding write races.
+
+The optional storage is one additional head per world cell plus 48 bytes per primary
+hit slot (and per secondary slot when multibounce is on). The lower-cost mode skips
+both per-hit shading passes and releases this storage. It preserves the original
+one-update-per-cell behavior. Primary diffuse rays are identical between modes;
+additional visibility and continuation rays must be included when profiling.
+`amd_gi_hit_updates` reads actual GPU lists to verify every registered hit is present
+exactly once, all samples are shaded, and toggling releases the extra buffers.

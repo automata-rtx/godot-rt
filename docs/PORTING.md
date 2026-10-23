@@ -1296,7 +1296,7 @@ pipeline when `amd_gi/enabled` is requested, otherwise the diagnostic pipeline.
 The host/shader contracts are a 128-byte transport push block, a 560-byte frame
 UBO, 192-byte probes (position, normal, SH9, seed/age/update slot), 80-byte ray records, 32-byte hash tiles,
 16-byte radiance cells, and 48-byte pixel histories. The shader specializes pass ID
-at constant 0; preserve all 36 stage boundaries and barriers, including each
+at constant 0; preserve all 38 stage boundaries and barriers, including each
 iteration of the probe-mask mip stage. Cache publication,
 lookup/update ownership, old/new radiance, mip generation, probe reconstruction,
 and temporal/spatial filtering must not become concurrent read/write operations.
@@ -1304,7 +1304,7 @@ and temporal/spatial filtering must not become concurrent read/write operations.
 Viewport custom data owns all histories and buffers; its cleanup must run on resize
 and disabling. Forward+ still consumes binding 34 before tone mapping/upscaling.
 Backend switching must clear the inactive output scope, and native-GI conflicts
-must not silently change authored environment settings. Port all seventeen live
+must not silently change authored environment settings. Port all eighteen live
 `amd_gi/*` controls and regenerate ProjectSettings documentation. The initial path
 still uses conservative scene invalidation and dynamic-material refresh.
 
@@ -1471,7 +1471,7 @@ The private scene adapter exposes a const CPU light view for constructing it.
 Rebuild only on changed records and free it with per-view GI resources. The shader
 must divide fresh RIS weights by the complete mixed tree-walk probability, not
 by uniform `1/light_count`. Keep the placeholder unreachable when resampling is
-disabled. There are now 31 storage-buffer bindings, within Vulkan's minimum 32.
+disabled. That stage used 31 storage-buffer bindings; the later all-hit path adds one more.
 
 ### AMD GI native screen-lighting feedback
 
@@ -1494,3 +1494,22 @@ globally enabling it. Each version tracks whether compilation started for a grou
 shader replacement resets that state. Requesting the actual feedback variant starts
 only its material's group. This avoids compiling feedback for future materials
 after GI has been disabled. Other shader groups retain their prior behavior.
+
+### AMD GI all-hit world-cache updates
+
+Binding 46 stores 48-byte hit samples (direct vec4, indirect vec4, uvec4 links).
+`motion.y` enables the path. The owner buffer gains a second cell-count block for
+list heads only while active. Registration links each primary/secondary hit once;
+secondary IDs are offset by primary ray capacity. Separate SHADE_HITS and
+SHADE_INDIRECT_HITS dispatches write sample records before per-cell reduction.
+Never read lists during registration or sum concurrently written radiance.
+There are exactly 32 storage-buffer bindings. Check device per-stage/set limits
+and at least 32 KiB shared memory before scene collection or shader allocation;
+these are requirements of this implementation, not universal Vulkan guarantees.
+
+The all-hit continuation dispatch uses primary-ray capacity, while the lower-cost
+mode still dispatches over cache cells and selects their owner. Keep these counts
+separate. Only the stable owner writes a light reservoir in either mode. The toggle
+reallocates/reset histories and releases all list/sample storage when disabled.
+`GODOT_AMD_GI_VALIDATE_HITS` checks actual GPU list coverage, cycles/duplicates,
+shading completion, finite values and cell identity; it is diagnostic readback only.

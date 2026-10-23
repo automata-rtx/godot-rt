@@ -102,6 +102,11 @@ bool AMDGI::is_enabled() {
 	return GLOBAL_GET("rendering/global_illumination/amd_gi/enabled");
 }
 
+bool AMDGI::is_supported() {
+	RD *rd = RD::get_singleton();
+	return rd->limit_get(RD::LIMIT_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE) >= 32 && rd->limit_get(RD::LIMIT_MAX_STORAGE_BUFFERS_PER_UNIFORM_SET) >= 32 && rd->limit_get(RD::LIMIT_MAX_COMPUTE_SHARED_MEMORY_SIZE) >= 32768;
+}
+
 bool AMDGI::Environment::history_compatible(const Environment &p_previous) const {
 	if (radiance != p_previous.radiance || border != p_previous.border || revision != p_previous.revision || ambient.a != p_previous.ambient.a) {
 		return false;
@@ -143,9 +148,9 @@ static bool validate_light_reservoirs(RID p_buffer, uint32_t p_count, uint32_t p
 	return true;
 }
 
-static bool validate_multibounce(RID p_owners, RID p_primary, RID p_secondary, uint32_t p_cells, uint32_t p_rays) {
+static bool validate_multibounce(RID p_owners, RID p_primary, RID p_secondary, uint32_t p_cells, uint32_t p_rays, bool p_all_hits) {
 	RD *rd = RD::get_singleton();
-	Vector<uint8_t> owner_bytes = rd->buffer_get_data(p_owners);
+	Vector<uint8_t> owner_bytes = rd->buffer_get_data(p_owners, 0, p_cells * 4);
 	Vector<uint8_t> primary_bytes = rd->buffer_get_data(p_primary);
 	Vector<uint8_t> secondary_bytes = rd->buffer_get_data(p_secondary);
 	ERR_FAIL_COND_V(owner_bytes.size() != int64_t(p_cells * 4) || primary_bytes.size() != int64_t(p_rays * 80) || secondary_bytes.size() != int64_t(p_rays * 80), false);
@@ -166,6 +171,12 @@ static bool validate_multibounce(RID p_owners, RID p_primary, RID p_secondary, u
 		primary_count += owner < p_rays;
 		secondary_cells += owner >= p_rays;
 	}
+	if (p_all_hits) {
+		primary_count = 0;
+		for (uint32_t ray = 0; ray < p_rays; ray++) {
+			primary_count += primary[ray * 20 + 7] != UINT32_MAX;
+		}
+	}
 	for (uint32_t ray = 0; ray < p_rays; ray++) {
 		float distance;
 		memcpy(&distance, secondary + ray * 20 + 3, sizeof(float));
@@ -174,11 +185,61 @@ static bool validate_multibounce(RID p_owners, RID p_primary, RID p_secondary, u
 			continue;
 		}
 		uint32_t parent = primary[ray * 20 + 7];
-		ERR_FAIL_COND_V(parent >= p_cells || owners[parent] != ray, false);
+		ERR_FAIL_COND_V(parent >= p_cells || (!p_all_hits && owners[parent] != ray), false);
 		secondary_hits++;
 	}
 	ERR_FAIL_COND_V(secondary_hits > primary_count, false);
 	print_line(vformat("AMD GI multibounce validation: primary=%d secondary_hits=%d secondary_cells=%d", primary_count, secondary_hits, secondary_cells));
+	return true;
+}
+
+static bool validate_hit_updates(RID p_owners, RID p_samples, RID p_primary, RID p_secondary, uint32_t p_cells, uint32_t p_rays, bool p_multibounce) {
+	RD *rd = RD::get_singleton();
+	Vector<uint8_t> owner_bytes = rd->buffer_get_data(p_owners);
+	Vector<uint8_t> sample_bytes = rd->buffer_get_data(p_samples);
+	Vector<uint8_t> primary_bytes = rd->buffer_get_data(p_primary);
+	Vector<uint8_t> secondary_bytes = p_multibounce ? rd->buffer_get_data(p_secondary) : Vector<uint8_t>();
+	const uint32_t count = p_rays * (p_multibounce ? 2 : 1);
+	ERR_FAIL_COND_V(owner_bytes.size() != int64_t(p_cells * 8) || sample_bytes.size() != int64_t(count * 48) || primary_bytes.size() != int64_t(p_rays * 80), false);
+	ERR_FAIL_COND_V(p_multibounce && secondary_bytes.size() != int64_t(p_rays * 80), false);
+	const uint32_t *owners = reinterpret_cast<const uint32_t *>(owner_bytes.ptr());
+	const uint32_t *samples = reinterpret_cast<const uint32_t *>(sample_bytes.ptr());
+	const uint32_t *primary = reinterpret_cast<const uint32_t *>(primary_bytes.ptr());
+	const uint32_t *secondary = reinterpret_cast<const uint32_t *>(secondary_bytes.ptr());
+	Vector<uint8_t> visited;
+	visited.resize_initialized(count);
+	uint8_t *seen = visited.ptrw();
+	uint32_t primary_count = 0, secondary_count = 0, shared_cells = 0;
+	for (uint32_t cell = 0; cell < p_cells; cell++) {
+		uint32_t length = 0;
+		for (uint32_t id = owners[p_cells + cell]; id != UINT32_MAX; id = samples[id * 12 + 8]) {
+			ERR_FAIL_COND_V_MSG(id >= count || seen[id] || cell % 85 >= 64, false, "AMD GI hit list contains a cycle, duplicate or invalid index.");
+			seen[id] = 1;
+			const uint32_t *ray = id < p_rays ? primary + id * 20 : secondary + (id - p_rays) * 20;
+			ERR_FAIL_COND_V(ray[7] != cell, false);
+			for (uint32_t channel = 0; channel < (p_multibounce && id < p_rays ? 8u : 4u); channel++) {
+				float value;
+				memcpy(&value, samples + id * 12 + channel, sizeof(float));
+				ERR_FAIL_COND_V(!Math::is_finite(value) || value < 0, false);
+			}
+			float direct_count, indirect_count;
+			memcpy(&direct_count, samples + id * 12 + 3, sizeof(float));
+			ERR_FAIL_COND_V(direct_count != 1.0f, false);
+			if (p_multibounce && id < p_rays) {
+				memcpy(&indirect_count, samples + id * 12 + 7, sizeof(float));
+				ERR_FAIL_COND_V(indirect_count != 1.0f, false);
+			}
+			primary_count += id < p_rays;
+			secondary_count += id >= p_rays;
+			length++;
+		}
+		shared_cells += length > 1;
+	}
+	for (uint32_t id = 0; id < count; id++) {
+		const uint32_t *ray = id < p_rays ? primary + id * 20 : secondary + (id - p_rays) * 20;
+		ERR_FAIL_COND_V_MSG(bool(seen[id]) != (ray[7] != UINT32_MAX), false, "AMD GI dropped a registered hit from cache shading.");
+	}
+	print_line(vformat("AMD GI hit update validation: primary=%d secondary=%d shared_cells=%d", primary_count, secondary_count, shared_cells));
 	return true;
 }
 
@@ -204,6 +265,7 @@ static bool validate_reflections(RID p_buffer, uint32_t p_count) {
 }
 
 AMDGI::AMDGI() {
+	ERR_FAIL_COND(!is_supported());
 	Vector<String> modes;
 	modes.push_back("");
 	shader.initialize(modes);
@@ -333,7 +395,7 @@ bool AMDGI::ViewData::update_light_tree(const RaytracingGIScene &p_scene) {
 }
 
 void AMDGI::ViewData::free_data() {
-	for (RID *handle : { &frame_uniform, &probes[0], &probes[1], &radiance[0], &radiance[1], &pixels[0], &pixels[1], &rays, &keys, &cache[0], &cache[1], &owners, &scratch, &spawn, &queues, &probe_mask, &cached_probes, &cached_state, &cached_order[0], &cached_order[1], &light_reservoirs[0], &light_reservoirs[1], &indirect_cache[0], &indirect_cache[1], &secondary_rays, &reflection_samples, &reflection_history[0], &reflection_history[1], &light_tree }) {
+	for (RID *handle : { &frame_uniform, &probes[0], &probes[1], &radiance[0], &radiance[1], &pixels[0], &pixels[1], &rays, &keys, &cache[0], &cache[1], &owners, &scratch, &spawn, &queues, &probe_mask, &cached_probes, &cached_state, &cached_order[0], &cached_order[1], &light_reservoirs[0], &light_reservoirs[1], &indirect_cache[0], &indirect_cache[1], &secondary_rays, &reflection_samples, &reflection_history[0], &reflection_history[1], &light_tree, &hit_samples }) {
 		if (handle->is_valid()) {
 			RD::get_singleton()->free_rid(*handle);
 			*handle = RID();
@@ -376,6 +438,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	const uint32_t update_count = update_columns * update_rows;
 	const uint32_t ray_count = update_count * 64;
 	const uint32_t cells = CACHE_TILES * CACHE_CELLS_PER_TILE;
+	const bool cache_all_hits = GLOBAL_GET("rendering/global_illumination/amd_gi/cache_all_hits");
 	const bool multibounce = GLOBAL_GET("rendering/global_illumination/amd_gi/multibounce");
 	const bool denoiser = GLOBAL_GET("rendering/global_illumination/amd_gi/denoiser");
 	const bool importance_sampling = GLOBAL_GET("rendering/global_illumination/amd_gi/importance_sampling");
@@ -400,7 +463,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		data.instantiate();
 		p_buffers->set_custom_data(RB_SCOPE_AMD_GI, data);
 	}
-	if (data->size != size || data->stride != stride || data->probe_cache != probe_cache || data->light_resampling != light_resampling || data->multibounce != multibounce || data->reflection_stride != reflection_stride || data->screen_feedback != screen_feedback) {
+	if (data->size != size || data->stride != stride || data->probe_cache != probe_cache || data->light_resampling != light_resampling || data->multibounce != multibounce || data->reflection_stride != reflection_stride || data->screen_feedback != screen_feedback || data->cache_all_hits != cache_all_hits) {
 		data->free_data();
 		p_buffers->clear_context(RB_SCOPE_AMD_GI);
 		data->size = size;
@@ -409,6 +472,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		data->light_resampling = light_resampling;
 		data->multibounce = multibounce;
 		data->screen_feedback = screen_feedback;
+		data->cache_all_hits = cache_all_hits;
 		data->reflection_stride = reflection_stride;
 		const uint32_t reflection_bytes = reflections ? reflection_size.x * reflection_size.y * 80 : 16;
 		data->reflection_samples = rd->storage_buffer_create(reflection_bytes);
@@ -426,7 +490,8 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		data->rays = rd->storage_buffer_create(ray_count * 80);
 		data->secondary_rays = rd->storage_buffer_create(multibounce ? ray_count * 80 : 16);
 		data->keys = rd->storage_buffer_create(CACHE_TILES * 32);
-		data->owners = rd->storage_buffer_create(cells * 4);
+		data->owners = rd->storage_buffer_create(cells * 4 * (cache_all_hits ? 2 : 1));
+		data->hit_samples = rd->storage_buffer_create(cache_all_hits ? ray_count * (multibounce ? 2 : 1) * 48 : 16);
 		data->scratch = rd->storage_buffer_create(probe_count * 64 * 16);
 		data->spawn = rd->storage_buffer_create(update_count * 16);
 		data->queues = rd->storage_buffer_create(16 + (probe_count * 3 + update_count * 2) * 4);
@@ -448,6 +513,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	const bool reset = !data->valid || !p_environment.history_compatible(data->environment) || camera_cut || data->scene_revision != p_scene.get_revision() || data->configuration != configuration || data->cell_size != cell_size || data->continuation != probability || data->max_distance != max_distance || data->reflection_roughness != reflection_roughness || data->reflection_filter_passes != reflection_filter_passes;
 	FrameUniform frame = {};
 	frame.motion[0] = p_scene.get_motion_bounds().size();
+	frame.motion[1] = cache_all_hits;
 	for (uint32_t i = 0; i < frame.motion[0]; i++) {
 		const AABB &bounds = p_scene.get_motion_bounds()[i];
 		const Vector3 end = bounds.get_end();
@@ -534,6 +600,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 43, reflection_output));
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 44, data->light_tree));
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 45, Vector<RID>{ sampler, feedback }));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 46, data->hit_samples));
 	RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(shader.version_get_shader(version, 0), 0, uniforms);
 	if (set.is_null()) {
 		data->valid = false;
@@ -562,7 +629,10 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		if ((!reflections && pass >= REFLECTION_TRACE) || (!denoiser && pass == REFLECTION_FILTER)) {
 			continue;
 		}
-		if (!multibounce && ((pass >= POPULATE && pass <= REGISTER_SECONDARY) || (pass >= UPDATE_INDIRECT && pass <= INDIRECT_MIP3))) {
+		if (!multibounce && ((pass >= POPULATE && pass <= REGISTER_SECONDARY) || (pass >= SHADE_INDIRECT_HITS && pass <= INDIRECT_MIP3))) {
+			continue;
+		}
+		if (!cache_all_hits && (pass == SHADE_HITS || pass == SHADE_INDIRECT_HITS)) {
 			continue;
 		}
 		if (!probe_cache && (pass == BIN_CACHED || pass == ORDER_CACHED || pass == STORE_CACHED)) {
@@ -604,6 +674,10 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 			rd->compute_list_dispatch_threads(list, reflection_size.x, reflection_size.y, 1);
 		} else if (pass >= INTERPOLATE) {
 			rd->compute_list_dispatch_threads(list, size.x, size.y, 1);
+		} else if (pass == SHADE_HITS) {
+			rd->compute_list_dispatch(list, (ray_count * (multibounce ? 2 : 1) + 63) / 64, 1, 1);
+		} else if (pass == SHADE_INDIRECT_HITS || (pass == POPULATE && cache_all_hits)) {
+			rd->compute_list_dispatch(list, (ray_count + 63) / 64, 1, 1);
 		} else if (pass == UPDATE || pass == POPULATE || pass == UPDATE_INDIRECT) {
 			rd->compute_list_dispatch(list, (cells + 63) / 64, 1, 1);
 		} else if (pass == RESET || (pass >= MIP1 && pass <= MIP3) || (pass >= INDIRECT_MIP1 && pass <= INDIRECT_MIP3)) {
@@ -640,13 +714,17 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		uint32_t accepted = *reinterpret_cast<const uint32_t *>(counts.ptr());
 		print_line(vformat("AMD GI feedback validation: frame=%d covered=%d accepted=%d mean=%.8f", data->frame, covered, accepted, sum / (MAX(covered, 1u) * 3.0 * MAX(data->previous_exposure, 0.000001f))));
 	}
+	static const bool validate_hits = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_HITS").is_empty();
+	if (validate_hits && cache_all_hits) {
+		ERR_FAIL_COND_V(!validate_hit_updates(data->owners, data->hit_samples, data->rays, data->secondary_rays, cells, ray_count, multibounce), false);
+	}
 	static const bool validate_glossy = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_REFLECTIONS").is_empty();
 	if (validate_glossy && reflections) {
 		ERR_FAIL_COND_V(!validate_reflections(data->reflection_samples, reflection_size.x * reflection_size.y), false);
 	}
 	static const bool validate_bounces = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_BOUNCES").is_empty();
 	if (validate_bounces && multibounce) {
-		ERR_FAIL_COND_V(!validate_multibounce(data->owners, data->rays, data->secondary_rays, cells, ray_count), false);
+		ERR_FAIL_COND_V(!validate_multibounce(data->owners, data->rays, data->secondary_rays, cells, ray_count, cache_all_hits), false);
 	}
 	static const bool validate_reservoirs = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_RESERVOIRS").is_empty();
 	if (validate_reservoirs && light_resampling) {

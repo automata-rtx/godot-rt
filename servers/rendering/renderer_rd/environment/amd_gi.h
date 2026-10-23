@@ -69,10 +69,12 @@ private:
 		POPULATE,
 		ALLOCATE_SECONDARY,
 		REGISTER_SECONDARY,
+		SHADE_HITS,
 		UPDATE,
 		MIP1,
 		MIP2,
 		MIP3,
+		SHADE_INDIRECT_HITS,
 		UPDATE_INDIRECT,
 		INDIRECT_MIP1,
 		INDIRECT_MIP2,
@@ -118,7 +120,7 @@ private:
 		float sky[4]; // diffuse and reflection energy, octahedral border, unused
 		float ambient[4]; // remaining ambient color, replace native ambient
 		float reflections[4]; // sample stride, probe roughness threshold, filter iterations, unused
-		uint32_t motion[4]; // swept bound count, reserved
+		uint32_t motion[4]; // swept bound count, all-hit cache updates, reserved
 		float motion_bounds[RaytracingGIScene::MAX_MOTION_BOUNDS][8]; // min/max, std140 vec4 pairs
 	};
 	static_assert(sizeof(PushConstant) == 128);
@@ -140,6 +142,7 @@ private:
 		LocalVector<RaytracingGIScene::LightData> sampling_lights;
 		bool update_light_tree(const RaytracingGIScene &p_scene);
 		RID indirect_cache[2], secondary_rays;
+		RID hit_samples;
 		RID reflection_samples, reflection_history[2];
 		uint32_t reflection_stride = 0;
 		float reflection_roughness = 0;
@@ -158,6 +161,7 @@ private:
 		bool light_resampling = false;
 		bool multibounce = false;
 		bool screen_feedback = false;
+		bool cache_all_hits = false;
 		float previous_exposure = 0;
 		Projection previous_view_projection;
 		Transform3D previous_camera;
@@ -173,6 +177,7 @@ private:
 
 public:
 	static bool is_enabled();
+	static bool is_supported();
 	static void clear(const Ref<RenderSceneBuffersRD> &p_buffers);
 	bool render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffersRD> &p_buffers, RID p_normals, const Projection &p_projection, const Transform3D &p_camera, float p_exposure, const Environment &p_environment);
 	AMDGI();

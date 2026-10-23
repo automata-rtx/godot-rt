@@ -271,3 +271,11 @@ It verifies GPU hit acceptance, exposure removal, fog isolation, feedback textur
 release and exact zero-indirect/disabled controls at the ordinary quarter primary
 ray budget. Native feedback variants compile on demand; rerun the native material
 and shadow geometry rigs when changing that shader-group behavior.
+
+`./run.sh amd_gi_hit_updates` exercises all-hit and one-hit world-cache modes,
+including multibounce on/off, restored-mode lighting, exact disabled controls and
+release of the list/sample buffers. `GODOT_AMD_GI_VALIDATE_HITS` verifies actual
+GPU lists: every registered hit exactly once, matching cells, acyclic links,
+finite complete samples. Its readbacks are diagnostic and must be off for timing.
+The matched `amd_gi_budget_compare` captures explicitly enable all-hit accumulation
+and native screen feedback at both budgets, with denoisers on and 64 fresh GI draws.

@@ -6,6 +6,32 @@ alone — several of these already were, and failed. Not here: using a feature (
 one works (`docs/internals/`), running the harnesses (`docs/VALIDATION.md`), diagnosing a symptom
 (`docs/TROUBLESHOOTING.md`).
 
+## AMD GI all-hit cache accumulation — 2026-10-23
+
+`[code]` Registered primary and secondary hits now shade independently and reduce
+into their world cells. Per-cell lists separate registration, shading and reduction;
+only the stable owner publishes a light reservoir. History evidence counts the
+contributing samples. Each primary hit may schedule a probability-compensated
+continuation. The live `cache_all_hits` toggle retains the cheaper one-hit-per-cell
+path and releases the additional lists/sample records. Primary diffuse ray counts
+are unchanged; visibility, continuation and shading work can increase.
+
+`[shadow_validation]` GPU list validation passes 132 frames with exact coverage,
+unique/acyclic lists, correct cell identity, and finite completed shading. Toggling
+the mode releases 7,186,416 buffer bytes at the test's 641×359 quarter budget.
+The multibounce test reports single/multiple display-RGB gains 0.024708/0.036473;
+restoring single bounce gives 0.024742. Identical and mixed light resampling gain
+ratios are 0.999064/0.997624 relative to exhaustive lighting in the controlled rigs.
+Matched 64-frame quarter/one images give gains 0.036440/0.036067. Reflections,
+FSR2 and native deformation checks pass. These are software-Vulkan correctness
+results, not evidence of target-hardware performance or universal quality gains.
+
+`[code]` The shader now uses 32 storage buffers. The support gate checks both
+per-stage/set limits and 32 KiB compute shared memory before collecting GI geometry
+or allocating its shaders. The prior documentation incorrectly called these
+universal Vulkan minima; they are implementation requirements and are now described
+as such.
+
 ## AMD GI native screen-lighting feedback — 2026-10-23
 
 `[code]` Continuation and glossy hits can now reuse the previous opaque native HDR
