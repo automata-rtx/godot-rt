@@ -26,6 +26,19 @@ structure updates on the RTX 5090 (roughly 6–7 FPS). This is a separate remain
 performance issue. The game's saved video settings override the project's
 upscaler at runtime; Streamline initialization alone does not prove active DLSS.
 
+A separate repeated-level stall remained with the desktop's implicit Vulkan
+layers: Sandbox → Crossroads → Live World stopped at a GPU fence, with or without
+DLSS. Excluding `VK_LAYER_RTSS` for the test process completed that sequence with
+GI and effective DLSS mode 6 on every level. Excluding all implicit layers also
+completed it; a small DLSS/MultiMesh test alone did not reproduce it. Treat this
+as a tested local RivaTuner compatibility workaround, not a proven defect inside
+RivaTuner or a general reason to disable overlays. The supplied desktop launcher
+sets `VK_LOADER_LAYERS_DISABLE=VK_LAYER_RTSS` only in its child process environment;
+no global overlay settings were changed. See the
+[Vulkan loader's layer filtering documentation](https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderLayerInterface.md#layer-filtering).
+The independent dispatch regression still fails before the graph fix and passes
+afterward with RivaTuner excluded, so that engine correction is separate.
+
 The main AMD GI-1.2 pipeline and audited default-path corrections are implemented
 for supported inputs. **Full feature coverage, Godot compatibility and production
 validation are unfinished.** No claim that all reported gameplay defects are fixed.
