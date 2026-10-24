@@ -8,6 +8,24 @@ Search a specific heading/finding there; do not load the entire archive into AI 
 
 ## State of the implementation
 
+Windows freeze investigation (RTX 5090, 2026-10-24): the branch now splits AMD GI
+entry points before SPIR-V generation instead of specializing one large native
+material shader 54 times. It also retains both storage and indirect-command
+access when a compute buffer has both roles. Dropping the indirect access let
+dispatches consume stale counts; the unchanged engine failed cache ownership
+validation on this GPU. The 256-dispatch regression produced 7,567 incorrect
+words before the graph fix and zero afterward. The source-material oracle and
+consequential cache/viewport regression pass on the corrected Windows build.
+
+Actual fps-proto menu transitions through Systems Sandbox and Crossroads are
+responsive with GI enabled. Cold shader creation can still pause loading; it is
+not asynchronous. Crossroads remains slow: the external menu-driven GPU profile
+(`validation/shadow_validation/fps_proto_amd_gi_profile.gd`) at 1280x720 measured
+about 122 ms in GI hit shading and 19 ms in acceleration
+structure updates on the RTX 5090 (roughly 6–7 FPS). This is a separate remaining
+performance issue. The game's saved video settings override the project's
+upscaler at runtime; Streamline initialization alone does not prove active DLSS.
+
 The main AMD GI-1.2 pipeline and audited default-path corrections are implemented
 for supported inputs. **Full feature coverage, Godot compatibility and production
 validation are unfinished.** No claim that all reported gameplay defects are fixed.

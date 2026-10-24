@@ -408,20 +408,19 @@ bool AMDGI::prepare_material_pipelines(const RaytracingGIScene &p_scene) {
 	if (diagnostic_source_enabled()) {
 		defines.push_back("#define AMD_GI_DIAGNOSTIC_SOURCE\n");
 	}
+	const uint64_t start_usec = OS::get_singleton()->get_ticks_usec();
+	print_verbose(vformat("AMD GI: compiling material shader revision %d.", material_revision));
 	shader.version_set_compute_code(version, {}, "", materials.get_shader_source(), defines);
-	RID compiled = shader.version_get_shader(version, 0);
-	ERR_FAIL_COND_V(compiled.is_null(), false);
 	for (uint32_t i = 0; i < PASS_COUNT; i++) {
 		if (i == VALIDATE_SOURCE && !diagnostic_source_enabled()) {
 			continue;
 		}
-		RD::PipelineSpecializationConstant constant;
-		constant.constant_id = 0;
-		constant.type = RD::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_INT;
-		constant.int_value = i;
-		pipelines[i] = rd->compute_pipeline_create(compiled, Vector<RD::PipelineSpecializationConstant>{ constant });
+		RID compiled = shader.version_get_shader(version, i);
+		ERR_FAIL_COND_V(compiled.is_null(), false);
+		pipelines[i] = rd->compute_pipeline_create(compiled);
 		ERR_FAIL_COND_V(pipelines[i].is_null(), false);
 	}
+	print_verbose(vformat("AMD GI: material pipelines ready in %.3f ms.", (OS::get_singleton()->get_ticks_usec() - start_usec) / 1000.0));
 	material_scene = &p_scene;
 	material_revision = materials.get_shader_revision();
 	return true;
@@ -430,8 +429,13 @@ bool AMDGI::prepare_material_pipelines(const RaytracingGIScene &p_scene) {
 AMDGI::AMDGI() {
 	ERR_FAIL_COND(!is_supported());
 	Vector<String> modes;
-	modes.push_back("");
+	// Remove unrelated entry points before SPIR-V generation. A specialization
+	// constant leaves the native material call trees in every driver's input.
+	for (uint32_t i = 0; i < PASS_COUNT; i++) {
+		modes.push_back("#define AMD_GI_PASS " + itos(i) + "\n");
+	}
 	shader.initialize(modes);
+	shader.set_variant_enabled(VALIDATE_SOURCE, diagnostic_source_enabled());
 	environment_shader.initialize({ "#define CONVERT_OCTMAP\n", "" });
 	environment_version = environment_shader.version_create();
 	for (int i = 0; i < 2; i++) {
@@ -879,14 +883,8 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 61, Vector<RID>{ sampler, p_buffers->get_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("roughness")) }));
 	const RID exposure_texture = p_environment.auto_exposure.is_valid() ? p_environment.auto_exposure : TextureStorage::get_singleton()->texture_rd_get_default(TextureStorage::DEFAULT_RD_TEXTURE_WHITE);
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 58, Vector<RID>{ sampler, exposure_texture }));
-	RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(shader.version_get_shader(version, 0), 0, uniforms);
 	LocalVector<RD::Uniform> material_uniforms;
 	p_scene.get_source_materials().append_uniforms(material_uniforms);
-	RID material_set = UniformSetCacheRD::get_singleton()->get_cache_vec(shader.version_get_shader(version, 0), 1, material_uniforms);
-	if (set.is_null()) {
-		data->valid = false;
-		return false;
-	}
 	PushConstant push = {};
 	MaterialStorage::store_camera(view_projection.inverse(), push.inv_view_projection);
 	const Quaternion rotation = p_camera.basis.get_rotation_quaternion();
@@ -914,6 +912,14 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	for (uint32_t pass = 0; pass < PASS_COUNT; pass++) {
 		if (pass == VALIDATE_SOURCE) {
 			if (diagnostic_source_enabled()) {
+				RID pass_shader = shader.version_get_shader(version, pass);
+				RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(pass_shader, 0, uniforms);
+				RID material_set = UniformSetCacheRD::get_singleton()->get_cache_vec(pass_shader, 1, material_uniforms);
+				if (set.is_null() || material_set.is_null()) {
+					rd->compute_list_end();
+					data->valid = false;
+					ERR_FAIL_V(false);
+				}
 				rd->compute_list_bind_compute_pipeline(list, pipelines[pass]);
 				rd->compute_list_bind_uniform_set(list, set, 0);
 				rd->compute_list_bind_uniform_set(list, material_set, 1);
@@ -944,6 +950,15 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		}
 		if (!probe_cache && (pass == BIN_CACHED || pass == ORDER_CACHED || pass == STORE_CACHED)) {
 			continue;
+		}
+		// Cache bindings against the selected variant's reflected resources.
+		RID pass_shader = shader.version_get_shader(version, pass);
+		RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(pass_shader, 0, uniforms);
+		RID material_set = UniformSetCacheRD::get_singleton()->get_cache_vec(pass_shader, 1, material_uniforms);
+		if (set.is_null() || material_set.is_null()) {
+			rd->compute_list_end();
+			data->valid = false;
+			ERR_FAIL_V(false);
 		}
 		rd->compute_list_bind_compute_pipeline(list, pipelines[pass]);
 		rd->compute_list_bind_uniform_set(list, set, 0);

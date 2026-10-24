@@ -2122,9 +2122,21 @@ void RenderingDeviceGraph::add_compute_list_usage(ResourceTracker *p_tracker, Re
 		compute_instruction_list.command_tracker_usages.push_back(p_usage);
 		p_tracker->compute_list_index = compute_instruction_list.index;
 		p_tracker->compute_list_usage = p_usage;
+	} else if ((p_usage == RESOURCE_USAGE_INDIRECT_BUFFER_READ && (p_tracker->compute_list_usage == RESOURCE_USAGE_STORAGE_BUFFER_READ || p_tracker->compute_list_usage == RESOURCE_USAGE_STORAGE_BUFFER_READ_WRITE)) ||
+			(p_tracker->compute_list_usage == RESOURCE_USAGE_INDIRECT_BUFFER_READ && (p_usage == RESOURCE_USAGE_STORAGE_BUFFER_READ || p_usage == RESOURCE_USAGE_STORAGE_BUFFER_READ_WRITE))) {
+		// A shader may read/write the same buffer that supplies its dispatch
+		// arguments. Keep both accesses in the dependency instead of dropping
+		// the indirect read (which executes before the compute shader stage).
+		p_tracker->compute_list_usage = RESOURCE_USAGE_GENERAL;
+		for (uint32_t i = 0; i < compute_instruction_list.command_trackers.size(); i++) {
+			if (compute_instruction_list.command_trackers[i] == p_tracker) {
+				compute_instruction_list.command_tracker_usages[i] = RESOURCE_USAGE_GENERAL;
+				break;
+			}
+		}
 	}
 #ifdef DEV_ENABLED
-	else if (p_tracker->compute_list_usage != p_usage) {
+	else if (p_tracker->compute_list_usage != p_usage && p_tracker->compute_list_usage != RESOURCE_USAGE_GENERAL) {
 		ERR_FAIL_MSG(vformat("Tracker can't have more than one type of usage in the same compute list. Compute list usage is %s and the requested usage is %s.", _usage_to_string(p_tracker->compute_list_usage), _usage_to_string(p_usage)));
 	}
 #endif

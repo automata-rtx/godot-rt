@@ -33,63 +33,63 @@ THE SOFTWARE.
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-layout(constant_id = 0) const int pass_id = 0;
+const int pass_id = AMD_GI_PASS;
 // Keep in the same order as AMDGI::Pass.
-const int PASS_RESERVOIR_RESET = 0;
-const int PASS_RESET = 1;
-const int PASS_PURGE = 2;
-const int PASS_REPROJECT = 3;
-const int PASS_BIN_CACHED = 4;
-const int PASS_SELECT = 5;
-const int PASS_PATCH = 6;
-const int PASS_COMPACT_PROBES = 7;
-const int PASS_GATHER_PROBES = 8;
-const int PASS_PREPARE = 9;
-const int PASS_TRACE = 10;
-const int PASS_ALLOCATE = 11;
-const int PASS_REGISTER = 12;
-const int PASS_POPULATE = 13;
-const int PASS_ALLOCATE_SECONDARY = 14;
-const int PASS_REGISTER_SECONDARY = 15;
-const int PASS_LIGHT_GRID_DISPATCH = 16;
-const int PASS_LIGHT_GRID = 17;
-const int PASS_SHADE_HITS = 18;
-const int PASS_UPDATE = 19;
-const int PASS_RESERVOIR_SCAN = 20;
-const int PASS_RESERVOIR_SCAN_BLOCKS = 21;
-const int PASS_RESERVOIR_SCAN_TOP = 22;
-const int PASS_RESERVOIR_COMPACT = 23;
-const int PASS_MIP1 = 24;
-const int PASS_MIP2 = 25;
-const int PASS_MIP3 = 26;
-const int PASS_UPDATE_INDIRECT = 27;
-const int PASS_INDIRECT_MIP1 = 28;
-const int PASS_INDIRECT_MIP2 = 29;
-const int PASS_INDIRECT_MIP3 = 30;
-const int PASS_SHADE_INDIRECT_HITS = 31;
-const int PASS_RESOLVE = 32;
-const int PASS_STORE_CACHED = 33;
-const int PASS_ORDER_CACHED = 34;
-const int PASS_MASK = 35;
-const int PASS_FILTER_X = 36;
-const int PASS_FILTER_Y = 37;
-const int PASS_PROJECT = 38;
-const int PASS_NEAR_FIELD = 39;
-const int PASS_INTERPOLATE = 40;
-const int PASS_TEMPORAL = 41;
-const int PASS_BLUR_X = 42;
-const int PASS_BLUR_Y = 43;
-const int PASS_REFLECTION_CLASSIFY = 44;
-const int PASS_REFLECTION_BUILD_DISPATCH = 45;
-const int PASS_REFLECTION_TRACE = 46;
-const int PASS_REFLECTION_MARK_FIREFLIES = 47;
-const int PASS_REFLECTION_CLEAN_FIREFLIES = 48;
-const int PASS_REFLECTION_FIRST = 49;
-const int PASS_REFLECTION_ITER = 50;
-const int PASS_REFLECTION_LAST = 51;
-const int PASS_REFLECTION_TEMPORAL = 52;
-const int PASS_REFLECTION_OUTPUT = 53;
-const int PASS_VALIDATE_SOURCE = 54;
+#define PASS_RESERVOIR_RESET 0
+#define PASS_RESET 1
+#define PASS_PURGE 2
+#define PASS_REPROJECT 3
+#define PASS_BIN_CACHED 4
+#define PASS_SELECT 5
+#define PASS_PATCH 6
+#define PASS_COMPACT_PROBES 7
+#define PASS_GATHER_PROBES 8
+#define PASS_PREPARE 9
+#define PASS_TRACE 10
+#define PASS_ALLOCATE 11
+#define PASS_REGISTER 12
+#define PASS_POPULATE 13
+#define PASS_ALLOCATE_SECONDARY 14
+#define PASS_REGISTER_SECONDARY 15
+#define PASS_LIGHT_GRID_DISPATCH 16
+#define PASS_LIGHT_GRID 17
+#define PASS_SHADE_HITS 18
+#define PASS_UPDATE 19
+#define PASS_RESERVOIR_SCAN 20
+#define PASS_RESERVOIR_SCAN_BLOCKS 21
+#define PASS_RESERVOIR_SCAN_TOP 22
+#define PASS_RESERVOIR_COMPACT 23
+#define PASS_MIP1 24
+#define PASS_MIP2 25
+#define PASS_MIP3 26
+#define PASS_UPDATE_INDIRECT 27
+#define PASS_INDIRECT_MIP1 28
+#define PASS_INDIRECT_MIP2 29
+#define PASS_INDIRECT_MIP3 30
+#define PASS_SHADE_INDIRECT_HITS 31
+#define PASS_RESOLVE 32
+#define PASS_STORE_CACHED 33
+#define PASS_ORDER_CACHED 34
+#define PASS_MASK 35
+#define PASS_FILTER_X 36
+#define PASS_FILTER_Y 37
+#define PASS_PROJECT 38
+#define PASS_NEAR_FIELD 39
+#define PASS_INTERPOLATE 40
+#define PASS_TEMPORAL 41
+#define PASS_BLUR_X 42
+#define PASS_BLUR_Y 43
+#define PASS_REFLECTION_CLASSIFY 44
+#define PASS_REFLECTION_BUILD_DISPATCH 45
+#define PASS_REFLECTION_TRACE 46
+#define PASS_REFLECTION_MARK_FIREFLIES 47
+#define PASS_REFLECTION_CLEAN_FIREFLIES 48
+#define PASS_REFLECTION_FIRST 49
+#define PASS_REFLECTION_ITER 50
+#define PASS_REFLECTION_LAST 51
+#define PASS_REFLECTION_TEMPORAL 52
+#define PASS_REFLECTION_OUTPUT 53
+#define PASS_VALIDATE_SOURCE 54
 #include "../oct_inc.glsl"
 #define AMD_GI_REFERENCE_RANDOM
 #include "amd_gi_cache_inc.glsl"
@@ -1997,8 +1997,8 @@ void validate_source(uint id) {
 }
 #endif
 void main() {
-#ifdef AMD_GI_DIAGNOSTIC_SOURCE
-	if (pass_id == PASS_VALIDATE_SOURCE) {
+#if defined(AMD_GI_DIAGNOSTIC_SOURCE) && AMD_GI_PASS == PASS_VALIDATE_SOURCE
+	{
 		validate_source(gl_LocalInvocationIndex);
 		return;
 	}
@@ -2006,9 +2006,11 @@ void main() {
 	uint lane = gl_LocalInvocationIndex;
 	uint probe = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
 	uint id = probe * 64u + lane;
-	if ((pass_id == PASS_PREPARE || pass_id == PASS_ALLOCATE || pass_id == PASS_REGISTER || pass_id == PASS_ALLOCATE_SECONDARY || pass_id == PASS_REGISTER_SECONDARY || pass_id == PASS_RESOLVE) && probe >= work.counts.x) {
+#if AMD_GI_PASS == PASS_PREPARE || AMD_GI_PASS == PASS_ALLOCATE || AMD_GI_PASS == PASS_REGISTER || AMD_GI_PASS == PASS_ALLOCATE_SECONDARY || AMD_GI_PASS == PASS_REGISTER_SECONDARY || AMD_GI_PASS == PASS_RESOLVE
+	if (probe >= work.counts.x) {
 		return;
 	}
+#endif
 	if (pass_id == PASS_UPDATE || pass_id == PASS_UPDATE_INDIRECT || (pass_id == PASS_POPULATE && frame.motion.y == 0u) || (pass_id >= PASS_MIP1 && pass_id <= PASS_MIP3) || (pass_id >= PASS_INDIRECT_MIP1 && pass_id <= PASS_INDIRECT_MIP3)) {
 		uint active_index = gl_WorkGroupID.y * 256u + gl_WorkGroupID.x;
 		if (active_index >= keys.dispatch.w) {
@@ -2017,47 +2019,43 @@ void main() {
 		probe = keys.data[TILE_COUNT + active_index].state.x;
 		id = probe * TILE_CELLS + lane;
 	}
-	if (pass_id == PASS_LIGHT_GRID_DISPATCH) {
-		if (lane == 0u && light_grid.minimum.x != INVALID && gi_light_count() > 0u) {
-			vec3 minimum, cell_size;
-			uvec3 dimensions;
-			light_grid_configuration(minimum, cell_size, dimensions);
-			work.grid_dispatch = uvec4(dimensions.x * dimensions.y * dimensions.z, 1, 1, 0);
+#if AMD_GI_PASS == PASS_LIGHT_GRID_DISPATCH
+	if (lane == 0u && light_grid.minimum.x != INVALID && gi_light_count() > 0u) {
+		vec3 minimum, cell_size;
+		uvec3 dimensions;
+		light_grid_configuration(minimum, cell_size, dimensions);
+		work.grid_dispatch = uvec4(dimensions.x * dimensions.y * dimensions.z, 1, 1, 0);
+	}
+	return;
+#elif AMD_GI_PASS == PASS_LIGHT_GRID
+	build_light_grid(probe, lane);
+	return;
+#elif AMD_GI_PASS == PASS_RESERVOIR_RESET
+	reservoir_reset(id);
+	return;
+#elif AMD_GI_PASS >= PASS_RESERVOIR_SCAN && AMD_GI_PASS <= PASS_RESERVOIR_SCAN_TOP
+	reservoir_scan(probe, lane, uint(pass_id - PASS_RESERVOIR_SCAN));
+	return;
+#elif AMD_GI_PASS == PASS_RESERVOIR_COMPACT
+	if (frame.motion.y != 0u) {
+		if (id >= (params.samples == 0u ? work.counts.y : work.counts.z)) {
+			return;
 		}
-		return;
+		id = work.hit_indices[id + params.samples * primary_ray_count()];
 	}
-	if (pass_id == PASS_LIGHT_GRID) {
-		build_light_grid(probe, lane);
-		return;
+	reservoir_compact(id);
+	return;
+#elif AMD_GI_PASS == PASS_REFLECTION_BUILD_DISPATCH
+	if (lane == 0u) {
+		uint groups = (queues.data[frame.emitters.z + 3u] + 63u) / 64u;
+		queues.data[frame.emitters.z] = min(groups, 65535u);
+		queues.data[frame.emitters.z + 1u] = max((groups + 65534u) / 65535u, 1u);
+		queues.data[frame.emitters.z + 2u] = 1u;
 	}
-	if (pass_id == PASS_RESERVOIR_RESET) {
-		reservoir_reset(id);
-		return;
-	}
-	if (pass_id >= PASS_RESERVOIR_SCAN && pass_id <= PASS_RESERVOIR_SCAN_TOP) {
-		reservoir_scan(probe, lane, uint(pass_id - PASS_RESERVOIR_SCAN));
-		return;
-	}
-	if (pass_id == PASS_RESERVOIR_COMPACT) {
-		if (frame.motion.y != 0u) {
-			if (id >= (params.samples == 0u ? work.counts.y : work.counts.z)) {
-				return;
-			}
-			id = work.hit_indices[id + params.samples * primary_ray_count()];
-		}
-		reservoir_compact(id);
-		return;
-	}
-	if (pass_id == PASS_REFLECTION_BUILD_DISPATCH) {
-		if (lane == 0u) {
-			uint groups = (queues.data[frame.emitters.z + 3u] + 63u) / 64u;
-			queues.data[frame.emitters.z] = min(groups, 65535u);
-			queues.data[frame.emitters.z + 1u] = max((groups + 65534u) / 65535u, 1u);
-			queues.data[frame.emitters.z + 2u] = 1u;
-		}
-		return;
-	}
-	if (pass_id == PASS_REFLECTION_TRACE && frame.emitters.w != 0u) {
+	return;
+#elif AMD_GI_PASS >= PASS_REFLECTION_CLASSIFY
+#if AMD_GI_PASS == PASS_REFLECTION_TRACE
+	if (frame.emitters.w != 0u) {
 		id = (gl_WorkGroupID.y * 65535u + gl_WorkGroupID.x) * 64u + lane;
 		if (id < queues.data[frame.emitters.z + 3u]) {
 			uint sample_id = queues.data[frame.emitters.z + 4u + id];
@@ -2066,98 +2064,99 @@ void main() {
 		}
 		return;
 	}
-	if (pass_id >= PASS_REFLECTION_CLASSIFY) {
-		ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-		ivec2 size = pass_id >= PASS_REFLECTION_LAST ? ivec2(params.size) : reflection_size();
-		if (any(greaterThanEqual(pixel, size))) {
-			return;
-		}
-		uint reflection_id = pass_id >= PASS_REFLECTION_LAST ? uint(pixel.x) + uint(pixel.y) * params.size.x : reflection_index(pixel);
-		if (pass_id == PASS_REFLECTION_CLASSIFY) {
-			classify_reflection(pixel, reflection_id);
-		} else if (pass_id == PASS_REFLECTION_TRACE) {
-			trace_reflection(pixel, reflection_id);
-		} else if (pass_id == PASS_REFLECTION_MARK_FIREFLIES) {
-			mark_reflection_fireflies(pixel, reflection_id);
-		} else if (pass_id == PASS_REFLECTION_CLEAN_FIREFLIES) {
-			clean_reflection_fireflies(pixel, reflection_id);
-		} else if (pass_id >= PASS_REFLECTION_FIRST && pass_id <= PASS_REFLECTION_LAST) {
-			resolve_reflection(pixel, reflection_id);
-		} else if (pass_id == PASS_REFLECTION_TEMPORAL) {
-			temporal_reflection(pixel, reflection_id);
-		} else {
-			output_reflection_pixel(pixel, reflection_id);
-		}
-	} else if (pass_id == PASS_PURGE) {
-		purge_cache(id);
-	} else if (pass_id == PASS_RESET) {
-		reset_cache(lane);
-	} else if (pass_id == PASS_REPROJECT) {
-		reproject_probe(probe, lane);
-	} else if (pass_id == PASS_BIN_CACHED) {
-		bin_cached_probe(id);
-	} else if (pass_id == PASS_SELECT) {
-		if (lane == 0u) {
-			select_probe(probe);
-		}
-	} else if (pass_id == PASS_PATCH) {
-		if (lane == 0u) {
-			patch_probe(probe);
-		}
-	} else if (pass_id == PASS_COMPACT_PROBES) {
-		compact_probes(lane);
-	} else if (pass_id == PASS_GATHER_PROBES) {
-		if (lane == 0u) {
-			gather_probe(probe);
-		}
-	} else if (pass_id == PASS_PREPARE) {
-		prepare_probe(probe, lane);
-	} else if (pass_id == PASS_TRACE) {
-		trace_probe(probe, lane);
-	} else if (pass_id == PASS_ALLOCATE || pass_id == PASS_ALLOCATE_SECONDARY) {
-		allocate_tile(id);
-	} else if (pass_id == PASS_REGISTER || pass_id == PASS_REGISTER_SECONDARY) {
-		register_ray(id);
-	} else if (pass_id == PASS_POPULATE) {
-		populate_secondary(id);
-	} else if (pass_id == PASS_SHADE_HITS) {
-		shade_hit(id);
-	} else if (pass_id == PASS_SHADE_INDIRECT_HITS) {
-		shade_indirect_hit(id);
-	} else if (pass_id == PASS_UPDATE_INDIRECT) {
-		update_indirect(id);
-	} else if (pass_id == PASS_UPDATE) {
-		update_cell(id);
-	} else if (pass_id >= PASS_MIP1 && pass_id <= PASS_MIP3) {
-		build_mip(probe, lane, uint(pass_id - PASS_MIP1 + 1));
-	} else if (pass_id >= PASS_INDIRECT_MIP1 && pass_id <= PASS_INDIRECT_MIP3) {
-		build_mip(probe, lane, uint(pass_id - PASS_INDIRECT_MIP1 + 1));
-	} else if (pass_id == PASS_RESOLVE) {
-		resolve_probe(probe, lane);
-	} else if (pass_id == PASS_FILTER_X || pass_id == PASS_FILTER_Y) {
-		filter_probe(probe, lane);
-	} else if (pass_id == PASS_PROJECT) {
-		project_probe(probe, lane);
-	} else if (pass_id == PASS_ORDER_CACHED) {
-		order_cached_probes(lane);
-	} else if (pass_id == PASS_STORE_CACHED) {
-		store_cached_probe(probe, lane);
-	} else if (pass_id == PASS_MASK) {
-		filter_mask(gl_GlobalInvocationID.xy);
-	} else {
-		ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-		if (any(greaterThanEqual(pixel, ivec2(params.size)))) {
-			return;
-		}
-		uint pixel_id = uint(pixel.x) + uint(pixel.y) * params.size.x;
-		if (pass_id == PASS_NEAR_FIELD) {
-			integrate_near_field(pixel);
-		} else if (pass_id == PASS_INTERPOLATE) {
-			interpolate_pixel(pixel, pixel_id);
-		} else if (pass_id == PASS_TEMPORAL) {
-			reproject_pixel(pixel, pixel_id);
-		} else {
-			filter_pixel(pixel, pixel_id);
-		}
+#endif
+
+	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 size = pass_id >= PASS_REFLECTION_LAST ? ivec2(params.size) : reflection_size();
+	if (any(greaterThanEqual(pixel, size))) {
+		return;
 	}
+	uint reflection_id = pass_id >= PASS_REFLECTION_LAST ? uint(pixel.x) + uint(pixel.y) * params.size.x : reflection_index(pixel);
+#if AMD_GI_PASS == PASS_REFLECTION_CLASSIFY
+	classify_reflection(pixel, reflection_id);
+#elif AMD_GI_PASS == PASS_REFLECTION_TRACE
+	trace_reflection(pixel, reflection_id);
+#elif AMD_GI_PASS == PASS_REFLECTION_MARK_FIREFLIES
+	mark_reflection_fireflies(pixel, reflection_id);
+#elif AMD_GI_PASS == PASS_REFLECTION_CLEAN_FIREFLIES
+	clean_reflection_fireflies(pixel, reflection_id);
+#elif AMD_GI_PASS >= PASS_REFLECTION_FIRST && AMD_GI_PASS <= PASS_REFLECTION_LAST
+	resolve_reflection(pixel, reflection_id);
+#elif AMD_GI_PASS == PASS_REFLECTION_TEMPORAL
+	temporal_reflection(pixel, reflection_id);
+#else
+	output_reflection_pixel(pixel, reflection_id);
+#endif
+#elif AMD_GI_PASS == PASS_PURGE
+	purge_cache(id);
+#elif AMD_GI_PASS == PASS_RESET
+	reset_cache(lane);
+#elif AMD_GI_PASS == PASS_REPROJECT
+	reproject_probe(probe, lane);
+#elif AMD_GI_PASS == PASS_BIN_CACHED
+	bin_cached_probe(id);
+#elif AMD_GI_PASS == PASS_SELECT
+	if (lane == 0u) {
+		select_probe(probe);
+	}
+#elif AMD_GI_PASS == PASS_PATCH
+	if (lane == 0u) {
+		patch_probe(probe);
+	}
+#elif AMD_GI_PASS == PASS_COMPACT_PROBES
+	compact_probes(lane);
+#elif AMD_GI_PASS == PASS_GATHER_PROBES
+	if (lane == 0u) {
+		gather_probe(probe);
+	}
+#elif AMD_GI_PASS == PASS_PREPARE
+	prepare_probe(probe, lane);
+#elif AMD_GI_PASS == PASS_TRACE
+	trace_probe(probe, lane);
+#elif AMD_GI_PASS == PASS_ALLOCATE || AMD_GI_PASS == PASS_ALLOCATE_SECONDARY
+	allocate_tile(id);
+#elif AMD_GI_PASS == PASS_REGISTER || AMD_GI_PASS == PASS_REGISTER_SECONDARY
+	register_ray(id);
+#elif AMD_GI_PASS == PASS_POPULATE
+	populate_secondary(id);
+#elif AMD_GI_PASS == PASS_SHADE_HITS
+	shade_hit(id);
+#elif AMD_GI_PASS == PASS_SHADE_INDIRECT_HITS
+	shade_indirect_hit(id);
+#elif AMD_GI_PASS == PASS_UPDATE_INDIRECT
+	update_indirect(id);
+#elif AMD_GI_PASS == PASS_UPDATE
+	update_cell(id);
+#elif AMD_GI_PASS >= PASS_MIP1 && AMD_GI_PASS <= PASS_MIP3
+	build_mip(probe, lane, uint(pass_id - PASS_MIP1 + 1));
+#elif AMD_GI_PASS >= PASS_INDIRECT_MIP1 && AMD_GI_PASS <= PASS_INDIRECT_MIP3
+	build_mip(probe, lane, uint(pass_id - PASS_INDIRECT_MIP1 + 1));
+#elif AMD_GI_PASS == PASS_RESOLVE
+	resolve_probe(probe, lane);
+#elif AMD_GI_PASS == PASS_FILTER_X || AMD_GI_PASS == PASS_FILTER_Y
+	filter_probe(probe, lane);
+#elif AMD_GI_PASS == PASS_PROJECT
+	project_probe(probe, lane);
+#elif AMD_GI_PASS == PASS_ORDER_CACHED
+	order_cached_probes(lane);
+#elif AMD_GI_PASS == PASS_STORE_CACHED
+	store_cached_probe(probe, lane);
+#elif AMD_GI_PASS == PASS_MASK
+	filter_mask(gl_GlobalInvocationID.xy);
+#else
+	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(pixel, ivec2(params.size)))) {
+		return;
+	}
+	uint pixel_id = uint(pixel.x) + uint(pixel.y) * params.size.x;
+#if AMD_GI_PASS == PASS_NEAR_FIELD
+	integrate_near_field(pixel);
+#elif AMD_GI_PASS == PASS_INTERPOLATE
+	interpolate_pixel(pixel, pixel_id);
+#elif AMD_GI_PASS == PASS_TEMPORAL
+	reproject_pixel(pixel, pixel_id);
+#else
+	filter_pixel(pixel, pixel_id);
+#endif
+#endif
 }

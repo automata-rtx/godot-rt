@@ -1,5 +1,16 @@
 # Validating a Change to This Fork
 
+Compute storage/indirect synchronization: run the graphical Windows editor with
+`--path docs/validation/shadow_validation --script res://compute_indirect_storage.gd`.
+The local RenderingDevice fixture alternates 256 GPU-produced dispatch counts
+with consumers that also bind the arguments as storage. It checks 16,384 words
+and exits nonzero on mismatch. No CPU readback occurs between dispatches. On the
+RTX 5090, the original graph dropped the indirect-read access and produced 7,567
+incorrect words; merging both accesses produced zero. Run
+`amd_gi_consequential` with hit, bounce and cache diagnostics as the separate
+production-pipeline integration test. These are hardware correctness checks,
+not image parity or general performance claims.
+
 How to measure a change to godot-rt, what each rig's measurement is worth, and the four things no
 rig here can tell you. The shared layer above `docs/validation/`. Not here: what the measurements
 found or refuted (`docs/HISTORY.md`); diagnosing a symptom (`docs/TROUBLESHOOTING.md`); porting to a
