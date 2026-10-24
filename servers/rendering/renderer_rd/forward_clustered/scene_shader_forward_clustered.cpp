@@ -488,7 +488,7 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 				blend_state = blend_state_depth_normal_roughness_giprobe;
 				break;
 			case PIPELINE_VERSION_DEPTH_PASS_WITH_GI_MOTION:
-				blend_state = RD::PipelineColorBlendState::create_disabled(6);
+				blend_state = RD::PipelineColorBlendState::create_disabled(8);
 				break;
 			case PIPELINE_VERSION_DEPTH_PASS_WITH_MATERIAL:
 				// Writes to normal and roughness in opaque way.
@@ -930,7 +930,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.base_texture_binding_index = 1;
 		actions.texture_layout_set = RenderForwardClustered::MATERIAL_UNIFORM_SET;
 		actions.base_uniform_string = "material.";
-		actions.base_varying_index = 15;
+		actions.base_varying_index = 17; // 15/16 carry optional vertex-light GI feedback.
 
 		actions.default_filter = ShaderLanguage::FILTER_LINEAR_MIPMAP;
 		actions.default_repeat = ShaderLanguage::REPEAT_ENABLE;

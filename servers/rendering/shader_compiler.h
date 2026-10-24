@@ -80,6 +80,13 @@ public:
 		uint32_t uniform_total_size = 0;
 		String uniforms;
 		String stage_globals[STAGE_MAX];
+		struct PrivateVarying {
+			String name;
+			ShaderLanguage::DataType type;
+			int array_size;
+			bool flat;
+		};
+		Vector<PrivateVarying> private_varyings;
 
 		HashMap<String, String> code;
 
@@ -107,10 +114,21 @@ public:
 		uint32_t base_varying_index = 0;
 		bool apply_luminance_multiplier = false;
 		bool check_multiview_samplers = false;
+		// Source-material evaluation can run vertex/fragment entry points inside
+		// a ray shader. Keep the ordinary raster compiler defaults unchanged.
+		String identifier_prefix = "m_";
+		bool shared_stage_globals = false;
+		bool private_varyings = false;
+		String implicit_texture_lod;
+		String (*implicit_texture_lod_expression)(ShaderLanguage::DataType, const String &) = nullptr;
+		String discard_code = "discard;";
+		String (*texture_uniform_expression)(void *, const StringName &, const String &) = nullptr;
+		void *texture_uniform_userdata = nullptr;
 	};
 
 private:
 	ShaderLanguage parser;
+	String _mkid(const String &p_id) const;
 
 	String _get_sampler_name(ShaderLanguage::TextureFilter p_filter, ShaderLanguage::TextureRepeat p_repeat);
 
@@ -137,5 +155,6 @@ public:
 	Error compile(RSE::ShaderMode p_mode, const String &p_code, IdentifierActions *p_actions, const String &p_path, GeneratedCode &r_gen_code);
 
 	void initialize(DefaultIdentifierActions p_actions);
+	const DefaultIdentifierActions &get_default_actions() const { return actions; }
 	ShaderCompiler();
 };

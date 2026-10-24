@@ -985,6 +985,9 @@ public:
 	RID get_spot_light_buffer() { return spot_light_buffer; }
 	RID get_area_light_buffer() { return area_light_buffer; }
 	RID get_directional_light_buffer() { return directional_light_buffer; }
+	// Called only by active GI feedback, after update_light_buffers. The order
+	// is the native clustered-light order, not the GI transport light order.
+	Vector<uint8_t> get_gi_feedback_light_data(const PagedArray<RID> &p_lights) const;
 	uint32_t get_max_directional_lights() { return max_directional_lights; }
 	uint32_t get_directional_light_blend_splits(uint32_t p_directional_light_count) const {
 		uint32_t blend_splits = 0;

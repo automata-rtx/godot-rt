@@ -3891,12 +3891,13 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				LocalVector<RID> &lights;
 				uint32_t layers;
 				AABB bounds;
+				bool source_materials;
 				bool operator()(void *p_data) {
 					Instance *instance = static_cast<Instance *>(p_data);
 					if (!instance->visible || !(instance->layer_mask & layers)) {
 						return false;
 					}
-					if (instances.size() > RendererSceneRender::MAX_RT_GI_INSTANCES || lights.size() > RendererSceneRender::MAX_RT_GI_LIGHTS) {
+					if (!source_materials && (instances.size() > RendererSceneRender::MAX_RT_GI_INSTANCES || lights.size() > RendererSceneRender::MAX_RT_GI_LIGHTS)) {
 						return true; // Keep one overflow entry so the renderer rejects the scene.
 					}
 					if (instance->base_type == RSE::INSTANCE_LIGHT) {
@@ -3938,11 +3939,11 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 								gi.element = element;
 								gi.transform = instance->transform * RSG::mesh_storage->multimesh_instance_get_transform(gi.multimesh, element);
 								gi.world_bounds = gi.transform.xform(mesh_bounds);
-								if (!bounds.intersects(gi.world_bounds)) {
+								if (!source_materials && !bounds.intersects(gi.world_bounds)) {
 									continue;
 								}
 								instances.push_back(gi);
-								if (instances.size() > RendererSceneRender::MAX_RT_GI_INSTANCES) {
+								if (!source_materials && instances.size() > RendererSceneRender::MAX_RT_GI_INSTANCES) {
 									return true;
 								}
 							}
@@ -3952,12 +3953,20 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 					}
 					return false;
 				}
-			} collect{ gi_instances, gi_lights, p_visible_layers, bounds };
-			scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(bounds, collect);
-			scenario->indexers[Scenario::INDEXER_VOLUMES].aabb_query(bounds, collect);
-			for (Instance *light : scenario->directional_lights) {
-				if (collect(light)) {
-					break;
+			} collect{ gi_instances, gi_lights, p_visible_layers, bounds, amd_requested };
+			if (amd_requested) {
+				// Reference GI traces the participating scene, including off-screen
+				// secondary receivers. A camera-centered box clips valid bounces.
+				for (SelfList<Instance> *entry = scenario->instances.first(); entry; entry = entry->next()) {
+					collect(entry->self());
+				}
+			} else {
+				scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(bounds, collect);
+				scenario->indexers[Scenario::INDEXER_VOLUMES].aabb_query(bounds, collect);
+				for (Instance *light : scenario->directional_lights) {
+					if (collect(light)) {
+						break;
+					}
 				}
 			}
 			// BVH traversal order changes during balancing, even in a static

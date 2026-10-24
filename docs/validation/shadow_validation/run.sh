@@ -61,7 +61,11 @@ case "$RIG" in
 	amd_gi_material_density) RIG_RES=641x359 ;;
 	amd_gi_scene_churn|amd_gi_flashlight) RIG_RES=321x181 ;;
 	amd_gi_deformation) RIG_RES=641x359 ;;
-	amd_gi_emitters|amd_gi_gameplay_audit|amd_gi_reference) RIG_RES=321x181 ;;
+	amd_gi_source_material) RIG_RES=641x359 ;;
+	amd_gi_collection) RIG_RES=321x181 ;;
+	amd_gi_distance) RIG_RES=161x91 ;;
+	amd_gi_normals) RIG_RES=161x91 ;;
+	amd_gi_emitters|amd_gi_gameplay_audit|amd_gi_reference|amd_gi_consequential|amd_gi_exposure) RIG_RES=321x181 ;;
 	amd_gi_budget_compare) RIG_RES=641x359 ;;
 	*)          RIG_RES=1280x720 ;;
 esac
@@ -108,6 +112,18 @@ export DISPLAY="$DISP"
 export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.json}"
 export GODOT_SILENCE_ROOT_WARNING=1
 export SHADOW_OUT_DIR="$OUT"
+if [ "$RIG" = "amd_gi_collection" ]; then
+	export GODOT_AMD_GI_VALIDATE_CACHE=1 GODOT_AMD_GI_VALIDATE_MATERIALS=1 GODOT_AMD_GI_TRACE_HISTORY=1
+fi
+if [ "$RIG" = "amd_gi_source_material" ]; then
+	export GODOT_AMD_GI_VALIDATE_SOURCE=1
+fi
+if [ "$RIG" = "amd_gi_consequential" ]; then
+	export GODOT_AMD_GI_VALIDATE_HITS=1 GODOT_AMD_GI_VALIDATE_BOUNCES=1 GODOT_AMD_GI_VALIDATE_CACHE=1
+fi
+if [ "$RIG" = "amd_gi_exposure" ]; then
+	export GODOT_AMD_GI_VALIDATE_REFLECTIONS=1 GODOT_AMD_GI_TRACE_REFLECTION_HISTORY=1 GODOT_AMD_GI_TRACE_HISTORY=1
+fi
 if [ "$RIG" = "geometry" ]; then
 	export GODOT_RT_DEBUG=1
 fi
@@ -163,7 +179,30 @@ grep -aiE "SCRIPT ERROR|ERROR: Condition|not provided" "$LOG" | head -5
 mv "$HERE/out"/*.png "$OUT/" 2>/dev/null
 
 echo
-if [ "$RIG" = "amd_gi_winding" ]; then
+if [ "$RIG" = "amd_gi_consequential" ] || [ "$RIG" = "amd_gi_exposure" ]; then
+	python3 "$HERE/score_amd_gi_integration.py" "$OUT" "$RIG"
+elif [ "$RIG" = "amd_gi_collection" ]; then
+	python3 "$HERE/score_amd_gi_collection.py" "$OUT"
+elif [ "$RIG" = "amd_gi_distance" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD GI flat grid: 5 GPU cases passed' "$LOG"; then
+		echo "AMD distance/grid checks failed; inspect $LOG" >&2
+		exit 1
+	fi
+	grep -a 'GPU cases passed' "$LOG"
+elif [ "$RIG" = "amd_gi_source_material" ]; then
+	python3 "$HERE/score_amd_gi_source_material.py" "$OUT"
+elif [ "$RIG" = "amd_gi_normals" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD GI source normals: 36 GPU cases passed' "$LOG"; then
+		exit 1
+	fi
+	grep -a 'AMD GI source normals:' "$LOG"
+elif [ "$RIG" = "amd_gi_environment" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD environment: .* 0 failures' "$LOG"; then
+		cat "$LOG"
+		exit 1
+	fi
+	grep -a 'AMD environment:' "$LOG"
+elif [ "$RIG" = "amd_gi_winding" ]; then
 	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'AMD native winding: 48 ray queries passed' "$LOG"; then
 		exit 1
 	fi

@@ -908,6 +908,34 @@ bool LightStorage::light_instance_has_raytraced_shadow(RID p_light_instance) con
 	return light_instance != nullptr && light_instance->raytraced_shadow;
 }
 
+Vector<uint8_t> LightStorage::get_gi_feedback_light_data(const PagedArray<RID> &p_lights) const {
+	LocalVector<float> energies;
+	for (uint32_t i = 0; i < p_lights.size() && energies.size() < max_directional_lights; i++) {
+		const LightInstance *instance = light_instance_owner.get_or_null(p_lights[i]);
+		const Light *light = instance ? light_owner.get_or_null(instance->light) : nullptr;
+		if (light && light->type == RSE::LIGHT_DIRECTIONAL && light->directional_sky_mode != RSE::LIGHT_DIRECTIONAL_SKY_MODE_SKY_ONLY) {
+			energies.push_back(light->param[RSE::LIGHT_PARAM_INDIRECT_ENERGY]);
+		}
+	}
+	uint32_t offsets[4] = { 0, energies.size(), energies.size() + omni_light_count, energies.size() + omni_light_count + spot_light_count };
+	for (uint32_t i = 0; i < omni_light_count; i++) {
+		energies.push_back(omni_light_sort[i].light->param[RSE::LIGHT_PARAM_INDIRECT_ENERGY]);
+	}
+	for (uint32_t i = 0; i < spot_light_count; i++) {
+		energies.push_back(spot_light_sort[i].light->param[RSE::LIGHT_PARAM_INDIRECT_ENERGY]);
+	}
+	for (uint32_t i = 0; i < area_light_count; i++) {
+		energies.push_back(area_light_sort[i].light->param[RSE::LIGHT_PARAM_INDIRECT_ENERGY]);
+	}
+	Vector<uint8_t> result;
+	result.resize_initialized(sizeof(offsets) + MAX(energies.size(), 1u) * sizeof(float));
+	memcpy(result.ptrw(), offsets, sizeof(offsets));
+	if (!energies.is_empty()) {
+		memcpy(result.ptrw() + sizeof(offsets), energies.ptr(), energies.size() * sizeof(float));
+	}
+	return result;
+}
+
 void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, bool p_use_raytraced_shadows, bool p_use_screen_space_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows) {
 	ForwardIDStorage *forward_id_storage = ForwardIDStorage::get_singleton();
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();

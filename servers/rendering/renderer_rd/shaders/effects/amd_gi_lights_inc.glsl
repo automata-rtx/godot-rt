@@ -23,8 +23,11 @@ THE SOFTWARE.
 // Capsaicin v1.3 GridStream default: 16 cells/axis, 64 strided reservoirs,
 // expanded-cell volume weights, jittered lookup and eight segments without
 // replacement. Analytic lights and emissive triangles share one distribution.
+uint gi_environment_count() {
+	return (uint(frame.sky.w) >> 2u) & 1u;
+}
 uint gi_light_count() {
-	return params.light_count + frame.emitters.x + 1u;
+	return params.light_count + frame.emitters.x + gi_environment_count();
 }
 uint ordered_float(float f) {
 	uint u = floatBitsToUint(f);
@@ -33,17 +36,16 @@ uint ordered_float(float f) {
 float unordered_float(uint u) {
 	return uintBitsToFloat((u & 0x80000000u) != 0u ? u ^ 0x80000000u : ~u);
 }
-void light_grid_bounds(uint id) {
-	if (id >= primary_ray_count() * (params.bounces != 0u ? 2u : 1u)) {
-		return;
-	}
-	RayHit hit = id < primary_ray_count() ? rays.data[id] : secondary_rays.data[id - primary_ray_count()];
-	if (hit.position.w <= 0.0) {
-		return;
-	}
+void reset_light_bounds() {
+	light_grid.minimum = uvec4(0xffffffffu);
+	light_grid.maximum = uvec4(0u);
+}
+void register_light_bounds(vec3 position) {
+	// requestLightSampleLocation is part of registering the visibility hit,
+	// as in Capsaicin. No full-capacity ray scan or extra bounds pass.
 	for (uint axis = 0u; axis < 3u; axis++) {
-		atomicMin(light_grid.minimum[axis], ordered_float(hit.position[axis]));
-		atomicMax(light_grid.maximum[axis], ordered_float(hit.position[axis]));
+		atomicMin(light_grid.minimum[axis], ordered_float(position[axis]));
+		atomicMax(light_grid.maximum[axis], ordered_float(position[axis]));
 	}
 }
 void light_grid_configuration(out vec3 minimum, out vec3 cell_size, out uvec3 dimensions) {
@@ -55,26 +57,38 @@ void light_grid_configuration(out vec3 minimum, out vec3 cell_size, out uvec3 di
 	}
 	minimum = vec3(unordered_float(light_grid.minimum.x), unordered_float(light_grid.minimum.y), unordered_float(light_grid.minimum.z));
 	vec3 maximum = vec3(unordered_float(light_grid.maximum.x), unordered_float(light_grid.maximum.y), unordered_float(light_grid.maximum.z));
-	// Degenerate (planar or single-hit) bounds still need a finite cell.
-	vec3 extent = max(maximum - minimum, vec3(1e-5));
+	// Preserve AMD's actual bounds, including flat directions. The approved
+	// zero-extent policy selects the sole cell without dividing by zero.
+	vec3 extent = maximum - minimum;
 	float scale = max(max(extent.x, extent.y), extent.z) / 16.0;
-	dimensions = uvec3(clamp(ceil(extent / scale), vec3(1), vec3(16)));
+	dimensions = scale == 0.0 ? uvec3(1) : uvec3(max(ceil(extent / scale), vec3(1)));
 	cell_size = extent / vec3(dimensions);
+}
+uvec3 light_grid_cell(vec3 position, vec3 minimum, vec3 cell_size, uvec3 dimensions, vec3 jitter) {
+	uvec3 cell = uvec3(0);
+	for (uint axis = 0u; axis < 3u; axis++) {
+		if (dimensions[axis] > 1u) {
+			cell[axis] = uint(clamp(floor((position[axis] - minimum[axis]) / cell_size[axis] + jitter[axis]), 0.0, float(dimensions[axis] - 1u)));
+		}
+	}
+	return cell;
 }
 float gi_volume_weight(uint index, vec3 minimum, vec3 extent) {
 	vec3 color;
 	float weight = 0.0;
-	if (index == gi_light_count() - 1u) {
+	if (index < gi_environment_count()) {
 		vec3 total = vec3(0);
 		for (int axis = 0; axis < 3; axis++) {
 			vec3 direction = vec3(0);
 			direction[axis] = 1.0;
-			total += environment_radiance(direction, false) + environment_radiance(-direction, false);
+			float mip = float(textureQueryLevels(sky_radiance));
+			total += environment_radiance_lod(direction, false, mip) + environment_radiance_lod(-direction, false, mip);
 		}
 		return luma(total) * (4.0 * PI / 6.0);
 	}
+	index -= gi_environment_count();
 	if (index < params.light_count) {
-		Light light = lights.data[index];
+		Light light = gi_light(index);
 		color = abs(light.color);
 		if (light.type == 0u) {
 			return luma(color);
@@ -105,11 +119,12 @@ float gi_volume_weight(uint index, vec3 minimum, vec3 extent) {
 			weight += pow(max(1.0 - pow(nd, 4.0), 0.0), 2.0) * pow(max(distance, 0.0001), -light.decay);
 		}
 	} else {
-		Emitter light = lights.emitters[frame.emitters.y + index - params.light_count];
+		Emitter light = gi_emitter(index - params.light_count);
 		if (light.position_area.w <= 0.0) {
 			return 0.0;
 		}
-		color = light.emission_tile.rgb;
+		// sampleLightVolume: centroid with the full triangle's UV footprint.
+		color = gi_source_material_filtered(floatBitsToUint(light.edge2.w), floatBitsToUint(light.emission_tile.w), vec2(1.0 / 3.0), true, 0.0, true).emission.rgb;
 		vec3 center = light.position_area.xyz + (light.edge1_power.xyz + light.edge2.xyz) / 3.0;
 		vec3 normal = normalize(cross(light.edge1_power.xyz, light.edge2.xyz));
 		for (uint corner = 0u; corner < 8u; corner++) {
@@ -176,65 +191,86 @@ uint light_grid_segment(uint start, uint count, inout uint rng, out float pdf) {
 	pdf = total > 0.0 ? selected_weight / total : 0.0;
 	return selected;
 }
-vec3 gi_light_target(RayHit ray, uint index, vec2 sample_params, out vec3 direction, out float distance) {
+vec3 gi_light_target_normal(RayHit ray, vec3 brdf_normal, uint index, vec2 sample_params, float solid_angle, out vec3 direction, out float distance) {
 	vec3 incident;
-	if (index == gi_light_count() - 1u) {
+	if (index < gi_environment_count()) {
 		float theta = 2.0 * PI * sample_params.x;
 		float cosine = 1.0 - sample_params.y;
 		float sine = sin(acos(cosine));
 		direction = normalize(basis(ray.normal_mask.xyz) * vec3(sine * cos(theta), sine * sin(theta), cosine));
 		distance = params.max_distance;
-		incident = environment_radiance(direction, false);
-	} else if (index < params.light_count) {
+		incident = environment_radiance_cone(direction, solid_angle);
+	} else if (index - gi_environment_count() < params.light_count) {
+		index = (index - gi_environment_count());
 		// Passing the light direction as normal removes the cosine from the
 		// shared native irradiance helper; the reference BRDF supplies it.
-		Light light = lights.data[index];
+		Light light = gi_light(index);
 		direction = light.type == 0u ? light.direction : normalize(light.position - ray.position.xyz);
 		incident = unshadowed_irradiance(index, ray.position.xyz, direction, floatBitsToUint(ray.normal_mask.w), direction, distance);
 	} else {
-		Emitter light = lights.emitters[frame.emitters.y + index - params.light_count];
+		Emitter light = gi_emitter(index - gi_environment_count() - params.light_count);
 		vec3 delta = light.position_area.xyz + sample_params.x * light.edge1_power.xyz + sample_params.y * light.edge2.xyz - ray.position.xyz;
 		float d2 = dot(delta, delta);
 		distance = sqrt(d2);
 		direction = distance > 0.0 ? delta / distance : ray.normal_mask.xyz;
-		vec3 uv = atlas_tile_position(floatBitsToUint(light.emission_tile.w), sample_params);
-		vec3 emission = textureLod(emission_atlas, uv, 0).rgb * textureLod(albedo_atlas, uv, 0).a;
 		vec3 normal = normalize(cross(light.edge1_power.xyz, light.edge2.xyz));
+		// evaluateAreaLightConeAM: retain AMD's area cap and projected cone.
+		float width = min(light.position_area.w, solid_angle * distance);
+		float lod_offset = -0.5 * log2(2.0 * light.position_area.w) + log2(width / abs(dot(direction, normal)));
+		GISourceMaterial material = gi_source_material_filtered(floatBitsToUint(light.edge2.w), floatBitsToUint(light.emission_tile.w), sample_params, true, lod_offset, true);
+		// The approved native encoding supplies emitted RGB as a function with
+		// unit base factor. Godot opacity is a separate hit-coverage input;
+		// it is not an additional alpha channel of that emission function.
+		vec3 emission = material.emission.rgb;
 		incident = d2 > 0.0 && light.position_area.w > 0.0 ? emission * abs(dot(normal, -direction)) / d2 : vec3(0);
 	}
-	return incident * gi_rough_brdf(ray.diffuse.rgb, ray.normal_mask.xyz, -ray.direction_cache.xyz, direction);
+	return incident * gi_rough_brdf(ray.diffuse.rgb, brdf_normal, -ray.direction_cache.xyz, direction);
+}
+vec3 gi_light_target(RayHit ray, uint index, vec2 sample_params, float solid_angle, out vec3 direction, out float distance) {
+	return gi_light_target_normal(ray, ray.normal_mask.xyz, index, sample_params, solid_angle, direction, distance);
 }
 float gi_light_visibility(RayHit ray, uint index, vec3 direction, float distance) {
-	if (index < params.light_count) {
-		return light_visibility(index, ray.position.xyz, ray.normal_mask.xyz, direction, distance);
+	if (index >= gi_environment_count() && index - gi_environment_count() < params.light_count) {
+		return light_visibility((index - gi_environment_count()), ray.position.xyz, ray.geometry_normal.xyz, direction, distance);
 	}
 	uint blocker;
 	vec3 position, uv, normal;
-	vec3 origin = gi_offset_position(ray.position.xyz, ray.normal_mask.xyz);
-	if (index != gi_light_count() - 1u) {
+	vec3 origin = gi_offset_position(ray.position.xyz, ray.geometry_normal.xyz);
+	if (index >= gi_environment_count()) {
 		direction = ray.position.xyz + direction * distance - origin;
 		distance = 1.0 - 1.0 / 16384.0;
 	}
 	return trace(origin, direction, distance, 0xffffffffu, blocker, position, uv, normal) ? 0.0 : 1.0;
 }
-void gi_reservoir_add(uint light, vec2 sample_params, float target, float weight, inout uint selected, inout vec2 selected_params, inout float selected_target, inout float sum, inout uint rng) {
-	if (weight <= 0.0 || isnan(weight) || isinf(weight)) {
-		return;
-	}
-	sum += weight;
-	if (random_float(rng) * sum < weight) {
+// reservoir.hlsl: updateReservoirRadianceBRDF / mergeReservoirsRadiance.
+// Keep the incremental MIS normalization, including zero-target updates.
+void gi_reservoir_merge(uint light, vec2 sample_params, float target, float incoming_weight, float incoming_count, inout uint selected, inout vec2 selected_params, inout float selected_target, inout float weight, inout float count, inout uint rng) {
+	const float minimum = 1.1754943508222875e-38;
+	float denominator = max(count + incoming_count, minimum);
+	float w1 = (count / denominator) * selected_target * weight;
+	float w2 = (incoming_count / denominator) * target * incoming_weight;
+	float sum = w1 + w2;
+	if (random_float(rng) * sum < w2) {
 		selected = light;
 		selected_params = sample_params;
 		selected_target = target;
 	}
+	weight = sum / max(selected_target, minimum);
+	count += incoming_count;
 }
-vec3 resampled_direct(RayHit ray, inout uint rng, uint hit_id) {
-	uint initial_rng = rng;
+vec3 reservoir_material_albedo(vec3 value) {
+	// packMaterial/unpackMaterial: rough dielectric uses gamma RGB565.
+	vec3 scale = vec3(31, 63, 31);
+	return pow(vec3(uvec3(pow(clamp(value, 0.0, 1.0), vec3(1.0 / 2.2)) * scale)) / scale, vec3(2.2));
+}
+vec3 resampled_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_cell) {
+	update_cell = false;
+	vec3 shading_normal = ray.normal_mask.xyz;
 	vec3 minimum, cell_size;
 	uvec3 dimensions;
 	light_grid_configuration(minimum, cell_size, dimensions);
 	vec3 jitter = vec3(random_float(rng), random_float(rng), random_float(rng)) - 0.5;
-	uvec3 cell = uvec3(clamp(floor((ray.position.xyz - minimum) / cell_size + jitter), vec3(0), vec3(dimensions) - 1.0));
+	uvec3 cell = light_grid_cell(ray.position.xyz, minimum, cell_size, dimensions, jitter);
 	uint base = (cell.x + dimensions.x * (cell.y + dimensions.y * cell.z)) * 64u;
 	uint count = min(64u, gi_light_count()), segment_size = (count + 7u) / 8u;
 	uint candidates[8];
@@ -248,44 +284,75 @@ vec3 resampled_direct(RayHit ray, inout uint rng, uint hit_id) {
 			pdfs[valid++] = pdf;
 		}
 	}
-	uint selected = INVALID;
+	uint selected = 0u;
 	vec2 selected_params = vec2(0);
-	float selected_target = 0.0, sum = 0.0;
+	float selected_target = 0.0, weight = 0.0, confidence = 0.0;
 	for (uint i = 0u; i < valid; i++) {
 		vec2 sample_params = vec2(random_float(rng), random_float(rng));
 		float area_pdf = 1.0;
-		if (candidates[i] == gi_light_count() - 1u) {
+		if (candidates[i] < gi_environment_count()) {
 			area_pdf = 1.0 / (2.0 * PI);
-		} else if (candidates[i] >= params.light_count) {
+		} else if (candidates[i] >= params.light_count + gi_environment_count()) {
 			float root = sqrt(sample_params.x);
 			sample_params = vec2(1.0 - root, sample_params.y * root);
-			area_pdf = 1.0 / lights.emitters[frame.emitters.y + candidates[i] - params.light_count].position_area.w;
+			area_pdf = 1.0 / gi_emitter(candidates[i] - gi_environment_count() - params.light_count).position_area.w;
 		} else {
 			sample_params = vec2(0);
 		}
 		vec3 direction;
 		float distance;
-		float target = luma(abs(gi_light_target(ray, candidates[i], sample_params, direction, distance)));
-		// Division by valid segments in the proposal cancels the RIS mean.
-		gi_reservoir_add(candidates[i], sample_params, target, target / (pdfs[i] * area_pdf), selected, selected_params, selected_target, sum, rng);
+		float target = luma(abs(gi_light_target(ray, candidates[i], sample_params, 4.0 * PI / (8.0 * 1.5), direction, distance)));
+		// Reference fast merge divides the proposal PDF by actual valid segments.
+		float pdf = (pdfs[i] / float(valid)) * area_pdf;
+		gi_reservoir_merge(candidates[i], sample_params, target, 1.0 / max(pdf, 1.1754943508222875e-38), 1.0, selected, selected_params, selected_target, weight, confidence, rng);
 	}
-	float confidence = 1.0;
-	if (frame.tracing.w != 0u && hit_id != INVALID && selected != INVALID) {
+	if (confidence <= 0.0 || !(weight < 3.402823466e38)) {
+		return vec3(0);
+	}
+	update_cell = true;
+	if (frame.motion.y != 0u && hit_id != INVALID && hit_id >= primary_ray_count()) {
+		// Approved correction to UpdateMultibounceCells: the compact shadow-ray
+		// queue and visibility hits have different indices. Store this valid
+		// shadow ray's bypass on its actual hit, retaining AMD's reconstructed
+		// origin-to-hit distance and cell-size predicate.
+		hit_samples.data[hit_id].links.w = uint(ray.position.w < cache_cell_size(ray.position.xyz));
+	}
+	uint resample_rng = frame.tracing.w != 0u ? gi_random(atomicAdd(work.counts.w, 1u)) : 0u;
+	if (frame.tracing.w != 0u && hit_id != INVALID) {
 		reservoir_insert(hit_id, reservoir_jitter(ray.position.xyz, ray.normal_mask.xyz, rng));
 	}
+	// These values cross the same packed shadow-ray handoff as AMD, even
+	// when world-space resampling is disabled.
+	selected_params = unpackHalf2x16(packHalf2x16(selected_params));
+	ray.diffuse.rgb = reservoir_material_albedo(ray.diffuse.rgb);
 	if (frame.tracing.w != 0u) {
-		rng = initial_rng;
+		ray.normal_mask.xyz = unpack_reservoir_normal(pack_reservoir_normal(ray.normal_mask.xyz));
+		rng = resample_rng;
 		uint entry = reservoir_find_previous(reservoir_jitter(ray.position.xyz, ray.normal_mask.xyz, rng));
 		if (entry != INVALID) {
 			uint old_count = previous_light_reservoirs.data[RESERVOIR_ENTRIES + entry];
 			uint start = reservoir_previous_prefix(entry), increment = (old_count + 3u) / 4u;
 			uint offset = random_bits(rng) % increment;
+			vec3 direction;
+			float distance;
+			float target = luma(abs(gi_light_target(ray, selected, selected_params, 4.0 * PI / (8.0 * 12000.0), direction, distance)));
+			float fresh_weight = weight;
+			uint fresh_light = selected;
+			vec2 fresh_params = selected_params;
+			selected = 0u;
+			selected_params = vec2(0);
+			selected_target = 0.0;
+			weight = 0.0;
+			confidence = 0.0;
+			gi_reservoir_merge(fresh_light, fresh_params, target, fresh_weight, 1.0, selected, selected_params, selected_target, weight, confidence, rng);
 			for (uint i = 0u; i < old_count; i += increment) {
 				uint old_id = previous_light_reservoirs.data[reservoir_values_offset() + start + ((i + offset) % old_count)];
 				uvec4 old = reservoir_load_previous(old_id);
-				uint light = old.x < frame.motion.w ? light_grid.remap[old.x] : INVALID;
+				uint light = old.x;
 				float merged_count = min(unpackHalf2x16(old.w).x, 20.0);
-				if (light >= gi_light_count() || merged_count <= 0.0) {
+				// Approved reference correction: a nonzero-to-nonzero light-list
+				// shrink retains history, but an out-of-list index is not a light.
+				if (light >= gi_light_count() || merged_count <= 0.0 || !(uintBitsToFloat(old.z) < 3.402823466e38)) {
 					continue;
 				}
 				vec3 old_normal = unpack_reservoir_normal(previous_light_reservoirs.data[reservoir_normals_offset() + old_id]);
@@ -296,32 +363,40 @@ vec3 resampled_direct(RayHit ray, inout uint rng, uint hit_id) {
 				vec2 sample_params = unpackHalf2x16(old.y);
 				vec3 direction;
 				float distance;
-				float target = luma(abs(gi_light_target(ray, light, sample_params, direction, distance)));
-				gi_reservoir_add(light, sample_params, target, target * uintBitsToFloat(old.z) * merged_count, selected, selected_params, selected_target, sum, rng);
-				confidence += merged_count;
+				float target = luma(abs(gi_light_target(ray, light, sample_params, 4.0 * PI / (8.0 * 12000.0), direction, distance)));
+				gi_reservoir_merge(light, sample_params, target, uintBitsToFloat(old.z), merged_count, selected, selected_params, selected_target, weight, confidence, rng);
 			}
 		}
 	}
-	if (selected == INVALID || selected_target <= 0.0) {
-		return vec3(0);
-	}
-	float weight = sum / (confidence * selected_target);
-	if (frame.tracing.w != 0u && hit_id != INVALID) {
-		reservoir_store(hit_id, uvec4(selected, packHalf2x16(selected_params), floatBitsToUint(weight), packHalf2x16(vec2(confidence, 1.0))), ray.normal_mask.xyz);
-	}
+	selected_params = unpackHalf2x16(packHalf2x16(selected_params));
 	vec3 direction;
 	float distance;
-	vec3 value = gi_light_target(ray, selected, selected_params, direction, distance);
-	return value * (weight * gi_light_visibility(ray, selected, direction, distance));
+	// PopulateCells reconstructs source normals; reservoir packing only applies
+	// during resampling. Its BRDF/ray offset use geometry, while environment
+	// sampling uses the distinct interpolated vertex normal.
+	ray.normal_mask.xyz = shading_normal;
+	vec3 value = gi_light_target_normal(ray, ray.geometry_normal.xyz, selected, selected_params, 4.0 * PI / (8.0 * 12000.0), direction, distance);
+	float visibility = gi_light_visibility(ray, selected, direction, distance);
+	if (frame.tracing.w != 0u && hit_id != INVALID) {
+		// PopulateCellsHandleHit invalidates W for blocked light samples.
+		reservoir_store(hit_id, uvec4(selected, packHalf2x16(selected_params), floatBitsToUint(visibility > 0.0 ? weight : 0.0), packHalf2x16(vec2(confidence, 1.0))), ray.normal_mask.xyz);
+	}
+	return value * (weight * visibility);
 }
 vec3 diffuse_hit_emission(RayHit ray) {
 	return ray.emission.rgb;
 }
-vec3 shade_direct(RayHit ray, inout uint rng, uint hit_id) {
+vec3 shade_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_cell) {
+	update_cell = false;
 	// GenerateReservoirs stops at an emissive primary hit; Le is injected into
 	// the screen probe directly, rather than spread through the spatial cache.
 	if ((hit_id == INVALID || hit_id < primary_ray_count()) && dot(ray.emission.rgb, ray.emission.rgb) > 0.0) {
 		return vec3(0);
 	}
-	return gi_light_count() > 0u ? resampled_direct(ray, rng, hit_id) : vec3(0);
+	return gi_light_count() > 0u ? resampled_direct(ray, rng, hit_id, update_cell) : vec3(0);
+}
+
+vec3 shade_direct(RayHit ray, inout uint rng, uint hit_id) {
+	bool update_cell;
+	return shade_direct(ray, rng, hit_id, update_cell);
 }

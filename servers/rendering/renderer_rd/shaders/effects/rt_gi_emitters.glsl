@@ -17,8 +17,7 @@ struct Emitter {
 	vec4 emission_tile;
 };
 layout(set = 0, binding = 2, std430) restrict buffer Lights {
-	uvec4 analytic[5120]; // 1024 analytic lights, 80 bytes each.
-	Emitter emitters[];
+	uvec4 data[];
 }
 lights;
 layout(set = 0, binding = 3) uniform sampler2DArray emission_atlas;
@@ -26,6 +25,7 @@ layout(set = 0, binding = 4) uniform sampler2DArray albedo_atlas;
 layout(push_constant, std430) uniform Params {
 	mat4 transform;
 	uvec4 geometry;
+	uvec4 prefix;
 }
 params;
 vec3 vertex(uint index) {
@@ -63,6 +63,13 @@ void main() {
 	emitter.edge1_power.xyz = vertex(id * 3u + 1u) - emitter.position_area.xyz;
 	emitter.edge2 = vec4(vertex(id * 3u + 2u) - emitter.position_area.xyz, 0);
 	emitter.position_area.w = 0.5 * length(cross(emitter.edge1_power.xyz, emitter.edge2.xyz));
+#ifdef SOURCE_MATERIALS
+	// Immutable source indices; emission is evaluated from native textures in
+	// the volume proposal and selected-light cone evaluation, never captured.
+	emitter.edge2.w = uintBitsToFloat(params.geometry.x);
+	emitter.emission_tile = vec4(0, 0, 0, uintBitsToFloat(id));
+	emitter.edge1_power.w = 0.0;
+#else
 	uint tile = params.geometry.x + id;
 	vec3 emission = vec3(0);
 	// Include every covered material texel. A few point samples could miss
@@ -80,5 +87,10 @@ void main() {
 	emission /= float(max(count, 1u));
 	emitter.emission_tile = vec4(emission, uintBitsToFloat(tile));
 	emitter.edge1_power.w = emitter.position_area.w * max(dot(emission, vec3(0.2126, 0.7152, 0.0722)), 0.0);
-	lights.emitters[params.geometry.w + id] = emitter;
+#endif
+	uint first = params.prefix.x * 5u + (params.geometry.w + id) * 4u;
+	lights.data[first] = floatBitsToUint(emitter.position_area);
+	lights.data[first + 1u] = floatBitsToUint(emitter.edge1_power);
+	lights.data[first + 2u] = floatBitsToUint(emitter.edge2);
+	lights.data[first + 3u] = floatBitsToUint(emitter.emission_tile);
 }

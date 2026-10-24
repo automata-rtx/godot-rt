@@ -22,6 +22,10 @@ THE SOFTWARE.
 
 // Capsaicin 914b9159 materials/material_sampling.hlsl: bounded VNDF is the
 // default, with its matching PDF. math/quaternion.hlsl supplies the local frame.
+// lights/light_evaluation.hlsl::evaluateEnvironmentLightCone.
+float gi_environment_lod(float solid_angle, float mip_levels) {
+	return log2(solid_angle / (4.0 * 3.14159265358979323846)) + mip_levels;
+}
 vec4 gi_rotation_z(vec3 direction) {
 	return direction.z >= -0.99999 ? normalize(vec4(direction.y, -direction.x, 0.0, 1.0 + direction.z)) : vec4(1, 0, 0, 0);
 }

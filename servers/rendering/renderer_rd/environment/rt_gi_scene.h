@@ -31,6 +31,7 @@
 #pragma once
 #include "servers/rendering/renderer_rd/environment/rt_geometry.h"
 #include "servers/rendering/renderer_rd/environment/rt_material_capture.h"
+#include "servers/rendering/renderer_rd/environment/rt_material_source.h"
 #include "servers/rendering/renderer_rd/shaders/effects/rt_gi_emitters.glsl.gen.h"
 #include "servers/rendering/renderer_scene_render.h"
 
@@ -71,6 +72,7 @@ public:
 	const LocalVector<EmissiveRange> &get_emissive_ranges() const { return emissive_ranges; }
 
 private:
+	RaytracingMaterialSource source_materials;
 	LocalVector<EmissiveRange> emissive_ranges;
 	// Tile layout must match atlas_position() in rt_gi_transport_inc.glsl.
 	static constexpr uint32_t PAGE_TRIANGLES = 1024;
@@ -89,9 +91,20 @@ private:
 		uint32_t flags_emitter; // Bits 31/30: local normals / stochastic opacity; low bits: emitter base + 1.
 		uint32_t mask;
 		uint32_t shadow_mask = 0;
+		uint64_t vertex_address = 0;
+		uint64_t index_address = 0;
+		uint32_t index_stride = 0;
+		uint32_t material_flags = 0; // Alpha-tested and native cull mode.
+		uint32_t normal_offset = 0; // Words from the source vertex buffer's beginning.
+		uint32_t normal_stride = 0; // Words per vertex; zero if no vertex normal.
+		uint64_t normal_address = 0;
+		uint32_t padding[2] = {};
+		float object_to_world[12] = {}; // Three vec4 rows.
+		float normal_to_world[12] = {}; // Padded mat3 columns.
 	};
 
-	static_assert(sizeof(HitData) == 16);
+	static_assert(sizeof(HitData) == 160);
+	HashSet<RID> geometry_buffers;
 	static_assert(sizeof(LightData) == 80);
 	LocalVector<LightData> previous_lights;
 	static bool light_history_compatible(const LightData &p_current, const LightData &p_previous);
@@ -181,7 +194,8 @@ private:
 	RID hit_buffer;
 	RID light_buffer;
 	RtGiEmittersShaderRD emitter_shader;
-	RID emitter_version, emitter_pipeline;
+	RID emitter_version, emitter_pipelines[2];
+	bool emitter_uses_source_materials = false;
 	uint32_t emitter_count = 0;
 	uint32_t emitter_capacity = 0;
 	uint32_t emitter_storage_capacity = 0;
@@ -196,7 +210,7 @@ private:
 	};
 	LocalVector<EmitterBatch> previous_emitters;
 	bool emitter_buffer_valid = false;
-	bool update_emitters(const LocalVector<EmitterBatch> &p_batches);
+	bool update_emitters(const LocalVector<EmitterBatch> &p_batches, bool p_source_materials);
 	uint32_t light_count = 0;
 	uint32_t signature = 0;
 	uint64_t revision = 1;
@@ -205,6 +219,7 @@ private:
 	bool feedback_compatible = true;
 
 public:
+	const RaytracingMaterialSource &get_source_materials() const { return source_materials; }
 	static constexpr uint32_t MAX_MOTION_BOUNDS = 8;
 	const LocalVector<AABB> &get_motion_bounds() const { return motion_bounds; }
 	bool is_ready() const { return ready; }
@@ -215,6 +230,7 @@ public:
 	uint64_t get_revision() const { return revision; }
 	uint64_t get_lighting_revision() const { return lighting_revision; }
 	void append_uniforms(LocalVector<RD::Uniform> &r_uniforms, RID p_sampler) const;
+	void add_geometry_reads(RD::ComputeListID p_list) const;
 	void update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights);
 	RaytracingGIScene();
 	~RaytracingGIScene();

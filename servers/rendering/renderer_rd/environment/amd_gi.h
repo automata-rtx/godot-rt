@@ -32,6 +32,7 @@
 
 #include "servers/rendering/renderer_rd/environment/rt_gi_scene.h"
 #include "servers/rendering/renderer_rd/shaders/effects/amd_gi.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/effects/amd_gi_environment.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
 
 #define RB_SCOPE_AMD_GI SNAME("amd_gi")
@@ -44,6 +45,8 @@ class AMDGI {
 public:
 	struct Environment {
 		RID radiance;
+		RID auto_exposure;
+		float temporal_exposure_scale = 1.0f;
 		Basis world_to_sky;
 		Color ambient = Color(0, 0, 0, 0);
 		float diffuse_energy = 0;
@@ -57,10 +60,13 @@ private:
 	enum Pass {
 		RESERVOIR_RESET,
 		RESET,
+		PURGE,
 		REPROJECT,
 		BIN_CACHED,
 		SELECT,
 		PATCH,
+		COMPACT_PROBES,
+		GATHER_PROBES,
 		PREPARE,
 		TRACE,
 		ALLOCATE,
@@ -68,8 +74,7 @@ private:
 		POPULATE,
 		ALLOCATE_SECONDARY,
 		REGISTER_SECONDARY,
-		LIGHT_BOUNDS_RESET,
-		LIGHT_BOUNDS,
+		LIGHT_GRID_DISPATCH,
 		LIGHT_GRID,
 		SHADE_HITS,
 		UPDATE,
@@ -86,12 +91,13 @@ private:
 		INDIRECT_MIP3,
 		SHADE_INDIRECT_HITS,
 		RESOLVE,
-		ORDER_CACHED,
 		STORE_CACHED,
+		ORDER_CACHED,
+		MASK,
 		FILTER_X,
 		FILTER_Y,
 		PROJECT,
-		MASK,
+		NEAR_FIELD,
 		INTERPOLATE,
 		TEMPORAL,
 		BLUR_X,
@@ -106,6 +112,7 @@ private:
 		REFLECTION_LAST,
 		REFLECTION_TEMPORAL,
 		REFLECTION_OUTPUT,
+		VALIDATE_SOURCE,
 		PASS_COUNT
 	};
 	struct PushConstant {
@@ -122,6 +129,7 @@ private:
 	};
 	struct FrameUniform {
 		float previous_view_projection[16];
+		float previous_inverse_view_projection[16];
 		float previous_eye[4];
 		float previous_forward[4];
 		float view_projection[16];
@@ -134,33 +142,35 @@ private:
 		float ambient[4]; // remaining ambient color, replace native ambient
 		float reflections[4]; // sample stride, probe roughness threshold, filter iterations, unused
 		uint32_t cache_config[4]; // bucket count, tiles/bucket, reserved
-		float glossy[4]; // low roughness threshold, firefly low/high thresholds, unused
-		uint32_t motion[4]; // swept bound count, all-hit updates, reserved, previous light count
+		float near_field[4]; // projected radius, native projection axis signs, auto exposure enabled
+		float glossy[4]; // low roughness threshold, firefly low/high thresholds, exposure scale
+		uint32_t motion[4]; // swept bound count, all-hit updates, diffuse feedback, reserved
 		uint32_t emitters[4]; // emitter count/capacity, appended glossy queue offset, compact glossy dispatch
 	};
 	static_assert(sizeof(PushConstant) == 128);
-	static_assert(sizeof(FrameUniform) == 384);
+	static_assert(sizeof(FrameUniform) == 464);
 	struct ViewData : public RenderBufferCustomDataRD {
 		GDCLASS(ViewData, RenderBufferCustomDataRD);
 
 	public:
 		RID frame_uniform;
+		RID feedback_lights;
+		uint32_t feedback_light_bytes = 0;
 		RID probes[2];
 		RID radiance[2];
 		RID pixels[2];
 		RID rays, keys, cache[2], owners, scratch;
-		RID spawn, queues, probe_mask;
+		RID spawn, queues, probe_mask, work;
 		RID cached_probes, cached_state, cached_order[2];
 		RID light_reservoirs[2];
 		RID light_grid;
-		LocalVector<RaytracingGIScene::EmissiveRange> emissive_ranges;
 		uint32_t previous_analytic_count = 0;
-		uint32_t previous_light_count = 0;
-		LocalVector<uint64_t> light_identities;
-		void update_light_remap(const RaytracingGIScene &p_scene);
+		uint32_t previous_emitter_count = 0;
+		uint32_t previous_environment_count = 0;
+		bool update_light_order(const RaytracingGIScene &p_scene, uint32_t p_environment_count);
 		bool ensure_light_grid();
 		RID indirect_cache[2], secondary_rays;
-		RID hit_samples;
+		RID hit_samples, direct_updates, source_validation;
 		RID reflection_samples, reflection_history[2];
 		uint32_t reflection_stride = 0;
 		float reflection_roughness = 0;
@@ -186,12 +196,24 @@ private:
 		float previous_exposure = 0;
 		Projection previous_view_projection;
 		Transform3D previous_camera;
+		RID environment_cube;
+		RID environment_source;
+		Vector<RID> environment_mips;
+		uint64_t environment_revision = 0;
+		float environment_border = 0;
 		void configure(RenderSceneBuffersRD *p_buffers) override { free_data(); }
 		void free_data() override;
 		~ViewData() { free_data(); }
 	};
 	AmdGiShaderRD shader;
+	AmdGiEnvironmentShaderRD environment_shader;
+	RID environment_version;
+	RID environment_pipelines[2];
+	RID prepare_environment(ViewData &p_data, const Environment &p_environment);
 	RID version;
+	const RaytracingGIScene *material_scene = nullptr;
+	uint64_t material_revision = 0;
+	bool prepare_material_pipelines(const RaytracingGIScene &p_scene);
 	RID blue_noise;
 	uint32_t random_seed_count = 0;
 	void ensure_sampling_data(const Size2i &p_size);
@@ -201,6 +223,8 @@ public:
 	static bool is_enabled();
 	static bool is_supported();
 	static void clear(const Ref<RenderSceneBuffersRD> &p_buffers);
+	void prepare_feedback_lights(const Ref<RenderSceneBuffersRD> &p_buffers, const PagedArray<RID> &p_lights);
+	RID get_feedback_lights(const Ref<RenderSceneBuffersRD> &p_buffers) const;
 	bool render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffersRD> &p_buffers, RID p_normals, const Projection &p_projection, const Transform3D &p_camera, float p_exposure, const Environment &p_environment);
 	AMDGI();
 	~AMDGI();

@@ -1,0 +1,458 @@
+/**************************************************************************/
+/*  rt_material_source.cpp                                                */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#include "rt_material_source.h"
+
+#include "servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h"
+#include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
+#include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
+#include "servers/rendering/rendering_server.h"
+
+using namespace RendererRD;
+
+String RaytracingMaterialSource::texture_expression(void *p_context, const StringName &p_name, const String &p_index) {
+	const TextureContext &context = *static_cast<TextureContext *>(p_context);
+	ERR_FAIL_COND_V(!context.arrays.has(p_name), String());
+	String index = itos(context.offsets[p_name]) + "u";
+	if (!p_index.is_empty()) {
+		index += " + uint(" + p_index + ")";
+	}
+	return context.arrays[p_name] + "[nonuniformEXT(GISourceIndices(gi_source_context.texture_address).data[" + index + "])]";
+}
+
+Error RaytracingMaterialSource::compile(const ShaderCompiler &p_native_compiler, const SpatialShader &p_shader, uint32_t p_id, Shader &r_shader) {
+	ShaderCompiler::DefaultIdentifierActions defaults = p_native_compiler.get_default_actions();
+	const String prefix = "rtm" + itos(p_id) + "_";
+	const String uniform_type = "RTM" + itos(p_id) + "Uniforms";
+	defaults.identifier_prefix = prefix;
+	defaults.shared_stage_globals = true;
+	defaults.private_varyings = true;
+	defaults.base_uniform_string = uniform_type + "(gi_source_context.uniform_address).";
+	defaults.global_buffer_array_variable = "gi_global_uniforms.data";
+	defaults.instance_uniform_index_variable = "gi_source_context.info.z";
+	defaults.check_multiview_samplers = false;
+	defaults.renames["INSTANCE_ID"] = "int(gi_source_context.info.y)";
+	defaults.renames["VERTEX_ID"] = "int(gi_source_vertex_index)";
+	defaults.renames["TIME"] = "gi_source_frame.time";
+	defaults.renames["EXPOSURE"] = "gi_source_frame.exposure";
+	defaults.renames["MAIN_CAM_INV_VIEW_MATRIX"] = "inv_view_matrix";
+	defaults.renames["IN_SHADOW_PASS"] = "false";
+	defaults.renames["CAMERA_VISIBLE_LAYERS"] = "gi_source_frame.layer_mask";
+	defaults.renames["OUTPUT_IS_SRGB"] = "false";
+	defaults.renames["CLIP_SPACE_FAR"] = "0.0";
+	defaults.renames["FRAGCOORD"] = "gi_source_fragcoord";
+	defaults.renames["FRONT_FACING"] = "gi_source_front_face";
+	defaults.renames["DEPTH"] = "gi_source_depth";
+	defaults.renames["IS_MULTIVIEW"] = "false";
+	defaults.renames["VIEW_INDEX"] = "0";
+	// There are no raster derivatives at a secondary hit. Ordinary implicit
+	// samples use the caller's explicit reference texture/cone LOD; explicit
+	// textureLod/textureGrad calls remain authored shader operations.
+	defaults.implicit_texture_lod = "gi_source_lod";
+	defaults.implicit_texture_lod_expression = [](ShaderLanguage::DataType p_type, const String &p_sampler) -> String {
+		if (p_type == ShaderLanguage::TYPE_SAMPLER2D || p_type == ShaderLanguage::TYPE_ISAMPLER2D || p_type == ShaderLanguage::TYPE_USAMPLER2D) {
+			return "gi_source_texture_lod(vec2(textureSize(" + p_sampler + ", 0)))";
+		}
+		return "gi_source_lod";
+	};
+	defaults.discard_code = "gi_source_discarded = true;";
+	TextureContext context;
+	uint32_t texture_count = 0;
+	for (const ShaderCompiler::GeneratedCode::Texture &texture : p_shader.texture_uniforms) {
+		context.arrays[texture.name] = "gi_source_" + ShaderLanguage::get_datatype_name(texture.type);
+		context.offsets[texture.name] = texture_count;
+		texture_count += MAX(texture.array_size, 1);
+	}
+	defaults.texture_uniform_expression = texture_expression;
+	defaults.texture_uniform_userdata = &context;
+	ShaderCompiler compiler;
+	compiler.initialize(defaults);
+	ShaderCompiler::IdentifierActions actions;
+	actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_VERTEX;
+	actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_FRAGMENT;
+	bool uses_derivatives = false;
+	for (const char *name : { "dFdx", "dFdy", "fwidth", "dFdxCoarse", "dFdyCoarse", "fwidthCoarse", "dFdxFine", "dFdyFine", "fwidthFine", "textureQueryLod" }) {
+		actions.usage_flag_pointers[name] = &uses_derivatives;
+	}
+	HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> uniforms;
+	actions.uniforms = &uniforms;
+	ShaderCompiler::GeneratedCode generated;
+	Error error = compiler.compile(RSE::SHADER_SPATIAL, p_shader.code, &actions, p_shader.path, generated);
+	ERR_FAIL_COND_V(error != OK, error);
+	if (uses_derivatives) {
+		WARN_PRINT_ONCE(vformat("AMD GI source shader requires raster derivatives (%s); its surfaces are omitted from transport.", p_shader.path));
+		return ERR_UNAVAILABLE;
+	}
+	ERR_FAIL_COND_V_MSG(generated.uniform_total_size != p_shader.ubo_size || generated.uniform_offsets != p_shader.ubo_offsets, ERR_BUG, "RT source-material uniforms must match the native material buffer layout.");
+
+	String source;
+	if (generated.uniform_total_size != 0) {
+		source += "layout(buffer_reference, std140, buffer_reference_align=16) readonly buffer " + uniform_type + " {\n" + generated.uniforms + "};\n";
+	}
+	source += generated.stage_globals[ShaderCompiler::STAGE_VERTEX];
+	for (const char *stage : { "vertex", "fragment" }) {
+		source += "void " + prefix + stage + "() {\n";
+		if (generated.code.has(stage)) {
+			source += generated.code[stage];
+		}
+		source += "}\n";
+	}
+	source += "GISourceMaterial " + prefix + "evaluate(uint instance, uint primitive, vec2 barycentrics, bool front_face) {\n";
+	for (const auto &varying : generated.private_varyings) {
+		source += ShaderLanguage::get_datatype_name(varying.type) + " accumulated_" + varying.name;
+		if (varying.array_size > 0) {
+			source += "[" + itos(varying.array_size) + "]";
+		}
+		source += ";\n";
+	}
+	source += "GIVertex interpolated;\nvec2 triangle_uv[3];\n";
+	source += "uvec3 indices = gi_triangle_indices(instance, primitive);\n";
+	source += "vec3 weights = vec3(1.0-barycentrics.x-barycentrics.y, barycentrics);\n";
+	source += "gi_source_begin(instance, front_face);\n";
+	// Vertex texture reads have no raster footprint. Do not let a previous
+	// triangle's emitter area, or the fragment cone LOD, leak into them.
+	source += "bool emitter_filtered=gi_source_filtered;\nfloat fragment_lod=gi_source_lod;\ngi_source_filtered=false;\ngi_source_lod=0.0;\n";
+	source += "for (uint corner=0u; corner<3u; corner++) {\n";
+	source += "gi_source_vertex_begin(instance, indices[corner]);\n";
+	// Capsaicin's light builder packs each emitter UV into half2 before
+	// proposal/target interpolation. Ordinary material hits keep source UVs.
+	source += prefix + "vertex();\nif (emitter_filtered) uv_interp = unpackHalf2x16(packHalf2x16(uv_interp));\ntriangle_uv[corner] = uv_interp;\n";
+	source += "gi_source_vertex_accumulate(interpolated, weights[corner], corner==0u);\n";
+	for (const auto &varying : generated.private_varyings) {
+		for (int i = 0; i < MAX(varying.array_size, 1); i++) {
+			String element = varying.name + (varying.array_size > 0 ? "[" + itos(i) + "]" : String());
+			if (varying.flat) {
+				source += "if (corner==0u) accumulated_" + element + " = " + element + ";\n";
+			} else {
+				source += "if (corner==0u) accumulated_" + element + " = " + element + " * weights[corner]; else accumulated_" + element + " += " + element + " * weights[corner];\n";
+			}
+		}
+	}
+	source += "}\n";
+	source += "vec2 edge_uv0=triangle_uv[1]-triangle_uv[0], edge_uv1=triangle_uv[2]-triangle_uv[0];\ngi_source_uv_area=abs(edge_uv0.x*edge_uv1.y-edge_uv1.x*edge_uv0.y);\ngi_source_filtered=emitter_filtered;\ngi_source_lod=fragment_lod;\ngi_source_fragment_begin(interpolated);\n";
+	for (const auto &varying : generated.private_varyings) {
+		source += varying.name + " = accumulated_" + varying.name + ";\n";
+	}
+	source += prefix + "fragment();\n";
+	source += "return gi_source_fragment_end(" + String(p_shader.uses_normal_map ? "true" : "false") + ");\n}\n";
+	r_shader.id = p_id;
+	r_shader.source = source;
+	r_shader.textures = generated.texture_uniforms;
+	r_shader.texture_count = texture_count;
+	return OK;
+}
+
+void RaytracingMaterialSource::begin_frame() {
+	frame++;
+	contexts.clear();
+	for (TextureArray &array : texture_arrays) {
+		array.textures.clear();
+		array.indices.clear();
+	}
+	MaterialStorage::get_singleton()->_update_queued_materials();
+}
+
+int RaytracingMaterialSource::texture_array(ShaderLanguage::DataType p_type, RID p_fallback) {
+	for (int i = 0; i < texture_arrays.size(); i++) {
+		if (texture_arrays[i].type == p_type) {
+			return i;
+		}
+	}
+	TextureArray array;
+	array.type = p_type;
+	array.fallback = p_fallback;
+	texture_arrays.push_back(array);
+	shader_revision++;
+	return texture_arrays.size() - 1;
+}
+
+bool RaytracingMaterialSource::update_buffer(RID &r_buffer, Vector<uint8_t> &r_previous, const Vector<uint8_t> &p_bytes) {
+	if (r_buffer.is_valid() && r_previous == p_bytes) {
+		return true;
+	}
+	RD *rd = RD::get_singleton();
+	if (r_buffer.is_null() || r_previous.size() != p_bytes.size()) {
+		if (r_buffer.is_valid()) {
+			rd->free_rid(r_buffer);
+		}
+		r_buffer = rd->storage_buffer_create(MAX(p_bytes.size(), 16), {}, 0, RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
+	}
+	ERR_FAIL_COND_V(r_buffer.is_null(), false);
+	if (!p_bytes.is_empty()) {
+		rd->buffer_update(r_buffer, 0, p_bytes.size(), p_bytes.ptr());
+	}
+	r_previous = p_bytes;
+	return true;
+}
+
+Error RaytracingMaterialSource::add_surface(RID p_material, const RendererSceneRender::RaytracingGIInstance &p_instance, uint32_t p_surface, const Color &p_color, const Color &p_custom) {
+	RD *rd = RD::get_singleton();
+	MaterialStorage *storage = MaterialStorage::get_singleton();
+	auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(storage->material_get_data(p_material, MaterialStorage::SHADER_TYPE_3D));
+	Context context;
+	if (data && data->shader_data) {
+		Material &material = materials[p_material];
+		if (material.frame != frame) {
+			const SpatialShader &native = *data->shader_data;
+			const uint32_t *id = shader_ids.getptr(native.code);
+			if (!id) {
+				Shader compiled;
+				Error error = compile(RendererSceneRenderImplementation::RenderForwardClustered::get_singleton()->get_material_shader_compiler(), native, shaders.size() + 1, compiled);
+				if (error == ERR_UNAVAILABLE) {
+					shader_ids.insert(native.code, UINT32_MAX);
+					return error;
+				}
+				ERR_FAIL_COND_V(error != OK, error);
+				shaders.push_back(compiled);
+				shader_ids.insert(native.code, compiled.id);
+				id = shader_ids.getptr(native.code);
+				shader_revision++;
+			}
+			if (*id == UINT32_MAX) {
+				return ERR_UNAVAILABLE;
+			}
+			material.shader = *id;
+			ERR_FAIL_COND_V(!update_buffer(material.uniforms, material.uniform_bytes, data->get_uniform_data(true)), ERR_CANT_CREATE);
+			Vector<uint32_t> indices;
+			const Vector<RID> &textures = data->get_texture_data();
+			uint32_t index = 0;
+			for (const auto &texture : native.texture_uniforms) {
+				const int array_index = texture_array(texture.type, data->get_default_texture_id(texture.type, texture.hint));
+				TextureArray &array = texture_arrays.write[array_index];
+				for (int element = 0; element < MAX(texture.array_size, 1); element++) {
+					ERR_FAIL_COND_V(index >= uint32_t(textures.size()), ERR_BUG);
+					RID texture_rid = textures[index++];
+					uint32_t *slot = array.indices.getptr(texture_rid);
+					if (!slot) {
+						array.indices.insert(texture_rid, array.textures.size());
+						array.textures.push_back(texture_rid);
+						slot = array.indices.getptr(texture_rid);
+					}
+					indices.push_back(*slot);
+				}
+			}
+			if (material.indices.is_null() || material.texture_indices != indices) {
+				if (material.indices.is_valid()) {
+					rd->free_rid(material.indices);
+				}
+				material.indices = rd->storage_buffer_create(MAX(indices.size() * int(sizeof(uint32_t)), 16), {}, 0, RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
+				ERR_FAIL_COND_V(material.indices.is_null(), ERR_CANT_CREATE);
+				if (!indices.is_empty()) {
+					rd->buffer_update(material.indices, 0, indices.size() * sizeof(uint32_t), indices.ptr());
+				}
+				material.texture_indices = indices;
+			}
+			material.frame = frame;
+		}
+		context.uniform_address = rd->buffer_get_device_address(material.uniforms);
+		context.texture_address = rd->buffer_get_device_address(material.indices);
+		context.info[0] = material.shader;
+		context.info[3] = data->shader_data->uses_world_coordinates ? 4u : 0u;
+	}
+	MeshStorage *meshes = MeshStorage::get_singleton();
+	void *surface = meshes->mesh_get_surface(p_instance.mesh, p_surface);
+	const uint64_t format = meshes->mesh_surface_get_format(surface);
+	const uint32_t count = meshes->mesh_surface_get_vertex_count(surface);
+	RenderingServer *server = RenderingServer::get_singleton();
+	const uint32_t stride = server->mesh_surface_get_format_attribute_stride(format, count);
+	const RID source = meshes->mesh_surface_get_attribute_buffer_rd_rid(p_instance.mesh, p_surface);
+	if (source.is_valid() && stride > 0) {
+		// Attribute buffers predate the optional GI consumer and need not have
+		// a device address. Copy only on a source revision, entirely on GPU.
+		Attributes &copy = attributes[source];
+		const uint64_t revision = meshes->mesh_surface_get_data_revision(surface);
+		if (copy.buffer.is_null()) {
+			copy.buffer = rd->storage_buffer_create(stride * count, {}, 0, RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
+			ERR_FAIL_COND_V(copy.buffer.is_null(), ERR_CANT_CREATE);
+			copy.revision = UINT64_MAX;
+		}
+		if (copy.revision != revision) {
+			rd->buffer_copy(source, copy.buffer, 0, 0, stride * count);
+			copy.revision = revision;
+		}
+		copy.frame = frame;
+		context.attribute_address = rd->buffer_get_device_address(copy.buffer);
+		context.attributes[3] = stride / sizeof(uint32_t);
+		const RSE::ArrayType builtin[] = { RSE::ARRAY_TEX_UV, RSE::ARRAY_TEX_UV2, RSE::ARRAY_COLOR };
+		for (uint32_t i = 0; i < 3; i++) {
+			if (format & (uint64_t(1) << builtin[i])) {
+				context.attributes[i] = server->mesh_surface_get_format_offset(format, count, builtin[i]) / sizeof(uint32_t);
+			}
+		}
+		for (uint32_t i = 0; i < 4; i++) {
+			if (format & (uint64_t(1) << (RSE::ARRAY_CUSTOM0 + i))) {
+				context.custom_offsets[i] = server->mesh_surface_get_format_offset(format, count, RSE::ARRAY_CUSTOM0 + i) / sizeof(uint32_t);
+				context.custom_formats[i] = (format >> (RSE::ARRAY_FORMAT_CUSTOM0_SHIFT + i * RSE::ARRAY_FORMAT_CUSTOM_BITS)) & RSE::ARRAY_FORMAT_CUSTOM_MASK;
+			}
+		}
+	}
+	const Vector4 uv_scale = meshes->mesh_surface_get_uv_scale(surface);
+	for (uint32_t i = 0; i < 4; i++) {
+		context.uv_scale[i] = uv_scale[i];
+		context.color[i] = p_color[i];
+		context.custom[i] = p_custom[i];
+	}
+	context.info[1] = p_instance.element;
+	context.info[2] = uint32_t(p_instance.uniforms_offset);
+	context.info[3] |= (format & RSE::ARRAY_FORMAT_TANGENT) ? 1u : 0u;
+	context.info[3] |= (format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES) ? 2u : 0u;
+	contexts.push_back(context);
+	return OK;
+}
+
+bool RaytracingMaterialSource::end_frame() {
+	RD *rd = RD::get_singleton();
+	for (TextureArray &array : texture_arrays) {
+		if (array.textures.size() > int(array.capacity)) {
+			array.capacity = Math::next_power_of_2(uint32_t(array.textures.size()));
+			shader_revision++;
+		}
+	}
+	if (context_buffer.is_null() || contexts.size() > context_capacity) {
+		if (context_buffer.is_valid()) {
+			rd->free_rid(context_buffer);
+		}
+		context_capacity = Math::next_power_of_2(MAX(contexts.size(), 1u));
+		context_buffer = rd->storage_buffer_create(16 + context_capacity * sizeof(Context));
+	}
+	ERR_FAIL_COND_V(context_buffer.is_null(), false);
+	float header[4] = { float(RendererCompositorRD::get_singleton()->get_total_time()), float(contexts.size()), 0, 0 };
+	rd->buffer_update(context_buffer, 0, sizeof(header), header);
+	if (!contexts.is_empty()) {
+		rd->buffer_update(context_buffer, sizeof(header), contexts.size() * sizeof(Context), contexts.ptr());
+	}
+	// Remove resources once their source is no longer in the collected scene.
+	LocalVector<RID> expired;
+	for (const auto &entry : materials) {
+		if (entry.value.frame != frame) {
+			if (entry.value.uniforms.is_valid()) {
+				rd->free_rid(entry.value.uniforms);
+			}
+			if (entry.value.indices.is_valid()) {
+				rd->free_rid(entry.value.indices);
+			}
+			expired.push_back(entry.key);
+		}
+	}
+	for (RID rid : expired) {
+		materials.erase(rid);
+	}
+	expired.clear();
+	for (const auto &entry : attributes) {
+		if (entry.value.frame != frame) {
+			rd->free_rid(entry.value.buffer);
+			expired.push_back(entry.key);
+		}
+	}
+	for (RID rid : expired) {
+		attributes.erase(rid);
+	}
+	return true;
+}
+
+String RaytracingMaterialSource::get_shader_source() const {
+	String source;
+	for (int i = 0; i < texture_arrays.size(); i++) {
+		const TextureArray &array = texture_arrays[i];
+		String type = ShaderLanguage::get_datatype_name(array.type);
+		source += "layout(set=1,binding=" + itos(14 + i) + ") uniform " + type.replace("sampler", "texture") + " gi_source_" + type + "[" + itos(array.capacity) + "];\n";
+	}
+	for (const Shader &compiled : shaders) {
+		source += compiled.source;
+	}
+	source += "GISourceMaterial gi_source_material_filtered(uint instance, uint primitive, vec2 barycentrics, bool front_face, float lod, bool filtered) {\n gi_source_lod = lod;\n gi_source_filtered = filtered;\n switch (gi_sources.data[instance].info.x) {\n";
+	for (const Shader &compiled : shaders) {
+		source += "case " + itos(compiled.id) + "u: return rtm" + itos(compiled.id) + "_evaluate(instance, primitive, barycentrics, front_face);\n";
+	}
+	source += "default: return GISourceMaterial(vec4(1), vec4(0), vec4(1,1,0,0));\n }\n}\n";
+	source += "GISourceMaterial gi_source_material(uint instance, uint primitive, vec2 barycentrics, bool front_face, float lod) { return gi_source_material_filtered(instance, primitive, barycentrics, front_face, lod, false); }\n";
+	return source;
+}
+
+void RaytracingMaterialSource::append_uniforms(LocalVector<RD::Uniform> &r_uniforms) const {
+	MaterialStorage::get_singleton()->samplers_rd_get_default().append_uniforms(r_uniforms, 2);
+	RD::Uniform contexts_uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, context_buffer);
+	r_uniforms.push_back(contexts_uniform);
+	r_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, MaterialStorage::get_singleton()->global_shader_uniforms_get_storage_buffer()));
+	for (int i = 0; i < texture_arrays.size(); i++) {
+		const TextureArray &array = texture_arrays[i];
+		RD::Uniform textures(RD::UNIFORM_TYPE_TEXTURE, 14 + i, Vector<RID>());
+		for (uint32_t index = 0; index < array.capacity; index++) {
+			textures.append_id(index < uint32_t(array.textures.size()) ? array.textures[index] : array.fallback);
+		}
+		r_uniforms.push_back(textures);
+	}
+}
+
+void RaytracingMaterialSource::add_buffer_reads(RD::ComputeListID p_list) const {
+	RD *rd = RD::get_singleton();
+	for (const auto &entry : materials) {
+		if (entry.value.frame == frame) {
+			rd->compute_list_add_buffer_read(p_list, entry.value.uniforms);
+			rd->compute_list_add_buffer_read(p_list, entry.value.indices);
+		}
+	}
+	for (const auto &entry : attributes) {
+		if (entry.value.frame == frame) {
+			rd->compute_list_add_buffer_read(p_list, entry.value.buffer);
+		}
+	}
+}
+
+void RaytracingMaterialSource::clear() {
+	RD *rd = RD::get_singleton();
+	for (const auto &entry : materials) {
+		if (entry.value.uniforms.is_valid()) {
+			rd->free_rid(entry.value.uniforms);
+		}
+		if (entry.value.indices.is_valid()) {
+			rd->free_rid(entry.value.indices);
+		}
+	}
+	for (const auto &entry : attributes) {
+		rd->free_rid(entry.value.buffer);
+	}
+	if (context_buffer.is_valid()) {
+		rd->free_rid(context_buffer);
+	}
+	context_buffer = RID();
+	context_capacity = 0;
+	materials.clear();
+	attributes.clear();
+	texture_arrays.clear();
+	contexts.clear();
+	shaders.clear();
+	shader_ids.clear();
+	shader_revision++;
+}
+
+RaytracingMaterialSource::~RaytracingMaterialSource() {
+	clear();
+}

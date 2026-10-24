@@ -45,7 +45,7 @@ void main() {
 			float metallic = textureLod(orm_atlas, uv, 0.0).b;
 			vec3 diffuse = albedo * (1.0 - metallic);
 			vec3 outgoing = textureLod(emission_atlas, uv, 0.0).rgb;
-			outgoing += diffuse * direct_irradiance(position, hit_normal, hits.data[instance].z) / PI;
+			outgoing += diffuse * direct_irradiance(position, hit_normal, hits.data[instance].material.z) / PI;
 			radiance += throughput * outgoing;
 			throughput *= diffuse;
 			if (max(throughput.r, max(throughput.g, throughput.b)) < 0.00001) {

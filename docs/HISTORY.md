@@ -6,6 +6,57 @@ alone — several of these already were, and failed. Not here: using a feature (
 one works (`docs/internals/`), running the harnesses (`docs/VALIDATION.md`), diagnosing a symptom
 (`docs/TROUBLESHOOTING.md`).
 
+## Consequential AMD GI correction work — 2026-10-23
+
+`[in progress, not a release]` Restored probe filter/LRU/units/default near-field SSGI,
+reference light-list/reservoir behavior, reflection feedback and precision, primary
+normal/roughness contracts, compact work dispatch and object-space alpha hashing
+using shared triangle buffers. [The live record](AMD_GI_CONSEQUENTIAL_CORRECTIONS.md)
+accounts for every finding and records remaining consequential gaps. Native authored
+lighting, localized normal transforms, both multibounce ownership fixes, native emissive classification, flat light-grid axes, distance-only overflow handling and invalid old-light rejection have explicit approval. The firefly input snapshot was withdrawn; in-place AMD cleanup is restored.
+
+Quarter-budget cache/hit/multibounce integration and opacity endpoints pass on software
+Vulkan. Manual/auto exposure integration passes with restoration MAE 0.005276 and no
+history reset beyond frame zero. The emitter fixture passes reference light-settings
+transitions and its unchanged image thresholds. The final combined sky and multi-light controls now pass; the retained sky residual at 64 frames is consistent with source tile-update aging and reaches zero at 128/256. No history shortcut was added. The reflection regression also passes at 641×359, including emitter motion/return, resolution variants and buffer release. No Windows build or target-hardware result
+is represented by this checkpoint.
+
+## Complete AMD GI source comparison — 2026-10-23
+
+`[source comparison]` Compared Capsaicin `914b91596cd119eda85fbc1d3c7ee6ac391b1452`
+(v1.3 package, GI-1.2 renderer) against fork `d932f4a` plus the preexisting local
+follow-up. [The full report](AMD_GI_FULL_COMPARISON.md) and
+[coverage appendix](AMD_GI_COMPARISON_COVERAGE.md) account for all 70 main shader
+functions, 51 fork passes, 38 GI options, 19 dependency options and 29 fork settings.
+The source comparison is complete; the requested implementation is not.
+
+Confirmed differences include the never-incremented center-reuse counter, altered
+probe filter/LRU, SH normalization, missing default near-field SSGI/bent-cone path,
+disabled default reflection-hit feedback, rough-reflection scaling/input, coarse
+hit materials, and reservoir/precision/host-contract differences. Independent
+checks match all 16,384 packed blue-noise words; the SH scale comparison gives
+pi/4 for identical inputs before rounding, not a measured frame-brightness ratio.
+No renderer code, build or preview was changed during this audit. No deviation was
+approved, and the earlier rapid-emitter/sky failures remain open.
+
+## AMD GI environment cones and integrated validation — 2026-10-23
+
+`[shadow_validation]` The integrated d932f4a revision passes diffuse, reservoir,
+multibounce, reflection, FSR2, native material and controlled gameplay-history
+checks. It also **fails** the rapid-emitter removal and pulse-response quality
+fixture. Removal residual is 2.42% at 32 frames against a 2% limit; short off/on
+pulses blur together. The limits were not lowered and this is not a completed
+baseline. Crossroads quarter/one PNGs and provenance are in the workspace preview.
+The Windows clang editor artifact for d932f4a was built successfully in Actions.
+
+The follow-up restores Capsaicin's environment mip/cone sampling and zero-weight
+storage for occluded reservoirs. Native octahedral skies convert to an ordinary
+cubemap mip chain only while GI is enabled; static revisions reuse it. An independent
+4,096-direction GPU check measures 0.002671 maximum channel error against an
+analytic direction texture and 0.000932 maximum mip-mean error, including 64x64
+source interpolation and half rounding. The 4,096-case equation oracle, now also
+covering cone LOD, has maximum error zero. These are software-Vulkan measurements.
+
 ## AMD GI GridStream, cache and probe corrections — 2026-10-23
 
 Work after `848af68` replaces proposal trees with reference GridStream, restores
@@ -1384,3 +1435,21 @@ Recorded as absences, so nobody quotes a figure that does not exist.
 | The 128-lights-per-tile overflow's effect on denoiser history | Asserted, never measured. |
 | The checkerboard reconstruction tables | Measured, but no committed scorer reproduces them. See the caveat in the occlusion section. |
 | Anything temporal, from a render | Both harnesses capture settled still frames with the denoiser off, deliberately. `denoiser_sim.py` covers the temporal pass by simulation only. `docs/VALIDATION.md` has this blind spot and the compressed-geometry one in full. |
+
+### 2026-10-23 — approved source-normal correction (local, unshipped)
+
+The owner approved the authored-light/material integration boundary and conditionally approved correcting the pinned AMD transform errors. Source tracing and an extracted-expression counterexample establish those errors independently of the screen/world split. AMD GI now reads native source/pose vertex normals and separate triangle geometry normals, with one world transform and distinct sampling/cache-shading roles. The 36-case GPU decoder check passes (maximum vector error 0.00005052). Existing deformation image thresholds pass for four/eight-weight skeletons, blend shapes and FSR2 pose-buffer swapping; GI MAE versus baked geometry is 0.001191/0.002384. Quarter-budget integration diagnostics pass. A separate per-frame cache-tile claim fixes the duplicate-active-cell race exposed by the deformation test. This is software-Vulkan correctness evidence; no new Windows artifact, hardware timing or full AMD equivalence is claimed. Material fidelity and other consequential findings remain unfinished.
+
+## Consequential AMD source/material follow-up
+
+The native material GPU oracle exposed and corrected compressed UV decoding when
+Godot's UV scale is zero (normalized coordinates need no rescaling). The corrected
+fixture passes 256 samples with maximum component error 0.00000279, including
+source textures/LOD, uniforms, vertex attributes and actual alpha/discard rays.
+The default ray range now matches AMD's 1e9, with owner-approved distance-only
+storage/accumulation handling. The owner approved native emissive classification,
+flat grid directions, multibounce index/weight corrections and rejecting references
+to deleted lights. The immutable firefly snapshot proposal was withdrawn; cleanup
+returns to AMD's in-place method. No hardware performance gain is claimed.
+Detailed run evidence and outstanding qualification live in
+[AMD_GI_CONSEQUENTIAL_CORRECTIONS.md](AMD_GI_CONSEQUENTIAL_CORRECTIONS.md).

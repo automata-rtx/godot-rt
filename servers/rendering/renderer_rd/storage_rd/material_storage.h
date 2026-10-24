@@ -105,6 +105,8 @@ public:
 		//to be used internally by update_parameters, in the most common configuration of material parameters
 		bool update_parameters_uniform_set(const HashMap<StringName, Variant> &p_parameters, bool p_uniform_dirty, bool p_textures_dirty, const HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> &p_uniforms, const uint32_t *p_uniform_offsets, const Vector<ShaderCompiler::GeneratedCode::Texture> &p_texture_uniforms, const HashMap<StringName, HashMap<int, RID>> &p_default_texture_params, uint32_t p_ubo_size, RID &r_uniform_set, RID p_shader, uint32_t p_shader_uniform_set, bool p_use_linear_color, bool p_3d_material);
 		void free_parameters_uniform_set(RID p_uniform_set);
+		const Vector<uint8_t> &get_uniform_data(bool p_linear_color) const { return ubo_data[p_linear_color]; }
+		const Vector<RID> &get_texture_data() const { return texture_cache; }
 
 	private:
 		friend class MaterialStorage;
@@ -116,8 +118,8 @@ public:
 		HashMap<StringName, uint64_t> used_global_textures;
 
 		//internally by update_parameters_uniform_set
-		Vector<uint8_t> ubo_data[2]; // 0: linear buffer; 1: sRGB buffer.
-		RID uniform_buffer[2]; // 0: linear buffer; 1: sRGB buffer.
+		Vector<uint8_t> ubo_data[2]; // Indexed by p_use_linear_color: 0: sRGB; 1: linear.
+		RID uniform_buffer[2]; // Indexed by p_use_linear_color: 0: sRGB; 1: linear.
 		Vector<RID> texture_cache;
 	};
 

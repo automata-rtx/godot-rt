@@ -1919,8 +1919,8 @@ RID RenderingDevice::texture_create_shared_from_slice(const TextureView &p_view,
 	ERR_FAIL_COND_V_MSG(p_slice_type == TEXTURE_SLICE_3D && src_texture->type != TEXTURE_TYPE_3D, RID(),
 			"Can only create a 3D slice from a 3D texture");
 
-	ERR_FAIL_COND_V_MSG(p_slice_type == TEXTURE_SLICE_2D_ARRAY && (src_texture->type != TEXTURE_TYPE_2D_ARRAY), RID(),
-			"Can only create an array slice from a 2D array mipmap");
+	ERR_FAIL_COND_V_MSG(p_slice_type == TEXTURE_SLICE_2D_ARRAY && src_texture->type != TEXTURE_TYPE_2D_ARRAY && src_texture->type != TEXTURE_TYPE_CUBE && src_texture->type != TEXTURE_TYPE_CUBE_ARRAY, RID(),
+			"Can only create an array slice from a 2D array or cubemap mipmap");
 
 	// Create view.
 
@@ -1954,6 +1954,8 @@ RID RenderingDevice::texture_create_shared_from_slice(const TextureView &p_view,
 		texture.type = TEXTURE_TYPE_2D;
 	} else if (p_slice_type == TEXTURE_SLICE_3D) {
 		texture.type = TEXTURE_TYPE_3D;
+	} else if (p_slice_type == TEXTURE_SLICE_2D_ARRAY) {
+		texture.type = TEXTURE_TYPE_2D_ARRAY;
 	}
 
 	RDD::TextureView tv;
@@ -7138,6 +7140,20 @@ void RenderingDevice::compute_list_dispatch_indirect(ComputeListID p_list, RID p
 	}
 
 	_check_transfer_worker_buffer(buffer);
+}
+
+void RenderingDevice::compute_list_add_buffer_read(ComputeListID p_list, RID p_buffer) {
+	ERR_RENDER_THREAD_GUARD();
+	ERR_FAIL_COND(p_list != ID_TYPE_COMPUTE_LIST || !compute_list.active);
+	Buffer *buffer = _get_buffer_from_owner(p_buffer);
+	ERR_FAIL_NULL(buffer);
+	ERR_FAIL_COND(!buffer->usage.has_flag(RDD::BUFFER_USAGE_DEVICE_ADDRESS_BIT));
+	_check_transfer_worker_buffer(buffer);
+	// Immutable buffers need no tracker. A later mutation creates one and
+	// inserts global synchronization, as for immutable descriptor-bound reads.
+	if (buffer->draw_tracker != nullptr) {
+		draw_graph.add_compute_list_usage(buffer->draw_tracker, RDG::RESOURCE_USAGE_STORAGE_BUFFER_READ);
+	}
 }
 
 void RenderingDevice::compute_list_add_barrier(ComputeListID p_list) {

@@ -73,9 +73,16 @@ def main():
     if compaction_error > 0.005:
         raise SystemExit("Ray compaction changed the reflection estimator")
     log = (directory / "run.log").read_text()
-    motion = log.split("stage reflections: emitter motion\n")[-1].split("stage reflections: emitter motion finished")[0]
-    if "AMD GI history reset:" in motion or motion.count("AMD GI local motion:") < 8:
-        raise SystemExit("Moving reflections must use local invalidation without global history resets")
+    start, end = "stage reflections: emitter motion\n", "stage reflections: emitter motion finished"
+    if log.count(start) != 1 or log.count(end) != 1:
+        raise SystemExit("Missing moving-emitter validation interval")
+    motion = log.split(start)[1].split(end)[0]
+    # AMD reprojects/rejects individual samples. The removed fork-specific swept
+    # boxes must not be required merely because they used to emit a diagnostic.
+    if "AMD GI history reset:" in motion or "AMD GI reset reasons:" in motion:
+        raise SystemExit("Moving reflections caused a global history reset")
+    if motion.count("AMD GI reflection validation:") < 8:
+        raise SystemExit("Moving-emitter interval did not exercise enough reflection frames")
     memory = {
         name: int(buffers)
         for name, buffers in re.findall(r"GI memory reflections_(\w+): textures=\d+ buffers=(\d+)", log)
@@ -83,7 +90,7 @@ def main():
     height, width = half.shape[:2]
     # Reference reconstruction traces at half resolution but accumulates history
     # at full resolution: one half-resolution sample buffer, two full histories.
-    expected = ((width + 1) // 2) * ((height + 1) // 2) * (80 + 4) + width * height * 80 * 2 + 16 - 48
+    expected = ((width + 1) // 2) * ((height + 1) // 2) * (64 + 4) + width * height * 64 * 2 + 16 - 48
     if memory["restored"] - memory["off_after"] != expected:
         raise SystemExit("Reflection buffers did not release on disable")
     checks = re.findall(r"AMD GI reflection validation: budget=(\d+) traced=(\d+) probes=(\d+)", log)

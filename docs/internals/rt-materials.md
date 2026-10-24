@@ -1,11 +1,41 @@
 # Raytraced GI material preparation
 
-This describes the native material-capture primitive shared by
-[AMD GI](../features/amd-gi.md) and the opt-in
-[transport validator](../features/rtgi-validation.md). It is independent of their
-lighting and denoising algorithms.
-Overall status and remaining work are in [../AMD_GI_IMPLEMENTATION.md](../AMD_GI_IMPLEMENTATION.md).
-Shared acceleration geometry is described in [rt-shadows.md](rt-shadows.md).
+AMD GI now evaluates native material source at triangle hits. The opt-in
+[transport validator](../features/rtgi-validation.md) retains the older capture
+primitive described below. These are distinct material paths sharing RT geometry.
+Current qualification and open boundaries are tracked in
+[the consequential correction record](../AMD_GI_CONSEQUENTIAL_CORRECTIONS.md).
+
+## AMD GI source evaluation
+
+`environment/rt_material_source.{h,cpp}` compiles the native Forward+ material's
+vertex and fragment programs into the GI compute shader. It reads native material,
+global and instance uniforms and native texture/sampler bindings. Source vertex
+attributes retain their native packed layout; GPU copies supply device addresses
+only when their source revision changes. No CPU mesh readback or triangle texture
+atlas is used by AMD GI. Vertex outputs and private varyings are interpolated at the
+hit barycentrics. Source geometry/shading normals remain separate and transform to
+world space once; screen shading retains native normal maps.
+
+Implicit 2D texture reads use point LOD for ordinary hits and AMD's triangle/cone
+footprint for emitter proposals and targets. Explicit authored LOD/gradient reads
+remain explicit. Post-vertex UV0 emitter coordinates round through half precision, matching AMD's light builder; native vertex implicit reads use mip zero independently of the fragment footprint. Non-UV0 or fragment-remapped emitter footprints remain an open adapter gap. Shader programs requiring raster derivatives are reported as
+unsupported; they are not replaced with zero derivatives. Unsupported surfaces
+are skipped individually, so they can leave geometry/material omissions; this
+is not support for those classes. Supported surfaces keep running.
+
+The source context is rebuilt from active scene inputs. Resource allocation and
+shader initialization remain behind the GI enable gate; disabling the consumer
+releases its source resources. `GODOT_AMD_GI_VALIDATE_SOURCE=1` adds a diagnostic
+pass/readback for known-value material tests; it has no resource or dispatch when
+unset. Shader compilation/first-use costs and target-hardware performance remain
+unqualified.
+
+## Legacy capture path
+
+The following sections describe the uncached transport validator and standalone
+material-bake diagnostic. Their atlas, tile-size and preparation-budget settings
+no longer control AMD GI material fidelity or readiness.
 
 ## Why a native material pass
 
@@ -186,7 +216,7 @@ required) instance/element context. Conservative shader input tracking permits
 identity-transform evaluation only for transform-independent materials without
 normal/tangent inputs or instance uniforms. Their captured normals are local;
 HitData.triangles bit 31 marks inverse-transpose transformation at a ray hit.
-World-dependent captures keep world normals. HitData remains 16 bytes.
+World-dependent captures keep world normals. The current shared HitData is 64 bytes: material/layer metadata, shared position/index buffer addresses, source-normal address/layout, and reserved padding. The uncached transport validator still uses captured normals. AMD GI reads source normals directly as described below.
 
 Atlas resize preserves existing layers before releasing the old textures, with
 both allocations briefly live. Lowering the budget invalidates addresses in removed
@@ -212,3 +242,11 @@ tradeoff, not a lower geometry LOD or a different diffuse ray budget. Captures w
 identical non-white instance colors can share when their other inputs are context
 independent; exact color joins the material-cache key. Changes in live tile size
 release/recapture the atlas and advance history revision.
+
+## AMD GI source hit normals
+
+AMD GI no longer reads its hit normal from the material atlas. `amd_gi_geometry_inc.glsl` reads the shared triangle indices/positions and native packed vertex normals through buffer device addresses. Normal/tangent packing, compressed axis-angle frames and the current skeleton/blend-shape output follow Forward+'s decoding. These GPU reads are declared to RenderingDevice for transfer/compute synchronization; there is no geometry readback in rendering.
+
+Local geometric normals use Godot's clockwise triangle winding; interpolated vertex normals remain distinct. Both use the inverse transpose exactly once, followed by hit-facing orientation. Reservoir/continuation shading uses vertex normals; selected-light cache shading and shadow-ray offset use geometric normals, with vertex normals retained for environment sampling. This implements the [approved correction of specific upstream transform errors](../AMD_GI_NORMAL_SPACE_INVESTIGATION.md). It does not add normal-map evaluation to AMD hit paths that omit it. The screen-space shading-normal path continues to include native normal mapping.
+
+RayHit is now 96 bytes to preserve both normals in full precision. Atlas albedo, alpha, roughness and emission remain a consequential fidelity limitation; source-normal access does not make that material representation reference-equivalent. Run `run.sh amd_gi_normals`, `run.sh amd_gi_deformation`, and the consequential/reflection regressions when changing this access path.

@@ -2,6 +2,7 @@
 """Check emission-only transport, live removal, and flicker without global resets."""
 
 import argparse
+import re
 from pathlib import Path
 
 import numpy as np
@@ -31,5 +32,13 @@ for cycle in range(4):
     assert off < on and on > 0.2 * sampled, "Emitter response fails during repeated toggles"
 log = (directory / "run.log").read_text()
 assert "EMITTER FINISHED" in log and "ERROR:" not in log and "GI is suppressed" not in log
-assert "AMD GI reset reasons:" not in log.split("EMITTER stage: flicker")[1]
-print("Explicit emitter transport, bounded removal tail, and flicker continuity pass at quarter rate.")
+# Capsaicin LightBuilder::run changes shader settings when the area-light
+# population crosses zero; GI1::render reinitializes on that event. This rig
+# removes the sole emitter, so eight toggle boundaries plus removal must reset.
+# It must not reset for a generic per-frame invalidation or configuration change.
+resets = re.findall(
+    r"AMD GI reset reasons: frame=\d+ invalid=(\w+) configuration=(\w+) light_settings=(\w+)",
+    log.split("EMITTER stage: flicker")[1],
+)
+assert resets == [("false", "false", "true")] * 9, f"Unexpected light-settings/reset sequence: {resets}"
+print("Explicit emitter transport, bounded removal tail, and reference zero-light transitions pass at quarter rate.")

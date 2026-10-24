@@ -184,6 +184,10 @@ ivec2 multiview_uv(ivec2 uv) {
 #if !defined(MODE_RENDER_DEPTH) && !defined(MODE_UNSHADED) && defined(USE_VERTEX_LIGHTING)
 layout(location = 12) out vec4 diffuse_light_interp;
 layout(location = 13) out vec4 specular_light_interp;
+#ifdef GI_FEEDBACK
+layout(location = 15) out vec4 gi_diffuse_light_interp;
+layout(location = 16) out vec4 gi_specular_light_interp;
+#endif
 
 #include "../scene_forward_vertex_lights_inc.glsl"
 
@@ -570,6 +574,10 @@ void vertex_shader(vec3 vertex_input,
 #if !defined(MODE_RENDER_DEPTH) && !defined(MODE_UNSHADED) && defined(USE_VERTEX_LIGHTING)
 	diffuse_light_interp = vec4(0.0);
 	specular_light_interp = vec4(0.0);
+#ifdef GI_FEEDBACK
+	gi_diffuse_light_interp = vec4(0.0);
+	gi_specular_light_interp = vec4(0.0);
+#endif
 
 #ifdef USE_MULTIVIEW
 	vec3 view = -normalize(vertex_interp - eye_offset);
@@ -614,8 +622,17 @@ void vertex_shader(vec3 vertex_input,
 					continue; // Statically baked light and object uses lightmap, skip
 				}
 
+#ifdef GI_FEEDBACK
+				vec3 gi_before_diffuse = diffuse_light_interp.rgb;
+				vec3 gi_before_specular = specular_light_interp.rgb;
+#endif
 				light_process_omni_vertex(light_index, vertex, view, normal, roughness,
 						diffuse_light_interp.rgb, specular_light_interp.rgb);
+#ifdef GI_FEEDBACK
+				float gi_energy = gi_feedback_lights.energy[gi_feedback_lights.offsets.y + light_index];
+				gi_diffuse_light_interp.rgb += (diffuse_light_interp.rgb - gi_before_diffuse) * gi_energy;
+				gi_specular_light_interp.rgb += (specular_light_interp.rgb - gi_before_specular) * gi_energy;
+#endif
 			}
 		}
 	}
@@ -649,8 +666,17 @@ void vertex_shader(vec3 vertex_input,
 					continue; // Statically baked light and object uses lightmap, skip
 				}
 
+#ifdef GI_FEEDBACK
+				vec3 gi_before_diffuse = diffuse_light_interp.rgb;
+				vec3 gi_before_specular = specular_light_interp.rgb;
+#endif
 				light_process_spot_vertex(light_index, vertex, view, normal, roughness,
 						diffuse_light_interp.rgb, specular_light_interp.rgb);
+#ifdef GI_FEEDBACK
+				float gi_energy = gi_feedback_lights.energy[gi_feedback_lights.offsets.z + light_index];
+				gi_diffuse_light_interp.rgb += (diffuse_light_interp.rgb - gi_before_diffuse) * gi_energy;
+				gi_specular_light_interp.rgb += (specular_light_interp.rgb - gi_before_specular) * gi_energy;
+#endif
 			}
 		}
 	}
@@ -660,6 +686,10 @@ void vertex_shader(vec3 vertex_input,
 		// We process the first directional light separately as it may have shadows.
 		vec3 directional_diffuse = vec3(0.0);
 		vec3 directional_specular = vec3(0.0);
+#ifdef GI_FEEDBACK
+		vec3 gi_directional_diffuse = vec3(0.0);
+		vec3 gi_directional_specular = vec3(0.0);
+#endif
 
 		for (uint i = 0; i < scene_data.directional_light_count; i++) {
 			if (!bool(directional_lights.data[i].mask & instances.data[instance_index].layer_mask)) {
@@ -669,6 +699,10 @@ void vertex_shader(vec3 vertex_input,
 			if (directional_lights.data[i].bake_mode == LIGHT_BAKE_STATIC && bool(instances.data[instance_index].flags & INSTANCE_FLAGS_USE_LIGHTMAP)) {
 				continue; // Statically baked light and object uses lightmap, skip.
 			}
+#ifdef GI_FEEDBACK
+			vec3 gi_before_diffuse = diffuse_light_interp.rgb;
+			vec3 gi_before_specular = specular_light_interp.rgb;
+#endif
 			if (i == 0) {
 				light_compute_vertex(normal, directional_lights.data[0].direction, view,
 						directional_lights.data[0].color * directional_lights.data[0].energy,
@@ -682,6 +716,16 @@ void vertex_shader(vec3 vertex_input,
 						diffuse_light_interp.rgb,
 						specular_light_interp.rgb);
 			}
+#ifdef GI_FEEDBACK
+			float gi_energy = gi_feedback_lights.energy[gi_feedback_lights.offsets.x + i];
+			if (i == 0) {
+				gi_directional_diffuse = directional_diffuse * gi_energy;
+				gi_directional_specular = directional_specular * gi_energy;
+			} else {
+				gi_diffuse_light_interp.rgb += (diffuse_light_interp.rgb - gi_before_diffuse) * gi_energy;
+				gi_specular_light_interp.rgb += (specular_light_interp.rgb - gi_before_specular) * gi_energy;
+			}
+#endif
 		}
 
 		// Calculate the contribution from the shadowed light so we can scale the shadows accordingly.
@@ -704,6 +748,16 @@ void vertex_shader(vec3 vertex_input,
 		}
 
 		specular_light_interp.rgb += directional_specular;
+#ifdef GI_FEEDBACK
+		float gi_diff_avg = dot(gi_diffuse_light_interp.rgb, vec3(0.33333));
+		float gi_diff_dir_avg = dot(gi_directional_diffuse, vec3(0.33333));
+		gi_diffuse_light_interp.a = gi_diff_avg > 0.0 ? gi_diff_dir_avg / (gi_diff_avg + gi_diff_dir_avg) : 1.0;
+		gi_diffuse_light_interp.rgb += gi_directional_diffuse;
+		float gi_spec_avg = dot(gi_specular_light_interp.rgb, vec3(0.33333));
+		float gi_spec_dir_avg = dot(gi_directional_specular, vec3(0.33333));
+		gi_specular_light_interp.a = gi_spec_avg > 0.0 ? gi_spec_dir_avg / (gi_spec_avg + gi_spec_dir_avg) : 1.0;
+		gi_specular_light_interp.rgb += gi_directional_specular;
+#endif
 	}
 
 #endif //!defined(MODE_RENDER_DEPTH) && !defined(MODE_UNSHADED) && defined(USE_VERTEX_LIGHTING)
@@ -1076,6 +1130,10 @@ ivec2 multiview_uv(ivec2 uv) {
 #if !defined(MODE_RENDER_DEPTH) && !defined(MODE_UNSHADED) && defined(USE_VERTEX_LIGHTING)
 layout(location = 12) in vec4 diffuse_light_interp;
 layout(location = 13) in vec4 specular_light_interp;
+#ifdef GI_FEEDBACK
+layout(location = 15) in vec4 gi_diffuse_light_interp;
+layout(location = 16) in vec4 gi_specular_light_interp;
+#endif
 #endif
 
 #if defined(POINT_SIZE_USED) && defined(POINT_COORD_USED)
@@ -1159,6 +1217,8 @@ layout(location = 3) out vec4 gi_feedback;
 layout(location = 3) out vec4 gi_previous_position;
 layout(location = 4) out vec4 gi_geometry_normal;
 layout(location = 5) out vec4 gi_primary_material;
+layout(location = 6) out vec4 gi_shading_normal;
+layout(location = 7) out float gi_roughness;
 #endif
 
 #ifdef MOTION_VECTORS
@@ -2452,6 +2512,15 @@ void fragment_shader(in SceneData scene_data) {
 // LIGHTING
 #if !defined(MODE_RENDER_DEPTH) && !defined(MODE_UNSHADED)
 
+#ifdef GI_FEEDBACK
+	vec3 gi_diffuse_light = diffuse_light;
+	vec3 gi_specular_light = direct_specular_light;
+#ifdef USE_VERTEX_LIGHTING
+	gi_diffuse_light += gi_diffuse_light_interp.rgb;
+	gi_specular_light += gi_specular_light_interp.rgb * f0;
+#endif
+#endif
+
 #ifdef USE_VERTEX_LIGHTING
 	diffuse_light += diffuse_light_interp.rgb;
 	direct_specular_light += specular_light_interp.rgb * f0;
@@ -2811,6 +2880,10 @@ void fragment_shader(in SceneData scene_data) {
 #ifdef USE_VERTEX_LIGHTING
 					diffuse_light *= mix(1.0, shadow, diffuse_light_interp.a);
 					direct_specular_light *= mix(1.0, shadow, specular_light_interp.a);
+#ifdef GI_FEEDBACK
+					gi_diffuse_light *= mix(1.0, shadow, gi_diffuse_light_interp.a);
+					gi_specular_light *= mix(1.0, shadow, gi_specular_light_interp.a);
+#endif
 #endif
 				}
 
@@ -2827,6 +2900,10 @@ void fragment_shader(in SceneData scene_data) {
 #ifdef USE_VERTEX_LIGHTING
 			diffuse_light *= mix(1.0, shadowmask, diffuse_light_interp.a);
 			direct_specular_light *= mix(1.0, shadowmask, specular_light_interp.a);
+#ifdef GI_FEEDBACK
+			gi_diffuse_light *= mix(1.0, shadowmask, gi_diffuse_light_interp.a);
+			gi_specular_light *= mix(1.0, shadowmask, gi_specular_light_interp.a);
+#endif
 #endif
 
 			shadow0 |= uint(clamp(shadowmask * 255.0, 0.0, 255.0));
@@ -2936,6 +3013,10 @@ void fragment_shader(in SceneData scene_data) {
 
 			float size_A = sc_use_directional_soft_shadows() ? directional_lights.data[i].size : 0.0;
 
+#ifdef GI_FEEDBACK
+			vec3 gi_before_diffuse = diffuse_light;
+			vec3 gi_before_specular = direct_specular_light;
+#endif
 			light_compute(normal, directional_lights.data[i].direction, normalize(view), size_A,
 #ifndef DEBUG_DRAW_PSSM_SPLITS
 					directional_lights.data[i].color * directional_lights.data[i].energy,
@@ -2964,6 +3045,11 @@ void fragment_shader(in SceneData scene_data) {
 #endif
 					diffuse_light,
 					direct_specular_light);
+#ifdef GI_FEEDBACK
+			float gi_energy = gi_feedback_lights.energy[gi_feedback_lights.offsets.x + i];
+			gi_diffuse_light += (diffuse_light - gi_before_diffuse) * gi_energy;
+			gi_specular_light += (direct_specular_light - gi_before_specular) * gi_energy;
+#endif
 		}
 #endif // USE_VERTEX_LIGHTING
 	}
@@ -3006,6 +3092,10 @@ void fragment_shader(in SceneData scene_data) {
 					continue; // Statically baked light and object uses lightmap, skip
 				}
 
+#ifdef GI_FEEDBACK
+				vec3 gi_before_diffuse = diffuse_light;
+				vec3 gi_before_specular = direct_specular_light;
+#endif
 				light_process_omni(light_index, vertex, view, normal, vertex_ddx, vertex_ddy, f0, roughness, metallic, scene_data.taa_frame_count, albedo, alpha, screen_uv, energy_compensation,
 #ifdef LIGHT_BACKLIGHT_USED
 						backlight,
@@ -3026,6 +3116,11 @@ void fragment_shader(in SceneData scene_data) {
 						binormal, tangent, anisotropy,
 #endif
 						diffuse_light, direct_specular_light);
+#ifdef GI_FEEDBACK
+				float gi_energy = gi_feedback_lights.energy[gi_feedback_lights.offsets.y + light_index];
+				gi_diffuse_light += (diffuse_light - gi_before_diffuse) * gi_energy;
+				gi_specular_light += (direct_specular_light - gi_before_specular) * gi_energy;
+#endif
 			}
 		}
 	}
@@ -3067,6 +3162,10 @@ void fragment_shader(in SceneData scene_data) {
 					continue; // Statically baked light and object uses lightmap, skip
 				}
 
+#ifdef GI_FEEDBACK
+				vec3 gi_before_diffuse = diffuse_light;
+				vec3 gi_before_specular = direct_specular_light;
+#endif
 				light_process_spot(light_index, vertex, view, normal, vertex_ddx, vertex_ddy, f0, roughness, metallic, scene_data.taa_frame_count, albedo, alpha, screen_uv, energy_compensation,
 #ifdef LIGHT_BACKLIGHT_USED
 						backlight,
@@ -3087,6 +3186,11 @@ void fragment_shader(in SceneData scene_data) {
 						binormal, tangent, anisotropy,
 #endif
 						diffuse_light, direct_specular_light);
+#ifdef GI_FEEDBACK
+				float gi_energy = gi_feedback_lights.energy[gi_feedback_lights.offsets.z + light_index];
+				gi_diffuse_light += (diffuse_light - gi_before_diffuse) * gi_energy;
+				gi_specular_light += (direct_specular_light - gi_before_specular) * gi_energy;
+#endif
 			}
 		}
 	}
@@ -3128,6 +3232,10 @@ void fragment_shader(in SceneData scene_data) {
 					continue; // Statically baked light and object uses lightmap, skip
 				}
 
+#ifdef GI_FEEDBACK
+				vec3 gi_before_diffuse = diffuse_light;
+				vec3 gi_before_specular = direct_specular_light;
+#endif
 				light_process_area(light_index, vertex, view, normal, vertex_ddx, vertex_ddy, f0, roughness, metallic, scene_data.taa_frame_count, albedo, alpha, screen_uv, energy_compensation,
 #ifdef LIGHT_BACKLIGHT_USED
 						backlight,
@@ -3148,6 +3256,11 @@ void fragment_shader(in SceneData scene_data) {
 						binormal, tangent, anisotropy,
 #endif
 						diffuse_light, direct_specular_light);
+#ifdef GI_FEEDBACK
+				float gi_energy = gi_feedback_lights.energy[gi_feedback_lights.offsets.w + light_index];
+				gi_diffuse_light += (diffuse_light - gi_before_diffuse) * gi_energy;
+				gi_specular_light += (direct_specular_light - gi_before_specular) * gi_energy;
+#endif
 			}
 		}
 	}
@@ -3344,7 +3457,9 @@ void fragment_shader(in SceneData scene_data) {
 #else
 	// Store native outgoing HDR lighting before fog, tone mapping and upscaling.
 	// Alpha validates coverage; the GI reader removes the previous exposure.
-	gi_feedback = vec4(emission + ambient_light + diffuse_light + direct_specular_light + indirect_specular_light, 1.0);
+	// Keep native direct lighting unchanged. Transport sees the same lights
+	// weighted by their authored indirect energy, including SSGI/reflections.
+	gi_feedback = vec4(emission + ambient_light + gi_diffuse_light * albedo * ao * (1.0 - metallic) + gi_specular_light * ao + indirect_specular_light, 1.0);
 #endif
 #endif
 
@@ -3404,7 +3519,9 @@ void fragment_shader(in SceneData scene_data) {
 	// blend shapes and instance motion. This is produced before GI tracing.
 	vec4 previous_view = scene_data_block.prev_data.inv_projection_matrix * prev_screen_position;
 	// Positive alpha also carries native metallic for probe BRDF guiding.
-	gi_geometry_normal = vec4(normalize(mat3(inv_view_matrix) * geo_normal), 1.0);
+	gi_geometry_normal = vec4(normalize(mat3(inv_view_matrix) * geo_normal) * 0.5 + 0.5, 1.0);
+	gi_shading_normal = vec4(normalize(mat3(inv_view_matrix) * normal) * 0.5 + 0.5, 1.0);
+	gi_roughness = roughness;
 	gi_primary_material = vec4(albedo, metallic);
 	gi_previous_position = vec4((previous_view / previous_view.w) * scene_data_block.prev_data.inv_view_matrix, 1.0 + clamp(metallic, 0.0, 1.0));
 #endif

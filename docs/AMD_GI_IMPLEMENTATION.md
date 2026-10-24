@@ -1,13 +1,18 @@
 # AMD GI integration
 
-**Status: reference audit and correction in progress. The requested AMD implementation is not complete.**
+**Status: full source comparison complete; corrections unfinished. The requested AMD implementation is not complete.**
+The [live consequential correction record](AMD_GI_CONSEQUENTIAL_CORRECTIONS.md) lists the implemented corrections and remaining consequential gaps. Optional completeness is deferred; those gaps are not.
 The previous completion statement covered stage presence, not fidelity to AMD.
-See [the reference audit](AMD_GI_REFERENCE_AUDIT.md) for unapproved departures and corrections.
+See [the complete source comparison](AMD_GI_FULL_COMPARISON.md) and
+[coverage appendix](AMD_GI_COMPARISON_COVERAGE.md) for every stage and option.
+The [earlier correction ledger](AMD_GI_REFERENCE_AUDIT.md) is historical;
+its restored/translated labels do not certify reference equivalence.
 Cached diffuse GI, sky lighting, and glossy reflections run on Vulkan Forward+.
 It implements sparse screen probes, directional hashed world radiance, multibounce
 feedback, reconstruction, and temporal/spatial GI denoising. Progress captures use
-approximately 1/4 or 1 primary GI ray per internal pixel per frame, with denoising
-on. See [the implemented pipeline and explicit port gaps](features/amd-gi.md).
+the default approximately 1/4 primary GI ray per internal pixel per frame, with
+denoising on. Earlier one-ray captures remain historical evidence only.
+See [the implemented pipeline and explicit port gaps](features/amd-gi.md).
 Sampling, cache-update and glossy scheduling stages are implemented. Software-Vulkan
 integration, controlled motion and game-scene checks are recorded below. Engine-specific
 material and scene limits are documented explicitly; this is an adaptation, not a
@@ -37,6 +42,14 @@ reuse/guiding. Both reference optional feedback flags now default off. A sixth
 GI-only prepass attachment supplies primary albedo/metalness. See the live
 [correction ledger](AMD_GI_REFERENCE_AUDIT.md) for evidence and remaining gaps;
 the older implementation/measurement notes below are not a completion claim.
+
+The environment follow-up restores wide-proposal/narrow-final sky cones, a complete
+ordinary cubemap mip chain, fresh-reservoir target conversion and blocked-reservoir
+invalidation. The current correction replaces AMD's material atlas with native source
+shading and removes its arbitrary instance/light collection caps. The sole-emitter
+fixture passes with zero atlas residency. Source-material qualification, distance
+coverage, exceptional-domain decisions and the sky-removal regression remain open;
+see the live consequential record rather than older build results below.
 
 ## Implemented infrastructure
 
@@ -84,8 +97,8 @@ shadow entries survive. Normal cache age-out alone would not release GI-only res
 
 | Work | Required result |
 | --- | --- |
-| Automatic hit shading | Native capture retains prepared geometry/targets with source-revision invalidation; static pixels reuse material/texture revisions with dynamic-shader fallback; native poses reuse shared GPU deformation; CPU-managed MultiMesh inputs and shared static captures are supported. Triangle-tile material detail and unsupported shader/particle inputs are documented limits |
-| Scene collection | Independent bounded mesh/light collection includes native poses, off-screen non-casters and authored GI participation; explicit capacity/unsupported-input fallback |
+| Automatic hit shading | Native shader source, uniforms, textures and vertex attributes are evaluated at hits; source attribute copies follow revisions and poses reuse shared GPU geometry. Source-specific qualification and unsupported shader/particle inputs remain explicit limits |
+| Scene collection | Independent mesh/light collection includes native poses, off-screen non-casters and authored GI participation; buffers grow with supported inputs. Finite collection distance remains open; unsupported classes are reported/skipped individually |
 | World radiance cache | Reference-capacity checksum-hashed tiles with packed sums, sample-count-selected mips, touched-tile updates and delayed indirect accumulation; unified GridStream proposals and independent multi-hit reservoir reuse. Hit-material representation and full-frame conformance remain open. |
 | Screen probes | Dense stored grid with sparse updates, adaptive hole patching, current-grid neighborhood hit reprojection, bounded displaced-probe LRU reuse, radiance/BRDF guiding, angular rebinning/filtering, hierarchical mask lookup, two-dimensional temporal blue-noise sampling and SH9 reconstruction |
 | Multiple bounces | Continuations populate and shade secondary world receivers, then propagate current direct light and previous indirect feedback through separate histories; compatible combined native screen-lighting feedback is implemented; all-hit update scheduling is implemented with an optional lower-cost mode |
@@ -95,7 +108,17 @@ shadow entries survive. Normal cache age-out alone would not release GI-only res
 | Controls and comparisons | Script-accessible runtime controls and exclusive dynamic backend selection, retaining native Godot GI for comparisons |
 | Validation | Software-Vulkan reference/controlled images, moving scenes, resource lifetime checks and actual game-map collection checks pass. Measurements on the 780M/5090 and DLSS runtime validation are outstanding |
 
-### Native material capture
+### Native source materials and legacy capture
+
+AMD GI now uses `rt_material_source` to evaluate native material programs and
+textures at actual hits, including source alpha candidates and emitter sampling.
+It does not allocate or prepare a triangle-material atlas. See
+[internals/rt-materials.md](internals/rt-materials.md) for resource ownership and
+qualification limits. Geometry and shading normals transform once under the
+owner-approved correction. The owner also approved classifying an EMISSION-writing shader as emissive independently of its sampled RGB; dark texels and phases retain that classification.
+
+The following capture description applies to the uncached transport validator
+and standalone material-bake diagnostic, not the current AMD GI material path.
 
 `environment/rt_material_capture.{h,cpp}` adds an explicit, bounded capture primitive.
 It evaluates Godot's own material shaders into GPU textures for a selected range of
@@ -178,11 +201,12 @@ report a clear fallback instead of accessing missing render buffers.
 
 ## Acceptance and performance
 
-The game visual-comparison protocol matches approximately 1/4 versus 1 primary diffuse ray per internal
-pixel per frame, keeping camera, materials, lighting, exposure, denoising, other
-features, and settling protocol identical. Save phone-readable PDFs and original
-PNGs in `/workspace/preview`. Historical intermediate stage captures are not that
-comparison. Record reflection, continuation, and visibility ray budgets separately.
+Future game comparisons use only the default approximately 1/4 primary diffuse ray
+per internal pixel per frame, with denoising enabled. Match the camera, materials,
+lighting, exposure and settling protocol. Use Crossroads and native-resolution
+FSR2 for cloud previews; save original phone-readable PNGs in `/workspace/preview`.
+Earlier quarter-versus-one captures remain historical evidence. Record reflection,
+continuation and visibility ray budgets separately.
 
 1. Build and shader ABI checks, including release builds and awkward internal sizes.
 2. Disabled-path images against the baseline, plus hardware GPU timing, memory, and
@@ -262,6 +286,8 @@ not embed the Capsaicin renderer. `COPYRIGHT.txt` records the source attribution
 
 ### Native material capture
 
+Current correction: AMD GI hit normals bypass the atlas and read native packed/posed vertex normals plus shared triangle geometry. Both transform once into world space and preserve their separate reference roles. The owner approved this narrow upstream correction and the native authored-light/material boundary. The older capture limitations below describe the legacy validator; AMD material source qualification is recorded in the live correction ledger.
+
 - Full Linux editor build passed. Material capture and Forward+ translation units
   also compiled with `target=template_release`; this was not a full release build.
 - `shadow_validation/run.sh material` passed with zero assertion failures and no
@@ -298,5 +324,5 @@ Windows builds, or performance on either target GPU.
 
 Scene-history regression coverage now includes flickering geometry and camera-centered
 collection changes. Stable instance/element matching supplies local dirty bounds for
-additions/removals and material/topology edits, retaining unrelated history. Light indices are now remapped per viewport using stable identities; membership changes do not clear all histories. Camera/environment discontinuities still reset history. See the sandbox evidence
+additions/removals and material/topology edits, retaining unrelated history. The later consequential correction removes stable-ID remapping and follows reference light-index reuse and environment/zero-count settings reset boundaries. Dirty bounds are diagnostic, not a shader invalidation policy. See the sandbox evidence
 in [HISTORY](HISTORY.md) and `amd_gi_scene_churn` / `amd_gi_flashlight` rigs.

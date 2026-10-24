@@ -173,8 +173,8 @@ static String _opstr(SL::Operator p_op) {
 	return SL::get_operator_text(p_op);
 }
 
-static String _mkid(const String &p_id) {
-	String id = "m_" + p_id.replace("__", "_dus_");
+String ShaderCompiler::_mkid(const String &p_id) const {
+	String id = actions.identifier_prefix + p_id.replace("__", "_dus_");
 	return id.replace("__", "_dus_"); //doubleunderscore is reserved in glsl
 }
 
@@ -516,7 +516,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				struct_code += "}";
 				struct_code += ";\n";
 
-				for (int j = 0; j < STAGE_MAX; j++) {
+				for (int j = 0; j < (actions.shared_stage_globals ? 1 : STAGE_MAX); j++) {
 					r_gen_code.stage_globals[j] += struct_code;
 				}
 			}
@@ -611,8 +611,10 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				}
 				ucode += ";\n";
 				if (SL::is_sampler_type(uniform.type)) {
-					for (int j = 0; j < STAGE_MAX; j++) {
-						r_gen_code.stage_globals[j] += ucode;
+					if (!actions.texture_uniform_expression) {
+						for (int j = 0; j < (actions.shared_stage_globals ? 1 : STAGE_MAX); j++) {
+							r_gen_code.stage_globals[j] += ucode;
+						}
 					}
 
 					GeneratedCode::Texture texture;
@@ -698,7 +700,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				const StringName &varying_name = varying_names[k];
 				const SL::ShaderNode::Varying &varying = pnode->varyings[varying_name];
 
-				if (varying.stage == SL::ShaderNode::Varying::STAGE_FRAGMENT) {
+				if (!actions.private_varyings && varying.stage == SL::ShaderNode::Varying::STAGE_FRAGMENT) {
 					var_frag_to_light.push_back(Pair<StringName, SL::ShaderNode::Varying>(varying_name, varying));
 					fragment_varyings.insert(varying_name);
 					continue;
@@ -721,6 +723,13 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				}
 
 				vcode += ";\n";
+				if (actions.private_varyings) {
+					r_gen_code.stage_globals[STAGE_VERTEX] += vcode;
+					if (varying.stage != SL::ShaderNode::Varying::STAGE_FRAGMENT) {
+						r_gen_code.private_varyings.push_back({ _mkid(varying_name), varying.type, varying.array_size, varying.interpolation == SL::INTERPOLATION_FLAT });
+					}
+					continue;
+				}
 				// GLSL ES 3.0 does not allow layout qualifiers for varyings
 				if (!RS::get_singleton()->is_low_end()) {
 					r_gen_code.stage_globals[STAGE_VERTEX] += "layout(location=" + itos(index) + ") ";
@@ -766,7 +775,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				gcode += "=";
 				gcode += _dump_node_code(cnode.initializer, p_level, r_gen_code, p_actions, p_default_actions, p_assigning);
 				gcode += ";\n";
-				for (int j = 0; j < STAGE_MAX; j++) {
+				for (int j = 0; j < (actions.shared_stage_globals ? 1 : STAGE_MAX); j++) {
 					r_gen_code.stage_globals[j] += gcode;
 				}
 			}
@@ -795,7 +804,8 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 
 				if (p_actions.entry_point_stages.has(fnode->name)) {
 					Stage stage = p_actions.entry_point_stages[fnode->name];
-					_dump_function_deps(pnode, fnode->name, function_code, r_gen_code.stage_globals[stage], added_funcs_per_stage[stage]);
+					Stage globals_stage = actions.shared_stage_globals ? STAGE_VERTEX : stage;
+					_dump_function_deps(pnode, fnode->name, function_code, r_gen_code.stage_globals[globals_stage], added_funcs_per_stage[globals_stage]);
 					r_gen_code.code[fnode->name] = function_code[fnode->name];
 				}
 
@@ -967,7 +977,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 							name = _mkid(vnode->name); //texture, use as is
 						}
 
-						code = name;
+						code = actions.texture_uniform_expression ? actions.texture_uniform_expression(actions.texture_uniform_userdata, vnode->name, String()) : String(name);
 					} else {
 						//a scalar or vector
 						if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_GLOBAL) {
@@ -985,7 +995,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					}
 
 				} else {
-					if (use_fragment_varying) {
+					if (use_fragment_varying && !actions.private_varyings) {
 						code = "frag_to_light.";
 					}
 					code += _mkid(vnode->name); //its something else (local var most likely) use as is
@@ -1025,6 +1035,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 		case SL::Node::NODE_TYPE_ARRAY: {
 			SL::ArrayNode *anode = (SL::ArrayNode *)p_node;
 			bool use_fragment_varying = false;
+			bool custom_texture_index = false;
 
 			if (!anode->is_local && !(p_actions.entry_point_stages.has(current_func_name) && p_actions.entry_point_stages[current_func_name] == STAGE_VERTEX)) {
 				if (anode->assign_expression != nullptr && shader->varyings.has(anode->name)) {
@@ -1076,7 +1087,13 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					//its a uniform!
 					const ShaderLanguage::ShaderNode::Uniform &u = shader->uniforms[anode->name];
 					if (u.is_texture()) {
-						code = _mkid(anode->name); //texture, use as is
+						if (actions.texture_uniform_expression) {
+							String index = anode->index_expression ? _dump_node_code(anode->index_expression, p_level, r_gen_code, p_actions, p_default_actions, p_assigning) : String();
+							code = actions.texture_uniform_expression(actions.texture_uniform_userdata, anode->name, index);
+							custom_texture_index = true;
+						} else {
+							code = _mkid(anode->name);
+						}
 					} else {
 						//a scalar or vector
 						if (u.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_GLOBAL) {
@@ -1093,7 +1110,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 						}
 					}
 				} else {
-					if (use_fragment_varying) {
+					if (use_fragment_varying && !actions.private_varyings) {
 						code = "frag_to_light.";
 					}
 					code += _mkid(anode->name);
@@ -1103,7 +1120,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 			if (anode->call_expression != nullptr) {
 				code += ".";
 				code += _dump_node_code(anode->call_expression, p_level, r_gen_code, p_actions, p_default_actions, p_assigning, false);
-			} else if (anode->index_expression != nullptr) {
+			} else if (anode->index_expression != nullptr && !custom_texture_index) {
 				code += "[";
 				code += _dump_node_code(anode->index_expression, p_level, r_gen_code, p_actions, p_default_actions, p_assigning);
 				code += "]";
@@ -1207,6 +1224,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					bool texture_func_no_uv = false;
 					bool texture_func_returns_data = false;
 					bool texture_func_simple = false;
+					String implicit_lod = actions.implicit_texture_lod;
 
 					if (onode->op == SL::OP_STRUCT) {
 						code += _mkid(vnode->name);
@@ -1219,7 +1237,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 						}
 
 						if (is_internal_func) {
-							code += vnode->name;
+							code += vnode->name == "texture" && !actions.implicit_texture_lod.is_empty() ? "textureLod" : String(vnode->name);
 							is_texture_func = texture_functions.has(vnode->name);
 							texture_func_no_uv = (vnode->name == "textureSize" || vnode->name == "textureQueryLevels");
 							texture_func_returns_data = texture_func_no_uv || vnode->name == "textureQueryLod";
@@ -1370,7 +1388,11 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 									data_type_name = ShaderLanguage::get_datatype_name(onode->arguments[i]->get_datatype());
 								}
 
-								code += data_type_name + "(" + node_code + ", " + sampler_name + ")";
+								String sampler_expression = data_type_name + "(" + node_code + ", " + sampler_name + ")";
+								code += sampler_expression;
+								if (actions.implicit_texture_lod_expression) {
+									implicit_lod = actions.implicit_texture_lod_expression(onode->arguments[i]->get_datatype(), sampler_expression);
+								}
 							} else if (correct_texture_uniform && RS::get_singleton()->is_low_end()) {
 								// Texture function on low end hardware (i.e. OpenGL).
 
@@ -1409,8 +1431,15 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 
 							code += node_code;
 						} else {
-							code += node_code;
+							if (texture_func_simple && i == 3 && !actions.implicit_texture_lod.is_empty()) {
+								code += "(" + implicit_lod + ") + (" + node_code + ")";
+							} else {
+								code += node_code;
+							}
 						}
+					}
+					if (texture_func_simple && onode->arguments.size() == 3 && !actions.implicit_texture_lod.is_empty()) {
+						code += ", " + implicit_lod;
 					}
 					code += ")";
 					if (is_screen_texture && !texture_func_returns_data && actions.apply_luminance_multiplier) {
@@ -1502,7 +1531,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					used_flag_pointers.insert("DISCARD");
 				}
 
-				code = "discard;";
+				code = actions.discard_code;
 			} else if (cfnode->flow_op == SL::FLOW_OP_CONTINUE) {
 				code = "continue;";
 			} else if (cfnode->flow_op == SL::FLOW_OP_BREAK) {
@@ -1634,6 +1663,7 @@ Error ShaderCompiler::compile(RSE::ShaderMode p_mode, const String &p_code, Iden
 
 	r_gen_code.defines.clear();
 	r_gen_code.code.clear();
+	r_gen_code.private_varyings.clear();
 	for (int i = 0; i < STAGE_MAX; i++) {
 		r_gen_code.stage_globals[i] = String();
 	}

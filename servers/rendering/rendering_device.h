@@ -1687,6 +1687,9 @@ public:
 	void compute_list_dispatch(ComputeListID p_list, uint32_t p_x_groups, uint32_t p_y_groups, uint32_t p_z_groups);
 	void compute_list_dispatch_threads(ComputeListID p_list, uint32_t p_x_threads, uint32_t p_y_threads, uint32_t p_z_threads);
 	void compute_list_dispatch_indirect(ComputeListID p_list, RID p_buffer, uint32_t p_offset);
+	// Native BDA consumers must declare reads which descriptors cannot track.
+	// Applies to this list segment; declare again after compute_list_add_barrier.
+	void compute_list_add_buffer_read(ComputeListID p_list, RID p_buffer);
 	void compute_list_add_barrier(ComputeListID p_list);
 
 	void compute_list_end();

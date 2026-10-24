@@ -5,7 +5,30 @@ rig here can tell you. The shared layer above `docs/validation/`. Not here: what
 found or refuted (`docs/HISTORY.md`); diagnosing a symptom (`docs/TROUBLESHOOTING.md`); porting to a
 newer engine (`docs/PORTING.md`); how to run one rig (that rig's own README, the maintained copy).
 
+## Consequential correction integration
+
+See [the current correction record](AMD_GI_CONSEQUENTIAL_CORRECTIONS.md) for results
+and unresolved failures. `./run.sh amd_gi_consequential` exercises quarter-budget
+compaction, hit/cache membership, multibounce, camera motion, an empty screen,
+odd-size resize and disable. `./run.sh amd_gi_exposure` exercises manual and automatic
+exposure changes with accumulated glossy history. These do not establish whole-pipeline
+AMD image equivalence or hardware performance.
+
+The emitter rig's history assertion now follows the reference zero/nonzero light-class
+settings transition: its sole emitter produces nine settings-only resets through four
+off/on cycles and final removal. Ordinary light-index changes do not justify a global
+reset. Existing emitter image thresholds are unchanged. Reflection scoring requires
+641×359 because its mirror/emitter regions are defined at that fixture resolution.
+
 ## AMD reference-correction controls
+
+The [full AMD source comparison](AMD_GI_FULL_COMPARISON.md) is complete.
+Its [coverage appendix](AMD_GI_COMPARISON_COVERAGE.md) distinguishes matching
+helpers from different inputs, storage, branch behavior and missing stages.
+Existing equation/regression passes are not whole-pipeline AMD equivalence.
+The comparison added only read-only source/data/algebra checks, not new renders.
+No outstanding rapid-emitter or sky failure was waived. Future preview comparisons
+use quarter primary samples per pixel, denoising enabled and native-resolution FSR2.
 
 `./run.sh amd_gi_winding` traces 48 rays through a native BoxMesh with normal and
 mirrored instance transforms. It establishes Vulkan's facing flag independently
@@ -326,3 +349,35 @@ restore the dark reference exactly. These tests use the lightweight
 `run.sh amd_gi_material_density` switches 8→4→8-pixel hit-material tiles live,
 checks a fourfold atlas byte reduction, tinted-instance sharing and restoration.
 Triangle geometry, primary ray density and denoising stay unchanged.
+
+### AMD environment input conformance
+
+Run `docs/validation/shadow_validation/run.sh amd_gi_environment` under Vulkan.
+It executes the production octahedral-to-cube/mip compute shader and independently
+checks 4,096 directional cube samples against an analytic direction-colored input,
+plus every face's terminal mip against its full-resolution mean. Tolerances are
+0.003 per channel for 64x64 source interpolation/half storage. The rendered
+`amd_gi_sky` fixture separately exercises native sky updates, orientation, ambient
+replacement and disabled restoration. `amd_gi_reference` includes AMD's cone LOD
+at both the fresh-candidate and final-shading cone widths.
+
+AMD GI source normals: `docs/validation/shadow_validation/run.sh amd_gi_normals` runs 36 GPU cases against authored CPU expectations for packed/compressed normals, index layouts and nonuniform/mirrored transforms. This local-RD fixture explicitly completes its buffer uploads via diagnostic readback; production geometry reads use RD synchronization without CPU readback. Use `amd_gi_deformation` for posed normals, blend shapes and alternating FSR2 buffers, and `amd_gi_consequential` for cache/hit ownership and disabled lifetime. See the live correction record for current measured results and unresolved material fidelity.
+
+Current AMD source-material and capacity checks: `run.sh amd_gi_source_material`
+reads an opt-in GPU oracle for native UV/UV2/color/custom attributes, vertex
+varyings, local/global/instance uniforms, compression, point/volume/cone texture
+LOD, actual alpha/discard ray candidates and dark-phase emissive classification.
+It compares against authored numeric expectations, not a high-sample render.
+`amd_gi_collection` tests 1025 lights, emitter-prefix changes and isolation of an
+unsupported shader, with zero capture-atlas allocation. `amd_gi_distance` imports
+the production distance packing/accumulation functions and verifies exact integer
+carry words beyond the old overflow point. Both diagnostics are correctness tests,
+not hardware performance measurements.
+
+Source-domain bug proofs are preserved in
+[`amd_gi_source_proofs`](validation/amd_gi_source_proofs/README.md), with an
+overridable pinned-reference checkout path. These are CPU algebra/index tests,
+not AMD GPU captures. `amd_gi_consequential` now additionally exercises abrupt
+camera replacement and an independent viewport creation, resize and destruction.
+The material oracle includes a vertex-stage implicit texture read that must stay
+at mip zero while fragment reads use volume/cone filtering.

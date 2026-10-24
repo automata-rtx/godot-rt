@@ -500,6 +500,14 @@ layout(set = 1, binding = 38) uniform utexture2D rt_shadow_index;
 // variant: the pass is single view.
 layout(set = 1, binding = 39) uniform texture2D sss_shadow_mask;
 
+// Populated only while AMD GI captures outgoing lighting. Native light buffers
+// retain their existing layout. Only GI_FEEDBACK variants read this buffer.
+layout(set = 1, binding = 40, std430) readonly buffer GIFeedbackLights {
+	uvec4 offsets; // directional, omni, spot, area
+	float energy[];
+}
+gi_feedback_lights;
+
 // rt_shadow_lookup(), which samples the mask above, lives in
 // scene_forward_lights_inc.glsl because it reads gl_FragCoord. This file is
 // included by the vertex stage as well, where that builtin does not exist.

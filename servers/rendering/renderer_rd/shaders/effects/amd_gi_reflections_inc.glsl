@@ -31,16 +31,30 @@ struct ReflectionSample {
 	vec4 color_count;
 	vec4 virtual_variance;
 };
+struct StoredReflection {
+	vec4 position_roughness;
+	vec4 normal_distance;
+	uvec2 direction_pdf;
+	uvec2 color_count;
+	uvec2 virtual_variance;
+};
+StoredReflection pack_reflection(ReflectionSample value) {
+	return StoredReflection(value.position_roughness, value.normal_distance, gi_cache_pack(value.direction_pdf), gi_cache_pack(value.color_count), gi_cache_pack(value.virtual_variance));
+}
+ReflectionSample unpack_reflection(StoredReflection value) {
+	return ReflectionSample(value.position_roughness, value.normal_distance, gi_cache_unpack(value.direction_pdf), gi_cache_unpack(value.color_count), gi_cache_unpack(value.virtual_variance));
+}
+
 layout(set = 0, binding = 38, std430) restrict buffer ReflectionSamples {
-	ReflectionSample data[];
+	StoredReflection data[];
 }
 reflection_samples;
 layout(set = 0, binding = 39, std430) restrict readonly buffer PreviousReflections {
-	ReflectionSample data[];
+	StoredReflection data[];
 }
 previous_reflections;
 layout(set = 0, binding = 40, std430) restrict buffer Reflections {
-	ReflectionSample data[];
+	StoredReflection data[];
 }
 reflections;
 layout(rgba16f, set = 0, binding = 41) uniform restrict image2D reflection_filter_a;
@@ -60,9 +74,7 @@ ivec2 reflection_pixel(ivec2 pixel) {
 	return pixel * int(frame.reflections.x) + reflection_phase(params.padding);
 }
 float surface_roughness(ivec2 pixel) {
-	// Godot packs the material flag in the other half of this channel.
-	float r = texelFetch(normal_buffer, pixel, 0).w;
-	return clamp((r > 0.5 ? 1.0 - r : r) * (255.0 / 127.0), 0.0, 1.0);
+	return texelFetch(primary_roughness, pixel, 0).r;
 }
 
 float reflection_kernel(vec3 n, vec3 v, vec3 l, float roughness) {
@@ -130,7 +142,7 @@ vec3 reflection_probe_value(ivec2 pixel, vec3 p, vec3 n, vec3 view, float roughn
 			value += weights[i] * probe_irradiance(indices[i], detail_normal) / PI;
 		} else if (dot(direction, probes.data[indices[i]].normal.xyz) >= 0.0) {
 			uint cell = angular_index(direction, probes.data[indices[i]].normal.xyz);
-			value += weights[i] * radiance.data[indices[i] * 64u + cell].rgb;
+			value += weights[i] * gi_cache_unpack(radiance.data[indices[i] * 64u + cell]).rgb;
 		}
 	}
 	return value;
@@ -153,9 +165,9 @@ bool prepare_reflection(ivec2 pixel, out ReflectionSample result) {
 	if (roughness > frame.glossy.x) {
 		vec3 direction;
 		vec3 color = reflection_probe_value(full_pixel, p, n, normalize(params.camera_position.xyz - p), roughness, direction);
-		result.direction_pdf = vec4(direction, -1);
+		result.direction_pdf = gi_cache_unpack(gi_cache_pack(vec4(direction, -1)));
 		result.normal_distance.w = 1.0;
-		result.color_count = vec4(color / (1.0 + color), 1);
+		result.color_count = gi_cache_unpack(gi_cache_pack(vec4(color / (1.0 + color), 1)));
 		return false;
 	}
 	result.direction_pdf.w = 0.0;
@@ -164,7 +176,7 @@ bool prepare_reflection(ivec2 pixel, out ReflectionSample result) {
 void classify_reflection(ivec2 pixel, uint id) {
 	ReflectionSample result;
 	bool needs_ray = prepare_reflection(pixel, result);
-	reflection_samples.data[id] = result;
+	reflection_samples.data[id] = pack_reflection(result);
 	if (needs_ray) {
 		uint index = atomicAdd(queues.data[frame.emitters.z + 3u], 1u);
 		queues.data[frame.emitters.z + 4u + index] = id;
@@ -173,9 +185,9 @@ void classify_reflection(ivec2 pixel, uint id) {
 void trace_reflection(ivec2 pixel, uint id) {
 	ReflectionSample result;
 	if (frame.emitters.w != 0u) {
-		result = reflection_samples.data[id];
+		result = unpack_reflection(reflection_samples.data[id]);
 	} else if (!prepare_reflection(pixel, result)) {
-		reflection_samples.data[id] = result;
+		reflection_samples.data[id] = pack_reflection(result);
 		return;
 	}
 	ivec2 full_pixel = reflection_pixel(pixel);
@@ -194,12 +206,12 @@ void trace_reflection(ivec2 pixel, uint id) {
 	RayHit hit = trace_hit(gi_offset_position(p, n), l);
 	vec3 value = environment_radiance(l, true);
 	result.normal_distance.w = 65519.0;
-	if (hit.position.w > 0.0) {
+	if (hit.position.w >= 0.0) {
 		// A geometric hit without usable radiance keeps TRACE_NONE_DISTANCE.
 		// It must not masquerade as a valid black cache sample in reconstruction.
 		result.normal_distance.w = -1.0;
 		value = vec3(0);
-		if (any(greaterThan(hit.emission.rgb, vec3(0)))) {
+		if (hit.emission.w > 0.0) {
 			value = hit.emission.rgb;
 			result.normal_distance.w = hit.position.w;
 		} else if (screen_lighting(hit, true, value)) {
@@ -216,19 +228,24 @@ void trace_reflection(ivec2 pixel, uint id) {
 			}
 		}
 	}
-	result.color_count = vec4(value / (1.0 + value), 1);
-	reflection_samples.data[id] = result;
+	result.color_count = gi_cache_unpack(gi_cache_pack(vec4(value / (1.0 + value), 1)));
+	// AMD stores camera-relative hit points for short connections, and a
+	// direction otherwise, in the same RGBA16F direction target.
+	bool short_hit = result.normal_distance.w > 0.0 && result.normal_distance.w < 100.0;
+	result.direction_pdf = gi_cache_unpack(gi_cache_pack(short_hit ? vec4(p + result.normal_distance.w * l - params.camera_position.xyz, 1) : vec4(l, 0)));
+	result.normal_distance.w = unpackHalf2x16(packHalf2x16(vec2(result.normal_distance.w, 0))).x;
+	reflection_samples.data[id] = pack_reflection(result);
 }
 
 vec4 reflection_raw(ivec2 pixel) {
-	ReflectionSample sample_value = reflection_samples.data[reflection_index(pixel)];
+	ReflectionSample sample_value = unpack_reflection(reflection_samples.data[reflection_index(pixel)]);
 	return vec4(sample_value.color_count.rgb, sample_value.normal_distance.w);
 }
 
 // gi1.comp:MarkFireflies. Thresholds are the upstream defaults unless explicitly
 // changed through settings; no custom luminance multiple or geometry rank test.
 void mark_reflection_fireflies(ivec2 pixel, uint id) {
-	ReflectionSample center = reflection_samples.data[id];
+	ReflectionSample center = unpack_reflection(reflection_samples.data[id]);
 	float marked = 0.0;
 	if (center.position_roughness.w >= 0.0 && center.position_roughness.w <= frame.reflections.y) {
 		if (center.normal_distance.w < 0.0) {
@@ -237,13 +254,17 @@ void mark_reflection_fireflies(ivec2 pixel, uint id) {
 			float center_luma = luma(center.color_count.rgb), lower = 0.0, higher = 0.0;
 			int full_radius = frame.reflections.x > 1.0 ? 3 : 2;
 			int half_radius = frame.reflections.x > 1.0 ? (full_radius + 1) / 2 : full_radius;
-			for (int y = -half_radius; y <= half_radius; y++) {
-				for (int x = -half_radius; x <= half_radius; x++) {
+			for (int x = -half_radius; x <= half_radius; x++) {
+				for (int y = -half_radius; y <= half_radius; y++) {
 					ivec2 q = pixel + ivec2(x, y);
 					if ((x == 0 && y == 0) || any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, reflection_size()))) {
 						continue;
 					}
-					ReflectionSample sample_value = reflection_samples.data[reflection_index(q)];
+					ivec2 full_sample = reflection_pixel(q);
+					if (any(lessThan(full_sample, ivec2(0))) || any(greaterThanEqual(full_sample, ivec2(params.size)))) {
+						continue;
+					}
+					ReflectionSample sample_value = unpack_reflection(reflection_samples.data[reflection_index(q)]);
 					if (sample_value.position_roughness.w > frame.reflections.y) {
 						continue;
 					}
@@ -263,36 +284,46 @@ void mark_reflection_fireflies(ivec2 pixel, uint id) {
 void clean_reflection_fireflies(ivec2 pixel, uint id) {
 	vec4 value = reflection_raw(pixel);
 	if (imageLoad(reflection_filter_a, pixel).x >= 0.5) {
-		ReflectionSample center = reflection_samples.data[id];
+		ReflectionSample center = unpack_reflection(reflection_samples.data[id]);
 		vec4 sum = vec4(0);
 		float weight = 0.0;
 		int radius = frame.reflections.x > 1.0 ? 2 : 1;
 		float depth = gi_view_depth(center.position_roughness.xyz);
-		for (int y = -radius; y <= radius; y++) {
-			for (int x = -radius; x <= radius; x++) {
+		for (int x = -radius; x <= radius; x++) {
+			for (int y = -radius; y <= radius; y++) {
 				ivec2 q = pixel + ivec2(x, y);
-				if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, reflection_size()))) {
-					continue;
-				}
-				ReflectionSample other = reflection_samples.data[reflection_index(q)];
-				float plane = 1.0 - clamp(abs(dot(center.normal_distance.xyz, center.position_roughness.xyz - other.position_roughness.xyz) / depth) * 200.0, 0.0, 1.0);
-				float w = (1.0 - imageLoad(reflection_filter_a, q).x) * plane * exp(-float(x * x + y * y) / float((radius + 1) * (radius + 1)));
-				sum += reflection_raw(q) * w;
+				// D3D texture loads outside the image return zero. Preserve their
+				// denominator contribution instead of dropping those filter taps.
+				bool in_half = all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, reflection_size()));
+				ivec2 full_sample = reflection_pixel(q);
+				bool in_full = all(greaterThanEqual(full_sample, ivec2(0))) && all(lessThan(full_sample, ivec2(params.size)));
+				float sample_depth = in_full ? texelFetch(depth_buffer, full_sample, 0).r : 0.0;
+				vec2 sample_uv = (vec2(full_sample) + 0.5) / vec2(params.size);
+				vec4 sample_world = params.inv_view_projection * vec4(sample_uv * 2.0 - 1.0, sample_depth, 1);
+				vec3 other_position = sample_world.xyz / sample_world.w;
+				float plane = 1.0 - clamp(abs(dot(center.normal_distance.xyz, center.position_roughness.xyz - other_position) / depth) * 200.0, 0.0, 1.0);
+				float mark = in_half ? imageLoad(reflection_filter_a, q).x : 0.0;
+				float w = (1.0 - mark) * plane * exp(-float(x * x + y * y) / float((radius + 1) * (radius + 1)));
+				vec4 radiance = in_half ? reflection_raw(q) : vec4(0);
+				sum += radiance * w;
 				weight += w;
 			}
 		}
-		if (abs(weight) >= 1e-3) {
-			value = weight > 0.0 ? sum / weight : sum;
+		if (abs(weight) < 1e-3) {
+			sum += value;
+			weight += 1.0;
 		}
-		value = gi_denoiser_remove_nans(value);
+		value = gi_denoiser_remove_nans(weight > 0.0 ? sum / weight : sum);
+		// Match AMD's in-place cleanup and half-precision specular target.
+		// Unmarked samples remain untouched. Exceptional NaN behavior retains
+		// the source's scheduling dependence; no snapshot policy is substituted.
+		reflection_samples.data[id].color_count = gi_cache_pack(vec4(value.rgb, center.color_count.w));
+		reflection_samples.data[id].normal_distance.w = unpackHalf2x16(packHalf2x16(vec2(value.w, 0))).x;
 	}
-	// Immutable source for the following ratio pass. This also avoids upstream's
-	// in-place neighborhood write hazards without changing the filter equations.
-	imageStore(reflection_filter_b, pixel, value);
 }
 vec4 reflection_filter_source(ivec2 pixel, uint iteration, bool moments) {
 	if (iteration == 0u) {
-		vec4 value = (uint(frame.sky.w) & 1u) != 0u ? imageLoad(reflection_filter_b, pixel) : reflection_raw(pixel);
+		vec4 value = reflection_raw(pixel);
 		return moments ? vec4(value.rgb * value.rgb, 0) : value;
 	}
 	bool source_a = (iteration & 1u) != 0u;
@@ -333,8 +364,8 @@ void resolve_reflection(ivec2 pixel, uint id) {
 	ivec2 half_pixel = full_pixel / stride, jitter = ivec2(0);
 	if (last) {
 		float average = 0.0, squared_average = 0.0, count = 0.0;
-		for (int y = -4; y <= 4; y += 2) {
-			for (int x = -4; x <= 4; x += 2) {
+		for (int x = -4; x <= 4; x += 2) {
+			for (int y = -4; y <= 4; y += 2) {
 				ivec2 q = full_pixel + ivec2(x, y);
 				if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, ivec2(params.size)))) {
 					continue;
@@ -354,8 +385,8 @@ void resolve_reflection(ivec2 pixel, uint id) {
 	vec4 sum = vec4(0);
 	vec3 squares = vec3(0);
 	float weight = 0.0;
-	for (int y = -half_radius; y <= half_radius; y += half_step) {
-		for (int x = -half_radius; x <= half_radius; x += half_step) {
+	for (int x = -half_radius; x <= half_radius; x += half_step) {
+		for (int y = -half_radius; y <= half_radius; y += half_step) {
 			ivec2 q = half_pixel + ivec2(x, y) + jitter;
 			ivec2 full_q = q * stride + reflection_phase(params.padding);
 			if (any(lessThan(full_q, ivec2(0))) || any(greaterThanEqual(full_q, ivec2(params.size))) || surface_roughness(full_q) > frame.reflections.y) {
@@ -365,10 +396,10 @@ void resolve_reflection(ivec2 pixel, uint id) {
 			if (!surface(full_q, other_p, other_n)) {
 				continue;
 			}
-			ReflectionSample sample_value = reflection_samples.data[reflection_index(q)];
+			ReflectionSample sample_value = unpack_reflection(reflection_samples.data[reflection_index(q)]);
 			vec3 l = sample_value.direction_pdf.xyz;
-			if (sample_value.direction_pdf.w >= 0.0 && sample_value.normal_distance.w > 0.0 && sample_value.normal_distance.w < 100.0) {
-				l = normalize(sample_value.position_roughness.xyz + l * sample_value.normal_distance.w - p);
+			if (sample_value.direction_pdf.w > 0.0) {
+				l = normalize(l + params.camera_position.xyz - p);
 			}
 			float nh = clamp(dot(detail_normal, normalize(view + l)), -1.0, 1.0);
 			float pdf = gi_ggx_bounded_pdf(alpha, alpha_squared, nh, local_view);
@@ -389,12 +420,12 @@ void resolve_reflection(ivec2 pixel, uint id) {
 	if (last) {
 		ReflectionSample result;
 		result.position_roughness = vec4(p, roughness);
-		result.normal_distance = vec4(n, sum.w);
+		result.normal_distance = vec4(n, unpackHalf2x16(packHalf2x16(vec2(sum.w, 0))).x);
 		result.direction_pdf = vec4(0);
 		vec3 deviation = sqrt(abs(squares - sum.rgb * sum.rgb));
-		result.virtual_variance = vec4(deviation / max(vec3(1.0) - deviation, vec3(1e-3)), 0);
-		result.color_count = vec4(sum.rgb / max(vec3(1.0) - sum.rgb, vec3(1e-3)), 1);
-		reflections.data[id] = result;
+		result.virtual_variance = gi_cache_unpack(gi_cache_pack(vec4(deviation / max(vec3(1.0) - deviation, vec3(1e-3)), 0)));
+		result.color_count = gi_cache_unpack(gi_cache_pack(vec4(sum.rgb / max(vec3(1.0) - sum.rgb, vec3(1e-3)), 1)));
+		reflections.data[id] = pack_reflection(result);
 	} else if ((iteration & 1u) == 0u) {
 		imageStore(reflection_filter_a, pixel, sum);
 		imageStore(reflection_moments_a, pixel, vec4(sqrt(squares), 1));
@@ -421,10 +452,10 @@ vec4 reflection_history_at(vec2 uv, vec3 normal, float depth) {
 	for (uint i = 0u; i < 4u; i++) {
 		ivec2 q = clamp(base + offsets[i], ivec2(0), ivec2(params.size) - 1);
 		uint index = uint(q.x) + uint(q.y) * params.size.x;
-		Pixel previous = previous_pixels.data[index];
+		Pixel previous = unpack_pixel(previous_pixels.data[index]);
 		previous_normal += previous.normal_delta.xyz * weights[i];
 		previous_depths[i] = previous.position.w > 0.0 ? dot(previous.position.xyz - frame.previous_eye.xyz, frame.previous_forward.xyz) : 1e30;
-		previous_colors[i] = previous_reflections.data[index].color_count;
+		previous_colors[i] = gi_cache_unpack(previous_reflections.data[index].color_count);
 	}
 	vec4 agreement = exp(-abs(1.0 - max(0.0, dot(normal, previous_normal))) * 1.4) * exp(-abs(previous_depths - depth) / depth);
 	if (all(greaterThan(agreement, vec4(0.9)))) {
@@ -439,7 +470,7 @@ vec4 reflection_history_at(vec2 uv, vec3 normal, float depth) {
 		}
 		// Preserve the explicit fallback Load coordinate used by upstream.
 		ivec2 q = clamp(ivec2(uv * vec2(params.size)) + offsets[selected], ivec2(0), ivec2(params.size) - 1);
-		return previous_reflections.data[uint(q.x) + uint(q.y) * params.size.x].color_count;
+		return gi_cache_unpack(previous_reflections.data[uint(q.x) + uint(q.y) * params.size.x].color_count);
 	}
 	return vec4(0);
 }
@@ -452,11 +483,11 @@ void temporal_reflection(ivec2 pixel, uint id) {
 		empty.direction_pdf = vec4(0);
 		empty.color_count = vec4(0);
 		empty.virtual_variance = vec4(0);
-		reflections.data[id] = empty;
+		reflections.data[id] = pack_reflection(empty);
 		return;
 	}
-	n = shading_normal(pixel);
-	ReflectionSample current = reflections.data[id];
+	n = texelFetch(primary_shading_normal, pixel, 0).xyz * 2.0 - 1.0;
+	ReflectionSample current = unpack_reflection(reflections.data[id]);
 	vec3 color = current.color_count.rgb;
 	vec3 ray = p - params.camera_position.xyz;
 	vec3 virtual_position = p + normalize(ray) * current.normal_distance.w;
@@ -466,7 +497,11 @@ void temporal_reflection(ivec2 pixel, uint id) {
 	vec4 old_surface = surface_clip.w > 0.0 ? reflection_history_at(surface_clip.xy / surface_clip.w * 0.5 + 0.5, n, gi_view_depth(p)) : vec4(0);
 	vec3 hit_color = old_hit.rgb / max(old_hit.w, 1.0), surface_color = old_surface.rgb / max(old_surface.w, 1.0);
 	vec3 lo = color - current.virtual_variance.rgb, hi = color + current.virtual_variance.rgb;
-	float scale = -100.0 * params.exposure;
+	float exposure = params.exposure * frame.glossy.w;
+	if (frame.near_field.w != 0.0) {
+		exposure /= texelFetch(temporal_auto_exposure, ivec2(0), 0).r;
+	}
+	float scale = -100.0 * exposure;
 	float hit_weight = old_hit.w > 0.0 ? clamp(exp2(scale * luma(hit_color - color)), 0.0, 1.0) : 0.0;
 	float surface_weight = old_surface.w > 0.0 ? clamp(exp2(scale * luma(surface_color - color)), 0.0, 1.0) : 0.0;
 	float weight = max(hit_weight + surface_weight, 1e-7);
@@ -479,8 +514,8 @@ void temporal_reflection(ivec2 pixel, uint id) {
 	if (lighting.w > max_count) {
 		lighting *= max_count / lighting.w;
 	}
-	current.color_count = vec4(gi_denoiser_remove_nans(vec4(lighting.rgb, 0)).rgb, lighting.w);
-	reflections.data[id] = current;
+	current.color_count = gi_cache_unpack(gi_cache_pack(vec4(gi_denoiser_remove_nans(vec4(lighting.rgb, 0)).rgb, lighting.w)));
+	reflections.data[id] = pack_reflection(current);
 }
 void output_reflection_pixel(ivec2 pixel, uint id) {
 	vec3 p, n;
@@ -488,10 +523,11 @@ void output_reflection_pixel(ivec2 pixel, uint id) {
 	if (surface(pixel, p, n)) {
 		float roughness = surface_roughness(pixel);
 		if (roughness > frame.reflections.y) {
-			vec3 direction;
-			value = reflection_probe_value(pixel, p, n, normalize(params.camera_position.xyz - p), roughness, direction);
+			// ResolveGI1 uses the denoised irradiance, before native ambient/exposure.
+			vec4 irradiance = gi_cache_unpack(pixels.data[id].color);
+			value = irradiance.rgb / (max(irradiance.w, 1.0) * PI);
 		} else if (frame.flags.x != 0u) {
-			vec4 color = reflections.data[id].color_count;
+			vec4 color = gi_cache_unpack(reflections.data[id].color_count);
 			value = color.rgb / max(color.w, 1.0);
 		} else {
 			vec3 color = reflection_raw(pixel / int(frame.reflections.x)).rgb;

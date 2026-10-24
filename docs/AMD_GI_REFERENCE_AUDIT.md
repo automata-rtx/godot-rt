@@ -1,12 +1,23 @@
 # AMD GI reference audit and correction
 
-Status: **in progress; reference fidelity is not established**. The previous
+Current correction status: [consequential corrections](AMD_GI_CONSEQUENTIAL_CORRECTIONS.md). This earlier ledger is historical; its pass/restored statements do not supersede open findings.
+
+Current status: **the full source comparison is complete; reference fidelity is not established and corrections remain unfinished**.
+See [the complete comparison](AMD_GI_FULL_COMPARISON.md) and its
+[function/pass/option coverage appendix](AMD_GI_COMPARISON_COVERAGE.md).
+They supersede this historical ledger's conformance claims. In particular,
+probe eviction/filtering, SH normalization, reflection feedback/rough fallback,
+near-field SSGI, material evaluation and reservoir branch behavior still differ.
+No renderer changes were made during that comparison and no deviation was approved.
+
+The previous
 "scoped pipeline implemented" statement did not establish completion of the
 requested AMD implementation. No algorithmic departure is approved by the owner.
 
 Baseline: AMD Capsaicin v1.3, commit
 [`914b91596cd119eda85fbc1d3c7ee6ac391b1452`](https://github.com/GPUOpen-LibrariesAndSDKs/Capsaicin/tree/914b91596cd119eda85fbc1d3c7ee6ac391b1452/src/core/src/render_techniques/gi1), under
-`src/core/src/render_techniques/gi1/`. Fork audit baseline: `d4b39f5`.
+`src/core/src/render_techniques/gi1/`. Historical ledger baseline: `d4b39f5`.
+The complete comparison uses `d932f4a` plus the existing uncommitted follow-up.
 Tests of the fork alone establish regression behavior, not equivalence to AMD.
 
 The table records source differences, not permission to retain them. A proposed
@@ -115,8 +126,8 @@ Broader rendered regressions and Windows packaging are pending for this working 
   Exact hit-coordinate texture/alpha/normal evaluation and ray-cone material LOD
   remain a substantial gap; native shader compatibility does not justify coarse tiles.
 - Grid volume and final cone evaluation still obtain emissive texture values from
-  that atlas. Environment lookup needs the reference cone/mip convention mapped
-  precisely onto Godot’s sky representation. Godot analytic attenuation is an engine
+  that atlas. Environment cone/mip sampling is now translated using a complete cubemap converted
+  from the native sky; see the validation below. Godot analytic attenuation is an engine
   semantic requirement; the proposal formula and support require dedicated checks.
 - GI hit captures now select geometry normals before normal-map application;
   interpolation remains limited by the triangle tiles. Full scene collection and
@@ -155,3 +166,59 @@ game. The existing 50-unit collection limit remains an **unresolved departure**,
 not an approved optimization. Exact hit material evaluation and cone-dependent
 texture sampling remain substantive missing work; none of these corrections make
 the existing tiny material tiles equivalent to AMD's material inputs.
+
+### Environment cone and reservoir follow-up
+
+`evaluateEnvironmentLightCone` and the two GI-1 cone widths are now translated.
+A GI-owned cube converts the native octahedral level zero and generates ordinary
+box-filtered mips. Conversion preserves native orientation/exposure; static sky
+revisions reuse the cube, dynamic skies refresh it, and disabling GI frees it.
+RenderingDevice now permits 2D-array views of cube faces for compute storage; this
+is a resource-view integration change, not a new sampling estimator.
+
+The independent Vulkan direction test covers 4,096 cube lookups: maximum absolute
+channel error 0.002671 against an analytic direction-colored 64x64 input; each
+face's final mip differs from its base-level mean by at most 0.000932. Both bounds
+include native-source interpolation and half-float rounding. The equation oracle
+includes the cone LOD and still has maximum error zero over 4,096 cases.
+
+When temporal resampling is enabled, the fresh reservoir is first reweighted under
+the narrow target before merging previous candidates. Blocked samples now retain
+zero W, as `PopulateCellsHandleHit` requires. Previously they retained their
+unoccluded proposal weight in next frame's reservoir.
+
+The rough-BRDF target omits AMD's common scalar albedo normalization: for a hit,
+that factor multiplies every candidate target by the same positive constant c.
+Selection probabilities `(c*w_i)/sum(c*w)` and the final weight
+`sum(c*w)/(M*c*selected_target)` are unchanged; the same cancellation applies to
+each temporal merge. No BRDF lobe, relative candidate weight, sampling distribution
+or estimator is replaced by this algebraic cancellation.
+
+### Integrated d932f4a evidence and failures
+
+Software Vulkan: diffuse quarter/one, light reservoirs, multibounce, FSR2,
+reflections, gameplay history continuity and native material fixtures pass.
+Reflection validation covers 344 frames, including a moving off-screen emitter;
+its mirror contains 799 emitter pixels versus 26 with the incorrect facing flag.
+Moving glossy receivers kept history: 1,200 of 24,446 samples were fresh in the
+controlled gameplay fixture. Light pulses and geometry flicker did not cause
+whole-history resets. This is a controlled fixture, not validation on the owner's
+5090 or of the golden weapon itself.
+
+The rapid-emitter quality fixture **fails**: 32 frames after removal, receiver
+linear energy is 0.000882 versus lit 0.036523 (2.42%, above the 2% threshold).
+Short off/on pulse pairs blur together and do not satisfy the response assertion.
+The threshold was not changed. This prevents a claim that the electrical hazard
+or muzzle-flash temporal response is fixed.
+
+Crossroads still captures at 640x360 internal / 1280x720 FSR2 Performance show GI
+contributing at both quarter and one primary budgets, with denoising enabled,
+grass off and hard RT shadows. A frozen scene and 62-frame settle are recorded in
+`preview/amd-gi-d932f4a-crossroads/capture.json` in the workspace. They do not show
+movement quality, hardware performance, or the later environment-cone follow-up.
+
+Windows clang editor and release template artifacts were successfully produced by
+[run 39992968091](https://github.com/automata-rtx/godot-rt/actions/runs/39992968091)
+for d932f4a. They precede the environment-cone follow-up.
+
+The later [normal-space investigation](AMD_GI_NORMAL_SPACE_INVESTIGATION.md) identifies localized upstream transform errors and records the owner's conditional approval. The port now preserves source interpolated and geometric normals separately; GPU decoder and deformation regressions qualify that change. This supersedes the historical capture-normal description for AMD GI, without claiming that atlas material evaluation is resolved.

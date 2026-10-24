@@ -164,12 +164,24 @@ If GI repeatedly restarts while standing still or walking, enable the opt-in
 `GODOT_AMD_GI_TRACE_HISTORY=1` environment variable to distinguish camera,
 environment, configuration and scene resets from local dirty regions. The sandbox
 regression fixed global resets caused by flickering electrical-field mesh visibility
-and camera-centered geometry collection changes. Those events now invalidate local
-bounds. The subsequent implementation remaps light identities, reprojects native
-previous surfaces, retains native captures and atlas placements, and preflights
-material capacity. See the historical [gameplay audit](AMD_GI_GAMEPLAY_AUDIT.md)
+and camera-centered geometry collection changes. Current dirty bounds are diagnostic.
+The consequential correction removes stable-ID remapping and follows AMD's
+light-settings transitions, including zero/nonzero emitter or analytic-light counts.
+Native previous-surface reprojection, capture residency and capacity preflight remain;
+capacity/unsupported-material preparation can still suppress GI. See the
+[live correction record](AMD_GI_CONSEQUENTIAL_CORRECTIONS.md). See the historical [gameplay audit](AMD_GI_GAMEPLAY_AUDIT.md)
 for the `3038a14` failures and the implementation status for current evidence.
 These changes are not a substitute for checking moving images and actual hardware.
 Default Crossroads/Fieldway scene preparation now adapts material resolution to fit
 its budget; the compact fallback reduces within-triangle material detail. See
 [AMD GI history diagnostics](features/amd-gi.md#scene-changes-and-history-diagnostics).
+
+Current AMD GI no longer uses the capture atlas. Raising `material_atlas_mb`,
+`material_preparation_budget` or `material_tile_size` cannot fix AMD GI source
+shading; those settings now affect only the legacy uncached transport validator.
+Unsupported source shader/scene classes produce a warning and are omitted
+individually, so check warnings if particular objects are absent from transport.
+An EMISSION-writing shader is classified as emissive even when its current RGB
+is black; this owner-approved input encoding follows AMD's base-emissivity
+termination distinction. See the live correction record before treating any
+historical atlas workaround or settled still as current validation.

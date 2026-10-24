@@ -267,8 +267,8 @@ RID RenderForwardClustered::RenderBufferDataForwardClustered::get_depth_fb(Depth
 					velocity = render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("velocity"), RenderSceneBuffersRD::get_velocity_format(), RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT);
 				}
 				RID previous_position = render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("previous_position"), RD::DATA_FORMAT_R32G32B32A32_SFLOAT, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT);
-				RID geometry_normal = render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("geometry_normal"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT);
-				return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), depth, normal_roughness_buffer, sss_caster_buffer, velocity, previous_position, geometry_normal, render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("primary_material"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT));
+				RID geometry_normal = render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("geometry_normal"), RD::DATA_FORMAT_A2B10G10R10_UNORM_PACK32, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT);
+				return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), depth, normal_roughness_buffer, sss_caster_buffer, velocity, previous_position, geometry_normal, render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("primary_material"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT), render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("shading_normal"), RD::DATA_FORMAT_A2B10G10R10_UNORM_PACK32, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT), render_buffers->create_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("roughness"), RD::DATA_FORMAT_R16_SFLOAT, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT));
 			}
 			return FramebufferCacheRD::get_singleton()->get_cache_multiview(render_buffers->get_view_count(), depth, normal_roughness_buffer, sss_caster_buffer);
 		} break;
@@ -2289,6 +2289,15 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		const float exposure = p_render_data->camera_attributes.is_valid() ? RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes) : 1.0f;
 		RendererRD::AMDGI::Environment gi_environment;
 		const RID env = p_render_data->environment;
+		gi_environment.temporal_exposure_scale = env.is_valid() ? environment_get_exposure(env) : 1.0f;
+		if (p_render_data->camera_attributes.is_valid() && RSG::camera_attributes->camera_attributes_uses_auto_exposure(p_render_data->camera_attributes)) {
+			// The GI stage consumes the previous completed exposure reduction,
+			// as Capsaicin does before its current-frame exposure/tonemap pass.
+			gi_environment.auto_exposure = luminance->get_current_luminance_buffer(rb);
+			if (gi_environment.auto_exposure.is_valid()) {
+				gi_environment.temporal_exposure_scale *= RSG::camera_attributes->camera_attributes_get_auto_exposure_scale(p_render_data->camera_attributes) / rb->get_luminance_multiplier();
+			}
+		}
 		if (env.is_valid()) {
 			const RID sky_rid = environment_get_sky(env);
 			const bool sky_background = environment_get_background(env) == RSE::ENV_BG_SKY;
@@ -2639,7 +2648,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			} break;
 			case PASS_MODE_DEPTH_GI_MOTION: {
 				depth_framebuffer = rb_data->get_depth_fb(RenderBufferDataForwardClustered::DEPTH_FB_GI_MOTION, motion_vectors_required, _using_restricted_sss_casters(p_render_data));
-				for (int i = 0; i < 6; i++) {
+				for (int i = 0; i < 8; i++) {
 					depth_pass_clear.push_back(Color(0, 0, 0, 0));
 				}
 			} break;
@@ -2897,6 +2906,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	// GI has finished reading last frame's opaque lighting. Attach its optional
 	// target only now, after GI resource allocation/fallback has completed.
 	if (amd_gi && rb_data.is_valid() && rb->has_texture(RB_SCOPE_AMD_GI, SNAME("feedback"))) {
+		amd_gi->prepare_feedback_lights(rb, *p_render_data->lights);
 		color_pass_flags |= COLOR_PASS_FLAG_GI_FEEDBACK;
 		color_framebuffer = rb_data->get_color_pass_fb(color_pass_flags);
 		if (load_color) {
@@ -4643,6 +4653,11 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		RID texture = mask.is_valid() ? mask : texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_WHITE);
 		u.append_id(texture);
 		uniforms.push_back(u);
+	}
+
+	{
+		RID feedback_lights = amd_gi ? amd_gi->get_feedback_lights(rb) : RID();
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 40, feedback_lights.is_valid() ? feedback_lights : RendererRD::MeshStorage::get_singleton()->get_default_rd_storage_buffer()));
 	}
 
 	return UniformSetCacheRD::get_singleton()->get_cache_vec(scene_shader.get_default_shader_rd(is_multiview), RENDER_PASS_UNIFORM_SET, uniforms);

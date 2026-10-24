@@ -891,6 +891,7 @@ protected:
 
 public:
 	static RenderForwardClustered *get_singleton() { return singleton; }
+	const ShaderCompiler &get_material_shader_compiler() const { return scene_shader.compiler; }
 
 	ClusterBuilderSharedDataRD *get_cluster_builder_shared() { return &cluster_builder_shared; }
 	RendererRD::SSEffects *get_ss_effects() { return ss_effects; }
