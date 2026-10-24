@@ -1,0 +1,549 @@
+{
+  "strict-0": {
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 140.3826,
+        "mean": 138.1377,
+        "p90": 141.3045
+      },
+      "AMD GI pass 17": {
+        "median": 120.6753,
+        "mean": 119.788,
+        "p90": 120.9032
+      },
+      "AMD GI pass 18": {
+        "median": 0.0802,
+        "mean": 0.0808,
+        "p90": 0.0842
+      },
+      "AMD GI pass 18 secondary": {
+        "median": 0.0901,
+        "mean": 0.0913,
+        "p90": 0.0964
+      },
+      "RT GI emitters": {
+        "median": 17.0772,
+        "mean": 17.0974,
+        "p90": 17.707
+      },
+      "RT GI TLAS build": {
+        "median": 0.2,
+        "mean": 0.2003,
+        "p90": 0.202
+      },
+      "RT GI materials upload": {
+        "median": 0.1065,
+        "mean": 0.1132,
+        "p90": 0.1068
+      },
+      "RT shadow scene update": {
+        "median": 0.3387,
+        "mean": 0.2493,
+        "p90": 0.3431
+      }
+    },
+    "metadata": [
+      "PROFILE_GEOMETRY instances=16402 emitter_batches=12563",
+      "DEEP_PROFILE_BEGIN mode=0 level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+      "PROFILE_WORK 2225 37073 4852 0 2225 1 1 0 580 1 1 0 76 1 1 0 256 1 1 0 ",
+      "PROFILE_SCENE primary_budget=230400 lights=2 emitters=5291940"
+    ]
+  },
+  "final-0": {
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 140.688,
+        "mean": 139.2606,
+        "p90": 141.4097
+      },
+      "AMD GI pass 17": {
+        "median": 120.8044,
+        "mean": 120.9345,
+        "p90": 121.0015
+      },
+      "AMD GI pass 18": {
+        "median": 0.0798,
+        "mean": 0.0802,
+        "p90": 0.084
+      },
+      "AMD GI pass 18 secondary": {
+        "median": 0.0901,
+        "mean": 0.0906,
+        "p90": 0.0952
+      },
+      "RT GI emitters": {
+        "median": 0.0021,
+        "mean": 0.0022,
+        "p90": 0.0022
+      },
+      "RT GI emitter buffer clear": {
+        "median": 0.3091,
+        "mean": 0.3482,
+        "p90": 0.5001
+      },
+      "RT GI emitter dispatches": {
+        "median": 16.7803,
+        "mean": 16.7799,
+        "p90": 17.2995
+      },
+      "RT GI TLAS build": {
+        "median": 0.2,
+        "mean": 0.2004,
+        "p90": 0.2033
+      },
+      "RT GI materials upload": {
+        "median": 0.1065,
+        "mean": 0.118,
+        "p90": 0.1069
+      },
+      "RT shadow scene update": {
+        "median": 0.1422,
+        "mean": 0.2081,
+        "p90": 0.3432
+      }
+    },
+    "metadata": [
+      "PROFILE_EMITTER_DIRTY total=12563 previous=12563 changed=1 dirty=56 transform=56 geometry=0 pixels=0 layout=0 valid=true",
+      "PROFILE_GEOMETRY instances=16402 emitter_batches=12563",
+      "PROFILE_MATERIAL triangles=5219312 shader= shader_id=20 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(13868449398836)",
+      "PROFILE_MATERIAL triangles=24 shader= shader_id=22 emission=(0.32, 0.78, 0.9, 1.0) energy=1.60000002384186 texture=<null>",
+      "PROFILE_MATERIAL triangles=8184 shader= shader_id=23 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(13868449398836)",
+      "PROFILE_MATERIAL triangles=64420 shader= shader_id=24 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(26195005538370)",
+      "DEEP_PROFILE_BEGIN mode=0 level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+      "PROFILE_WORK 2225 37097 4822 0 2225 1 1 0 580 1 1 0 76 1 1 0 256 1 1 0 ",
+      "PROFILE_SCENE primary_budget=230400 lights=2 emitters=5291940",
+      "PROFILE_AUTHORED_MATERIAL texture=res://assets/Synty/PolygonApocalypse/Textures/Misc/PolygonApocalypse_01_Emissive.png rid=RID(13868449398836) emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 surfaces=5223",
+      "PROFILE_AUTHORED_MATERIAL texture=none rid=RID(0) emission=(0.32, 0.78, 0.9, 1.0) energy=1.60000002384186 surfaces=2",
+      "PROFILE_AUTHORED_MATERIAL texture=res://assets/Synty/PolygonApocalypse/Textures/Misc/Vehicle_01_Emissive.png rid=RID(26195005538370) emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 surfaces=54"
+    ]
+  },
+  "strict-6": {
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 136.4826,
+        "mean": 136.4499,
+        "p90": 141.1151
+      },
+      "AMD GI pass 17": {
+        "median": 117.0238,
+        "mean": 118.6723,
+        "p90": 121.0608
+      },
+      "AMD GI pass 18": {
+        "median": 0.006,
+        "mean": 0.006,
+        "p90": 0.0061
+      },
+      "AMD GI pass 18 secondary": {
+        "median": 0.0061,
+        "mean": 0.0061,
+        "p90": 0.0062
+      },
+      "RT GI emitters": {
+        "median": 16.6605,
+        "mean": 16.623,
+        "p90": 17.5309
+      },
+      "RT GI TLAS build": {
+        "median": 0.2001,
+        "mean": 0.2003,
+        "p90": 0.202
+      },
+      "RT GI materials upload": {
+        "median": 0.1065,
+        "mean": 0.1155,
+        "p90": 0.1069
+      },
+      "RT shadow scene update": {
+        "median": 0.3383,
+        "mean": 0.2504,
+        "p90": 0.3425
+      }
+    },
+    "metadata": [
+      "PROFILE_GEOMETRY instances=16402 emitter_batches=12563",
+      "DEEP_PROFILE_BEGIN mode=6 level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+      "PROFILE_WORK 2225 33684 4789 0 2225 1 1 0 527 1 1 0 75 1 1 0 256 1 1 0 ",
+      "PROFILE_SCENE primary_budget=230400 lights=2 emitters=5291940"
+    ]
+  },
+  "strict-7": {
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 19.1871,
+        "mean": 18.9666,
+        "p90": 19.2505
+      },
+      "AMD GI pass 17": {
+        "median": 0.0061,
+        "mean": 0.0061,
+        "p90": 0.0062
+      },
+      "AMD GI pass 18": {
+        "median": 0.0246,
+        "mean": 0.0248,
+        "p90": 0.0266
+      },
+      "AMD GI pass 18 secondary": {
+        "median": 0.0266,
+        "mean": 0.0273,
+        "p90": 0.0287
+      },
+      "RT GI emitters": {
+        "median": 16.5796,
+        "mean": 16.582,
+        "p90": 16.6052
+      },
+      "RT GI TLAS build": {
+        "median": 0.1999,
+        "mean": 0.2001,
+        "p90": 0.2019
+      },
+      "RT GI materials upload": {
+        "median": 0.1063,
+        "mean": 0.1062,
+        "p90": 0.1066
+      },
+      "RT shadow scene update": {
+        "median": 0.1403,
+        "mean": 0.1343,
+        "p90": 0.1425
+      }
+    },
+    "metadata": [
+      "PROFILE_GEOMETRY instances=16402 emitter_batches=12563",
+      "DEEP_PROFILE_BEGIN mode=7 level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+      "PROFILE_WORK 2225 33745 4740 0 2225 1 1 0 528 1 1 0 75 1 1 0 256 1 1 0 ",
+      "PROFILE_SCENE primary_budget=230400 lights=2 emitters=5291940"
+    ]
+  },
+  "grid-simple-emission": {
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 106.4769,
+        "mean": 105.0349,
+        "p90": 107.4743
+      },
+      "AMD GI pass 17": {
+        "median": 86.4911,
+        "mean": 86.1229,
+        "p90": 86.7494
+      },
+      "AMD GI pass 18": {
+        "median": 0.0798,
+        "mean": 0.0808,
+        "p90": 0.0859
+      },
+      "AMD GI pass 18 secondary": {
+        "median": 0.0931,
+        "mean": 0.0933,
+        "p90": 0.0983
+      },
+      "RT GI emitters": {
+        "median": 0.0021,
+        "mean": 0.0021,
+        "p90": 0.0022
+      },
+      "RT GI emitter buffer clear": {
+        "median": 0.3084,
+        "mean": 0.3291,
+        "p90": 0.4899
+      },
+      "RT GI emitter dispatches": {
+        "median": 16.9359,
+        "mean": 16.9129,
+        "p90": 17.3964
+      },
+      "RT GI TLAS build": {
+        "median": 0.1999,
+        "mean": 0.2,
+        "p90": 0.2019
+      },
+      "RT GI materials upload": {
+        "median": 0.1067,
+        "mean": 0.111,
+        "p90": 0.1068
+      },
+      "RT shadow scene update": {
+        "median": 0.3388,
+        "mean": 0.2578,
+        "p90": 0.3425
+      }
+    },
+    "metadata": [
+      "PROFILE_GEOMETRY instances=16402 emitter_batches=12563",
+      "PROFILE_MATERIAL triangles=5219312 shader= shader_id=20 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(13868449398836)",
+      "PROFILE_MATERIAL triangles=24 shader= shader_id=22 emission=(0.32, 0.78, 0.9, 1.0) energy=1.60000002384186 texture=<null>",
+      "PROFILE_MATERIAL triangles=8184 shader= shader_id=23 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(13868449398836)",
+      "PROFILE_MATERIAL triangles=64420 shader= shader_id=24 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(26195005538370)",
+      "DEEP_PROFILE_BEGIN mode=8 level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+      "PROFILE_WORK 2225 37055 4788 0 2225 1 1 0 579 1 1 0 75 1 1 0 256 1 1 0 ",
+      "PROFILE_SCENE primary_budget=230400 lights=2 emitters=5291940"
+    ]
+  },
+  "no-emitter-sampling": {
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 2.8173,
+        "mean": 2.7762,
+        "p90": 2.8613
+      },
+      "AMD GI pass 17": {
+        "median": 0.0102,
+        "mean": 0.0102,
+        "p90": 0.0102
+      },
+      "AMD GI pass 18": {
+        "median": 0.0471,
+        "mean": 0.0487,
+        "p90": 0.0532
+      },
+      "AMD GI pass 18 secondary": {
+        "median": 0.0553,
+        "mean": 0.0563,
+        "p90": 0.0614
+      },
+      "RT GI emitters": {
+        "median": 0.0021,
+        "mean": 0.0021,
+        "p90": 0.0022
+      },
+      "RT GI TLAS build": {
+        "median": 0.202,
+        "mean": 0.202,
+        "p90": 0.2044
+      },
+      "RT GI materials upload": {
+        "median": 0.1052,
+        "mean": 0.1053,
+        "p90": 0.1058
+      },
+      "RT shadow scene update": {
+        "median": 0.1444,
+        "mean": 0.127,
+        "p90": 0.1469
+      }
+    },
+    "metadata": [
+      "PROFILE_GEOMETRY instances=16402 emitter_batches=0",
+      "DEEP_PROFILE_BEGIN mode=0 level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+      "PROFILE_WORK 2225 37136 4789 0 2225 1 1 0 581 1 1 0 75 1 1 0 256 1 1 0 ",
+      "PROFILE_SCENE primary_budget=230400 lights=2 emitters=0",
+      "PROFILE_AUTHORED_MATERIAL texture=res://assets/Synty/PolygonApocalypse/Textures/Misc/PolygonApocalypse_01_Emissive.png rid=RID(13868449398836) emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 surfaces=5223",
+      "PROFILE_AUTHORED_MATERIAL texture=none rid=RID(0) emission=(0.32, 0.78, 0.9, 1.0) energy=1.60000002384186 surfaces=2",
+      "PROFILE_AUTHORED_MATERIAL texture=res://assets/Synty/PolygonApocalypse/Textures/Misc/Vehicle_01_Emissive.png rid=RID(26195005538370) emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 surfaces=54"
+    ]
+  },
+  "spacing-32": {
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 140.6861,
+        "mean": 139.1617,
+        "p90": 140.9804
+      },
+      "AMD GI pass 17": {
+        "median": 120.87,
+        "mean": 120.9978,
+        "p90": 121.0742
+      },
+      "AMD GI pass 18": {
+        "median": 0.0819,
+        "mean": 0.0818,
+        "p90": 0.0875
+      },
+      "AMD GI pass 18 secondary": {
+        "median": 0.0923,
+        "mean": 0.0938,
+        "p90": 0.1004
+      },
+      "RT GI emitters": {
+        "median": 0.0021,
+        "mean": 0.0021,
+        "p90": 0.0022
+      },
+      "RT GI emitter buffer clear": {
+        "median": 0.3071,
+        "mean": 0.3355,
+        "p90": 0.4941
+      },
+      "RT GI emitter dispatches": {
+        "median": 16.7711,
+        "mean": 16.7282,
+        "p90": 16.9503
+      },
+      "RT GI TLAS build": {
+        "median": 0.2,
+        "mean": 0.2001,
+        "p90": 0.2021
+      },
+      "RT GI materials upload": {
+        "median": 0.1065,
+        "mean": 0.1087,
+        "p90": 0.1068
+      },
+      "RT shadow scene update": {
+        "median": 0.3376,
+        "mean": 0.2566,
+        "p90": 0.3441
+      }
+    },
+    "metadata": [
+      "PROFILE_GEOMETRY instances=16402 emitter_batches=12563",
+      "PROFILE_MATERIAL triangles=5219312 shader= shader_id=20 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(13868449398836)",
+      "PROFILE_MATERIAL triangles=24 shader= shader_id=22 emission=(0.32, 0.78, 0.9, 1.0) energy=1.60000002384186 texture=<null>",
+      "PROFILE_MATERIAL triangles=8184 shader= shader_id=23 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(13868449398836)",
+      "PROFILE_MATERIAL triangles=64420 shader= shader_id=24 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(26195005538370)",
+      "DEEP_PROFILE_BEGIN mode=0 level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+      "PROFILE_WORK 586 10252 1311 0 586 1 1 0 161 1 1 0 21 1 1 0 256 1 1 0 ",
+      "PROFILE_SCENE primary_budget=58880 lights=2 emitters=5291940",
+      "PROFILE_AUTHORED_MATERIAL texture=res://assets/Synty/PolygonApocalypse/Textures/Misc/PolygonApocalypse_01_Emissive.png rid=RID(13868449398836) emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 surfaces=5223",
+      "PROFILE_AUTHORED_MATERIAL texture=none rid=RID(0) emission=(0.32, 0.78, 0.9, 1.0) energy=1.60000002384186 surfaces=2",
+      "PROFILE_AUTHORED_MATERIAL texture=res://assets/Synty/PolygonApocalypse/Textures/Misc/Vehicle_01_Emissive.png rid=RID(26195005538370) emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 surfaces=54"
+    ]
+  },
+  "final-9": {
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 134.0908,
+        "mean": 132.5384,
+        "p90": 135.0218
+      },
+      "AMD GI pass 17": {
+        "median": 114.1809,
+        "mean": 114.3005,
+        "p90": 114.4142
+      },
+      "AMD GI pass 18": {
+        "median": 0.0799,
+        "mean": 0.0807,
+        "p90": 0.0855
+      },
+      "AMD GI pass 18 secondary": {
+        "median": 0.0901,
+        "mean": 0.0908,
+        "p90": 0.0942
+      },
+      "RT GI emitters": {
+        "median": 0.0021,
+        "mean": 0.0021,
+        "p90": 0.0022
+      },
+      "RT GI emitter buffer clear": {
+        "median": 0.3071,
+        "mean": 0.3376,
+        "p90": 0.4971
+      },
+      "RT GI emitter dispatches": {
+        "median": 16.7761,
+        "mean": 16.7391,
+        "p90": 17.3154
+      },
+      "RT GI TLAS build": {
+        "median": 0.2,
+        "mean": 0.2036,
+        "p90": 0.2033
+      },
+      "RT GI materials upload": {
+        "median": 0.1065,
+        "mean": 0.1112,
+        "p90": 0.1069
+      },
+      "RT shadow scene update": {
+        "median": 0.3381,
+        "mean": 0.2429,
+        "p90": 0.3433
+      }
+    },
+    "metadata": [
+      "PROFILE_EMITTER_DIRTY total=12563 previous=12563 changed=1 dirty=116 transform=116 geometry=0 pixels=0 layout=0 valid=true",
+      "PROFILE_GEOMETRY instances=16402 emitter_batches=12563",
+      "PROFILE_MATERIAL triangles=5219312 shader= shader_id=20 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(13868449398836)",
+      "PROFILE_MATERIAL triangles=24 shader= shader_id=22 emission=(0.32, 0.78, 0.9, 1.0) energy=1.60000002384186 texture=<null>",
+      "PROFILE_MATERIAL triangles=8184 shader= shader_id=23 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(13868449398836)",
+      "PROFILE_MATERIAL triangles=64420 shader= shader_id=24 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(26195005538370)",
+      "DEEP_PROFILE_BEGIN mode=9 level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+      "PROFILE_WORK 2225 37176 4898 0 2225 1 1 0 581 1 1 0 77 1 1 0 256 1 1 0 ",
+      "PROFILE_SCENE primary_budget=230400 lights=2 emitters=5291940",
+      "PROFILE_AUTHORED_MATERIAL texture=res://assets/Synty/PolygonApocalypse/Textures/Misc/PolygonApocalypse_01_Emissive.png rid=RID(13868449398836) emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 surfaces=5223",
+      "PROFILE_AUTHORED_MATERIAL texture=none rid=RID(0) emission=(0.32, 0.78, 0.9, 1.0) energy=1.60000002384186 surfaces=2",
+      "PROFILE_AUTHORED_MATERIAL texture=res://assets/Synty/PolygonApocalypse/Textures/Misc/Vehicle_01_Emissive.png rid=RID(26195005538370) emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 surfaces=54"
+    ]
+  },
+  "final-10": {
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 138.0492,
+        "mean": 136.5905,
+        "p90": 138.7743
+      },
+      "AMD GI pass 17": {
+        "median": 118.2363,
+        "mean": 118.285,
+        "p90": 118.4239
+      },
+      "AMD GI pass 18": {
+        "median": 0.0306,
+        "mean": 0.0306,
+        "p90": 0.031
+      },
+      "AMD GI pass 18 secondary": {
+        "median": 0.0287,
+        "mean": 0.0294,
+        "p90": 0.0307
+      },
+      "RT GI emitters": {
+        "median": 0.0021,
+        "mean": 0.0022,
+        "p90": 0.0022
+      },
+      "RT GI emitter buffer clear": {
+        "median": 0.3092,
+        "mean": 0.3483,
+        "p90": 0.4963
+      },
+      "RT GI emitter dispatches": {
+        "median": 16.769,
+        "mean": 16.7951,
+        "p90": 17.4091
+      },
+      "RT GI TLAS build": {
+        "median": 0.2001,
+        "mean": 0.2007,
+        "p90": 0.2025
+      },
+      "RT GI materials upload": {
+        "median": 0.1065,
+        "mean": 0.1068,
+        "p90": 0.1068
+      },
+      "RT shadow scene update": {
+        "median": 0.1447,
+        "mean": 0.2256,
+        "p90": 0.3433
+      }
+    },
+    "metadata": [
+      "PROFILE_EMITTER_DIRTY total=12563 previous=12563 changed=1 dirty=48 transform=48 geometry=0 pixels=0 layout=0 valid=true",
+      "PROFILE_GEOMETRY instances=16402 emitter_batches=12563",
+      "PROFILE_MATERIAL triangles=5219312 shader= shader_id=20 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(13868449398836)",
+      "PROFILE_MATERIAL triangles=24 shader= shader_id=22 emission=(0.32, 0.78, 0.9, 1.0) energy=1.60000002384186 texture=<null>",
+      "PROFILE_MATERIAL triangles=8184 shader= shader_id=23 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(13868449398836)",
+      "PROFILE_MATERIAL triangles=64420 shader= shader_id=24 emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 texture=RID(26195005538370)",
+      "DEEP_PROFILE_BEGIN mode=10 level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+      "PROFILE_WORK 2225 33725 4747 0 2225 1 1 0 527 1 1 0 75 1 1 0 256 1 1 6135 ",
+      "PROFILE_SCENE primary_budget=230400 lights=2 emitters=5291940",
+      "PROFILE_AUTHORED_MATERIAL texture=res://assets/Synty/PolygonApocalypse/Textures/Misc/PolygonApocalypse_01_Emissive.png rid=RID(13868449398836) emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 surfaces=5223",
+      "PROFILE_AUTHORED_MATERIAL texture=none rid=RID(0) emission=(0.32, 0.78, 0.9, 1.0) energy=1.60000002384186 surfaces=2",
+      "PROFILE_AUTHORED_MATERIAL texture=res://assets/Synty/PolygonApocalypse/Textures/Misc/Vehicle_01_Emissive.png rid=RID(26195005538370) emission=(0.0, 0.0, 0.0, 1.0) energy=1.0 surfaces=54"
+    ]
+  }
+}

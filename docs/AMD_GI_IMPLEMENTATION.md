@@ -19,11 +19,20 @@ consequential cache/viewport regression pass on the corrected Windows build.
 
 Actual fps-proto menu transitions through Systems Sandbox and Crossroads are
 responsive with GI enabled. Cold shader creation can still pause loading; it is
-not asynchronous. Crossroads remains slow: the external menu-driven GPU profile
-(`validation/shadow_validation/fps_proto_amd_gi_profile.gd`) at 1280x720 measured
-about 122 ms in GI hit shading and 19 ms in acceleration
-structure updates on the RTX 5090 (roughly 6–7 FPS). This is a separate remaining
-performance issue. The game's saved video settings override the project's
+not asynchronous. Crossroads remains slow. A deeper synchronized GPU profile at
+1280x720 attributes about **121 ms to light-grid construction** and **17 ms to
+emitter geometry regeneration** on the RTX 5090, out of roughly 140 ms total.
+The earlier 122 ms hit-shading / 19 ms acceleration-structure attribution was
+incorrect: ordinary timestamp boundaries allowed work to cross the labels.
+Actual primary/secondary hit shading is about 0.17 ms combined; GI TLAS building
+is about 0.2 ms. The light grid scans 5.29 million emissive triangles for each of
+256 cells. Only 56 of 12,563 emitter batches changed in one snapshot, but all
+were rebuilt. See the [profiling report and reproducible evidence](validation/amd_gi_profile_2026_10_24/README.md)
+for controls, exact-zero candidate counts and the recommended fix work.
+No production performance optimization was installed by that investigation.
+Its automated runs also exposed a separate exit-time `nvcuda64.dll` access
+violation, reproduced with the unchanged delivered editor; root cause remains
+unresolved. The game's saved video settings override the project's
 upscaler at runtime; Streamline initialization alone does not prove active DLSS.
 
 A separate repeated-level stall remained with the desktop's implicit Vulkan

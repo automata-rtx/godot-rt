@@ -1,5 +1,12 @@
 # Validating a Change to This Fork
 
+AMD GI GPU cost investigation on the RTX 5090: see the
+[2026-10-24 profile](validation/amd_gi_profile_2026_10_24/README.md), external
+fps-proto harness, per-frame evidence and temporary instrumentation patch.
+Synchronized timestamps correct the earlier hit-shading attribution: light-grid
+construction and emitter regeneration dominate. Diagnostic ablations are not
+shipping quality presets; the report records the separate exit-time fault.
+
 Compute storage/indirect synchronization: run the graphical Windows editor with
 `--path docs/validation/shadow_validation --script res://compute_indirect_storage.gd`.
 The local RenderingDevice fixture alternates 256 GPU-produced dispatch counts

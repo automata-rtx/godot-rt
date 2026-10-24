@@ -1,0 +1,177 @@
+diff --git a/drivers/vulkan/rendering_device_driver_vulkan.cpp b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+index 590456e405..c02a5ff57b 100644
+--- a/drivers/vulkan/rendering_device_driver_vulkan.cpp
++++ b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+@@ -6883,0 +6884,5 @@ void RenderingDeviceDriverVulkan::command_timestamp_write(CommandBufferID p_cmd_
++	const bool strict = OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_STRICT") == "1";
++	VkMemoryBarrier barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT };
++	if (strict) {
++		vkCmdPipelineBarrier(command_buffer->vk_command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
++	}
+@@ -6884,0 +6890,3 @@ void RenderingDeviceDriverVulkan::command_timestamp_write(CommandBufferID p_cmd_
++	if (strict) {
++		vkCmdPipelineBarrier(command_buffer->vk_command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
++	}
+diff --git a/servers/rendering/renderer_rd/environment/amd_gi.cpp b/servers/rendering/renderer_rd/environment/amd_gi.cpp
+index d76ec87fa9..0e1ced555e 100644
+--- a/servers/rendering/renderer_rd/environment/amd_gi.cpp
++++ b/servers/rendering/renderer_rd/environment/amd_gi.cpp
+@@ -404,0 +405,2 @@ bool AMDGI::prepare_material_pipelines(const RaytracingGIScene &p_scene) {
++	const int profile_mode = OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_MODE").to_int();
++	defines.push_back("#define AMD_GI_PROFILE_MODE " + itos(profile_mode) + "\n");
+@@ -911,0 +914 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
++	const bool profile_passes = OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_PASSES") == "1";
+@@ -953,0 +957,5 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
++		if (profile_passes) {
++			rd->compute_list_end();
++			rd->capture_timestamp("AMD GI pass " + itos(pass));
++			list = rd->compute_list_begin();
++		}
+@@ -973,0 +982,8 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
++				if (profile_passes && bounce > 0) {
++					rd->compute_list_end();
++					rd->capture_timestamp("AMD GI pass " + itos(pass) + " secondary");
++					list = rd->compute_list_begin();
++					rd->compute_list_bind_compute_pipeline(list, pipelines[pass]);
++					rd->compute_list_bind_uniform_set(list, set, 0);
++					rd->compute_list_bind_uniform_set(list, material_set, 1);
++				}
+@@ -1063,0 +1080,13 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
++	if (profile_passes) {
++		rd->capture_timestamp("AMD GI end");
++	}
++	if (OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_COUNTS") == "1" && push.frame == 100) {
++		Vector<uint8_t> work_bytes = rd->buffer_get_data(data->work, 0, 80);
++		const uint32_t *w = reinterpret_cast<const uint32_t *>(work_bytes.ptr());
++		String counts;
++		for (int i = 0; i < 20; i++) {
++			counts += itos(w[i]) + " ";
++		}
++		print_line("PROFILE_WORK " + counts);
++		print_line(vformat("PROFILE_SCENE primary_budget=%d lights=%d emitters=%d", ray_count, p_scene.get_light_count(), p_scene.get_emitter_count()));
++	}
+diff --git a/servers/rendering/renderer_rd/environment/rt_gi_scene.cpp b/servers/rendering/renderer_rd/environment/rt_gi_scene.cpp
+index 829bfb78de..2cfc018bd7 100644
+--- a/servers/rendering/renderer_rd/environment/rt_gi_scene.cpp
++++ b/servers/rendering/renderer_rd/environment/rt_gi_scene.cpp
+@@ -493,0 +494 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
++	HashMap<String, uint64_t> profile_materials;
+@@ -787,0 +789,4 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
++				if (OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_COUNTS") == "1" && material_frame == 100) {
++					String key = vformat("shader=%s shader_id=%d emission=%s energy=%s texture=%s", data->shader_data->path, materials->material_get_shader_id(material), String(materials->material_get_param(material, "emission")), String(materials->material_get_param(material, "emission_energy")), String(materials->material_get_param(material, "texture_emission")));
++					profile_materials[key] += triangles;
++				}
+@@ -937,0 +943,2 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
++	const bool profile_rt = OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_PASSES") == "1";
++	if (profile_rt) { rd->capture_timestamp("RT GI materials upload"); }
+@@ -949 +956,9 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
+-	ready = rd->tlas_build(tlas, instances) == OK && update_emitters(emitter_batches, use_source_materials);
++	if (profile_rt) { rd->capture_timestamp("RT GI TLAS build"); }
++	ready = rd->tlas_build(tlas, instances) == OK;
++	if (profile_rt) { rd->capture_timestamp("RT GI emitters"); }
++	ready = ready && update_emitters(emitter_batches, use_source_materials);
++	if (profile_rt) { rd->capture_timestamp("RT GI preparation end"); }
++	if (profile_rt && material_frame == 100) {
++		print_line(vformat("PROFILE_GEOMETRY instances=%d emitter_batches=%d", instances.size(), emitter_batches.size()));
++		for (const auto &entry : profile_materials) { print_line(vformat("PROFILE_MATERIAL triangles=%d %s", entry.value, entry.key)); }
++	}
+@@ -967,0 +983,12 @@ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batch
++	if (OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_COUNTS") == "1" && material_frame == 100) {
++		uint32_t transforms = 0, geometry = 0, pixels = 0, layout = 0, dirty = 0;
++		for (uint32_t i = 0; i < MIN(p_batches.size(), previous_emitters.size()); i++) {
++			const EmitterBatch &a = p_batches[i], &b = previous_emitters[i];
++			transforms += a.transform != b.transform;
++			geometry += a.geometry_revision != b.geometry_revision;
++			pixels += a.pixels_revision != b.pixels_revision;
++			layout += a.first_tile != b.first_tile || a.first_emitter != b.first_emitter || a.vertices != b.vertices || a.indices != b.indices || a.triangles != b.triangles;
++			dirty += !(a == b);
++		}
++		print_line(vformat("PROFILE_EMITTER_DIRTY total=%d previous=%d changed=%d dirty=%d transform=%d geometry=%d pixels=%d layout=%d valid=%s", p_batches.size(), previous_emitters.size(), int(changed), dirty, transforms, geometry, pixels, layout, emitter_buffer_valid));
++	}
+@@ -969,0 +997 @@ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batch
++	if (OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_PASSES") == "1") { rd->capture_timestamp("RT GI emitter buffer clear"); }
+@@ -970,0 +999 @@ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batch
++	if (OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_PASSES") == "1") { rd->capture_timestamp("RT GI emitter dispatches"); }
+diff --git a/servers/rendering/renderer_rd/renderer_scene_render_rd.cpp b/servers/rendering/renderer_rd/renderer_scene_render_rd.cpp
+index a40581af9d..492495b74f 100644
+--- a/servers/rendering/renderer_rd/renderer_scene_render_rd.cpp
++++ b/servers/rendering/renderer_rd/renderer_scene_render_rd.cpp
+@@ -1978,0 +1979,2 @@ void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<Raytracing
++	const bool profile_rt = OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_PASSES") == "1";
++	if (profile_rt) { RD::get_singleton()->capture_timestamp("RT shadow scene update"); }
+@@ -1980,0 +1983 @@ void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<Raytracing
++	if (profile_rt) { RD::get_singleton()->capture_timestamp("RT GI scene update"); }
+@@ -1985,0 +1989 @@ void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<Raytracing
++		if (profile_rt) { RD::get_singleton()->capture_timestamp("RT scene update end"); }
+diff --git a/servers/rendering/renderer_rd/shaders/effects/amd_gi.glsl b/servers/rendering/renderer_rd/shaders/effects/amd_gi.glsl
+index d91a67b6a2..181c41e35a 100644
+--- a/servers/rendering/renderer_rd/shaders/effects/amd_gi.glsl
++++ b/servers/rendering/renderer_rd/shaders/effects/amd_gi.glsl
+@@ -565,0 +566,5 @@ RayHit decode_hit(RayRecord record, vec2 barycentrics) {
++#if AMD_GI_PROFILE_MODE == 2 && AMD_GI_PASS == PASS_SHADE_HITS
++		GISourceMaterial material;
++		material.albedo = vec4(0.5, 0.5, 0.5, 1.0);
++		material.emission = vec4(0);
++#else
+@@ -566,0 +572 @@ RayHit decode_hit(RayRecord record, vec2 barycentrics) {
++#endif
+@@ -1376,0 +1383,3 @@ void accumulate_direct(uint cell, vec4 value) {
++#if AMD_GI_PROFILE_MODE == 5 && AMD_GI_PASS == PASS_SHADE_HITS
++	return;
++#endif
+@@ -1389,0 +1399,3 @@ void shade_hit(uint id) {
++#if AMD_GI_PROFILE_MODE == 6
++	return;
++#endif
+@@ -1409,0 +1422,4 @@ void shade_hit(uint id) {
++#if AMD_GI_PROFILE_MODE == 4 && AMD_GI_PASS == PASS_SHADE_HITS
++	vec3 value = hit.diffuse.rgb;
++	valid_update = true;
++#else
+@@ -1410,0 +1427 @@ void shade_hit(uint id) {
++#endif
+diff --git a/servers/rendering/renderer_rd/shaders/effects/amd_gi_lights_inc.glsl b/servers/rendering/renderer_rd/shaders/effects/amd_gi_lights_inc.glsl
+index 1254a31917..ddfa35deb5 100644
+--- a/servers/rendering/renderer_rd/shaders/effects/amd_gi_lights_inc.glsl
++++ b/servers/rendering/renderer_rd/shaders/effects/amd_gi_lights_inc.glsl
+@@ -126,0 +127,3 @@ float gi_volume_weight(uint index, vec3 minimum, vec3 extent) {
++#if AMD_GI_PROFILE_MODE == 8
++		color = vec3(1);
++#else
+@@ -127,0 +131,4 @@ float gi_volume_weight(uint index, vec3 minimum, vec3 extent) {
++#endif
++#if AMD_GI_PROFILE_MODE == 9
++		if (luma(color) == 0.0) { return 0.0; }
++#endif
+@@ -156,0 +164,10 @@ void build_light_grid(uint cell_index, uint lane) {
++#if AMD_GI_PROFILE_MODE == 10
++	if (cell_index != 0u) {
++		light_grid.data[cell_index * 64u + lane] = uvec4(INVALID, 0, 0, 0);
++		return;
++	}
++#endif
++#if AMD_GI_PROFILE_MODE == 7
++	light_grid.data[cell_index * 64u + lane] = uvec4(INVALID, 0, 0, 0);
++	return;
++#endif
+@@ -171,0 +189 @@ void build_light_grid(uint cell_index, uint lane) {
++	uint positive_emitters = 0u;
+@@ -173,0 +192,3 @@ void build_light_grid(uint cell_index, uint lane) {
++#if AMD_GI_PROFILE_MODE == 10
++		positive_emitters += uint(light >= params.light_count + gi_environment_count() && weight > 0.0);
++#endif
+@@ -178,0 +200,3 @@ void build_light_grid(uint cell_index, uint lane) {
++#if AMD_GI_PROFILE_MODE == 10
++	atomicAdd(work.grid_dispatch.w, positive_emitters);
++#endif
+@@ -219,0 +244,4 @@ vec3 gi_light_target_normal(RayHit ray, vec3 brdf_normal, uint index, vec2 sampl
++#if AMD_GI_PROFILE_MODE == 3 && AMD_GI_PASS == PASS_SHADE_HITS
++		GISourceMaterial material;
++		material.emission = vec4(1);
++#else
+@@ -220,0 +249 @@ vec3 gi_light_target_normal(RayHit ray, vec3 brdf_normal, uint index, vec2 sampl
++#endif
+@@ -232,0 +262,3 @@ float gi_light_visibility(RayHit ray, uint index, vec3 direction, float distance
++#if AMD_GI_PROFILE_MODE == 1 && AMD_GI_PASS == PASS_SHADE_HITS
++	return 1.0;
++#endif
