@@ -158,41 +158,11 @@ GODOT_RT_DEBUG=1 ./godot ...       # Linux, macOS
 | An **exported game has none of the fork in it** | The renderer changes are in the binary, not in the project, so stock templates produce a running game with no fork in it | Export against this fork's own `windows-template` CI artifact via **Export -> preset -> Custom Template -> Release**, which sidesteps version matching. `docs/VALIDATION.md` |
 | **"Export With Debug", one-click deploy or remote debugging does not work** | There is no `template_debug` build anywhere in the CI matrix | Release exports only; adding the target is a matrix entry plus a CI job. It is also why no shippable configuration has `DEBUG_ENABLED`, which is what turns a push constant mismatch into a hard error — `CLAUDE.md`, and "The frame is black" above |
 
-## Experimental AMD GI history
+## AMD GI: missing lighting, flicker or shader warnings
 
-If GI repeatedly restarts while standing still or walking, enable the opt-in
-`GODOT_AMD_GI_TRACE_HISTORY=1` environment variable to distinguish camera,
-environment, configuration and scene resets from local dirty regions. The sandbox
-regression fixed global resets caused by flickering electrical-field mesh visibility
-and camera-centered geometry collection changes. Current dirty bounds are diagnostic.
-The consequential correction removes stable-ID remapping and follows AMD's
-light-settings transitions, including zero/nonzero emitter or analytic-light counts.
-Native previous-surface reprojection, capture residency and capacity preflight remain;
-capacity/unsupported-material preparation can still suppress GI. See the
-[live correction record](AMD_GI_CONSEQUENTIAL_CORRECTIONS.md). See the historical [gameplay audit](AMD_GI_GAMEPLAY_AUDIT.md)
-for the `3038a14` failures and the implementation status for current evidence.
-These changes are not a substitute for checking moving images and actual hardware.
-Default Crossroads/Fieldway scene preparation now adapts material resolution to fit
-its budget; the compact fallback reduces within-triangle material detail. See
-[AMD GI history diagnostics](features/amd-gi.md#scene-changes-and-history-diagnostics).
-
-Current AMD GI no longer uses the capture atlas. Raising `material_atlas_mb`,
-`material_preparation_budget` or `material_tile_size` cannot fix AMD GI source
-shading; those settings now affect only the legacy uncached transport validator.
-Unsupported source shader/scene classes produce a warning and are omitted
-individually, so check warnings if particular objects are absent from transport.
-An EMISSION-writing shader is classified as emissive even when its current RGB
-is black; this owner-approved input encoding follows AMD's base-emissivity
-termination distinction. See the live correction record before treating any
-historical atlas workaround or settled still as current validation.
-
-
-### AMD GI warns about an unqualified emitter texture mapping
-
-The supported affine path handles ordinary/alternate UV layouts and straight
-scaling, rotation or translation, with supported aliases and vertex varyings.
-Nonlinear warping, texture-dependent coordinates, some control-flow/helper cases,
-partial mutations and non-2D implicit reads are not certified. The warning names
-the material shader; its existing filtering fallback remains active, so lighting
-from it can still be noisy or incorrectly averaged. This does not indicate a GI
-history reset. See [the precise adapter scope](AMD_GI_ADAPTER_DECISIONS.md).
+Start with [current status, limitations and local reproduction checklist](AMD_GI_IMPLEMENTATION.md).
+Unsupported surfaces/lights can be omitted from GI while still visible in native rendering.
+An unqualified emitter-coordinate warning retains fallback filtering; it is not a history-reset notice.
+Use `GODOT_AMD_GI_TRACE_HISTORY=1` to investigate actual history transitions.
+AMD GI no longer uses the capture atlas: changing legacy material-atlas controls cannot fix it.
+Historical diagnoses and atlas workarounds are in [the archive](history/AMD_GI_ARCHIVE.md#snapshot-gi-troubleshooting), not current guidance.

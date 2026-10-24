@@ -7,8 +7,8 @@ newer engine (`docs/PORTING.md`); how to run one rig (that rig's own README, the
 
 ## Consequential correction integration
 
-See [the current correction record](AMD_GI_CONSEQUENTIAL_CORRECTIONS.md) for results
-and unresolved failures. `./run.sh amd_gi_consequential` exercises quarter-budget
+See [the current handoff](AMD_GI_IMPLEMENTATION.md) for status and unresolved game issues;
+[archived correction evidence](history/AMD_GI_ARCHIVE.md#snapshot-amd-gi-consequential-corrections) records earlier test results. `./run.sh amd_gi_consequential` exercises quarter-budget
 compaction, hit/cache membership, multibounce, camera motion, an empty screen,
 odd-size resize and disable. `./run.sh amd_gi_exposure` exercises manual and automatic
 exposure changes with accumulated glossy history. These do not establish whole-pipeline
@@ -22,12 +22,12 @@ reset. Existing emitter image thresholds are unchanged. Reflection scoring requi
 
 ## AMD reference-correction controls
 
-The [full AMD source comparison](AMD_GI_FULL_COMPARISON.md) is complete.
-Its [coverage appendix](AMD_GI_COMPARISON_COVERAGE.md) distinguishes matching
+The [full AMD source comparison](history/AMD_GI_ARCHIVE.md#snapshot-amd-gi-full-comparison) is complete.
+Its [coverage appendix](history/AMD_GI_ARCHIVE.md#snapshot-amd-gi-comparison-coverage) distinguishes matching
 helpers from different inputs, storage, branch behavior and missing stages.
 Existing equation/regression passes are not whole-pipeline AMD equivalence.
 The comparison added only read-only source/data/algebra checks, not new renders.
-No outstanding rapid-emitter or sky failure was waived. Future preview comparisons
+The archive records both failed attempts and later results; current hardware/gameplay qualification remains open. Future preview comparisons
 use quarter primary samples per pixel, denoising enabled and native-resolution FSR2.
 
 `./run.sh amd_gi_winding` traces 48 rays through a native BoxMesh with normal and
@@ -299,11 +299,10 @@ Capsaicin `914b915`. It checks 4,096 cases and fails on nonfinite results or rel
 error above 1e-5. This verifies those equations, not complete renderer parity.
 `amd_gi_lights` additionally reads the independent reservoir hash and verifies every
 prefix, compacted hit, entry/slot ownership and packed confidence, including entries
-containing multiple hits. The light-proposal estimator remains under correction.
-See [the reference audit](AMD_GI_REFERENCE_AUDIT.md) before interpreting old results
-as evidence of fidelity to AMD.
+containing multiple hits. These structural checks do not alone establish estimator fidelity.
+See [current status](AMD_GI_IMPLEMENTATION.md) and consult the archived audit only for historical evidence.
 
-AMD GI scene compatibility checks: `run.sh amd_gi_atlas` exercises packed small
+Legacy capture-era scene checks (not proof of current source-material behavior): `run.sh amd_gi_atlas` exercises packed small
 surfaces and relocation across layers; `run.sh amd_gi_dynamic_lighting` checks
 continuous sky/light changes; `GODOT_AMD_GI_VALIDATE_CACHE=1 run.sh amd_gi_deformation`
 compares native skeleton/blend-shape output with independently baked geometry and
@@ -361,7 +360,7 @@ plus every face's terminal mip against its full-resolution mean. Tolerances are
 replacement and disabled restoration. `amd_gi_reference` includes AMD's cone LOD
 at both the fresh-candidate and final-shading cone widths.
 
-AMD GI source normals: `docs/validation/shadow_validation/run.sh amd_gi_normals` runs 36 GPU cases against authored CPU expectations for packed/compressed normals, index layouts and nonuniform/mirrored transforms. This local-RD fixture explicitly completes its buffer uploads via diagnostic readback; production geometry reads use RD synchronization without CPU readback. Use `amd_gi_deformation` for posed normals, blend shapes and alternating FSR2 buffers, and `amd_gi_consequential` for cache/hit ownership and disabled lifetime. See the live correction record for current measured results and unresolved material fidelity.
+AMD GI source normals: `docs/validation/shadow_validation/run.sh amd_gi_normals` runs 36 GPU cases against authored CPU expectations for packed/compressed normals, index layouts and nonuniform/mirrored transforms. This local-RD fixture explicitly completes its buffer uploads via diagnostic readback; production geometry reads use RD synchronization without CPU readback. Use `amd_gi_deformation` for posed normals, blend shapes and alternating FSR2 buffers, and `amd_gi_consequential` for cache/hit ownership and disabled lifetime. See the current AMD GI handoff for validation limits and remaining material compatibility gaps.
 
 Current AMD source-material and capacity checks: `run.sh amd_gi_source_material`
 reads an opt-in GPU oracle for native UV/UV2/color/custom attributes, vertex

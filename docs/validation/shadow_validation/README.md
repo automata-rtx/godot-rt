@@ -105,7 +105,7 @@ Native geometry is marked static, VoxelGI is baked at 128 and 256 subdivisions
 occlusion-enabled settings. Native setups get 120 settling frames, an early
 capture, 60 additional frames, and a final capture. `score_gi_compare.py` checks
 exact disabled restoration and reports remaining native settling differences.
-See [comparison settings](../../features/amd-gi.md#native-comparisons).
+See [comparison settings](../../AMD_GI_IMPLEMENTATION.md#owner-constraints-and-hardware-targets).
 These are neither accuracy scores against a perfect reference nor GPU benchmarks.
 
 `geometry` requires ray queries and rejects shadow-map fallback. It also requires the
@@ -365,4 +365,4 @@ bounded-VNDF GGX helper equations with an independently extracted upstream oracl
 `./run.sh amd_gi_lights` checks the independent world reservoir hash on GPU through
 explicit readback: prefix sums, unique hit ownership, collision-slot compaction,
 multiple hits per entry and temporal reuse. See
-[the reference audit](../../AMD_GI_REFERENCE_AUDIT.md) for remaining differences.
+[current status](../../AMD_GI_IMPLEMENTATION.md) for remaining work; the [archived reference audit](../../history/AMD_GI_ARCHIVE.md#snapshot-amd-gi-reference-audit) describes historical differences.

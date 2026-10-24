@@ -19,11 +19,10 @@ anything else. **Open the file that covers the question before answering it.**
 | Has this been tried, what did it measure | `docs/HISTORY.md` — read before re-attempting anything |
 | How do I measure or validate a change | `docs/VALIDATION.md` |
 | Re-applying the fork to a newer Godot | `docs/PORTING.md` |
-| AMD GI implementation status and qualification | `docs/AMD_GI_IMPLEMENTATION.md` — full source comparison complete in `docs/AMD_GI_FULL_COMPARISON.md`; qualified default-path corrections implemented; full feature parity and hardware/gameplay qualification unfinished |
-| AMD GI correction evidence and approvals | `docs/AMD_GI_CONSEQUENTIAL_CORRECTIONS.md` and `docs/AMD_GI_ADAPTER_DECISIONS.md` — qualified input domains and remaining limitations; further deviations require explicit owner approval. Optional completeness is deferred. |
-| Triangle materials / GI material preparation | `docs/internals/rt-materials.md` — AMD native source evaluation; legacy validator capture/atlas; readback is diagnostic |
-| Sparse AMD GI progress and live controls | `docs/features/amd-gi.md` — actual low-budget captures, denoiser enabled |
-| GI enabled/disabled stills and validation controls | `docs/features/rtgi-validation.md` — uncached diffuse transport, not AMD GI-1.x |
+| AMD GI: start here | `docs/AMD_GI_IMPLEMENTATION.md` — concise current state, remaining work, unresolved game issues and local-PC handoff. Read this first; do not load old audits by default. |
+| AMD GI settings / material internals / approvals | `docs/features/amd-gi.md`, `docs/internals/rt-materials.md`, `docs/AMD_GI_ADAPTER_DECISIONS.md` — open only the relevant guide. New algorithm deviations require explicit owner approval. |
+| AMD GI historical evidence | `docs/history/AMD_GI_ARCHIVE.md` — all old audits, progress notes and GI history. Search a specific heading/finding and read that section only; historical claims are not current status. |
+| Legacy uncached GI validator | `docs/features/rtgi-validation.md` — diagnostic only, not AMD GI or a shipping preset. |
 
 `<feature>` is one of `rt-shadows`, `ambient-occlusion`, `screen-space-shadows`, `dlss`.
 
@@ -36,7 +35,7 @@ Single-player first-person shooter. Not a general engine release — a tradeoff 
 is the right one even where a general answer would differ.
 
 - **Two target machines.** RTX 5090 desktop at 3440x1440, and a Ryzen 7 7840HS / Radeon 780M
-  laptop. Every published measurement was taken on one of them. "Weak hardware" means the 780M.
+  laptop. Hardware performance claims require a named target machine. Cloud software-Vulkan GI checks establish controlled correctness, not target performance. "Weak hardware" means the 780M.
 - **No standalone TAA.** DLSS or FSR2 supplies antialiasing when a temporal upscaler is
   active; SMAA is the fallback when neither is active. Do not enable SMAA/FXAA alongside
   temporal upscaling. Godot fills the velocity buffer for a viewport running a temporal
