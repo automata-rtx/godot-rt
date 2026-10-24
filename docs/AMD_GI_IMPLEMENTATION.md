@@ -1,6 +1,8 @@
 # AMD GI: current status and local handoff
 
-Updated 2026-10-24. Renderer checkpoint: `837fb30` on **`feature/amd-gi`**.
+Updated 2026-10-24. Pushed baseline: `9f4386ed09` on **`feature/amd-gi`**.
+Emitter performance implementation: **`feature/amd-gi-emitter-performance`**,
+branched directly from that baseline.
 Read this file first. Read [controls](features/amd-gi.md), [material internals](internals/rt-materials.md),
 or [approval boundaries](AMD_GI_ADAPTER_DECISIONS.md) only as needed.
 Older documentation is preserved in one [historical archive](history/AMD_GI_ARCHIVE.md).
@@ -19,7 +21,7 @@ consequential cache/viewport regression pass on the corrected Windows build.
 
 Actual fps-proto menu transitions through Systems Sandbox and Crossroads are
 responsive with GI enabled. Cold shader creation can still pause loading; it is
-not asynchronous. Crossroads remains slow. A deeper synchronized GPU profile at
+not asynchronous. On the baseline branch, a deeper synchronized GPU profile at
 1280x720 attributes about **121 ms to light-grid construction** and **17 ms to
 emitter geometry regeneration** on the RTX 5090, out of roughly 140 ms total.
 The earlier 122 ms hit-shading / 19 ms acceleration-structure attribution was
@@ -29,7 +31,17 @@ is about 0.2 ms. The light grid scans 5.29 million emissive triangles for each o
 256 cells. Only 56 of 12,563 emitter batches changed in one snapshot, but all
 were rebuilt. See the [profiling report and reproducible evidence](validation/amd_gi_profile_2026_10_24/README.md)
 for controls, exact-zero candidate counts and the recommended fix work.
-No production performance optimization was installed by that investigation.
+That investigation installed no production performance optimization.
+The separate emitter-performance branch now rebuilds only changed native emitter
+geometry and prepares current-frame emission once before traversing ordered
+exact-zero masks. It preserves original light IDs, strata, weights and RNG order;
+GPU oracles compare against the full original scan and full geometry regeneration.
+A fresh Crossroads comparison at 1280x720 measured **135.604 ms whole GPU frame
+before, 3.509/3.496 ms after** on this RTX 5090. Synchronized new stage timings:
+0.484 ms emission preparation, 0.006 ms upper masks, 0.559 ms light grid,
+0.092 ms emitter geometry. Extra scratch storage is approximately 82 MiB per
+active GI viewport at this emitter count. This is not a gameplay FPS or Radeon
+780M claim. See the [adversarial evaluation, implementation and evidence](validation/amd_gi_emitter_performance_2026_10_24/README.md).
 Its automated runs also exposed a separate exit-time `nvcuda64.dll` access
 violation, reproduced with the unchanged delivered editor; root cause remains
 unresolved. The game's saved video settings override the project's

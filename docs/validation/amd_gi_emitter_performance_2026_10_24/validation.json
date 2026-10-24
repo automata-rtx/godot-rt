@@ -1,0 +1,66 @@
+{
+  "oracle-final": {
+    "grid_validations": 66,
+    "grid_mismatches": 0,
+    "emitter_buffer_comparisons": 56,
+    "emitter_buffer_mismatches": 0,
+    "maximum_compared_triangles": 262145,
+    "stages": [
+      "EMITTER_OPT stage transforms",
+      "EMITTER_OPT stage black emission then recovery",
+      "EMITTER_OPT stage texture update",
+      "EMITTER_OPT stage light membership",
+      "EMITTER_OPT stage environment membership and resampling",
+      "EMITTER_OPT stage signed HDR and dim emission",
+      "EMITTER_OPT stage tiny and distant geometry",
+      "EMITTER_OPT stage emitter layout and shrink",
+      "EMITTER_OPT stage upper mask boundary",
+      "EMITTER_OPT stage disable/re-enable",
+      "EMITTER_OPT complete"
+    ],
+    "exit_code": 0
+  },
+  "consequential-final": {
+    "grid_validations": 170,
+    "grid_mismatches": 0,
+    "emitter_buffer_comparisons": 0,
+    "emitter_buffer_mismatches": 0,
+    "maximum_compared_triangles": 0,
+    "stages": [
+      "AMD consequential integration completed: 0 failures"
+    ],
+    "exit_code": 0
+  },
+  "coordinates": {
+    "grid_validations": 89,
+    "grid_mismatches": 0,
+    "emitter_buffer_comparisons": 89,
+    "emitter_buffer_mismatches": 0,
+    "maximum_compared_triangles": 1,
+    "stages": [],
+    "exit_code": 0
+  },
+  "game-oracle": {
+    "grid_validations": 194,
+    "grid_mismatches": 0,
+    "emitter_buffer_comparisons": 0,
+    "emitter_buffer_mismatches": 0,
+    "maximum_compared_triangles": 0,
+    "stages": [],
+    "exit_code": -1073741819
+  },
+  "levels": {
+    "grid_validations": 0,
+    "grid_mismatches": 0,
+    "emitter_buffer_comparisons": 0,
+    "emitter_buffer_mismatches": 0,
+    "maximum_compared_triangles": 0,
+    "stages": [
+      "LEVEL_TEST level=0 scene=res://levels/systems_sandbox/systems_sandbox.tscn GI=true effective_upscaler=6 FPS=60.0",
+      "LEVEL_TEST level=5 scene=res://levels/region/crossroads.tscn GI=true effective_upscaler=6 FPS=48.0",
+      "LEVEL_TEST level=1 scene=res://levels/live_world/crossroads.tscn GI=true effective_upscaler=6 FPS=48.0",
+      "LEVEL_TEST completed"
+    ],
+    "exit_code": 0
+  }
+}

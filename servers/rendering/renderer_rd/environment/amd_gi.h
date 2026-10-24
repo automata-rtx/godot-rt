@@ -113,6 +113,8 @@ private:
 		REFLECTION_TEMPORAL,
 		REFLECTION_OUTPUT,
 		VALIDATE_SOURCE,
+		PREPARE_LIGHTS,
+		PREPARE_LIGHT_MASKS,
 		PASS_COUNT
 	};
 	struct PushConstant {
@@ -164,11 +166,12 @@ private:
 		RID cached_probes, cached_state, cached_order[2];
 		RID light_reservoirs[2];
 		RID light_grid;
+		uint32_t light_grid_bytes = 0;
 		uint32_t previous_analytic_count = 0;
 		uint32_t previous_emitter_count = 0;
 		uint32_t previous_environment_count = 0;
 		bool update_light_order(const RaytracingGIScene &p_scene, uint32_t p_environment_count);
-		bool ensure_light_grid();
+		bool ensure_light_grid(uint32_t p_emitters, uint32_t p_lights);
 		RID indirect_cache[2], secondary_rays;
 		RID hit_samples, direct_updates, source_validation;
 		RID reflection_samples, reflection_history[2];

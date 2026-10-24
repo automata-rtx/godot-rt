@@ -90,6 +90,8 @@ const int pass_id = AMD_GI_PASS;
 #define PASS_REFLECTION_TEMPORAL 52
 #define PASS_REFLECTION_OUTPUT 53
 #define PASS_VALIDATE_SOURCE 54
+#define PASS_PREPARE_LIGHTS 55
+#define PASS_PREPARE_LIGHT_MASKS 56
 #include "../oct_inc.glsl"
 #define AMD_GI_REFERENCE_RANDOM
 #include "amd_gi_cache_inc.glsl"
@@ -2019,7 +2021,13 @@ void main() {
 		probe = keys.data[TILE_COUNT + active_index].state.x;
 		id = probe * TILE_CELLS + lane;
 	}
-#if AMD_GI_PASS == PASS_LIGHT_GRID_DISPATCH
+#if AMD_GI_PASS == PASS_PREPARE_LIGHTS
+	prepare_light(id);
+	return;
+#elif AMD_GI_PASS == PASS_PREPARE_LIGHT_MASKS
+	prepare_light_mask(id);
+	return;
+#elif AMD_GI_PASS == PASS_LIGHT_GRID_DISPATCH
 	if (lane == 0u && light_grid.minimum.x != INVALID && gi_light_count() > 0u) {
 		vec3 minimum, cell_size;
 		uvec3 dimensions;

@@ -947,6 +947,17 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	}
 	rd->buffer_update(hit_buffer, 0, hits.size() * sizeof(HitData), hits.ptr());
 	ready = rd->tlas_build(tlas, instances) == OK && update_emitters(emitter_batches, use_source_materials);
+	// Opt-in GPU oracle: retained/incremental records must match a complete
+	// regeneration byte for byte. Never enabled by a rendering preset.
+	if (ready && use_source_materials && emitter_count > 0 && OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_EMITTER_UPDATES") == "1") {
+		Vector<uint8_t> incremental = rd->buffer_get_data(light_buffer, light_count * sizeof(LightData), emitter_count * 64u);
+		emitter_buffer_valid = false;
+		ready = update_emitters(emitter_batches, true);
+		Vector<uint8_t> rebuilt = rd->buffer_get_data(light_buffer, light_count * sizeof(LightData), emitter_count * 64u);
+		bool matches = incremental == rebuilt;
+		print_line(vformat("AMD GI emitter validation: triangles=%d matches=%s", emitter_count, matches));
+		ERR_FAIL_COND_MSG(!matches, "Incremental emitter records differ from a full rebuild.");
+	}
 }
 
 // Extract emissive triangle geometry and build a power hierarchy entirely on GPU.
@@ -954,10 +965,15 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 // GI shader within the existing 32-storage-buffer device requirement.
 bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batches, bool p_source_materials) {
 	RD *rd = RD::get_singleton();
+	const bool full_update = !p_source_materials || !emitter_buffer_valid || emitter_uses_source_materials != p_source_materials || previous_emitters.size() != p_batches.size();
+	LocalVector<uint32_t> dirty_batches;
 	bool changed = emitter_uses_source_materials != p_source_materials || previous_emitters.size() != p_batches.size();
-	emitter_uses_source_materials = p_source_materials;
-	for (uint32_t i = 0; !changed && i < p_batches.size(); i++) {
-		changed = !(previous_emitters[i] == p_batches[i]);
+	for (uint32_t i = 0; i < p_batches.size(); i++) {
+		const bool batch_changed = i >= previous_emitters.size() || !(previous_emitters[i] == p_batches[i]);
+		changed |= batch_changed;
+		if (full_update || batch_changed) {
+			dirty_batches.push_back(i);
+		}
 	}
 	if (!changed && emitter_buffer_valid) {
 		return true;
@@ -965,10 +981,19 @@ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batch
 	if (changed) {
 		lighting_revision++;
 	}
-	previous_emitters = p_batches;
+	// Native records contain geometry and source IDs, not evaluated emission.
+	// Unchanged records remain valid across material/time changes. Invalidation
+	// or a changed batch count forces a complete update. EmitterBatch also
+	// compares source offsets, buffer identities, geometry revisions and transforms,
+	// so repacked ranges are regenerated even when the batch count stays the same.
+	emitter_buffer_valid = false;
 	const uint32_t prefix = light_count * sizeof(LightData);
-	rd->buffer_clear(light_buffer, prefix, emitter_capacity * 64u);
+	if (full_update) {
+		rd->buffer_clear(light_buffer, prefix, emitter_capacity * 64u);
+	}
 	if (emitter_count == 0) {
+		previous_emitters = p_batches;
+		emitter_uses_source_materials = p_source_materials;
 		emitter_buffer_valid = true;
 		return true;
 	}
@@ -994,7 +1019,8 @@ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batch
 	static_assert(sizeof(Push) == 96);
 	push.prefix[0] = light_count;
 	RID last_set;
-	for (const EmitterBatch &batch : p_batches) {
+	for (uint32_t batch_index : dirty_batches) {
+		const EmitterBatch &batch = p_batches[batch_index];
 		LocalVector<RD::Uniform> uniforms;
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 0, batch.vertices));
 		RID indices = batch.indices.is_valid() ? batch.indices : MeshStorage::get_singleton()->get_default_rd_storage_buffer();
@@ -1025,6 +1051,8 @@ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batch
 			last_set = RID();
 		}
 	}
+	previous_emitters = p_batches;
+	emitter_uses_source_materials = p_source_materials;
 	emitter_buffer_valid = true;
 	return true;
 }

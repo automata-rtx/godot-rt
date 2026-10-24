@@ -1,0 +1,67 @@
+--- a/drivers/vulkan/rendering_device_driver_vulkan.cpp
++++ b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+@@ -6881,7 +6881,12 @@
+ 
+ void RenderingDeviceDriverVulkan::command_timestamp_write(CommandBufferID p_cmd_buffer, QueryPoolID p_pool_id, uint32_t p_index) {
+ 	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
++	const bool strict = OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_STRICT") == "1";
++	VkMemoryBarrier barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT };
++	if (strict) { vkCmdPipelineBarrier(command_buffer->vk_command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr); }
+ 	vkCmdWriteTimestamp(command_buffer->vk_command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, (VkQueryPool)p_pool_id.id, p_index);
++	if (strict) { vkCmdPipelineBarrier(command_buffer->vk_command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr); }
++
+ }
+ 
+ /****************/
+--- a/servers/rendering/renderer_rd/environment/amd_gi.cpp
++++ b/servers/rendering/renderer_rd/environment/amd_gi.cpp
+@@ -926,7 +926,13 @@
+ 	rd->buffer_clear(data->light_grid, 32 + (16 * 16 * 16 * 64 + p_scene.get_emitter_count()) * 16, (proposal_leaves + proposal_tops) * 64 * 16);
+ 	// Pass boundaries are explicit: no dispatch reads concurrently written radiance.
+ 	RD::ComputeListID list = rd->compute_list_begin();
++	const bool profile = OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_STRICT") == "1";
+ 	for (uint32_t pass = 0; pass < PREPARE_LIGHTS; pass++) {
++		if (profile && (pass == LIGHT_GRID_DISPATCH || pass == SHADE_HITS)) {
++			rd->compute_list_end();
++			rd->capture_timestamp(pass == LIGHT_GRID_DISPATCH ? "GI prepare emission" : "GI remaining passes");
++			list = rd->compute_list_begin();
++		}
+ 		if (pass == LIGHT_GRID_DISPATCH) {
+ 			for (uint32_t preparation : { uint32_t(PREPARE_LIGHTS), uint32_t(PREPARE_LIGHT_MASKS) }) {
+ 				RID preparation_shader = shader.version_get_shader(version, preparation);
+@@ -942,6 +948,11 @@
+ 				uint32_t columns = MIN(MAX(groups, 1u), 1024u);
+ 				rd->compute_list_dispatch(list, columns, (MAX(groups, 1u) + columns - 1) / columns, 1);
+ 				rd->compute_list_add_barrier(list);
++				if (profile) {
++					rd->compute_list_end();
++					rd->capture_timestamp(preparation == PREPARE_LIGHTS ? "GI prepare masks" : "GI light grid");
++					list = rd->compute_list_begin();
++				}
+ 			}
+ 		}
+ 		if (pass == VALIDATE_SOURCE) {
+@@ -1095,6 +1106,7 @@
+ 		}
+ 	}
+ 	rd->compute_list_end();
++	if (profile) { rd->capture_timestamp("GI end"); }
+ 	if (OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_LIGHT_GRID") == "1") {
+ 		Vector<uint8_t> result = rd->buffer_get_data(data->light_grid, 28, 4);
+ 		ERR_FAIL_COND_V(result.size() != 4, false);
+--- a/servers/rendering/renderer_rd/environment/rt_gi_scene.cpp
++++ b/servers/rendering/renderer_rd/environment/rt_gi_scene.cpp
+@@ -946,7 +946,12 @@
+ 		rd->buffer_update(light_buffer, 0, lights.size() * sizeof(LightData), lights.ptr());
+ 	}
+ 	rd->buffer_update(hit_buffer, 0, hits.size() * sizeof(HitData), hits.ptr());
+-	ready = rd->tlas_build(tlas, instances) == OK && update_emitters(emitter_batches, use_source_materials);
++	const bool profile = OS::get_singleton()->get_environment("GODOT_AMD_GI_PROFILE_STRICT") == "1";
++	if (profile) { rd->capture_timestamp("GI TLAS"); }
++	ready = rd->tlas_build(tlas, instances) == OK;
++	if (profile) { rd->capture_timestamp("GI emitter geometry"); }
++	ready = ready && update_emitters(emitter_batches, use_source_materials);
++	if (profile) { rd->capture_timestamp("GI geometry end"); }
+ 	// Opt-in GPU oracle: retained/incremental records must match a complete
+ 	// regeneration byte for byte. Never enabled by a rendering preset.
+ 	if (ready && use_source_materials && emitter_count > 0 && OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_EMITTER_UPDATES") == "1") {

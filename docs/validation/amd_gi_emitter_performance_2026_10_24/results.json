@@ -1,0 +1,297 @@
+{
+  "baseline-gpu": {
+    "engine": "Godot Engine v4.8.dev.custom_build.e308dc719 (2026-10-24 06:16:03 UTC) - https://godotengine.org",
+    "configuration": "DEEP_PROFILE_BEGIN mode= level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+    "settings": {
+      "rendering/global_illumination/amd_gi/enabled": "true",
+      "rendering/global_illumination/amd_gi/probe_spacing": "16",
+      "rendering/global_illumination/amd_gi/material_atlas_mb": "128",
+      "rendering/global_illumination/amd_gi/material_tile_size": "8",
+      "rendering/global_illumination/amd_gi/material_adaptive_resolution": "true",
+      "rendering/global_illumination/amd_gi/material_preparation_budget": "64",
+      "rendering/global_illumination/amd_gi/multibounce": "true",
+      "rendering/global_illumination/amd_gi/screen_feedback": "false",
+      "rendering/global_illumination/amd_gi/cache_all_hits": "true",
+      "rendering/global_illumination/amd_gi/cache_bucket_exponent": "14",
+      "rendering/global_illumination/amd_gi/denoiser": "true",
+      "rendering/global_illumination/amd_gi/importance_sampling": "true",
+      "rendering/global_illumination/amd_gi/adaptive_sampling": "true",
+      "rendering/global_illumination/amd_gi/probe_cache": "true",
+      "rendering/global_illumination/amd_gi/light_resampling": "false",
+      "rendering/global_illumination/amd_gi/reflections/enabled": "false",
+      "rendering/global_illumination/amd_gi/reflections/half_resolution": "true",
+      "rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold": "0.2",
+      "rendering/global_illumination/amd_gi/reflections/firefly_low_threshold": "0.0",
+      "rendering/global_illumination/amd_gi/reflections/firefly_high_threshold": "1.0",
+      "rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold": "0.6",
+      "rendering/global_illumination/amd_gi/reflections/filter_passes": "4",
+      "rendering/global_illumination/amd_gi/reflections/firefly_filter": "true",
+      "rendering/global_illumination/amd_gi/reflections/ray_compaction": "true",
+      "rendering/global_illumination/amd_gi/emissive_sampling": "true",
+      "rendering/global_illumination/amd_gi/brdf_sampling": "true",
+      "rendering/global_illumination/amd_gi/minimum_cell_size": "0.1",
+      "rendering/global_illumination/amd_gi/continuation_probability": "0.3",
+      "rendering/global_illumination/amd_gi/max_distance": "1000000000.0"
+    },
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 135.60415999999998,
+        "mean": 136.92358542222223,
+        "p90": 140.409792
+      },
+      "AMD GI": {
+        "median": 117.871264,
+        "mean": 119.39158435555555,
+        "p90": 121.875232
+      },
+      "Update RT Acceleration Structures": {
+        "median": 16.86288,
+        "mean": 16.701694933333332,
+        "p90": 17.773568
+      }
+    }
+  },
+  "candidate-gpu1": {
+    "engine": "Godot Engine v4.8.dev.custom_build.9f4386ed0 (2026-10-24 13:52:20 UTC) - https://godotengine.org",
+    "configuration": "DEEP_PROFILE_BEGIN mode= level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+    "settings": {
+      "rendering/global_illumination/amd_gi/enabled": "true",
+      "rendering/global_illumination/amd_gi/probe_spacing": "16",
+      "rendering/global_illumination/amd_gi/material_atlas_mb": "128",
+      "rendering/global_illumination/amd_gi/material_tile_size": "8",
+      "rendering/global_illumination/amd_gi/material_adaptive_resolution": "true",
+      "rendering/global_illumination/amd_gi/material_preparation_budget": "64",
+      "rendering/global_illumination/amd_gi/multibounce": "true",
+      "rendering/global_illumination/amd_gi/screen_feedback": "false",
+      "rendering/global_illumination/amd_gi/cache_all_hits": "true",
+      "rendering/global_illumination/amd_gi/cache_bucket_exponent": "14",
+      "rendering/global_illumination/amd_gi/denoiser": "true",
+      "rendering/global_illumination/amd_gi/importance_sampling": "true",
+      "rendering/global_illumination/amd_gi/adaptive_sampling": "true",
+      "rendering/global_illumination/amd_gi/probe_cache": "true",
+      "rendering/global_illumination/amd_gi/light_resampling": "false",
+      "rendering/global_illumination/amd_gi/reflections/enabled": "false",
+      "rendering/global_illumination/amd_gi/reflections/half_resolution": "true",
+      "rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold": "0.2",
+      "rendering/global_illumination/amd_gi/reflections/firefly_low_threshold": "0.0",
+      "rendering/global_illumination/amd_gi/reflections/firefly_high_threshold": "1.0",
+      "rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold": "0.6",
+      "rendering/global_illumination/amd_gi/reflections/filter_passes": "4",
+      "rendering/global_illumination/amd_gi/reflections/firefly_filter": "true",
+      "rendering/global_illumination/amd_gi/reflections/ray_compaction": "true",
+      "rendering/global_illumination/amd_gi/emissive_sampling": "true",
+      "rendering/global_illumination/amd_gi/brdf_sampling": "true",
+      "rendering/global_illumination/amd_gi/minimum_cell_size": "0.1",
+      "rendering/global_illumination/amd_gi/continuation_probability": "0.3",
+      "rendering/global_illumination/amd_gi/max_distance": "1000000000.0"
+    },
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 3.508912,
+        "mean": 3.515380622222222,
+        "p90": 3.627584
+      },
+      "AMD GI": {
+        "median": 2.1760159999999997,
+        "mean": 2.180676977777778,
+        "p90": 2.20048
+      },
+      "Update RT Acceleration Structures": {
+        "median": 0.396896,
+        "mean": 0.3907089777777778,
+        "p90": 0.451904
+      }
+    }
+  },
+  "candidate-gpu2": {
+    "engine": "Godot Engine v4.8.dev.custom_build.9f4386ed0 (2026-10-24 13:52:20 UTC) - https://godotengine.org",
+    "configuration": "DEEP_PROFILE_BEGIN mode= level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+    "settings": {
+      "rendering/global_illumination/amd_gi/enabled": "true",
+      "rendering/global_illumination/amd_gi/probe_spacing": "16",
+      "rendering/global_illumination/amd_gi/material_atlas_mb": "128",
+      "rendering/global_illumination/amd_gi/material_tile_size": "8",
+      "rendering/global_illumination/amd_gi/material_adaptive_resolution": "true",
+      "rendering/global_illumination/amd_gi/material_preparation_budget": "64",
+      "rendering/global_illumination/amd_gi/multibounce": "true",
+      "rendering/global_illumination/amd_gi/screen_feedback": "false",
+      "rendering/global_illumination/amd_gi/cache_all_hits": "true",
+      "rendering/global_illumination/amd_gi/cache_bucket_exponent": "14",
+      "rendering/global_illumination/amd_gi/denoiser": "true",
+      "rendering/global_illumination/amd_gi/importance_sampling": "true",
+      "rendering/global_illumination/amd_gi/adaptive_sampling": "true",
+      "rendering/global_illumination/amd_gi/probe_cache": "true",
+      "rendering/global_illumination/amd_gi/light_resampling": "false",
+      "rendering/global_illumination/amd_gi/reflections/enabled": "false",
+      "rendering/global_illumination/amd_gi/reflections/half_resolution": "true",
+      "rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold": "0.2",
+      "rendering/global_illumination/amd_gi/reflections/firefly_low_threshold": "0.0",
+      "rendering/global_illumination/amd_gi/reflections/firefly_high_threshold": "1.0",
+      "rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold": "0.6",
+      "rendering/global_illumination/amd_gi/reflections/filter_passes": "4",
+      "rendering/global_illumination/amd_gi/reflections/firefly_filter": "true",
+      "rendering/global_illumination/amd_gi/reflections/ray_compaction": "true",
+      "rendering/global_illumination/amd_gi/emissive_sampling": "true",
+      "rendering/global_illumination/amd_gi/brdf_sampling": "true",
+      "rendering/global_illumination/amd_gi/minimum_cell_size": "0.1",
+      "rendering/global_illumination/amd_gi/continuation_probability": "0.3",
+      "rendering/global_illumination/amd_gi/max_distance": "1000000000.0"
+    },
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 3.49592,
+        "mean": 3.4967363555555555,
+        "p90": 3.61184
+      },
+      "AMD GI": {
+        "median": 2.1703200000000002,
+        "mean": 2.1790090666666666,
+        "p90": 2.1992
+      },
+      "Update RT Acceleration Structures": {
+        "median": 0.39201600000000003,
+        "mean": 0.38424426666666667,
+        "p90": 0.445952
+      }
+    }
+  },
+  "candidate-strict": {
+    "engine": "Godot Engine v4.8.dev.custom_build.9f4386ed0 (2026-10-24 13:52:20 UTC) - https://godotengine.org",
+    "configuration": "DEEP_PROFILE_BEGIN mode= level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+    "settings": {
+      "rendering/global_illumination/amd_gi/enabled": "true",
+      "rendering/global_illumination/amd_gi/probe_spacing": "16",
+      "rendering/global_illumination/amd_gi/material_atlas_mb": "128",
+      "rendering/global_illumination/amd_gi/material_tile_size": "8",
+      "rendering/global_illumination/amd_gi/material_adaptive_resolution": "true",
+      "rendering/global_illumination/amd_gi/material_preparation_budget": "64",
+      "rendering/global_illumination/amd_gi/multibounce": "true",
+      "rendering/global_illumination/amd_gi/screen_feedback": "false",
+      "rendering/global_illumination/amd_gi/cache_all_hits": "true",
+      "rendering/global_illumination/amd_gi/cache_bucket_exponent": "14",
+      "rendering/global_illumination/amd_gi/denoiser": "true",
+      "rendering/global_illumination/amd_gi/importance_sampling": "true",
+      "rendering/global_illumination/amd_gi/adaptive_sampling": "true",
+      "rendering/global_illumination/amd_gi/probe_cache": "true",
+      "rendering/global_illumination/amd_gi/light_resampling": "false",
+      "rendering/global_illumination/amd_gi/reflections/enabled": "false",
+      "rendering/global_illumination/amd_gi/reflections/half_resolution": "true",
+      "rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold": "0.2",
+      "rendering/global_illumination/amd_gi/reflections/firefly_low_threshold": "0.0",
+      "rendering/global_illumination/amd_gi/reflections/firefly_high_threshold": "1.0",
+      "rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold": "0.6",
+      "rendering/global_illumination/amd_gi/reflections/filter_passes": "4",
+      "rendering/global_illumination/amd_gi/reflections/firefly_filter": "true",
+      "rendering/global_illumination/amd_gi/reflections/ray_compaction": "true",
+      "rendering/global_illumination/amd_gi/emissive_sampling": "true",
+      "rendering/global_illumination/amd_gi/brdf_sampling": "true",
+      "rendering/global_illumination/amd_gi/minimum_cell_size": "0.1",
+      "rendering/global_illumination/amd_gi/continuation_probability": "0.3",
+      "rendering/global_illumination/amd_gi/max_distance": "1000000000.0"
+    },
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 3.8657760000000003,
+        "mean": 3.8581902222222224,
+        "p90": 3.964832
+      },
+      "AMD GI": {
+        "median": 0.418752,
+        "mean": 0.4284067555555556,
+        "p90": 0.434176
+      },
+      "Update RT Acceleration Structures": {
+        "median": 0.246976,
+        "mean": 0.23144106666666667,
+        "p90": 0.248544
+      },
+      "GI TLAS": {
+        "median": 0.201632,
+        "mean": 0.20204515555555555,
+        "p90": 0.204224
+      },
+      "GI emitter geometry": {
+        "median": 0.091728,
+        "mean": 0.08726186666666667,
+        "p90": 0.14336
+      },
+      "GI prepare emission": {
+        "median": 0.484352,
+        "mean": 0.4845888,
+        "p90": 0.485376
+      },
+      "GI prepare masks": {
+        "median": 0.006144,
+        "mean": 0.006119111111111112,
+        "p90": 0.006176
+      },
+      "GI light grid": {
+        "median": 0.559168,
+        "mean": 0.5597262222222222,
+        "p90": 0.5632
+      },
+      "GI remaining passes": {
+        "median": 0.7214240000000001,
+        "mean": 0.7219978666666667,
+        "p90": 0.733216
+      }
+    }
+  },
+  "candidate-final": {
+    "engine": "Godot Engine v4.8.dev.custom_build.9f4386ed0 (2026-10-24 13:52:20 UTC) - https://godotengine.org",
+    "configuration": "DEEP_PROFILE_BEGIN mode= level=5 size=(1280, 720) scale=1.0 camera=[X: (1.0, 0.0, 0.0), Y: (0.0, 1.0, 0.0), Z: (0.0, 0.0, 1.0), O: (300.0, 8.451623, -262.0)]",
+    "settings": {
+      "rendering/global_illumination/amd_gi/enabled": "true",
+      "rendering/global_illumination/amd_gi/probe_spacing": "16",
+      "rendering/global_illumination/amd_gi/material_atlas_mb": "128",
+      "rendering/global_illumination/amd_gi/material_tile_size": "8",
+      "rendering/global_illumination/amd_gi/material_adaptive_resolution": "true",
+      "rendering/global_illumination/amd_gi/material_preparation_budget": "64",
+      "rendering/global_illumination/amd_gi/multibounce": "true",
+      "rendering/global_illumination/amd_gi/screen_feedback": "false",
+      "rendering/global_illumination/amd_gi/cache_all_hits": "true",
+      "rendering/global_illumination/amd_gi/cache_bucket_exponent": "14",
+      "rendering/global_illumination/amd_gi/denoiser": "true",
+      "rendering/global_illumination/amd_gi/importance_sampling": "true",
+      "rendering/global_illumination/amd_gi/adaptive_sampling": "true",
+      "rendering/global_illumination/amd_gi/probe_cache": "true",
+      "rendering/global_illumination/amd_gi/light_resampling": "false",
+      "rendering/global_illumination/amd_gi/reflections/enabled": "false",
+      "rendering/global_illumination/amd_gi/reflections/half_resolution": "true",
+      "rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold": "0.2",
+      "rendering/global_illumination/amd_gi/reflections/firefly_low_threshold": "0.0",
+      "rendering/global_illumination/amd_gi/reflections/firefly_high_threshold": "1.0",
+      "rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold": "0.6",
+      "rendering/global_illumination/amd_gi/reflections/filter_passes": "4",
+      "rendering/global_illumination/amd_gi/reflections/firefly_filter": "true",
+      "rendering/global_illumination/amd_gi/reflections/ray_compaction": "true",
+      "rendering/global_illumination/amd_gi/emissive_sampling": "true",
+      "rendering/global_illumination/amd_gi/brdf_sampling": "true",
+      "rendering/global_illumination/amd_gi/minimum_cell_size": "0.1",
+      "rendering/global_illumination/amd_gi/continuation_probability": "0.3",
+      "rendering/global_illumination/amd_gi/max_distance": "1000000000.0"
+    },
+    "samples": 90,
+    "metrics_ms": {
+      "GPU total": {
+        "median": 3.50504,
+        "mean": 3.4531790222222223,
+        "p90": 3.60912
+      },
+      "AMD GI": {
+        "median": 2.1803679999999996,
+        "mean": 2.1325664,
+        "p90": 2.202944
+      },
+      "Update RT Acceleration Structures": {
+        "median": 0.390592,
+        "mean": 0.38391786666666666,
+        "p90": 0.43408
+      }
+    }
+  }
+}

@@ -402,6 +402,9 @@ bool AMDGI::prepare_material_pipelines(const RaytracingGIScene &p_scene) {
 	}
 	version = shader.version_create();
 	Vector<String> defines;
+	if (OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_LIGHT_GRID") == "1") {
+		defines.push_back("#define AMD_GI_VALIDATE_LIGHT_GRID\n");
+	}
 	if (diagnostic_hits_enabled()) {
 		defines.push_back("#define AMD_GI_DIAGNOSTIC_HITS\n");
 	}
@@ -562,11 +565,20 @@ bool AMDGI::ViewData::update_light_order(const RaytracingGIScene &p_scene, uint3
 	return settings_changed;
 }
 
-bool AMDGI::ViewData::ensure_light_grid() {
-	if (light_grid.is_null()) {
-		// Reference GridStream: at most 16^3 cells, 64 reservoirs per cell.
-		// Native lights are collected in reference type order; this descriptor holds bounds and reservoirs.
-		light_grid = RD::get_singleton()->storage_buffer_create(32 + 16 * 16 * 16 * 64 * 16);
+bool AMDGI::ViewData::ensure_light_grid(uint32_t p_emitters, uint32_t p_lights) {
+	const uint32_t strata = MIN(64u, MAX(p_lights, 1u));
+	const uint32_t leaves = (p_lights + strata * 64 - 1) / (strata * 64);
+	const uint32_t tops = (leaves + 63) / 64;
+	// Reuse binding 44: reservoirs, current-frame native proposal colors, and
+	// two levels of per-stratum masks. Original light IDs never change.
+	const uint64_t bytes = 32ull + (16ull * 16 * 16 * 64 + p_emitters + uint64_t(leaves + tops) * 64) * 16;
+	ERR_FAIL_COND_V(bytes > UINT32_MAX, false);
+	if (light_grid.is_null() || light_grid_bytes < bytes) {
+		if (light_grid.is_valid()) {
+			RD::get_singleton()->free_rid(light_grid);
+		}
+		light_grid = RD::get_singleton()->storage_buffer_create(bytes);
+		light_grid_bytes = bytes;
 	}
 	return light_grid.is_valid();
 }
@@ -737,7 +749,8 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 			data->light_reservoirs[i] = rd->storage_buffer_create(light_resampling ? reservoir_buffer_bytes(ray_count * (multibounce ? 2 : 1)) : 16);
 		}
 	}
-	if (!data->ensure_light_grid()) {
+	const uint32_t proposal_lights = p_scene.get_light_count() + p_scene.get_emitter_count() + 1;
+	if (!data->ensure_light_grid(p_scene.get_emitter_count(), proposal_lights)) {
 		data->valid = false;
 		return false;
 	}
@@ -907,9 +920,30 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		data->frame = 1;
 	}
 	push.frame = data->frame++;
+	const uint32_t proposal_strata = MIN(64u, MAX(proposal_lights, 1u));
+	const uint32_t proposal_leaves = (proposal_lights + proposal_strata * 64 - 1) / (proposal_strata * 64);
+	const uint32_t proposal_tops = (proposal_leaves + 63) / 64;
+	rd->buffer_clear(data->light_grid, 32 + (16 * 16 * 16 * 64 + p_scene.get_emitter_count()) * 16, (proposal_leaves + proposal_tops) * 64 * 16);
 	// Pass boundaries are explicit: no dispatch reads concurrently written radiance.
 	RD::ComputeListID list = rd->compute_list_begin();
-	for (uint32_t pass = 0; pass < PASS_COUNT; pass++) {
+	for (uint32_t pass = 0; pass < PREPARE_LIGHTS; pass++) {
+		if (pass == LIGHT_GRID_DISPATCH) {
+			for (uint32_t preparation : { uint32_t(PREPARE_LIGHTS), uint32_t(PREPARE_LIGHT_MASKS) }) {
+				RID preparation_shader = shader.version_get_shader(version, preparation);
+				RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(preparation_shader, 0, uniforms);
+				RID materials = UniformSetCacheRD::get_singleton()->get_cache_vec(preparation_shader, 1, material_uniforms);
+				rd->compute_list_bind_compute_pipeline(list, pipelines[preparation]);
+				rd->compute_list_bind_uniform_set(list, set, 0);
+				rd->compute_list_bind_uniform_set(list, materials, 1);
+				p_scene.add_geometry_reads(list);
+				p_scene.get_source_materials().add_buffer_reads(list);
+				rd->compute_list_set_push_constant(list, &push, sizeof(push));
+				uint32_t groups = preparation == PREPARE_LIGHTS ? (proposal_lights + 63) / 64 : proposal_leaves;
+				uint32_t columns = MIN(MAX(groups, 1u), 1024u);
+				rd->compute_list_dispatch(list, columns, (MAX(groups, 1u) + columns - 1) / columns, 1);
+				rd->compute_list_add_barrier(list);
+			}
+		}
 		if (pass == VALIDATE_SOURCE) {
 			if (diagnostic_source_enabled()) {
 				RID pass_shader = shader.version_get_shader(version, pass);
@@ -1061,6 +1095,13 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		}
 	}
 	rd->compute_list_end();
+	if (OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_LIGHT_GRID") == "1") {
+		Vector<uint8_t> result = rd->buffer_get_data(data->light_grid, 28, 4);
+		ERR_FAIL_COND_V(result.size() != 4, false);
+		uint32_t mismatches = reinterpret_cast<const uint32_t *>(result.ptr())[0];
+		print_line(vformat("AMD GI light grid validation: frame=%d mismatches=%d", push.frame, mismatches));
+		ERR_FAIL_COND_V(mismatches != 0, false);
+	}
 	if (diagnostic_source_enabled()) {
 		Vector<uint8_t> bytes = rd->buffer_get_data(data->source_validation);
 		print_line("AMD GI source validation: " + String::hex_encode_buffer(bytes.ptr(), bytes.size()));

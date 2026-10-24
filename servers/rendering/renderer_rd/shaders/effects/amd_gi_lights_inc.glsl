@@ -73,7 +73,97 @@ uvec3 light_grid_cell(vec3 position, vec3 minimum, vec3 cell_size, uvec3 dimensi
 	}
 	return cell;
 }
-float gi_volume_weight(uint index, vec3 minimum, vec3 extent) {
+// Proposal colors are recomputed for this viewport every frame. This is not
+// material caching across time: texture/uniform/animation changes remain live.
+const uint GI_GRID_ENTRIES = 16u * 16u * 16u * 64u;
+uint proposal_strata() {
+	return max(min(64u, gi_light_count()), 1u);
+}
+uint proposal_leaf_count() {
+	return (gi_light_count() + proposal_strata() * 64u - 1u) / (proposal_strata() * 64u);
+}
+uint proposal_leaf_offset() {
+	return GI_GRID_ENTRIES + frame.emitters.x;
+}
+uint proposal_top_offset() {
+	return proposal_leaf_offset() + proposal_leaf_count() * 64u;
+}
+
+// Zero RGB is a removable zero-weight candidate only when the geometric
+// weight is finite. Keep exceptional/near-corner geometry in the original
+// stream, including possible 0 * infinity / NaN cases. Conservative bounds
+// deliberately retain ambiguous candidates instead of changing their behavior.
+bool finite_zero_proposal(Emitter light) {
+	vec3 minimum, size;
+	uvec3 dimensions;
+	light_grid_configuration(minimum, size, dimensions);
+	vec3 center = light.position_area.xyz + (light.edge1_power.xyz + light.edge2.xyz) / 3.0;
+	vec3 normal = normalize(cross(light.edge1_power.xyz, light.edge2.xyz));
+	float magnitude = max(max(max(abs(center.x), abs(center.y)), abs(center.z)), max(max(abs(minimum.x), abs(minimum.y)), abs(minimum.z)));
+	if (any(isnan(center)) || any(isinf(center)) || any(isnan(normal)) || any(isinf(normal)) || any(isnan(minimum)) || any(isinf(minimum)) || any(isnan(size)) || any(isinf(size)) || magnitude > 1000000.0 || any(greaterThan(abs(size), vec3(1000000.0))) || !(light.position_area.w <= 1e12)) {
+		return false;
+	}
+	vec3 nearest = minimum;
+	for (uint axis = 0u; axis < 3u; axis++) {
+		if (size[axis] != 0.0) {
+			if (abs(size[axis]) < 0.001) {
+				return false;
+			}
+			float corner = clamp(round((center[axis] - minimum[axis]) / size[axis] + 0.5), 0.0, float(dimensions[axis] + 1u));
+			nearest[axis] += (corner - 0.5) * size[axis];
+		}
+	}
+	// Covers roundoff in the two equivalent lattice-coordinate expressions.
+	float margin = max(0.01, max(magnitude, max(max(abs(size.x), abs(size.y)), abs(size.z))) * 0.00001);
+	return length(center - nearest) > margin;
+}
+void prepare_light(uint light_index) {
+	if (light_index >= gi_light_count()) {
+		return;
+	}
+	bool keep = true;
+	uint prefix = params.light_count + gi_environment_count();
+	if (light_index >= prefix) {
+		uint emitter = light_index - prefix;
+		Emitter light = gi_emitter(emitter);
+		vec3 color = vec3(0);
+		if (light.position_area.w <= 0.0) {
+			keep = false;
+		} else {
+			color = gi_source_material_filtered(floatBitsToUint(light.edge2.w), floatBitsToUint(light.emission_tile.w), vec2(1.0 / 3.0), true, 0.0, true).emission.rgb;
+			keep = !all(equal(color, vec3(0))) || !finite_zero_proposal(light);
+		}
+		light_grid.data[GI_GRID_ENTRIES + emitter] = uvec4(floatBitsToUint(color), 0u);
+	}
+	if (keep) {
+		uint strata = proposal_strata();
+		uint sequence = light_index / strata;
+		uint word = proposal_leaf_offset() + (sequence / 64u) * 64u + light_index % strata;
+		uint bit = sequence % 64u;
+		if (bit < 32u) {
+			atomicOr(light_grid.data[word].x, 1u << bit);
+		} else {
+			atomicOr(light_grid.data[word].y, 1u << (bit - 32u));
+		}
+	}
+}
+void prepare_light_mask(uint id) {
+	uint leaf = id / 64u, lane = id % 64u;
+	if (leaf >= proposal_leaf_count() || lane >= proposal_strata()) {
+		return;
+	}
+	uvec2 mask = light_grid.data[proposal_leaf_offset() + id].xy;
+	if (any(notEqual(mask, uvec2(0)))) {
+		uint word = proposal_top_offset() + (leaf / 64u) * 64u + lane;
+		uint bit = leaf % 64u;
+		if (bit < 32u) {
+			atomicOr(light_grid.data[word].x, 1u << bit);
+		} else {
+			atomicOr(light_grid.data[word].y, 1u << (bit - 32u));
+		}
+	}
+}
+float gi_volume_weight(uint index, vec3 minimum, vec3 extent, bool prepared) {
 	vec3 color;
 	float weight = 0.0;
 	if (index < gi_environment_count()) {
@@ -124,7 +214,7 @@ float gi_volume_weight(uint index, vec3 minimum, vec3 extent) {
 			return 0.0;
 		}
 		// sampleLightVolume: centroid with the full triangle's UV footprint.
-		color = gi_source_material_filtered(floatBitsToUint(light.edge2.w), floatBitsToUint(light.emission_tile.w), vec2(1.0 / 3.0), true, 0.0, true).emission.rgb;
+		color = prepared ? uintBitsToFloat(light_grid.data[GI_GRID_ENTRIES + index - params.light_count].xyz) : gi_source_material_filtered(floatBitsToUint(light.edge2.w), floatBitsToUint(light.emission_tile.w), vec2(1.0 / 3.0), true, 0.0, true).emission.rgb;
 		vec3 center = light.position_area.xyz + (light.edge1_power.xyz + light.edge2.xyz) / 3.0;
 		vec3 normal = normalize(cross(light.edge1_power.xyz, light.edge2.xyz));
 		for (uint corner = 0u; corner < 8u; corner++) {
@@ -169,13 +259,47 @@ void build_light_grid(uint cell_index, uint lane) {
 	uint rng = gi_random(cell_index * count + lane);
 	float residual = random_float(rng), none = 1.0, total = 0.0, selected_weight = 0.0;
 	uint selected = INVALID;
-	for (uint light = lane; light < gi_light_count(); light += count) {
-		float weight = gi_volume_weight(light, minimum, cell_size * 2.0);
-		if (gi_stream_select(weight, total, residual, none, rng)) {
-			selected = light;
-			selected_weight = weight;
+	// Ascending bits preserve the original light % count strata, candidate
+	// order and residual RNG updates. Zero candidates consume no random values.
+	uint top_count = (proposal_leaf_count() + 63u) / 64u;
+	for (uint top = 0u; top < top_count; top++) {
+		uvec2 top_mask = light_grid.data[proposal_top_offset() + top * 64u + lane].xy;
+		for (uint word_half = 0u; word_half < 2u; word_half++) {
+			uint bits = top_mask[word_half];
+			while (bits != 0u) {
+				uint leaf = top * 64u + word_half * 32u + uint(findLSB(bits));
+				bits &= bits - 1u;
+				uvec2 leaf_mask = light_grid.data[proposal_leaf_offset() + leaf * 64u + lane].xy;
+				for (uint lower_half = 0u; lower_half < 2u; lower_half++) {
+					uint lower_bits = leaf_mask[lower_half];
+					while (lower_bits != 0u) {
+						uint light = (leaf * 64u + lower_half * 32u + uint(findLSB(lower_bits))) * count + lane;
+						lower_bits &= lower_bits - 1u;
+						float weight = gi_volume_weight(light, minimum, cell_size * 2.0, true);
+						if (gi_stream_select(weight, total, residual, none, rng)) {
+							selected = light;
+							selected_weight = weight;
+						}
+					}
+				}
+			}
 		}
 	}
+#ifdef AMD_GI_VALIDATE_LIGHT_GRID
+	uint reference_rng = gi_random(cell_index * count + lane);
+	float reference_residual = random_float(reference_rng), reference_none = 1.0, reference_total = 0.0, reference_weight = 0.0;
+	uint reference_selected = INVALID;
+	for (uint light = lane; light < gi_light_count(); light += count) {
+		float weight = gi_volume_weight(light, minimum, cell_size * 2.0, false);
+		if (gi_stream_select(weight, reference_total, reference_residual, reference_none, reference_rng)) {
+			reference_selected = light;
+			reference_weight = weight;
+		}
+	}
+	if (selected != reference_selected || floatBitsToUint(selected_weight) != floatBitsToUint(reference_weight) || floatBitsToUint(total) != floatBitsToUint(reference_total) || rng != reference_rng || floatBitsToUint(residual) != floatBitsToUint(reference_residual) || floatBitsToUint(none) != floatBitsToUint(reference_none)) {
+		atomicAdd(light_grid.maximum.w, 1u);
+	}
+#endif
 	light_grid.data[cell_index * 64u + lane] = uvec4(selected, floatBitsToUint(selected_weight), floatBitsToUint(total), 0u);
 }
 uint light_grid_segment(uint start, uint count, inout uint rng, out float pdf) {
