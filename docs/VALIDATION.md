@@ -381,3 +381,13 @@ not AMD GPU captures. `amd_gi_consequential` now additionally exercises abrupt
 camera replacement and an independent viewport creation, resize and destruction.
 The material oracle includes a vertex-stage implicit texture read that must stay
 at mip zero while fragment reads use volume/cone filtering.
+
+
+Approved affine emitter mapping: `run.sh amd_gi_emitter_coordinates` checks 704 GPU
+samples against textures whose mip levels and texel positions have known colors.
+It covers ordinary/alternate UVs, scaling/rotation/translation/mirroring, aliases,
+compound assignments, interpolated/flat varyings, explicit LOD/bias, compression
+and live uniforms. Unrelated partial writes must not invalidate known coordinates.
+`run.sh amd_gi_emitter_coordinate_limits` requires explicit diagnostics for five
+unqualified mappings; a successful shader compile alone is not a filtering proof.
+The ordinary source-material oracle and emitter-room regression remain separate.

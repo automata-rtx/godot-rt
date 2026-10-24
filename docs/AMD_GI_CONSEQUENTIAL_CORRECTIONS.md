@@ -1,21 +1,29 @@
-# Consequential AMD GI corrections — in progress
+# Consequential AMD GI correction record
 
-This is the live correction record for the owner's request to resolve consequential findings while deferring completeness. **That request is not yet fully satisfied.** Missing optional algorithms/options/visualizers are deferred; material fidelity, tracing coverage, exceptional-domain behavior and unresolved regressions are not reclassified as completeness to make this record look finished.
+This is the live record for resolving consequential findings while deferring
+completeness. The default-path corrections are implemented and tested for the
+qualified input domain below, with the owner's explicitly approved exceptions.
+The last approved material correction covers affine emitter mappings. Arbitrary
+custom mappings, additional native scene classes, optional AMD features and
+hardware/gameplay qualification remain incomplete; this is not a claim that the
+entire requested integration is finished or that every reported game issue is fixed.
 
-Reference: Capsaicin `914b91596cd119eda85fbc1d3c7ee6ac391b1452`, package v1.3 / renderer GI-1.2. Starting fork: `d932f4a` plus the preexisting local follow-up. The [full comparison](AMD_GI_FULL_COMPARISON.md) and [coverage appendix](AMD_GI_COMPARISON_COVERAGE.md) remain the historical source inventory. The [adapter decision record](AMD_GI_ADAPTER_DECISIONS.md) records each approved correction, the withdrawn firefly snapshot, and the remaining emitter-coordinate proposal.
+Reference: Capsaicin `914b91596cd119eda85fbc1d3c7ee6ac391b1452`, package v1.3 / renderer GI-1.2. Starting fork: `d932f4a` plus the preexisting local follow-up. The [full comparison](AMD_GI_FULL_COMPARISON.md) and [coverage appendix](AMD_GI_COMPARISON_COVERAGE.md) remain the historical source inventory. The [adapter decision record](AMD_GI_ADAPTER_DECISIONS.md) records each approved correction, the withdrawn firefly snapshot, and the approved affine emitter-coordinate extension and its remaining native-material limits.
 
-## Outstanding consequential boundary
+## Latest approved boundary
 
-T01/L03 remain open for emitter textures whose shader uses a different layout
-from the post-vertex UV0 used by AMD's single-map material model. The owner has
-been asked to approve a native input extension; it is not installed or deferred.
-The independent corrections below are implemented and have passing source/GPU
-checks. The final moving-reflection rerun passes 344 checked frames. Hardware performance,
-DLSS runtime qualification and the Windows artifact are not claimed complete.
+T01/L03 now include correct affine emitter filtering for alternate UV layouts,
+scaling, translation, rotation, mirroring and supported aliases/varyings. The
+704-sample GPU oracle and ordinary material/emitter regressions pass. Complex
+nonlinear/texture-driven/control-flow mappings retain an explicitly diagnosed
+fallback; they were excluded from the recommendation the owner approved.
+No additional algorithm exception awaits approval. Full AMD optional-feature
+parity, complete native-material/scene coverage and target-hardware qualification
+remain unfinished.
 
 ## Implemented corrections and remaining qualification
 
-“Implemented” below describes source changes, not whole-pipeline equivalence. The evidence directory is `/workspace/gi-validation/amd-consequential-corrections/`; `preexisting.patch` separates this work from earlier local changes. No Windows artifact or hardware-performance result is supplied by this work.
+“Implemented” below describes source changes, not whole-pipeline equivalence. The evidence directory is `/workspace/gi-validation/amd-consequential-corrections/`; `preexisting.patch` separates this work from earlier local changes. The preceding corrections are available in the Windows artifacts from [run 40062237050](https://github.com/automata-rtx/godot-rt/actions/runs/40062237050), commit `1d486a02d5`; those artifacts predate the affine follow-up below. No target-hardware performance result is supplied by this work.
 
 | Finding | Current disposition |
 | --- | --- |
@@ -36,7 +44,7 @@ DLSS runtime qualification and the Windows artifact are not claimed complete.
 | C06 | Implemented the explicitly approved native base-emissivity encoding: an EMISSION-writing program has a unit base factor, independent of sampled RGB. Front-facing primary/glossy hits terminate even at black texels or dark procedural phases; back faces and secondary cache shading retain their reference roles. The GPU source fixture verifies the flag remains set at zero RGB and clears when the emission write is removed. |
 | L01 | Bounds accumulate during hit insertion. Reference light order and conditional environment entry are retained. The approved flat-axis policy removes the arbitrary epsilon thickness, retains actual zero extents and selects the sole cell without division; jitter draw consumption is unchanged. Positive-extent arithmetic is unchanged. |
 | L02 | **Approved boundary:** native authored attenuation, energy, masks and material response. A concrete numerical comparison and narrow scope are in the adapter proposal. The owner explicitly approved this boundary on October 23, 2026. |
-| L03 | Source emitter geometry replaces capture tiles, and proposals/targets execute the material source with triangle/cone LOD. The 256-sample GPU fixture verifies point/volume/cone values and native attribute/uniform changes. The former emitter cap is removed, and the source-emitter room passes. Post-vertex UV0 is half-packed as in the reference light builder. Native EMISSION is the approved RGB function with unit emission-texture alpha; surface opacity is separate traversal coverage. Alternate-coordinate emitter filtering remains open; the concrete example and proposed input extension are in the adapter decisions. |
+| L03 | Source emitter geometry replaces capture tiles, and proposals/targets execute the material source with triangle/cone LOD. The 256-sample GPU fixture verifies point/volume/cone values and native attribute/uniform changes. The former emitter cap is removed, and the source-emitter room passes. Post-vertex UV0 is half-packed as in the reference light builder. Native EMISSION is the approved RGB function with unit emission-texture alpha; surface opacity is separate traversal coverage. The approved affine-coordinate extension now passes 704 GPU samples. Complex mappings outside that subset are explicitly diagnosed and remain unsupported for correct emitter filtering; see the adapter decision for the precise scope. |
 | L04 | Implemented zero-weight draw consumption, fresh-confidence branch behavior, draw order, half sample parameters, packed albedo/normal inputs, incremental MIS-normalized merging, previous M cap and reference validity checks. The multi-light fixture now passes with world reuse exercised and exact zero-indirect/disabled controls. Native screen feedback now accumulates each analytic light using its authored indirect-energy multiplier. |
 | L05 | Removed persistent identity remapping. Restored reference index reuse and environment/zero-count light-settings reset boundaries; the original universal-reset audit assertion was corrected. The owner explicitly approved rejecting a historical sample whose light index is outside the current logical list. Existing in-range index semantics and other history are retained. |
 | L06 | Deferred completeness: optional GridStream modes and sampling configurations. Default algorithm corrections remain in scope. |
@@ -49,7 +57,7 @@ DLSS runtime qualification and the Windows artifact are not claimed complete.
 | D01 | Implemented irradiance units at denoiser input, preserving reference thresholds. |
 | D02 | Implemented continuous-UV previous-world reconstruction, decoded normal inputs, half color/history/delta and R8_SNORM blur mask. Persistent diffuse records now use 32 bytes instead of 48; all reads/writes use packed backing storage. Combined ownership/motion/resize/disable integration passes. The final native pose/FSR2 regression passes with GI MAE 0.001130/0.002276 against independently baked four/eight-weight geometry. |
 | D03 | Supplies effective native manual/automatic exposure to reflection temporal luminance weighting, using the previous completed luminance reduction without a CPU readback. Dynamic exposure integration fixture added; this is not whole-renderer exposure equivalence. |
-| T01 | AMD hit albedo/emission/alpha now execute native shader source with native uniform/texture/sampler/attribute inputs. No AMD material-capture atlas is allocated or prepared. The source oracle passes 256 GPU samples (maximum component error 0.00000142), including vertex-stage mip-zero reads, UV/UV2, custom/color data, varying interpolation, uniform changes, compressed inputs, transforms, mip levels, actual alpha/discard rays and emissive classification. Alternate-coordinate emitter footprint qualification remains open. |
+| T01 | AMD hit albedo/emission/alpha now execute native shader source with native uniform/texture/sampler/attribute inputs. No AMD material-capture atlas is allocated or prepared. The source oracle passes 256 GPU samples (maximum component error 0.00000142), including vertex-stage mip-zero reads, UV/UV2, custom/color data, varying interpolation, uniform changes, compressed inputs, transforms, mip levels, actual alpha/discard rays and emissive classification. Affine emitter footprint qualification passes; arbitrary warped/texture-driven/control-flow mappings remain a native-material limitation. |
 | T02 | Added shared-BLAS position/index buffer access, barycentrically reconstructed transformed hit positions, and query hit distance. Native front-face orientation is used. Source vertex normals now come from native packed/posed buffers; geometric normals come from shared triangle positions. Both transform into world space once and remain separate through reservoir sampling, shadow offsets and final cache shading. Compact 48-byte visibility records now retain the actual query point/distance and half barycentrics separately; source shading reconstructs from the latter. The new integration passes hit/cache/continuation checks, including empty-screen dispatch and odd resize. The approved distance correction restores the 1e9 default ray extent and full participating-scene collection; only screen-probe reprojection distance is capped at 65504, with a two-word sum. Twenty GPU cases verify exact integer carries and unchanged RGB. The [normal-space investigation](AMD_GI_NORMAL_SPACE_INVESTIGATION.md) traces producers and consumers and demonstrates missing/repeated transforms on equivalent baked/instanced geometry; the owner's conditional approval now authorizes the narrow correction. |
 | T03 | Source object-position/frame xxHash coverage, strict >0.5 cutout, nonopaque sidedness and opaque traversal flags now match the reference adapter contract. Candidate material opacity is evaluated at the actual hit. Source tests exercise textured opacity and procedural discard in actual ray queries; earlier endpoint tests and native winding checks are retained. |
 | T04 | Removed AMD arbitrary instance/light/emitter collection caps; buffers grow with the supported scene. Unsupported shader/scene/light classes are reported and skipped individually rather than suppressing supported GI. The GPU fixture passes 1025 analytic lights plus an emitter, shrink to one light, unsupported-shader isolation and zero atlas allocation. Additional scene classes remain deferred completeness; omissions are explicit, not claimed as support. |
@@ -77,7 +85,7 @@ DLSS runtime qualification and the Windows artifact are not claimed complete.
 - Source-normal quarter-budget integration passes cache ownership, all-hit membership, continuation, empty-screen dispatch, resize and disable. Four/eight-weight posed meshes match independent static baked references: GI display-RGB MAE 0.001191/0.002384, direct MAE 0.000008/0.000918. Eight-weight coverage includes alternating FSR2 pose buffers. Existing image thresholds are unchanged.
 - Source-normal reflection regression also passes: 344 GPU-checked frames, 733 reflected-emitter pixels, restoration MAE 0.002420, moving-emitter shift 13.823 pixels, return overlap 0.989, vacated residual 0/0, half/full MAE 0.002483, compact/direct linear-RGB MAE 0.000861. Denoising and the quarter diffuse-ray budget remained fixed. The native winding fixture additionally passes 48 front/back ray queries, including mirrored instances.
 - Persistent ray records now use 48 bytes: actual query point/distance, sampled direction/cache key and packed visibility. Expanded shading data, including distinct normals, is local to the shader. Source metadata uses 160 bytes for shared geometry addresses, source-normal layout and transforms. No target-hardware performance claim is made.
-- Source-material replacement now evaluates generated native shader helpers, native uniform/texture resources and GPU-copied source attributes. Alternate-coordinate emitter filtering is the remaining material qualification gap. Initial shader integration failures are retained in `source-material-first/` and `source-material-marker/`; neither is a passing renderer test. The atlas is now retained only for the uncached legacy transport validator; current AMD preparation bypasses it.
+- Source-material replacement now evaluates generated native shader helpers, native uniform/texture resources and GPU-copied source attributes. Affine emitter filtering is corrected; arbitrary custom-coordinate filtering remains outside the qualified subset. Initial shader integration failures are retained in `source-material-first/` and `source-material-marker/`; neither is a passing renderer test. The atlas is now retained only for the uncached legacy transport validator; current AMD preparation bypasses it.
 - Runs and completed scorers are recorded separately in the evidence directory. An image file or “capture finished” line alone is not a passing image-quality test.
 
 All new integration captures use the default quarter primary budget and enabled denoising. Controlled small fixtures are correctness tests, not requested game previews. No higher primary sample count has been used to represent these corrections. Future game previews remain Crossroads, native-resolution FSR2, PNGs in the preview directory.
@@ -107,9 +115,20 @@ All new integration captures use the default quarter primary budget and enabled 
 - `combined-sky/`: removal maxima at 64/128/256 frames 0.035294/0/0; gain 0.333953, occlusion response 0.113938, orientation response 0.047100. Disabled restoration passes.
 - `flat-grid/`: the twenty distance cases and five point/line/plane/tiny-positive/volume grid cases pass using the production shader helpers.
 
-The open alternate-coordinate emitter input is not covered by these passes and
-is not being renamed completeness. The proposed input extension awaits approval.
-No new Windows test artifact has been published while that consequential boundary
-remains unresolved.
+The owner subsequently approved the bounded affine input extension. Its tests and
+remaining native-material limits are recorded in the follow-up below.
 
 - `reflections-final/`: the final registered-hit/material build passes 344 GPU-checked frames. Mirror emitter pixels 733, emitter shift 13.671 pixels, return overlap 0.989, no detected vacated residual, half/full MAE 0.002376, compact/direct linear MAE 0.000951. Denoising and the quarter primary budget remain enabled.
+
+### Affine emitter follow-up — 2026-10-24
+
+`/workspace/gi-validation/amd-emitter-coordinates/final-mapped/` passes 704 GPU
+samples with maximum component error 0.00008534. `ordinary/` passes the existing
+256 source-material samples, error 0.00000142. `room/` passes with explicit/hit-only
+receiver energy 0.027311/0.022281, zero removed/off energy and nine reference
+settings transitions. `limits/` completes without renderer errors and explicitly
+diagnoses all five unsupported mapping cases; this validates warnings, not their
+filtering correctness. No primary ray-budget increase or disabled denoiser was used.
+The initial fixture attempted a forbidden fragment UV write, and the first limits
+fixture lacked a WorldEnvironment; neither is passing evidence. Corrected fixtures
+are retained in the repository. No target-hardware timing claim is made.

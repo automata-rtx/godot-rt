@@ -1,7 +1,7 @@
 # AMD GI integration
 
-**Status: full source comparison complete; corrections unfinished. The requested AMD implementation is not complete.**
-The [live consequential correction record](AMD_GI_CONSEQUENTIAL_CORRECTIONS.md) lists the implemented corrections and remaining consequential gaps. Optional completeness is deferred; those gaps are not.
+**Status: the main AMD GI-1.2 pipeline and default-path correction pass are implemented for qualified inputs. Full feature parity and production qualification remain incomplete.**
+The [live consequential correction record](AMD_GI_CONSEQUENTIAL_CORRECTIONS.md) lists every correction, approved exception, test and remaining input limitation. Optional AMD features remain deferred.
 The previous completion statement covered stage presence, not fidelity to AMD.
 See [the complete source comparison](AMD_GI_FULL_COMPARISON.md) and
 [coverage appendix](AMD_GI_COMPARISON_COVERAGE.md) for every stage and option.
@@ -40,16 +40,14 @@ emission bypass, the rough dielectric secondary BRDF, reference RNG, packed
 radiance sums and default cache capacity, delayed multibounce updates, and probe
 reuse/guiding. Both reference optional feedback flags now default off. A sixth
 GI-only prepass attachment supplies primary albedo/metalness. See the live
-[correction ledger](AMD_GI_REFERENCE_AUDIT.md) for evidence and remaining gaps;
+[consequential correction record](AMD_GI_CONSEQUENTIAL_CORRECTIONS.md) for evidence and remaining limits;
 the older implementation/measurement notes below are not a completion claim.
 
 The environment follow-up restores wide-proposal/narrow-final sky cones, a complete
 ordinary cubemap mip chain, fresh-reservoir target conversion and blocked-reservoir
 invalidation. The current correction replaces AMD's material atlas with native source
 shading and removes its arbitrary instance/light collection caps. The sole-emitter
-fixture passes with zero atlas residency. Source-material qualification, distance
-coverage, exceptional-domain decisions and the sky-removal regression remain open;
-see the live consequential record rather than older build results below.
+fixture passes with zero atlas residency. Qualified source-material and affine emitter tests pass. The approved distance correction restores full participating-scene collection and the reference ray extent; the extended sky-removal regression passes. Exceptional-domain decisions and remaining native-input limitations are explicit in the live consequential record rather than the older build results below.
 
 ## Implemented infrastructure
 
@@ -98,8 +96,8 @@ shadow entries survive. Normal cache age-out alone would not release GI-only res
 | Work | Required result |
 | --- | --- |
 | Automatic hit shading | Native shader source, uniforms, textures and vertex attributes are evaluated at hits; source attribute copies follow revisions and poses reuse shared GPU geometry. Source-specific qualification and unsupported shader/particle inputs remain explicit limits |
-| Scene collection | Independent mesh/light collection includes native poses, off-screen non-casters and authored GI participation; buffers grow with supported inputs. Finite collection distance remains open; unsupported classes are reported/skipped individually |
-| World radiance cache | Reference-capacity checksum-hashed tiles with packed sums, sample-count-selected mips, touched-tile updates and delayed indirect accumulation; unified GridStream proposals and independent multi-hit reservoir reuse. Hit-material representation and full-frame conformance remain open. |
+| Scene collection | Independent mesh/light collection includes native poses, off-screen non-casters and authored GI participation; buffers grow with supported inputs. The full participating scene is collected and the default ray extent is 1e9; unsupported classes are reported/skipped individually |
+| World radiance cache | Reference-capacity checksum-hashed tiles with packed sums, sample-count-selected mips, touched-tile updates and delayed indirect accumulation; unified GridStream proposals and independent multi-hit reservoir reuse. Native hit inputs and registered sample membership have controlled GPU validation; whole-renderer pixel parity and target-hardware performance are not established. |
 | Screen probes | Dense stored grid with sparse updates, adaptive hole patching, current-grid neighborhood hit reprojection, bounded displaced-probe LRU reuse, radiance/BRDF guiding, angular rebinning/filtering, hierarchical mask lookup, two-dimensional temporal blue-noise sampling and SH9 reconstruction |
 | Multiple bounces | Continuations populate and shade secondary world receivers, then propagate current direct light and previous indirect feedback through separate histories; compatible combined native screen-lighting feedback is implemented; all-hit update scheduling is implemented with an optional lower-cost mode |
 | Reflections | GGX sampling, rough-probe reuse, compacted tracing, firefly cleanup, ratio reconstruction, virtual/surface temporal history and a-trous filtering implemented; secondary materials follow AMD's diffuse approximation rather than general nested specular transport; gameplay quality validation remains |
@@ -114,7 +112,7 @@ AMD GI now uses `rt_material_source` to evaluate native material programs and
 textures at actual hits, including source alpha candidates and emitter sampling.
 It does not allocate or prepare a triangle-material atlas. See
 [internals/rt-materials.md](internals/rt-materials.md) for resource ownership and
-qualification limits. Geometry and shading normals transform once under the
+qualification limits. The approved affine emitter adapter now follows each supported texture mapping rather than always using UV0 for filtering; arbitrary warped/texture-driven mappings remain unqualified. Geometry and shading normals transform once under the
 owner-approved correction. The owner also approved classifying an EMISSION-writing shader as emissive independently of its sampled RGB; dark texels and phases retain that classification.
 
 The following capture description applies to the uncached transport validator

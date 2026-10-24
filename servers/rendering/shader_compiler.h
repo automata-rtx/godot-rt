@@ -87,6 +87,7 @@ public:
 			bool flat;
 		};
 		Vector<PrivateVarying> private_varyings;
+		bool has_unqualified_texture_coordinates = false;
 
 		HashMap<String, String> code;
 
@@ -120,13 +121,26 @@ public:
 		bool shared_stage_globals = false;
 		bool private_varyings = false;
 		String implicit_texture_lod;
-		String (*implicit_texture_lod_expression)(ShaderLanguage::DataType, const String &) = nullptr;
+		String (*implicit_texture_lod_expression)(ShaderLanguage::DataType, const String &, const String &) = nullptr;
+		// Optional affine texture-coordinate expansion for ray material inputs.
+		// $CORNER is replaced by the consumer with a triangle vertex index.
+		HashMap<StringName, String> texture_coordinate_inputs;
+		String texture_coordinate_varying_prefix;
 		String discard_code = "discard;";
 		String (*texture_uniform_expression)(void *, const StringName &, const String &) = nullptr;
 		void *texture_uniform_userdata = nullptr;
 	};
 
 private:
+	struct AffineCoordinate {
+		String expression;
+		int degree = -1; // -1 unknown, 0 constant on the triangle, 1 affine.
+	};
+	using CoordinateVariables = HashMap<StringName, AffineCoordinate>;
+	HashMap<const ShaderLanguage::Node *, String> texture_coordinates;
+	void _invalidate_coordinate_write(const ShaderLanguage::Node *p_node, CoordinateVariables &r_variables);
+	AffineCoordinate _affine_coordinate(const ShaderLanguage::Node *p_node, const CoordinateVariables &p_variables, GeneratedCode &r_code, IdentifierActions &p_actions, const DefaultIdentifierActions &p_defaults);
+	void _analyze_texture_coordinates(const ShaderLanguage::Node *p_node, CoordinateVariables &r_variables, GeneratedCode &r_code, IdentifierActions &p_actions, const DefaultIdentifierActions &p_defaults, bool p_record = true);
 	ShaderLanguage parser;
 	String _mkid(const String &p_id) const;
 

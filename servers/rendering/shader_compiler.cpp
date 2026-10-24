@@ -447,6 +447,229 @@ static String _get_global_shader_uniform_from_type_and_index(const String &p_buf
 	}
 }
 
+ShaderCompiler::AffineCoordinate ShaderCompiler::_affine_coordinate(const SL::Node *p_node, const CoordinateVariables &p_variables, GeneratedCode &r_code, IdentifierActions &p_actions, const DefaultIdentifierActions &p_defaults) {
+	if (!p_node) {
+		return {};
+	}
+	if (p_node->type == SL::Node::NODE_TYPE_CONSTANT) {
+		return { _dump_node_code(p_node, 0, r_code, p_actions, p_defaults, false), 0 };
+	}
+	if (p_node->type == SL::Node::NODE_TYPE_VARIABLE) {
+		const auto *variable = static_cast<const SL::VariableNode *>(p_node);
+		if (const AffineCoordinate *value = p_variables.getptr(variable->name)) {
+			return *value;
+		}
+		if (!variable->is_local && (shader->uniforms.has(variable->name) || shader->constants.has(variable->name) || variable->name == SNAME("TIME"))) {
+			return { _dump_node_code(p_node, 0, r_code, p_actions, p_defaults, false), 0 };
+		}
+		return {};
+	}
+	if (p_node->type == SL::Node::NODE_TYPE_MEMBER) {
+		const auto *member = static_cast<const SL::MemberNode *>(p_node);
+		if (member->basetype == SL::TYPE_STRUCT || member->assign_expression || member->call_expression || member->index_expression) {
+			return {};
+		}
+		AffineCoordinate owner = _affine_coordinate(member->owner, p_variables, r_code, p_actions, p_defaults);
+		if (owner.degree >= 0) {
+			owner.expression = "(" + owner.expression + ")." + String(member->name);
+		}
+		return owner;
+	}
+	if (p_node->type != SL::Node::NODE_TYPE_OPERATOR) {
+		return {};
+	}
+	const auto *op = static_cast<const SL::OperatorNode *>(p_node);
+	if (op->op == SL::OP_CONSTRUCT || op->op == SL::OP_CALL) {
+		const auto *callee = static_cast<const SL::VariableNode *>(op->arguments[0]);
+		// Only pure built-ins of triangle-constant arguments are admitted.
+		// In particular, texture-dependent mappings and custom helpers do not
+		// acquire an invented footprint through this analysis.
+		bool constructor = op->op == SL::OP_CONSTRUCT && SL::is_float_type(op->get_datatype());
+		bool constant_function = false;
+		for (const char *name : { "sin", "cos", "tan", "radians", "degrees", "abs", "min", "max", "clamp", "sqrt", "pow" }) {
+			constant_function |= callee->name == name;
+		}
+		if (!constructor && !constant_function) {
+			return {};
+		}
+		AffineCoordinate result{ String(callee->name) + "(", 0 };
+		for (int i = 1; i < op->arguments.size(); i++) {
+			AffineCoordinate argument = _affine_coordinate(op->arguments[i], p_variables, r_code, p_actions, p_defaults);
+			if (argument.degree < 0 || (!constructor && argument.degree != 0)) {
+				return {};
+			}
+			result.degree = MAX(result.degree, argument.degree);
+			result.expression += (i > 1 ? "," : "") + argument.expression;
+		}
+		result.expression += ")";
+		return result;
+	}
+	if (op->op == SL::OP_NEGATE) {
+		AffineCoordinate value = _affine_coordinate(op->arguments[0], p_variables, r_code, p_actions, p_defaults);
+		if (value.degree >= 0) {
+			value.expression = "(-(" + value.expression + "))";
+		}
+		return value;
+	}
+	if (op->arguments.size() != 2) {
+		return {};
+	}
+	AffineCoordinate left = _affine_coordinate(op->arguments[0], p_variables, r_code, p_actions, p_defaults);
+	AffineCoordinate right = _affine_coordinate(op->arguments[1], p_variables, r_code, p_actions, p_defaults);
+	if (left.degree < 0 || right.degree < 0) {
+		return {};
+	}
+	const bool linear_sum = op->op == SL::OP_ADD || op->op == SL::OP_SUB;
+	const bool linear_product = op->op == SL::OP_MUL && left.degree + right.degree <= 1;
+	const bool linear_division = op->op == SL::OP_DIV && right.degree == 0;
+	const bool constant_comparison = left.degree == 0 && right.degree == 0 && op->op >= SL::OP_EQUAL && op->op <= SL::OP_OR;
+	if (!linear_sum && !linear_product && !linear_division && !constant_comparison) {
+		return {};
+	}
+	return { "(" + left.expression + _opstr(op->op) + right.expression + ")", MAX(left.degree, right.degree) };
+}
+
+void ShaderCompiler::_invalidate_coordinate_write(const SL::Node *p_node, CoordinateVariables &r_variables) {
+	while (p_node && p_node->type == SL::Node::NODE_TYPE_MEMBER) {
+		p_node = static_cast<const SL::MemberNode *>(p_node)->owner;
+	}
+	if (p_node && p_node->type == SL::Node::NODE_TYPE_VARIABLE) {
+		r_variables[static_cast<const SL::VariableNode *>(p_node)->name] = {};
+	} else if (p_node && p_node->type == SL::Node::NODE_TYPE_ARRAY) {
+		r_variables[static_cast<const SL::ArrayNode *>(p_node)->name] = {};
+	} else {
+		for (auto &entry : r_variables) {
+			entry.value = {};
+		}
+	}
+}
+
+void ShaderCompiler::_analyze_texture_coordinates(const SL::Node *p_node, CoordinateVariables &r_variables, GeneratedCode &r_code, IdentifierActions &p_actions, const DefaultIdentifierActions &p_defaults, bool p_record) {
+	if (!p_node) {
+		return;
+	}
+	switch (p_node->type) {
+		case SL::Node::NODE_TYPE_MEMBER: {
+			const auto *member = static_cast<const SL::MemberNode *>(p_node);
+			_analyze_texture_coordinates(member->owner, r_variables, r_code, p_actions, p_defaults, p_record);
+			_analyze_texture_coordinates(member->assign_expression, r_variables, r_code, p_actions, p_defaults, p_record);
+			if (member->assign_expression) {
+				_invalidate_coordinate_write(member->owner, r_variables);
+			}
+		} break;
+		case SL::Node::NODE_TYPE_ARRAY: {
+			const auto *array = static_cast<const SL::ArrayNode *>(p_node);
+			_analyze_texture_coordinates(array->index_expression, r_variables, r_code, p_actions, p_defaults, p_record);
+			_analyze_texture_coordinates(array->assign_expression, r_variables, r_code, p_actions, p_defaults, p_record);
+			if (array->assign_expression) {
+				_invalidate_coordinate_write(p_node, r_variables);
+			}
+		} break;
+		case SL::Node::NODE_TYPE_BLOCK: {
+			const auto *block = static_cast<const SL::BlockNode *>(p_node);
+			CoordinateVariables shadowed;
+			HashSet<StringName> declared;
+			for (const SL::Node *statement : block->statements) {
+				if (statement->type == SL::Node::NODE_TYPE_VARIABLE_DECLARATION) {
+					for (const auto &variable : static_cast<const SL::VariableDeclarationNode *>(statement)->declarations) {
+						if (!declared.has(variable.name)) {
+							if (const AffineCoordinate *old = r_variables.getptr(variable.name)) {
+								shadowed[variable.name] = *old;
+							}
+							declared.insert(variable.name);
+						}
+					}
+				}
+				_analyze_texture_coordinates(statement, r_variables, r_code, p_actions, p_defaults, p_record);
+			}
+			for (const StringName &name : declared) {
+				if (const AffineCoordinate *old = shadowed.getptr(name)) {
+					r_variables[name] = *old;
+				} else {
+					r_variables.erase(name);
+				}
+			}
+		} break;
+		case SL::Node::NODE_TYPE_VARIABLE_DECLARATION: {
+			const auto *declaration = static_cast<const SL::VariableDeclarationNode *>(p_node);
+			for (const auto &variable : declaration->declarations) {
+				AffineCoordinate value;
+				for (const SL::Node *initializer : variable.initializer) {
+					_analyze_texture_coordinates(initializer, r_variables, r_code, p_actions, p_defaults, p_record);
+				}
+				if (variable.size == 0 && variable.initializer.size() == 1) {
+					value = _affine_coordinate(variable.initializer[0], r_variables, r_code, p_actions, p_defaults);
+				}
+				r_variables[variable.name] = value;
+			}
+		} break;
+		case SL::Node::NODE_TYPE_CONTROL_FLOW: {
+			const auto *flow = static_cast<const SL::ControlFlowNode *>(p_node);
+			bool constant_if = flow->flow_op == SL::FLOW_OP_IF && !flow->expressions.is_empty() && _affine_coordinate(flow->expressions[0], r_variables, r_code, p_actions, p_defaults).degree == 0;
+			CoordinateVariables before(r_variables);
+			for (const SL::Node *expression : flow->expressions) {
+				_analyze_texture_coordinates(expression, r_variables, r_code, p_actions, p_defaults, false);
+			}
+			// Branches never lend their assignments to another branch. Loops,
+			// spatial conditions and branch-dependent aliases are unqualified.
+			for (const SL::BlockNode *block : flow->blocks) {
+				CoordinateVariables branch(before);
+				_analyze_texture_coordinates(block, branch, r_code, p_actions, p_defaults, p_record && constant_if);
+				for (const auto &entry : branch) {
+					const AffineCoordinate *old = before.getptr(entry.key);
+					if (!old || old->expression != entry.value.expression || old->degree != entry.value.degree) {
+						r_variables[entry.key] = {};
+					}
+				}
+			}
+		} break;
+		case SL::Node::NODE_TYPE_OPERATOR: {
+			const auto *op = static_cast<const SL::OperatorNode *>(p_node);
+			if (op->op == SL::OP_INCREMENT || op->op == SL::OP_DECREMENT || op->op == SL::OP_POST_INCREMENT || op->op == SL::OP_POST_DECREMENT) {
+				_invalidate_coordinate_write(op->arguments[0], r_variables);
+			}
+			if (op->op == SL::OP_CALL) {
+				const auto *callee = static_cast<const SL::VariableNode *>(op->arguments[0]);
+				if (callee->name == SNAME("texture") && op->arguments.size() >= 3 && p_record) {
+					AffineCoordinate coordinate = _affine_coordinate(op->arguments[2], r_variables, r_code, p_actions, p_defaults);
+					if (coordinate.degree >= 0) {
+						texture_coordinates[p_node] = coordinate.expression;
+					}
+				}
+				if (!internal_functions.has(callee->name)) {
+					// A custom call may change globals or out/inout arguments.
+					for (auto &entry : r_variables) {
+						entry.value = {};
+					}
+				}
+			}
+			for (int i = (op->op == SL::OP_CALL || op->op == SL::OP_CONSTRUCT) ? 1 : 0; i < op->arguments.size(); i++) {
+				_analyze_texture_coordinates(op->arguments[i], r_variables, r_code, p_actions, p_defaults, p_record);
+			}
+			if (op->op >= SL::OP_ASSIGN && op->op <= SL::OP_ASSIGN_BIT_XOR) {
+				if (op->arguments[0]->type == SL::Node::NODE_TYPE_VARIABLE) {
+					const auto *variable = static_cast<const SL::VariableNode *>(op->arguments[0]);
+					AffineCoordinate value = _affine_coordinate(op->arguments[1], r_variables, r_code, p_actions, p_defaults);
+					if (op->op != SL::OP_ASSIGN) {
+						SL::OperatorNode operation;
+						operation.op = op->op == SL::OP_ASSIGN_ADD ? SL::OP_ADD : op->op == SL::OP_ASSIGN_SUB ? SL::OP_SUB
+								: op->op == SL::OP_ASSIGN_MUL												  ? SL::OP_MUL
+								: op->op == SL::OP_ASSIGN_DIV												  ? SL::OP_DIV
+																											  : SL::OP_MOD;
+						operation.arguments = op->arguments;
+						value = _affine_coordinate(&operation, r_variables, r_code, p_actions, p_defaults);
+					}
+					r_variables[variable->name] = value;
+				} else {
+					_invalidate_coordinate_write(op->arguments[0], r_variables);
+				}
+			}
+		} break;
+		default:
+			break;
+	}
+}
+
 String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, GeneratedCode &r_gen_code, IdentifierActions &p_actions, const DefaultIdentifierActions &p_default_actions, bool p_assigning, bool p_use_scope) {
 	String code;
 
@@ -787,6 +1010,20 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				SL::FunctionNode *fnode = pnode->vfunctions[i].function;
 				function = fnode;
 				current_func_name = fnode->name;
+				texture_coordinates.clear();
+				if (!actions.texture_coordinate_inputs.is_empty() && fnode->name == SNAME("fragment")) {
+					CoordinateVariables variables;
+					for (const auto &entry : actions.texture_coordinate_inputs) {
+						variables[entry.key] = { entry.value, 1 };
+					}
+					for (const auto &entry : shader->varyings) {
+						if (entry.value.stage == SL::ShaderNode::Varying::STAGE_VERTEX && entry.value.array_size == 0 && !actions.texture_coordinate_varying_prefix.is_empty()) {
+							bool flat = entry.value.interpolation == SL::INTERPOLATION_FLAT;
+							variables[entry.key] = { actions.texture_coordinate_varying_prefix + _mkid(entry.key) + (flat ? "[0]" : "[$CORNER]"), flat ? 0 : 1 };
+						}
+					}
+					_analyze_texture_coordinates(fnode->body, variables, r_gen_code, p_actions, p_default_actions);
+				}
 				function_code[fnode->name] = _dump_node_code(fnode->body, p_level + 1, r_gen_code, p_actions, p_default_actions, p_assigning);
 				function = nullptr;
 			}
@@ -1391,7 +1628,12 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 								String sampler_expression = data_type_name + "(" + node_code + ", " + sampler_name + ")";
 								code += sampler_expression;
 								if (actions.implicit_texture_lod_expression) {
-									implicit_lod = actions.implicit_texture_lod_expression(onode->arguments[i]->get_datatype(), sampler_expression);
+									const String *coordinate = texture_coordinates.getptr(onode);
+									implicit_lod = actions.implicit_texture_lod_expression(onode->arguments[i]->get_datatype(), sampler_expression, coordinate ? *coordinate : String());
+									bool sampler_2d = onode->arguments[i]->get_datatype() == SL::TYPE_SAMPLER2D || onode->arguments[i]->get_datatype() == SL::TYPE_ISAMPLER2D || onode->arguments[i]->get_datatype() == SL::TYPE_USAMPLER2D;
+									if (texture_func_simple && !actions.texture_coordinate_inputs.is_empty() && current_func_name != SNAME("vertex") && (!coordinate || !sampler_2d)) {
+										r_gen_code.has_unqualified_texture_coordinates = true;
+									}
 								}
 							} else if (correct_texture_uniform && RS::get_singleton()->is_low_end()) {
 								// Texture function on low end hardware (i.e. OpenGL).
@@ -1664,6 +1906,7 @@ Error ShaderCompiler::compile(RSE::ShaderMode p_mode, const String &p_code, Iden
 	r_gen_code.defines.clear();
 	r_gen_code.code.clear();
 	r_gen_code.private_varyings.clear();
+	r_gen_code.has_unqualified_texture_coordinates = false;
 	for (int i = 0; i < STAGE_MAX; i++) {
 		r_gen_code.stage_globals[i] = String();
 	}

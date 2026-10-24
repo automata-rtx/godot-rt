@@ -19,8 +19,8 @@ anything else. **Open the file that covers the question before answering it.**
 | Has this been tried, what did it measure | `docs/HISTORY.md` — read before re-attempting anything |
 | How do I measure or validate a change | `docs/VALIDATION.md` |
 | Re-applying the fork to a newer Godot | `docs/PORTING.md` |
-| AMD GI implementation status and qualification | `docs/AMD_GI_IMPLEMENTATION.md` — full source comparison complete in `docs/AMD_GI_FULL_COMPARISON.md`; corrections unfinished; fidelity and target-hardware qualification unverified |
-- Live correction status: `docs/AMD_GI_CONSEQUENTIAL_CORRECTIONS.md`; consequential gaps remain. Approved adapter boundaries and still-pending proposals are distinguished in `docs/AMD_GI_ADAPTER_DECISIONS.md`; further deviations require explicit owner approval. Optional completeness is deferred.
+| AMD GI implementation status and qualification | `docs/AMD_GI_IMPLEMENTATION.md` — full source comparison complete in `docs/AMD_GI_FULL_COMPARISON.md`; qualified default-path corrections implemented; full feature parity and hardware/gameplay qualification unfinished |
+| AMD GI correction evidence and approvals | `docs/AMD_GI_CONSEQUENTIAL_CORRECTIONS.md` and `docs/AMD_GI_ADAPTER_DECISIONS.md` — qualified input domains and remaining limitations; further deviations require explicit owner approval. Optional completeness is deferred. |
 | Triangle materials / GI material preparation | `docs/internals/rt-materials.md` — AMD native source evaluation; legacy validator capture/atlas; readback is diagnostic |
 | Sparse AMD GI progress and live controls | `docs/features/amd-gi.md` — actual low-budget captures, denoiser enabled |
 | GI enabled/disabled stills and validation controls | `docs/features/rtgi-validation.md` — uncached diffuse transport, not AMD GI-1.x |

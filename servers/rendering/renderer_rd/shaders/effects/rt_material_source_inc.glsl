@@ -75,9 +75,24 @@ GISourceFrame gi_source_frame;
 uint gi_source_vertex_index;
 float gi_source_lod;
 float gi_source_uv_area;
+vec2 gi_source_triangle_uv[3];
+vec2 gi_source_triangle_uv2[3];
 bool gi_source_filtered;
 float gi_source_texture_lod(vec2 dimensions) {
 	return gi_source_filtered ? 0.5 * log2(dimensions.x * dimensions.y * gi_source_uv_area) + gi_source_lod : gi_source_lod;
+}
+float gi_source_mapped_texture_lod(vec2 dimensions, vec2 uv0, vec2 uv1, vec2 uv2) {
+	if (!gi_source_filtered) {
+		return gi_source_lod;
+	}
+	// The approved native adapter supplies the actual affine texture mapping
+	// to AMD's unchanged triangle/cone footprint, at its half-UV precision.
+	uv0 = unpackHalf2x16(packHalf2x16(uv0));
+	uv1 = unpackHalf2x16(packHalf2x16(uv1));
+	uv2 = unpackHalf2x16(packHalf2x16(uv2));
+	vec2 a = uv1 - uv0, b = uv2 - uv0;
+	float area = abs(a.x * b.y - b.x * a.y);
+	return 0.5 * log2(dimensions.x * dimensions.y * area) + gi_source_lod;
 }
 bool gi_source_front_face, gi_source_discarded;
 vec4 gi_source_fragcoord;

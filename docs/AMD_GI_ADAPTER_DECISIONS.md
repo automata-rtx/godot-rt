@@ -1,6 +1,6 @@
 # AMD GI adapter decisions and approval scope
 
-The owner explicitly requires approval for departures from AMD. On October 23, 2026, the owner approved the authored-light/material boundary and conditionally approved correcting the normal transforms if the pinned AMD implementation is incorrect. The completed normal-space investigation establishes that condition. The individual sections below record later approvals, remaining proposals and the withdrawn snapshot proposal. The consequential correction work remains in progress; neither this document nor passing helper tests establishes completion.
+The owner explicitly requires approval for departures from AMD. On October 23, 2026, the owner approved the authored-light/material boundary and conditionally approved correcting the normal transforms if the pinned AMD implementation is incorrect. The completed normal-space investigation establishes that condition. The individual sections below record the approved exceptions, the bounded affine mapping extension and the withdrawn snapshot proposal. Qualified corrections are implemented; neither these approvals nor passing helper tests establish full native-input support, optional AMD feature parity or production readiness.
 
 ## Approved: preserve authored Godot lighting at the input/output boundary
 
@@ -155,7 +155,7 @@ addresses if its allocation actually shrinks. Rejection consumes no merge RNG
 for this unavailable sample, as with the neighboring invalid-sample guards.
 The owner explicitly approved discarding these invalid samples. The existing guard is retained within this narrow scope; no global history reset or identity remapping is added.
 
-## Remaining domain investigation: RGB float-to-uint conversion
+## Retained reference limitation: RGB float-to-uint conversion
 
 Cache RGB quantization still uses the reference rounded float-to-uint conversion
 and 32-bit wrapping sums. This is defined for finite nonnegative rounded values
@@ -166,25 +166,24 @@ No new clamp or conversion policy has been installed. Distance overflow has a
 separately approved correction above; it does not authorize changing RGB conversion.
 
 
-## Open: emitter texture coordinates outside AMD's single-UV input model
+## Approved: affine emitter texture coordinates outside AMD's single-UV input model
 
 AMD's `gather_area_lights.comp` stores one `vertex.getUV()` per corner, rounded
 through `packUVs`. `evaluateAreaLightConeAM` uses that same mapping for the texture
 sample and its triangle-area LOD. The native source path now matches that contract
 for post-vertex UV0, including half UV precision and vertex-stage mip-zero reads.
-It does not yet correctly filter an implicit emission texture read using a different
+The earlier adapter did not correctly filter an implicit emission texture read using a different
 mapping, such as UV2 or a fragment-stage coordinate transformation. Evaluating
 its RGB source program correctly does not establish the correct filtering footprint.
 
 A source-checked example is in `emitter-coordinate-boundary.json` in the correction
 evidence directory. A mapping four times wider than UV0 needs two additional mip
 levels. For a 1024-square texture and shared cone offset -6, the current footprint selects mip 4 instead of mip 6; both are inside the available 0–10 range. It therefore selects four times finer linear detail.
-This can increase noise or select the wrong averaged emission. It remains an open
-adapter finding, not a silently deferred completeness item. The textual game-source
+This can increase noise or select the wrong averaged emission. This was a consequential adapter finding, not an optional visual improvement. The textual game-source
 inventory found ordinary UV0 emission textures and constant emission, but that does
 not establish the contents of imported binary assets or justify leaving the gap.
 
-Proposed direction, not yet adopted: supply AMD's existing triangle/cone formula
+Original proposed direction: supply AMD's existing triangle/cone formula
 with each emission texture's own mapped triangle coordinates. Preserve the fast
 single-UV path. For a native shader that computes another mapping, evaluate that
 mapping at the triangle corners; affine mappings reproduce the reference formula
@@ -193,3 +192,36 @@ for those shaders and further restrictions/qualification for nonlinear coordinat
 branches, loops, or texture-dependent coordinates. No cost or general nonlinear
 accuracy claim is made. This is a material-input extension absent from AMD's fixed
 material model; it must not be installed as an unexplained algorithm change.
+
+
+The owner approved the recommendation on October 24, 2026: “Continue with your
+recommendation.” The approved scope is the clearly understood mapping cases;
+arbitrary warped or texture-driven coordinates were explicitly not presented as
+solved. No new estimator or more GI rays are authorized by this decision.
+
+Implementation now uses an opt-in shader-compiler analysis to reconstruct affine
+texture coordinates at triangle corners. It recognizes UV0/UV2, interpolated or
+flat vertex varyings, local aliases/reassignment, component swizzles, addition,
+translation, multiplication by triangle-constant scalar/vector/matrix values,
+and division by triangle-constant values. Uniform-built rotation matrices are
+supported. Material/global/instance uniforms remain native inputs. A qualified
+read feeds AMD's unchanged triangle/cone LOD formula using half-precision mapped
+corners; the texture sample itself retains the authored coordinate expression.
+Ordinary UV0 and its direct aliases retain the existing footprint helper. Explicit
+textureLod/textureGrad operations remain authored. No extra material-program
+invocations, passes, ray queries, GPU buffers or CPU geometry readbacks are added.
+
+Analysis is conservative: nonlinear coordinates, partial/array mutations, loop-
+or spatial-branch-dependent mappings, aliases merged after conditional writes,
+custom helper calls and non-2D implicit textures are not certified. Such emitter
+programs warn once when compiled and retain their existing fallback. This is a
+remaining native-material limitation, not a fix for those cases. Additional
+arithmetic occurs for corrected mapped reads; target-hardware cost is unmeasured.
+
+The GPU known-mip/coordinate oracle passes 704 samples across eleven mappings,
+uncompressed/compressed inputs and changed uniforms (maximum component error
+0.00008534). The existing 256-sample native material oracle passes (0.00000142).
+The emitter-room regression passes at the quarter primary budget with denoising.
+Evidence: `/workspace/gi-validation/amd-emitter-coordinates/`. These are Vulkan
+correctness tests, not hardware performance or a proof that the reported game
+hazard/firefly symptoms were caused by this mapping issue.

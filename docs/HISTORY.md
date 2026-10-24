@@ -6,6 +6,21 @@ alone — several of these already were, and failed. Not here: using a feature (
 one works (`docs/internals/`), running the harnesses (`docs/VALIDATION.md`), diagnosing a symptom
 (`docs/TROUBLESHOOTING.md`).
 
+## Approved affine emitter filtering — 2026-10-24
+
+`[software Vulkan correctness; hardware cost unmeasured]` The owner approved
+correcting the clearly understood alternate texture-layout/scaling/rotation cases.
+The compiler reconstructs affine mappings at triangle corners for AMD's existing
+LOD formula. Ordinary UV0 uses the existing helper; no extra material invocations,
+rays, passes or GPU buffers are added. Complex mappings outside the certified
+subset warn and retain their fallback. This is not a general custom-shader fix.
+
+The new oracle passes 704 known mip/coordinate samples (maximum error 0.00008534),
+and the existing native material oracle passes 256 samples (0.00000142). The
+quarter-budget emitter room passes its original thresholds. All five unsupported
+mapping fixtures produce the expected diagnostics and finish without renderer errors. Details and limitations
+are in [the adapter decisions](AMD_GI_ADAPTER_DECISIONS.md).
+
 ## Consequential AMD GI correction work — 2026-10-23
 
 `[in progress, not a release]` Restored probe filter/LRU/units/default near-field SSGI,

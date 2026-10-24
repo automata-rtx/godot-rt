@@ -1,10 +1,10 @@
 # AMD GI implementation
 
 This is an experimental Vulkan Forward+ implementation of AMD GI-1.x, adapted from
-Capsaicin v1.3 at `914b91596cd119eda85fbc1d3c7ee6ac391b1452`. Reference fidelity is not established; the requested implementation is incomplete.
+Capsaicin v1.3 at `914b91596cd119eda85fbc1d3c7ee6ac391b1452`. The main default pipeline and audited corrections are implemented for qualified inputs; full feature parity and hardware/gameplay qualification remain incomplete.
 The [full source comparison](../AMD_GI_FULL_COMPARISON.md) is complete; its
 [coverage appendix](../AMD_GI_COMPARISON_COVERAGE.md) accounts for every stage
-and control. The [live consequential correction record](../AMD_GI_CONSEQUENTIAL_CORRECTIONS.md) tracks this implementation work; it remains unfinished. The prior
+and control. The [live consequential correction record](../AMD_GI_CONSEQUENTIAL_CORRECTIONS.md) tracks every correction, approval, validation result and remaining limitation. The prior
 [correction ledger](../AMD_GI_REFERENCE_AUDIT.md) is historical, not a fidelity certificate.
 Target-hardware qualification and shipping presets are also unverified.
 It uses sparse directional screen probes,
@@ -13,14 +13,12 @@ temporal/spatial GI denoising, sky lighting, and a separate glossy-reflection pa
 as a substitute for those stages.
 
 The [gameplay audit](../AMD_GI_GAMEPLAY_AUDIT.md) records failures in `3038a14`.
-Current corrections remove persistent light-ID remapping and restore AMD light-settings transitions. They add native previous-surface inputs, reference probe filtering/LRU and irradiance units, default near-field SSGI, independent reflection feedback, compact GI work and exact shared triangle-buffer access. Native source shading now replaces coarse material capture; its detailed qualification remains in progress.
+Current corrections remove persistent light-ID remapping and restore AMD light-settings transitions. They add native previous-surface inputs, reference probe filtering/LRU and irradiance units, default near-field SSGI, independent reflection feedback, compact GI work and exact shared triangle-buffer access. Native source shading now replaces coarse material capture; its ordinary and affine emitter-mapping cases have controlled GPU qualification; arbitrary custom mappings remain limited.
 Software-Vulkan regressions cover these stages, with game-scene checks for the
 reported collection/history failures. Historical checkpoint stills do not establish
 current quality or target-hardware stability.
 
-The controls below describe current behavior, including unapproved departures.
-Exact source materials, complete scene/ray coverage, numerical boundary contracts,
-source-material qualification and final combined regressions remain in progress. Approved distance handling restores full scene coverage; the extended sky-removal test passes while reporting its early residual.
+The controls below describe current behavior. Default-path algorithm corrections and approved numerical/native adapter exceptions are recorded in the live correction ledger. Optional quality modes are not claims of AMD baseline equivalence. Approved distance handling restores full participating-scene coverage; the extended sky-removal test passes while reporting its early residual.
 Default reflection feedback is now independent of `screen_feedback`; default SSGI
 also consumes previous opaque lighting. Comparisons use the default quarter primary
 ray budget and keep the denoiser enabled.
@@ -180,8 +178,7 @@ The default hash has 16,384 buckets, 16 tiles per bucket, and 85 cells per tile 
 mips. Bucket selection uses the reference PCG chain and checksum uses xxHash. Base-cell history is limited to 16 updates, tile lifetime to 50 unused frames,
 and final GI history to at most 64 samples with adaptive reduction. These are live
 temporal histories, not unlimited accumulation for screenshots. Histories reset on
-allocation, resize, quality changes, large camera cuts and discontinuous lighting
-changes. Native surface reprojection rejects incompatible geometry; the fork’s swept-bounding-box probe-history wipes have been removed. Smooth lighting changes retain history; small camera motion reprojects existing histories. Material colors refresh
+allocation, resource recreation and relevant quality/light-settings changes. Ordinary camera motion or camera replacement does not globally reset GI; surface/probe reprojection rejects incompatible history. Reference light-settings changes include environment presence and crossing zero/nonzero light-class counts, not every brightness or light-count change. Native surface reprojection rejects incompatible geometry; the fork’s swept-bounding-box probe-history wipes have been removed. Smooth lighting changes retain history; small camera motion reprojects existing histories. Material colors refresh
 through new cache samples and the reference temporal weighting.
 GI collection is sorted by stable instance and light IDs before building the
 signature and material layout; spatial-tree traversal permutations must not
@@ -230,8 +227,7 @@ evidence needed before reference fidelity can be claimed:
   Half-resolution mirrors can show reconstruction artifacts.
 - Native source material programs read uniforms, textures and packed attributes at
   hits. AMD GI does not prepare capture pages or wait for an atlas budget. Source
-  emitter sampling follows point/triangle/cone LOD; full material qualification
-  remains in progress.
+  emitter sampling follows point/triangle/cone LOD. Affine UV0/UV2, rotation/scaling/translation, supported aliases and varying mappings are qualified by 704 GPU samples. Arbitrary warped, texture-driven, helper/loop-dependent or other unqualified mappings retain a diagnosed fallback; full native material coverage remains incomplete.
 - MeshInstance3D geometry, native skeletons/blend shapes and CPU-managed 3D
   MultiMesh elements are collected without the former fixed instance/light caps.
   Particle/GPU-indirect MultiMesh geometry and unsupported native shader/light

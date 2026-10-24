@@ -76,8 +76,14 @@ Error RaytracingMaterialSource::compile(const ShaderCompiler &p_native_compiler,
 	// samples use the caller's explicit reference texture/cone LOD; explicit
 	// textureLod/textureGrad calls remain authored shader operations.
 	defaults.implicit_texture_lod = "gi_source_lod";
-	defaults.implicit_texture_lod_expression = [](ShaderLanguage::DataType p_type, const String &p_sampler) -> String {
+	defaults.texture_coordinate_inputs["UV"] = "gi_source_triangle_uv[$CORNER]";
+	defaults.texture_coordinate_inputs["UV2"] = "gi_source_triangle_uv2[$CORNER]";
+	defaults.texture_coordinate_varying_prefix = "gi_source_corner_";
+	defaults.implicit_texture_lod_expression = [](ShaderLanguage::DataType p_type, const String &p_sampler, const String &p_coordinate) -> String {
 		if (p_type == ShaderLanguage::TYPE_SAMPLER2D || p_type == ShaderLanguage::TYPE_ISAMPLER2D || p_type == ShaderLanguage::TYPE_USAMPLER2D) {
+			if (!p_coordinate.is_empty() && p_coordinate != "gi_source_triangle_uv[$CORNER]") {
+				return "gi_source_mapped_texture_lod(vec2(textureSize(" + p_sampler + ", 0)), " + p_coordinate.replace("$CORNER", "0") + ", " + p_coordinate.replace("$CORNER", "1") + ", " + p_coordinate.replace("$CORNER", "2") + ")";
+			}
 			return "gi_source_texture_lod(vec2(textureSize(" + p_sampler + ", 0)))";
 		}
 		return "gi_source_lod";
@@ -111,10 +117,18 @@ Error RaytracingMaterialSource::compile(const ShaderCompiler &p_native_compiler,
 		return ERR_UNAVAILABLE;
 	}
 	ERR_FAIL_COND_V_MSG(generated.uniform_total_size != p_shader.ubo_size || generated.uniform_offsets != p_shader.ubo_offsets, ERR_BUG, "RT source-material uniforms must match the native material buffer layout.");
+	if (p_shader.uses_emission && generated.has_unqualified_texture_coordinates) {
+		WARN_PRINT(vformat("AMD GI emitter shader '%s' contains implicit texture reads outside the supported 2D affine mapping subset; the existing fallback is retained and filtering for those reads is not qualified. Explicit textureLod/textureGrad reads remain authored.", p_shader.path));
+	}
 
 	String source;
 	if (generated.uniform_total_size != 0) {
 		source += "layout(buffer_reference, std140, buffer_reference_align=16) readonly buffer " + uniform_type + " {\n" + generated.uniforms + "};\n";
+	}
+	for (const auto &varying : generated.private_varyings) {
+		if (varying.array_size == 0) {
+			source += ShaderLanguage::get_datatype_name(varying.type) + " gi_source_corner_" + varying.name + "[3];\n";
+		}
 	}
 	source += generated.stage_globals[ShaderCompiler::STAGE_VERTEX];
 	for (const char *stage : { "vertex", "fragment" }) {
@@ -144,8 +158,12 @@ Error RaytracingMaterialSource::compile(const ShaderCompiler &p_native_compiler,
 	// Capsaicin's light builder packs each emitter UV into half2 before
 	// proposal/target interpolation. Ordinary material hits keep source UVs.
 	source += prefix + "vertex();\nif (emitter_filtered) uv_interp = unpackHalf2x16(packHalf2x16(uv_interp));\ntriangle_uv[corner] = uv_interp;\n";
+	source += "gi_source_triangle_uv[corner]=uv_interp;\ngi_source_triangle_uv2[corner]=uv2_interp;\n";
 	source += "gi_source_vertex_accumulate(interpolated, weights[corner], corner==0u);\n";
 	for (const auto &varying : generated.private_varyings) {
+		if (varying.array_size == 0) {
+			source += "gi_source_corner_" + varying.name + "[corner] = " + varying.name + ";\n";
+		}
 		for (int i = 0; i < MAX(varying.array_size, 1); i++) {
 			String element = varying.name + (varying.array_size > 0 ? "[" + itos(i) + "]" : String());
 			if (varying.flat) {

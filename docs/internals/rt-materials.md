@@ -19,7 +19,7 @@ world space once; screen shading retains native normal maps.
 
 Implicit 2D texture reads use point LOD for ordinary hits and AMD's triangle/cone
 footprint for emitter proposals and targets. Explicit authored LOD/gradient reads
-remain explicit. Post-vertex UV0 emitter coordinates round through half precision, matching AMD's light builder; native vertex implicit reads use mip zero independently of the fragment footprint. Non-UV0 or fragment-remapped emitter footprints remain an open adapter gap. Shader programs requiring raster derivatives are reported as
+remain explicit. Post-vertex UV0 emitter coordinates round through half precision, matching AMD's light builder; native vertex implicit reads use mip zero independently of the fragment footprint. An opt-in compiler analysis reconstructs affine UV0/UV2/varying mappings and uniform scaling/rotation/translation at triangle corners, then uses AMD's unchanged triangle/cone LOD. Direct UV0 aliases retain the existing helper. This adds no material reruns, ray queries, buffers or passes. Nonlinear, texture-driven, loop-dependent and other unqualified reads produce an emitter-program warning and retain their existing fallback; they are not certified as correctly filtered. Shader programs requiring raster derivatives are reported as
 unsupported; they are not replaced with zero derivatives. Unsupported surfaces
 are skipped individually, so they can leave geometry/material omissions; this
 is not support for those classes. Supported surfaces keep running.

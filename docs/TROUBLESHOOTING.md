@@ -185,3 +185,14 @@ An EMISSION-writing shader is classified as emissive even when its current RGB
 is black; this owner-approved input encoding follows AMD's base-emissivity
 termination distinction. See the live correction record before treating any
 historical atlas workaround or settled still as current validation.
+
+
+### AMD GI warns about an unqualified emitter texture mapping
+
+The supported affine path handles ordinary/alternate UV layouts and straight
+scaling, rotation or translation, with supported aliases and vertex varyings.
+Nonlinear warping, texture-dependent coordinates, some control-flow/helper cases,
+partial mutations and non-2D implicit reads are not certified. The warning names
+the material shader; its existing filtering fallback remains active, so lighting
+from it can still be noisy or incorrectly averaged. This does not indicate a GI
+history reset. See [the precise adapter scope](AMD_GI_ADAPTER_DECISIONS.md).

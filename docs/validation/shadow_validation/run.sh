@@ -62,6 +62,7 @@ case "$RIG" in
 	amd_gi_scene_churn|amd_gi_flashlight) RIG_RES=321x181 ;;
 	amd_gi_deformation) RIG_RES=641x359 ;;
 	amd_gi_source_material) RIG_RES=641x359 ;;
+	amd_gi_emitter_coordinates|amd_gi_emitter_coordinate_limits) RIG_RES=321x181 ;;
 	amd_gi_collection) RIG_RES=321x181 ;;
 	amd_gi_distance) RIG_RES=161x91 ;;
 	amd_gi_normals) RIG_RES=161x91 ;;
@@ -115,7 +116,7 @@ export SHADOW_OUT_DIR="$OUT"
 if [ "$RIG" = "amd_gi_collection" ]; then
 	export GODOT_AMD_GI_VALIDATE_CACHE=1 GODOT_AMD_GI_VALIDATE_MATERIALS=1 GODOT_AMD_GI_TRACE_HISTORY=1
 fi
-if [ "$RIG" = "amd_gi_source_material" ]; then
+if [ "$RIG" = "amd_gi_source_material" ] || [ "$RIG" = "amd_gi_emitter_coordinates" ]; then
 	export GODOT_AMD_GI_VALIDATE_SOURCE=1
 fi
 if [ "$RIG" = "amd_gi_consequential" ]; then
@@ -189,6 +190,16 @@ elif [ "$RIG" = "amd_gi_distance" ]; then
 		exit 1
 	fi
 	grep -a 'GPU cases passed' "$LOG"
+elif [ "$RIG" = "amd_gi_emitter_coordinates" ]; then
+	python3 "$HERE/score_amd_gi_emitter_coordinates.py" "$OUT"
+elif [ "$RIG" = "amd_gi_emitter_coordinate_limits" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'COORDINATE LIMITS FINISHED' "$LOG"; then
+		exit 1
+	fi
+	for mapping in nonlinear partial_write loop texture_dependent helper; do
+		grep -q "AMD GI emitter shader 'res://coordinate_limit_${mapping}.gdshader' contains implicit texture reads outside the supported 2D affine" "$LOG" || exit 1
+	done
+	echo "Five unsupported coordinate cases were explicitly diagnosed."
 elif [ "$RIG" = "amd_gi_source_material" ]; then
 	python3 "$HERE/score_amd_gi_source_material.py" "$OUT"
 elif [ "$RIG" = "amd_gi_normals" ]; then
