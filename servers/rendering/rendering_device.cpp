@@ -8964,6 +8964,10 @@ void RenderingDevice::finalize() {
 	_submit_transfer_workers();
 	_wait_for_transfer_workers();
 
+	if (driver != nullptr) {
+		driver->prepare_for_shutdown();
+	}
+
 	// Delete everything the graph has created.
 	draw_graph.finalize();
 

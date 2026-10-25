@@ -149,6 +149,8 @@ public:
 	/*****************/
 
 	virtual Error initialize(uint32_t p_device_index, uint32_t p_frame_count) = 0;
+	// Called after submitted work finishes, before resources and queues are freed.
+	virtual void prepare_for_shutdown() {}
 
 	/****************/
 	/**** MEMORY ****/

@@ -213,6 +213,7 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
 
 public:
 	Error initialize(uint32_t p_device_index, uint32_t p_frame_count) override final;
+	void prepare_for_shutdown() override final;
 
 private:
 	/****************/

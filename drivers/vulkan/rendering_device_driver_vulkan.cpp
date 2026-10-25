@@ -1520,9 +1520,23 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 		bool device_created = VulkanHooks::get_singleton()->create_vulkan_device(&create_info, &vk_device);
 		ERR_FAIL_COND_V_MSG(!device_created, ERR_CANT_CREATE, "Couldn't create a Vulkan device through the VulkanHooks singleton.");
 	} else {
-		VkResult err = vkCreateDevice(physical_device, &create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DEVICE), &vk_device);
+		PFN_vkCreateDevice create_device = vkCreateDevice;
+#ifdef STREAMLINE_ENABLED
+		if (StreamlineVK::get_singleton() != nullptr) {
+			create_device = reinterpret_cast<PFN_vkCreateDevice>(uintptr_t(StreamlineVK::get_singleton()->get_device_create_proc_addr(uint64_t(uintptr_t(context_driver->instance_get())))));
+			ERR_FAIL_NULL_V(create_device, ERR_CANT_CREATE);
+		}
+#endif
+		VkResult err = create_device(physical_device, &create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DEVICE), &vk_device);
 		ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, ERR_CANT_CREATE, vformat("Couldn't create Vulkan device (VkResult error %d).", err));
 	}
+
+#ifdef STREAMLINE_ENABLED
+	if (StreamlineVK::get_singleton() != nullptr) {
+		// Record ownership before any subsequent initialization step can fail.
+		StreamlineVK::get_singleton()->bind_device(uint64_t(uintptr_t(vk_device)));
+	}
+#endif
 
 	for (uint32_t i = 0; i < queue_families.size(); i++) {
 		for (uint32_t j = 0; j < queue_families[i].size(); j++) {
@@ -7558,7 +7572,18 @@ RenderingDeviceDriverVulkan::RenderingDeviceDriverVulkan(RenderingContextDriverV
 	max_descriptor_sets_per_pool = GLOBAL_GET("rendering/rendering_device/vulkan/max_descriptors_per_pool");
 }
 
+void RenderingDeviceDriverVulkan::prepare_for_shutdown() {
+#ifdef STREAMLINE_ENABLED
+	if (vk_device != VK_NULL_HANDLE && StreamlineVK::get_singleton() != nullptr) {
+		StreamlineVK::get_singleton()->shutdown_device(uint64_t(uintptr_t(vk_device)));
+	}
+#endif
+}
+
 RenderingDeviceDriverVulkan::~RenderingDeviceDriverVulkan() {
+	// Also covers failure after vkCreateDevice but before RenderingDevice initialization.
+	prepare_for_shutdown();
+
 #if defined(DEBUG_ENABLED) || defined(DEV_ENABLED)
 	if (breadcrumb_buffer != BufferID()) {
 		buffer_free(breadcrumb_buffer);

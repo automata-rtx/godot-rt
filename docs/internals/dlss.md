@@ -81,6 +81,35 @@ Everything feature-related happens here, not at `slInit`.
 | **Reflex is switched on process-wide here**, mode `eLowLatency`. `reflex_running` gates `frame_generation_set_enabled`. | It paces CPU against GPU, not a per-view idea; and frame generation reports `eFailReflexNotDetectedAtRuntime` and stops presenting interpolated frames without it. |
 | A second `VkDevice` (a local rendering device) is ignored. | `device_ready` latches on the first. |
 
+### Shutdown ownership and ordering
+
+`bind_device()` records the first created Vulkan device before subsequent driver
+initialization can fail. Additional device creation uses the native Vulkan loader
+instead of the Streamline create-device proxy: that proxy otherwise overwrites
+NVIDIA's global device/dispatch table. Destroying a local device cannot shut down
+the SDK bound to the main device.
+
+After RenderingDevice drains its submitted frames and transfer workers, its
+driver's `prepare_for_shutdown()` runs before Godot frees resources or queues.
+Streamline waits for the bound device with SDK hooks still active, releases any
+remaining viewport resources, and calls `slShutdown()` while the Vulkan device
+and instance remain valid. It disables feature entry points through their
+readiness/frame gates and latches the shutdown attempt before entering SDK code.
+An SDK failure is logged and never retried against partially destroyed plugins.
+
+The driver destructor repeats the guarded preparation for initialization failure
+paths. If no device was created, the context shuts down the initialized SDK before
+destroying its instance. Only after Vulkan destruction does `finalize()` unload
+the interposer and native-loader references; it never performs late SDK cleanup.
+Calling `slShutdown` after `vkDestroyDevice`/`vkDestroyInstance` was the previous
+exit-crash defect. See the investigation in `docs/AMD_GI_IMPLEMENTATION.md`.
+
+Source-only regression: run `python docs/validation/streamline_shutdown/generate_test.py
+<output.cpp>`, compile that output with a C++17 compiler, and run the resulting
+standalone test. It extracts production cleanup methods and substitutes fake
+SDK/Vulkan entry points. It loads neither Godot nor the NVIDIA runtime and does
+not replace the required, separately authorized hardware exit validation.
+
 ## 4. The resource tagging rule
 
 **Anything tagged for Streamline must be a texture of its own — never a view, never a slice.**

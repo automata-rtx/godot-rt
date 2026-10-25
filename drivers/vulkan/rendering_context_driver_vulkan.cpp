@@ -384,6 +384,13 @@ RenderingContextDriverVulkan::RenderingContextDriverVulkan() {
 }
 
 RenderingContextDriverVulkan::~RenderingContextDriverVulkan() {
+#ifdef STREAMLINE_ENABLED
+	if (StreamlineVK::get_singleton() != nullptr) {
+		// If no device was created, shut down the initialized SDK before the instance.
+		StreamlineVK::get_singleton()->shutdown_device(0);
+	}
+#endif
+
 	if (debug_messenger != VK_NULL_HANDLE && functions.DestroyDebugUtilsMessengerEXT != nullptr) {
 		functions.DestroyDebugUtilsMessengerEXT(instance, debug_messenger, get_allocation_callbacks(VK_OBJECT_TYPE_DEBUG_UTILS_MESSENGER_EXT));
 	}
@@ -397,7 +404,7 @@ RenderingContextDriverVulkan::~RenderingContextDriverVulkan() {
 	}
 
 #ifdef STREAMLINE_ENABLED
-	// After the instance, because the interposer owns the Vulkan entry points that destroyed it.
+	// SDK cleanup happened while Vulkan was alive. Keep its entry points loaded until now.
 	StreamlineVK::finalize();
 #endif
 }

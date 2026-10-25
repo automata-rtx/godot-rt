@@ -169,8 +169,15 @@ public:
 	// refuses to start -- in which case the engine carries on with the plain Vulkan loader and
 	// no singleton exists.
 	static uint64_t initialize();
+	// Unloads the DLL only; SDK shutdown must precede Vulkan device/instance destruction.
 	static void finalize();
 	static StreamlineVK *get_singleton() { return singleton; }
+
+	// Additional devices must bypass the interposer's process-wide device binding.
+	uint64_t get_device_create_proc_addr(uint64_t p_instance);
+	void bind_device(uint64_t p_device);
+	// Only the bound device can shut down the SDK. Zero handles initialization without a device.
+	void shutdown_device(uint64_t p_device);
 
 	// Why DLSS is not available, in a sentence, recorded wherever that is decided.
 	//
@@ -237,6 +244,7 @@ private:
 	Internal *internal = nullptr;
 
 	bool _load(const String &p_directory);
+	void _shutdown();
 	void _unload();
 };
 

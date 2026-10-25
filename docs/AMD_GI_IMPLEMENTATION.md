@@ -147,13 +147,141 @@ geometry and extra acceleration-structure work; changing a GI flag alone is
 incorrect. Keep receiver-only grass for now, especially on the 780M. Assess a
 bounded desktop deformation implementation separately before enabling transport.
 
-Shutdown investigation read four existing crash dumps without launching anything.
-Three identify read access violations in `nvcuda64.dll`; the latest identifies
-`nvoglv64.dll`. The dumps load the desktop Streamline interposer and Overwolf's
-Vulkan hook. Raw fault-thread stack memory contains NVIDIA NGX model addresses,
-but these are not unwound call frames and do not prove cause. No shutdown code,
-driver, overlay or system setting was changed. Reproducible offline extraction:
-`.artifacts/amd-gi-hardening-20261025/read_minidump.py` and `dump-exceptions.json`.
+### Exit crash: investigation, fix and runtime validation, 2026-10-25
+
+Investigated source revision `73864a817b` without launching Godot, the editor,
+the game, or renderer fixtures. No shutdown code, game files, drivers, overlays,
+or system settings were changed. The earlier raw-stack-only investigation is
+superseded by Windows DbgEng unwinding of ten existing Windows crash dumps and
+one earlier Streamline exception dump.
+
+**Confirmed integration defect:** `RenderingDeviceDriverVulkan` destroys the
+Vulkan device; `RenderingContextDriverVulkan` then destroys the instance and only
+afterward calls `StreamlineVK::finalize()`. That calls `slShutdown()` inside
+`_unload()`, ignores its result, and unloads the interposer DLL. NVIDIA requires
+Streamline shutdown before destroying Vulkan devices and instances; see the
+[Streamline 2.12 Reflex guide](https://github.com/NVIDIA-RTX/Streamline/blob/v2.12.0/docs/ProgrammingGuideReflex.md).
+The 2.12 Vulkan interposer's `vkDestroyDevice` and `vkDestroyInstance` wrappers
+do not perform this SDK shutdown automatically.
+
+**Crash evidence:** the saved `fps proto/sl.log` records releasing the DLSS
+viewport at 01:15:51, then plugin shutdown and "Shutting down NGX" at 01:15:52,
+immediately followed by an exception dump. That dump is from PID 7412, thread
+24672, and unwinds through `sl_interposer!slShutdown`, NVIDIA's common plugin,
+`_nvngx!NVSDK_NGX_VULKAN_Shutdown`, the downloaded DLSS model, and `nvoglv64.dll`.
+The fault is a null read at address `0x10` in `nvoglv64+0xa82bea`. This establishes
+an exception during explicit SDK cleanup, before the subsequent Windows exit
+crash. Streamline's reference exception handler catches this class of exception
+and returns an error; our wrapper discards that result.
+
+The later Windows dump from the same PID unwinds from `LdrShutdownProcess` through
+the downloaded `dlssd` model into `nvoglv64`. All ten inspected Windows dumps
+contain NGX model cleanup and `LdrShutdownProcess`; some fault in `nvcuda64` and
+others in `nvoglv64`. The CUDA filename therefore describes a later failure site,
+not sufficient evidence of an independent CUDA integration bug. The two-stage
+failure is consistent with SDK cleanup aborting and remaining model cleanup
+running again during process detach. The shutdown-order violation is the leading,
+high-confidence explanation. The corrected build subsequently passed the
+authorized hardware exit checks recorded below.
+
+Important limits: NVIDIA private symbols are unavailable. Large offsets from
+exported names in the dumps do not identify the actual private functions, and the
+old executable does not match the current binary, so engine-frame symbolization
+is not trusted. The deployed interposer reports 2.12.0, but NVIDIA's downloaded
+`sl_common_override_0` version 134672 and model version 20318480 are active; the
+2.12 reference source is not an exact source match for those downloaded binaries.
+The log also reports an applied NVIDIA App DLSS preset override. Neither that
+override nor the loaded RTSS/Overwolf hooks are established causes. No evidence
+here justifies changing AMD GI algorithms or deleting NVIDIA files.
+
+Correction implemented after subsequent owner authorization:
+
+- Split SDK shutdown from DLL unloading. `RenderingDevice::finalize()` invokes
+  the driver's `prepare_for_shutdown()` after draining frames/transfer workers,
+  before freeing resources. The Vulkan override shuts down the bound SDK while
+  its device and instance remain valid. Pending viewport resources are released
+  before SDK shutdown; feature readiness and the current frame token are cleared.
+- Keep the interposer DLL loaded until all Vulkan destruction calls have
+  completed; moving the existing combined `finalize()` earlier is insufficient.
+- Bind shutdown to the first successfully created device, before later allocator
+  or pipeline-cache initialization can fail. Separate local device destruction
+  does not shut down the global SDK. Additional device creation uses the native
+  Vulkan loader, avoiding the interposer's global device-table replacement.
+- Track successful SDK initialization and latch the first shutdown attempt before
+  SDK calls. Report shutdown errors explicitly; never retry partially completed
+  plugin teardown. The driver destructor supplies an idempotent fallback for
+  initialization failures; the context handles initialization without a device.
+- Keep `finalize()` unload-only and reject unloading if required SDK shutdown was
+  skipped. Skip DLSS-G resource release when the optional plugin is unavailable.
+
+RenderingDevice already waits for submitted frames and transfer workers during
+finalization. The added shutdown path also calls `vkDeviceWaitIdle` on the bound
+device while SDK hooks remain active, covering SDK queues without an arbitrary
+delay. Runtime validation was subsequently authorized and covered DLSS used,
+Streamline enabled but unused, disabled Streamline, and local RenderingDevice
+creation/destruction. Partial initialization failure remains covered by the
+isolated test rather than hardware fault injection.
+Require successful SDK shutdown and no new Streamline or Windows dump; process
+exit code alone is insufficient because the SDK can catch the first exception.
+
+The Windows MSVC editor build passed. The isolated test generator at
+`docs/validation/streamline_shutdown/generate_test.py` extracts the actual cleanup
+methods and compiles them against fake SDK/Vulkan calls; all six cleanup scenarios
+passed, including shutdown failure and repeated calls. This tests wrapper control
+flow, not real SDK behavior, GPU synchronization, or a game exit. Source hooks
+also passed. The implementation turn launched no Godot/editor/game executable;
+the following checks ran only after the owner explicitly authorized them.
+
+RTX 5090 hardware validation used the built Windows editor executable with SHA256
+`4EDE8767341A9FD6A243BD76FB16E88D73C6D1C27BA05C3A50C5F043D4E1BF21`,
+1280x720 windowed, a 60 FPS cap, and isolated process-local `APPDATA` directories
+for saves/settings/logs. These are correctness checks, not performance measurements.
+
+| Check | Result |
+| --- | --- |
+| Streamline enabled, DLSS unused, 44 rendered frames | Exit 0; SDK success marker; NGX/common plugin cleanup completed; no new Windows or Streamline dump |
+| fps-proto Live World, AMD GI and DLSS Quality active, grass disabled | 214 rendered frames; local RenderingDevice allocated/read back a storage buffer and was destroyed; main DLSS continued for 120 more frames; quit with level live; exit 0; SDK success marker; no new Windows or Streamline dump |
+| Streamline disabled, 44 rendered frames | Exit 0; no new Windows or Streamline dump |
+
+Game settings reported effective DLSS mode 6, preset K. The viewport capture
+confirms Live World was rendered. Each run verified the project.godot hash was
+unchanged. No game source/assets or original saves/settings were edited. Only
+test processes were managed; the owner's desktop editor was left running.
+The enabled-unused launch was initially repeated because the first runner did
+not wait for a GUI executable's exit: that first result has a null exit code
+and is not counted as a complete pass. The corrected runner waits through a
+PowerShell output pipeline. All four launched test processes have exited.
+
+All runs logged a separate existing Vulkan-loader failure to load
+`C:/ProgramData/ReShade/ReShade64.dll` (error 1114); it did not prevent the tests
+or clean shutdown. No overlay/driver/system configuration was changed.
+Hardware testing did not force SDK errors or failed Vulkan initialization;
+those guards retain isolated-test coverage only.
+
+Build/test evidence is under `.artifacts/streamline-shutdown-fix-20261025/`.
+Runtime results, engine/SDK logs and the external harness are in `runtime/`,
+specifically `enabled-20261025-190732`, `game-20261025-190758`, and
+`disabled-20261025-190916`.
+
+On the owner's subsequent publication/deployment request, the exact tested
+executable above was installed at
+`C:/Users/Andrew/Desktop/GodotRT/godot.windows.editor.x86_64.exe`; its SHA256
+was verified after replacement. The old executable was retained beside it as
+`godot.windows.editor.x86_64.pre-shutdown-fix-20261025-191204.exe.bak`.
+The open editor was not closed and still uses its original image; restart it
+to use the installed fix. The tested binary was built before committing, so its
+embedded base revision remains `73864a817b`; use the recorded SHA256 to identify
+this tested build. Deployment evidence is `deployment.json` in the evidence
+directory. The publication targets are `feature/amd-gi` and `master` (the
+repository's default branch).
+
+Local evidence is preserved under `.artifacts/exit-crash-investigation-20261025/`:
+`sl.log`, `dump-streamline-original.txt`, `dump-<PID>.txt`, `summary.json`, and the
+offline-only `inspect_dump.cpp` reader. The original Streamline dump is
+`C:/ProgramData/NVIDIA/Streamline/godot.windows.editor.x86_64/1792905352255815/sl-sha-17026aaf3.dmp`.
+The inspected 2.12 reference checkout is `.artifacts/Streamline-2.12-reference/`
+at `e8aaa6eaac968711fb62473d4ae8256dde20919b`. These local evidence directories
+are not published repository artifacts.
 
 ## State of the implementation
 

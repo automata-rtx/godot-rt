@@ -400,6 +400,10 @@ const char *quality_name(StreamlineVK::Quality p_quality) {
 // Everything that would drag a Vulkan or Streamline type into the header lives here.
 struct StreamlineVK::Internal {
 	HMODULE module = nullptr;
+	HMODULE vulkan_loader = nullptr;
+	bool initialized = false;
+	bool shutdown_attempted = false;
+	uint64_t device = 0;
 
 	// Core entry points, resolved by name straight out of the interposer. The engine links
 	// neither `sl.interposer.lib` nor `vulkan-1.lib`, so every one of these is a hand-resolved
@@ -552,6 +556,8 @@ void StreamlineVK::finalize() {
 	if (singleton == nullptr) {
 		return;
 	}
+	// Never try SDK cleanup here: the Vulkan handles are already destroyed.
+	ERR_FAIL_COND_MSG(singleton->internal->initialized && !singleton->internal->shutdown_attempted, "Streamline: SDK shutdown was skipped before Vulkan destruction; refusing to unload live plugins.");
 	singleton->_unload();
 	memdelete(singleton->internal);
 	memdelete(singleton);
@@ -686,17 +692,99 @@ bool StreamlineVK::_load(const String &p_directory) {
 		return false;
 	}
 
+	internal->initialized = true;
 	print_line(vformat("Streamline %d.%d.%d initialized. Feature availability is reported once the graphics device exists.", SL_VERSION_MAJOR, SL_VERSION_MINOR, SL_VERSION_PATCH));
 	return true;
 }
 
-void StreamlineVK::_unload() {
-	if (internal->shutdown != nullptr) {
-		internal->shutdown();
+uint64_t StreamlineVK::get_device_create_proc_addr(uint64_t p_instance) {
+	ERR_FAIL_COND_V(!internal->initialized || internal->shutdown_attempted, 0);
+	PFN_vkGetInstanceProcAddr get_proc_addr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(internal->vk_get_instance_proc_addr);
+	if (internal->device != 0) {
+		// Streamline's vkCreateDevice proxy overwrites its global device and dispatch table.
+		// Local RenderingDevices must use the native loader without rebinding the SDK.
+		if (internal->vulkan_loader == nullptr) {
+			internal->vulkan_loader = LoadLibraryExW(L"vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+		}
+		ERR_FAIL_NULL_V_MSG(internal->vulkan_loader, 0, "Streamline: cannot load Vulkan for a separate rendering device.");
+		get_proc_addr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(reinterpret_cast<void *>(GetProcAddress(internal->vulkan_loader, "vkGetInstanceProcAddr")));
 	}
+	ERR_FAIL_NULL_V(get_proc_addr, 0);
+	return uint64_t(uintptr_t(get_proc_addr(reinterpret_cast<VkInstance>(uintptr_t(p_instance)), "vkCreateDevice")));
+}
+
+void StreamlineVK::bind_device(uint64_t p_device) {
+	ERR_FAIL_COND(!internal->initialized || internal->shutdown_attempted || p_device == 0);
+	if (internal->device == 0) {
+		internal->device = p_device;
+	}
+}
+
+void StreamlineVK::shutdown_device(uint64_t p_device) {
+	if (internal->device != p_device) {
+		return;
+	}
+	_shutdown();
+}
+
+void StreamlineVK::_shutdown() {
+	if (!internal->initialized || internal->shutdown_attempted) {
+		return;
+	}
+	// Latch before entering any SDK code. An SDK exception can return an error after
+	// partially destroying plugins; a second attempt must never revisit those plugins.
+	internal->shutdown_attempted = true;
+	internal->device_ready = false;
+	internal->reflex_running = false;
+	internal->frame = nullptr;
+	unavailability_reason = "Streamline has shut down";
+
+	if (internal->device != 0) {
+		// Godot has drained its queues. This also covers SDK-created queues and the
+		// DLSS-G wait-idle hook, while all plugin hooks and Vulkan handles remain valid.
+		const VkResult result = vkDeviceWaitIdle(reinterpret_cast<VkDevice>(uintptr_t(internal->device)));
+		if (result != VK_SUCCESS) {
+			ERR_PRINT(vformat("Streamline: waiting for the graphics device during shutdown failed (VkResult %d).", result));
+		}
+	}
+
+	// Usually released by render buffers already. Drain remaining viewports before
+	// SDK shutdown and before RenderingDevice frees their textures and other RIDs.
+	for (const KeyValue<uint32_t, Internal::SuperResolutionState> &entry : internal->super_resolution) {
+		const sl::Result result = internal->free_resources(sl::kFeatureDLSS, sl::ViewportHandle(entry.key));
+		if (result != sl::Result::eOk) {
+			ERR_PRINT(vformat("Streamline: releasing DLSS viewport %d during shutdown failed (%s).", entry.key, sl::getResultAsStr(result)));
+		}
+	}
+	internal->super_resolution.clear();
+	for (const KeyValue<uint32_t, Internal::FrameGenerationState> &entry : internal->frame_generation) {
+		if (internal->supported[FEATURE_DLSS_FRAME_GENERATION] && internal->dlssg_set_options != nullptr) {
+			const sl::Result result = internal->free_resources(sl::kFeatureDLSS_G, sl::ViewportHandle(entry.key));
+			if (result != sl::Result::eOk) {
+				ERR_PRINT(vformat("Streamline: releasing DLSS-G viewport %d during shutdown failed (%s).", entry.key, sl::getResultAsStr(result)));
+			}
+		}
+		_free_hudless(entry.key);
+	}
+	internal->frame_generation.clear();
+
+	const sl::Result result = internal->shutdown();
+	if (result != sl::Result::eOk) {
+		ERR_PRINT(vformat("Streamline: slShutdown failed (%s). Cleanup will not be retried; inspect the Streamline log and crash dumps.", sl::getResultAsStr(result)));
+	} else {
+		print_verbose("Streamline: SDK shutdown completed before Vulkan destruction.");
+	}
+}
+
+void StreamlineVK::_unload() {
+	// Only DLL lifetime ends here. No SDK calls are safe after Vulkan destruction.
 	if (internal->module != nullptr) {
 		FreeLibrary(internal->module);
 		internal->module = nullptr;
+	}
+	if (internal->vulkan_loader != nullptr) {
+		FreeLibrary(internal->vulkan_loader);
+		internal->vulkan_loader = nullptr;
 	}
 }
 
@@ -738,7 +826,7 @@ String StreamlineVK::_requirements_hint(Feature p_feature) {
 
 void StreamlineVK::set_physical_device(uint64_t p_physical_device) {
 	ERR_FAIL_NULL(internal);
-	if (internal->device_ready) {
+	if (internal->device_ready || !internal->initialized || internal->shutdown_attempted) {
 		// A second VkDevice -- a local rendering device, say. Streamline drives one device, and
 		// it is the one the main window renders through.
 		return;
@@ -1199,6 +1287,9 @@ void StreamlineVK::super_resolution_release(uint32_t p_viewport) {
 
 bool StreamlineVK::frame_generation_set_enabled(uint32_t p_viewport, bool p_enabled, const Size2i &p_output_size, const Size2i &p_mvec_depth_size) {
 	ERR_FAIL_NULL_V(internal, false);
+	if (!internal->device_ready) {
+		return false;
+	}
 
 	Internal::FrameGenerationState &state = internal->frame_generation[p_viewport];
 
@@ -1319,7 +1410,7 @@ void StreamlineVK::frame_generation_release(uint32_t p_viewport) {
 	}
 	_free_hudless(p_viewport);
 	internal->frame_generation.erase(p_viewport);
-	if (internal->device_ready) {
+	if (is_supported(FEATURE_DLSS_FRAME_GENERATION) && internal->dlssg_set_options != nullptr) {
 		internal->free_resources(sl::kFeatureDLSS_G, sl::ViewportHandle(p_viewport));
 	}
 }
