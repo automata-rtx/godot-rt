@@ -3117,14 +3117,44 @@
 		<member name="rendering/global_illumination/amd_gi/continuation_probability" type="float" setter="" getter="" default="0.3">
 			Probability that a registered primary hit (or the selected hit per cache cell when cache_all_hits is disabled) traces an additional diffuse continuation when [member rendering/global_illumination/amd_gi/multibounce] is enabled. Contributions are probability compensated. This is additional work beyond primary screen-probe rays. Changes apply at run time and reset this experimental backend's history.
 		</member>
+		<member name="rendering/global_illumination/amd_gi/debug/atlas_page" type="int" setter="" getter="" default="0">
+			Page of the cache or retained-probe atlas. Tile order can change as cache entries expire. Out-of-range pages display black.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/debug/exclusion_reports" type="bool" setter="" getter="" default="false">
+			Collects scene-collection and transport rejection counts, plus up to 4096 detailed records per stage. Collection records include object IDs for resolving scene nodes. Counts remain complete when detailed records are truncated. Intended only for debugging; disabled by default.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/debug/exposure" type="float" setter="" getter="" default="0.0">
+			Exposure adjustment in stops for post-tonemap radiance visualizers. Does not alter GI energy, scene exposure, history, or the native material/direct/indirect display modes.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/debug/indirect_cache" type="bool" setter="" getter="" default="false">
+			Displays the multibounce cache in cache visualizers instead of the direct cache. Propagation mode always selects the multibounce cache. Displays black when multibounce is disabled.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/debug/max_age" type="int" setter="" getter="" default="60">
+			Age scale in GI frames for probe/cache visualizers. Cache tiles older than this are hidden. Zero shows only currently touched tiles. Cached-probe age is seed age, which may predate its latest radiance update.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/debug/mip" type="int" setter="" getter="" default="0">
+			Cache atlas mip level from 0 through 3. Adaptive selected-mip views compute their own level. Changes are display-only.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/debug/readback_interval" type="int" setter="" getter="" default="60">
+			Number of rendered GI frames between GPU counter snapshots when statistics are enabled. The first snapshot is immediate. Overlay queries return the cached snapshot without initiating readback.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/debug/sample_scale" type="float" setter="" getter="" default="32.0">
+			Heatmap scale for sample counts and per-bucket failed allocation attempts. Display-only; this does not change ray or cache budgets.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/debug/statistics" type="bool" setter="" getter="" default="false">
+			Enables opt-in GPU cache/probe counters and periodic synchronous readback. Sampling frames may stall and must not be used for performance comparisons. Read the latest detached snapshot with [method RenderingServer.viewport_get_amd_gi_diagnostics]. Disabling releases the full counter buffer.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/debug/view" type="int" setter="" getter="" default="0">
+			Live display-only diagnostic mode. 0 disables diagnostics; 1 indirect-only, 2 reflections, 3 screen probes, 4 probe directions, 5 probe coverage, 6 probe age, 7 cache radiance, 8 cache samples, 9 filtered cache, 10 filter gain, 11 filtered samples, 12 selected mip, 13 tile occupancy, 14 tile age, 15 cache coverage, 16 bucket occupancy, 17 bucket overflow, 18 albedo, 19 alpha, 20 specular F0, 21 direct-only, 22 propagation, 23 unfiltered reflections, 24 shading normals, 25 geometry normals, 26 roughness, 27 previous feedback, 28 cached-probe radiance, 29 cached-probe seed age, 30 cached-probe occupancy, 31 cached-probe LRU activity. Views do not replace GI history or direct-light feedback. Cache views are paged atlases, not overlays on the corresponding world geometry.
+		</member>
 		<member name="rendering/global_illumination/amd_gi/denoiser" type="bool" setter="" getter="" default="true">
-			Enables temporal reprojection, geometry rejection, reference history accumulation, and adaptive spatial filtering for the experimental AMD GI diffuse and reflection outputs. Screen-probe reconstruction and filtering remain part of the algorithm. Keep this enabled for representative quality comparisons. Changes apply at run time.
+			Enables temporal reprojection, geometry rejection, reference history accumulation, and adaptive spatial filtering for the experimental AMD GI diffuse output. Reflection filtering is selected independently with [member rendering/global_illumination/amd_gi/reflections/denoiser]. Screen-probe reconstruction and filtering remain part of the algorithm. Keep this enabled for representative quality comparisons. Changes apply at run time.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/emissive_sampling" type="bool" setter="" getter="" default="true">
 			Includes native emissive triangles in the GridStream distribution alongside analytic lights and the environment. Evaluates selected area-light samples at world receivers with a visibility ray. Primary emissive hits contribute emission directly to probes. Disabling removes triangle lights from next-event estimation, leaving primary hit emission. Changes apply at run time and reset history.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/enabled" type="bool" setter="" getter="" default="false">
-			Enables the experimental AMD GI diffuse pipeline in this fork. Requires Vulkan Forward+, ray-query support provisioned by RT shadows at startup, a [WorldEnvironment], and MSAA disabled. Includes sparse screen probes, directional world radiance caching, multibounce and native screen-lighting feedback, glossy reflections, and temporal/spatial denoising. This is an experimental adaptation of AMD GI, with documented sampling/material limitations and unmeasured target-hardware performance. Requires at least 32 storage-buffer bindings per compute stage/set 32 KiB compute shared memory, and 8 storage images per compute stage. Native SDFGI, VoxelGI, SSIL, and lightmaps must be disabled. Unsupported scenes suppress the contribution. Changes apply at run time; GI resources are allocated only while requested.
+			Enables the experimental AMD GI diffuse pipeline in this fork. Requires Vulkan Forward+, ray-query support provisioned by RT shadows at startup, a [WorldEnvironment], and MSAA disabled. Includes sparse screen probes, directional world radiance caching, multibounce and native screen-lighting feedback, glossy reflections, and temporal/spatial denoising. This is an experimental adaptation of AMD GI, with documented sampling/material limitations and unmeasured target-hardware performance. Requires at least 38 storage-buffer bindings per compute stage and pipeline layout, 32 KiB compute shared memory, and 12 storage images per compute stage. Native SDFGI, VoxelGI, SSIL, and lightmaps must be disabled. Unsupported scenes suppress the contribution. Changes apply at run time; GI resources are allocated only while requested.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/importance_sampling" type="bool" setter="" getter="" default="true">
 			Guides diffuse screen-probe rays using reprojected radiance and the surface cosine. The number of primary rays is unchanged; sampling and reconstruction add work, so this is not a measured performance preset. If [code]false[/code], uses stratified angular samples. Cells without reusable history and black distributions fall back to stratified samples. Changes apply at run time and reset cache/history state. GI denoising is controlled separately by [member rendering/global_illumination/amd_gi/denoiser].
@@ -3163,20 +3193,35 @@
 		<member name="rendering/global_illumination/amd_gi/probe_spacing" type="int" setter="" getter="" default="16">
 			Screen-tile size for selecting updates of 8 by 8 directional probes. The stored probe grid always has 8-pixel spacing; values 8, 16, and 32 reduce the update budget to approximately 1, 1/4, and 1/16 primary GI ray per internal-resolution pixel per frame. Visibility and continuation rays are additional. Edge tiles round up. Changes apply at run time and reallocate viewport probe history; these are not measured hardware performance presets.
 		</member>
+		<member name="rendering/global_illumination/amd_gi/reflections/denoiser" type="int" setter="" getter="" default="1">
+			Reflection denoiser: 0 AMD split-ratio X/Y estimator, 1 AMD a-trous estimator (recommended default), or 2 disabled. Independent of the diffuse denoiser. Changes apply at run time and recreate reflection resources and GI history. Split-ratio filtering can trade detail and stability for lower filtering cost; it is not an established fix for reflection artifacts.
+		</member>
 		<member name="rendering/global_illumination/amd_gi/reflections/enabled" type="bool" setter="" getter="" default="true">
 			Enables experimental hardware-traced glossy reflections and rough-reflection probe reuse while AMD GI is active. Shares the GI acceleration structure and radiance cache. Disabling skips all reflection dispatches and releases their full-size buffers and textures. Changes apply at run time. Clearcoat and anisotropic lobes are not separately traced.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/reflections/filter_passes" type="int" setter="" getter="" default="4">
 			Number of reference a-trous reflection reconstruction passes, from 2 through 8. Includes first and final reconstruction, with intermediate filtering between them. Requires [member rendering/global_illumination/amd_gi/denoiser]. More iterations suppress noise over larger neighborhoods, with additional compute cost and possible detail loss. Changes apply at run time and reset history.
 		</member>
+		<member name="rendering/global_illumination/amd_gi/reflections/firefly_cleanup_radius_full" type="int" setter="" getter="" default="1">
+			Sample-grid radius for reflection firefly cleanup. Selected when tracing at full resolution. Changes apply at run time and reset history.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/reflections/firefly_cleanup_radius_half" type="int" setter="" getter="" default="2">
+			Sample-grid radius for reflection firefly cleanup. Selected when tracing at half resolution. Changes apply at run time and reset history.
+		</member>
 		<member name="rendering/global_illumination/amd_gi/reflections/firefly_filter" type="bool" setter="" getter="" default="true">
-			Enables the reference rank-based reflection outlier marking and plane-weighted cleanup before reconstruction. The low/high rank thresholds control rejection; their reference defaults do not reject ordinary rank outliers. Requires reflections and the denoiser. Changes apply at run time and reset history.
+			Enables the reference rank-based reflection outlier marking and plane-weighted cleanup before reconstruction. The low/high rank thresholds control rejection; their reference defaults do not reject ordinary rank outliers. Requires reflections; independent of diffuse and reflection denoiser selection. Changes apply at run time and reset history.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/reflections/firefly_high_threshold" type="float" setter="" getter="" default="1.0">
 			Upper rank threshold for reflection firefly marking. The reference default of 1.0 leaves ordinary high-rank samples unmarked. Lower values reject more bright samples. Requires the reflection firefly filter and denoiser. Changes apply at run time and reset history.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/reflections/firefly_low_threshold" type="float" setter="" getter="" default="0.0">
 			Lower rank threshold for reflection firefly marking. The reference default of 0.0 leaves ordinary low-rank samples unmarked. Higher values reject more dark samples. Requires the reflection firefly filter and denoiser. Changes apply at run time and reset history.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/reflections/firefly_mark_radius_full" type="int" setter="" getter="" default="2">
+			Sample-grid radius for reflection firefly marking. Selected when tracing at full resolution. Changes apply at run time and reset history.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/reflections/firefly_mark_radius_half" type="int" setter="" getter="" default="3">
+			Sample-grid radius for reflection firefly marking. Selected when tracing at half resolution. Changes apply at run time and reset history.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/reflections/half_resolution" type="bool" setter="" getter="" default="true">
 			Samples glossy reflections at half the internal width and height, with rotating sample positions and geometry-aware reconstruction. At most one glossy primary ray is traced per 2 by 2 internal pixels, in addition to the diffuse probe budget; rough surfaces reuse probes where possible. Disabling traces at full internal resolution. Changes reset histories and reallocate reflection storage.
@@ -3187,11 +3232,20 @@
 		<member name="rendering/global_illumination/amd_gi/reflections/ray_compaction" type="bool" setter="" getter="" default="true">
 			Compacts glossy samples that require tracing into a GPU queue and dispatches them indirectly, after sky rejection and rough-probe reuse. Does not change the estimator or ray count. Disable to compare scheduling costs. Changes apply at run time.
 		</member>
+		<member name="rendering/global_illumination/amd_gi/reflections/split_radius_full" type="int" setter="" getter="" default="11">
+			Full-resolution pixel radius of the split-ratio reflection filter. Used only with split-ratio denoising. Selected when tracing at full resolution. Changes apply at run time and reset history.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/reflections/split_radius_half" type="int" setter="" getter="" default="11">
+			Full-resolution pixel radius of the split-ratio reflection filter. Used only with split-ratio denoising. Selected when tracing at half resolution. Changes apply at run time and reset history.
+		</member>
 		<member name="rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold" type="float" setter="" getter="" default="0.2">
 			Below this roughness, trace a glossy ray. Between this threshold and [member rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold], use a stochastic GGX lookup in four compatible screen probes. Missing probe coverage falls back to tracing. Changes apply at run time and reset history.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/screen_feedback" type="bool" setter="" getter="" default="false">
 			Reuses previous opaque HDR lighting for compatible on-screen secondary and reflection hits. Captures lighting before fog, tone mapping, and upscaling, then removes its previous exposure. Requires multibounce or reflections. Off-screen, disoccluded, or moving receivers fall back to the world cache. Uses one RGBA16F internal-resolution target and an extra opaque color attachment; disabling releases the target and resets history. Falls back automatically when any collected light has an indirect-energy multiplier other than 1, since combined native lighting cannot preserve those separate per-light weights. Changes apply at run time.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/sky_sampling" type="int" setter="" getter="" default="1">
+			Environment-light sampling at cached world hits: 0 uniform hemisphere, 1 cosine hemisphere (recommended default), or 2 luminance importance using the sky cubemap hierarchy. Independent of diffuse probe direction guiding. Changes apply at run time and reset GI history. Importance sampling adds hierarchy texture reads but can better find a small bright sun disk.
 		</member>
 		<member name="rendering/global_illumination/gi/use_half_resolution" type="bool" setter="" getter="" default="false" keywords="size">
 			If [code]true[/code], renders [VoxelGI] and SDFGI ([member Environment.sdfgi_enabled]) buffers at halved resolution (e.g. 960×540 when the viewport size is 1920×1080). This improves performance significantly when VoxelGI or SDFGI is enabled, at the cost of artifacts that may be visible on polygon edges. The loss in quality becomes less noticeable as the viewport resolution increases. [LightmapGI] rendering is not affected by this setting.

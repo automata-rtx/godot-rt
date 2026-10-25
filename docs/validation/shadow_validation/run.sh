@@ -60,6 +60,8 @@ case "$RIG" in
 	amd_gi_opacity) RIG_RES=641x359 ;;
 	amd_gi_material_density) RIG_RES=641x359 ;;
 	amd_gi_scene_churn|amd_gi_flashlight) RIG_RES=321x181 ;;
+	amd_gi_scene_metadata|amd_gi_light_storage) RIG_RES=321x181 ;;
+	amd_gi_geometry_normal) RIG_RES=321x181 ;;
 	amd_gi_deformation) RIG_RES=641x359 ;;
 	amd_gi_source_material) RIG_RES=641x359 ;;
 	amd_gi_emitter_coordinates|amd_gi_emitter_coordinate_limits) RIG_RES=321x181 ;;
@@ -122,6 +124,12 @@ fi
 if [ "$RIG" = "amd_gi_consequential" ]; then
 	export GODOT_AMD_GI_VALIDATE_HITS=1 GODOT_AMD_GI_VALIDATE_BOUNCES=1 GODOT_AMD_GI_VALIDATE_CACHE=1
 fi
+if [ "$RIG" = "amd_gi_scene_metadata" ]; then
+	export GODOT_AMD_GI_VALIDATE_SCENE_CACHE=1
+fi
+if [ "$RIG" = "amd_gi_light_storage" ]; then
+	export GODOT_AMD_GI_VALIDATE_LIGHT_STORAGE=1 GODOT_AMD_GI_VALIDATE_EMITTER_UPDATES=1
+fi
 if [ "$RIG" = "amd_gi_exposure" ]; then
 	export GODOT_AMD_GI_VALIDATE_REFLECTIONS=1 GODOT_AMD_GI_TRACE_REFLECTION_HISTORY=1 GODOT_AMD_GI_TRACE_HISTORY=1
 fi
@@ -180,7 +188,15 @@ grep -aiE "SCRIPT ERROR|ERROR: Condition|not provided" "$LOG" | head -5
 mv "$HERE/out"/*.png "$OUT/" 2>/dev/null
 
 echo
-if [ "$RIG" = "amd_gi_consequential" ] || [ "$RIG" = "amd_gi_exposure" ]; then
+if [ "$RIG" = "amd_gi_light_storage" ]; then
+	python3 "$HERE/score_amd_gi_light_storage.py" "$LOG"
+elif [ "$RIG" = "amd_gi_scene_metadata" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:' "$LOG" || ! grep -aq 'SCENE_METADATA complete' "$LOG" || ! grep -aq 'hit_records_match=true hit_upload_match=true' "$LOG"; then
+		echo "AMD GI scene metadata checks failed; inspect $LOG" >&2
+		exit 1
+	fi
+	grep -aE 'SCENE_METADATA|AMD GI scene cache validation' "$LOG"
+elif [ "$RIG" = "amd_gi_consequential" ] || [ "$RIG" = "amd_gi_exposure" ]; then
 	python3 "$HERE/score_amd_gi_integration.py" "$OUT" "$RIG"
 elif [ "$RIG" = "amd_gi_collection" ]; then
 	python3 "$HERE/score_amd_gi_collection.py" "$OUT"
@@ -370,6 +386,12 @@ elif [ "$RIG" = "material" ]; then
 		exit 1
 	fi
 	echo "material capture analytical checks passed"
+elif [ "$RIG" = "amd_gi_geometry_normal" ]; then
+	if grep -aqE 'SCRIPT ERROR|ERROR:|GI_GEOMETRY_NORMAL FAIL:' "$LOG" || ! grep -aq 'GI_GEOMETRY_NORMAL PASS:' "$LOG"; then
+		echo "AMD GI geometry-normal attachment check failed; inspect $LOG" >&2
+		exit 1
+	fi
+	echo "AMD GI geometry and authored shading normal attachment checks passed"
 elif [ "$RIG" = "geometry" ]; then
 	if ! grep -aqE 'RT_DEBUG pre_opaque: .*tlas=1' "$LOG"; then
 		echo "geometry validation did not establish a traceable TLAS" >&2

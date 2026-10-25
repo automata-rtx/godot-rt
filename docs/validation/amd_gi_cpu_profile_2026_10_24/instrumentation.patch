@@ -1,0 +1,235 @@
+--- a/servers/rendering/renderer_scene_cull.cpp
++++ b/servers/rendering/renderer_scene_cull.cpp
+@@ -28,6 +28,7 @@
+ /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+ /**************************************************************************/
+ 
++#include "servers/rendering/renderer_rd/environment/rt_cpu_profile.h"
+ #include "renderer_scene_cull.h"
+ 
+ #include "core/config/engine.h"
+@@ -3563,6 +3564,8 @@
+ 	// what its lights actually reach rather than to how big the level is.
+ 	if (scene_render->is_raytracing_scene_available() && !p_reflection_probe.is_valid()) {
+ 		RENDER_TIMESTAMP("Update RT Acceleration Structures");
++		RTCPU::Session cpu_session;
++		RTCPU::Scope cpu_shadow_collect(RTCPU::SHADOW_COLLECT);
+ 
+ 		const bool rt_time = scene_render->is_raytracing_debug_enabled();
+ 		const uint64_t rt_started = rt_time ? OS::get_singleton()->get_ticks_usec() : 0;
+@@ -3868,6 +3871,7 @@
+ 				print_line(cur);
+ 			}
+ 		}
++		cpu_shadow_collect.stop();
+ 		const uint64_t rt_gathered = rt_time ? OS::get_singleton()->get_ticks_usec() : 0;
+ 		LocalVector<RendererSceneRender::RaytracingGIInstance> gi_instances;
+ 		LocalVector<RID> gi_lights;
+@@ -3876,6 +3880,7 @@
+ 			WARN_PRINT_ONCE("RT GI requires VoxelGI disabled; native settings have not been changed.");
+ 		}
+ 		if (rtgi_requested && scene_cull_result.voxel_gi_instances.size() == 0) {
++			RTCPU::Scope cpu_gi_collect(RTCPU::GI_COLLECT);
+ 			// One camera-centered query, independent of both the frustum and shadow
+ 			// caster predicates. Reflectors behind the camera still contribute.
+ 			const bool amd_requested = GLOBAL_GET("rendering/global_illumination/amd_gi/enabled");
+--- a/servers/rendering/renderer_rd/environment/rt_gi_scene.cpp
++++ b/servers/rendering/renderer_rd/environment/rt_gi_scene.cpp
+@@ -28,6 +28,7 @@
+ /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+ /**************************************************************************/
+ 
++#include "servers/rendering/renderer_rd/environment/rt_cpu_profile.h"
+ #include "rt_gi_scene.h"
+ 
+ #include "core/config/project_settings.h"
+@@ -424,6 +425,7 @@
+ }
+ 
+ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights) {
++	RTCPU::Scope cpu_scene(RTCPU::GI_SCENE);
+ 	ready = false;
+ 	feedback_compatible = true;
+ 	material_frame++;
+@@ -505,6 +507,7 @@
+ 	} else {
+ 		source_materials.clear();
+ 	}
++	RTCPU::Scope cpu_loop(RTCPU::GI_LOOP);
+ 	for (const RendererSceneRender::RaytracingGIInstance &instance : p_instances) {
+ 		InstanceState state;
+ 		state.instance = instance.instance;
+@@ -829,6 +832,7 @@
+ 			current_instances.push_back(state);
+ 		}
+ 	}
++	cpu_loop.stop();
+ 	// Bounds are diagnostic only. Reference history uses surface reprojection,
+ 	// never a swept-box invalidation; avoid collecting this unused work normally.
+ 	static const bool trace_motion = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_HISTORY").is_empty();
+@@ -946,7 +950,7 @@
+ 		rd->buffer_update(light_buffer, 0, lights.size() * sizeof(LightData), lights.ptr());
+ 	}
+ 	rd->buffer_update(hit_buffer, 0, hits.size() * sizeof(HitData), hits.ptr());
+-	ready = rd->tlas_build(tlas, instances) == OK && update_emitters(emitter_batches, use_source_materials);
++	ready = RTCPU::measure(RTCPU::GI_TLAS, [&]() { return rd->tlas_build(tlas, instances); }) == OK && update_emitters(emitter_batches, use_source_materials);
+ 	// Opt-in GPU oracle: retained/incremental records must match a complete
+ 	// regeneration byte for byte. Never enabled by a rendering preset.
+ 	if (ready && use_source_materials && emitter_count > 0 && OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_EMITTER_UPDATES") == "1") {
+@@ -964,6 +968,7 @@
+ // Analytic lights occupy a fixed prefix of the same storage binding, keeping the
+ // GI shader within the existing 32-storage-buffer device requirement.
+ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batches, bool p_source_materials) {
++	RTCPU::Scope cpu_emitters(RTCPU::EMITTER_UPDATE);
+ 	RD *rd = RD::get_singleton();
+ 	const bool full_update = !p_source_materials || !emitter_buffer_valid || emitter_uses_source_materials != p_source_materials || previous_emitters.size() != p_batches.size();
+ 	LocalVector<uint32_t> dirty_batches;
+--- a/servers/rendering/renderer_rd/environment/rt_geometry.cpp
++++ b/servers/rendering/renderer_rd/environment/rt_geometry.cpp
+@@ -28,6 +28,7 @@
+ /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+ /**************************************************************************/
+ 
++#include "servers/rendering/renderer_rd/environment/rt_cpu_profile.h"
+ #include "rt_geometry.h"
+ 
+ #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
+@@ -73,6 +74,7 @@
+ }
+ 
+ const RaytracingGeometry::Surface *RaytracingGeometry::get_surface(RID p_mesh, RID p_mesh_instance, uint32_t p_surface, bool p_gi) {
++	RTCPU::Scope cpu_geometry(p_gi ? RTCPU::GI_GEOMETRY : RTCPU::SHADOW_GEOMETRY);
+ 	ERR_FAIL_COND_V(dequantize_pipeline.is_null(), nullptr);
+ 	BlasEntry *entry = _get_or_create_blas(p_mesh, p_mesh_instance, p_surface);
+ 	if (entry) {
+@@ -139,6 +141,7 @@
+ }
+ 
+ bool RaytracingGeometry::_build_blas_geometry(RID p_mesh, RID p_mesh_instance, uint32_t p_surface, BlasEntry &r_entry) {
++	RTCPU::Scope cpu_new(RTCPU::NEW_BLAS);
+ 	MeshStorage *mesh_storage = MeshStorage::get_singleton();
+ 
+ 	void *surface = mesh_storage->mesh_get_surface(p_mesh, p_surface);
+@@ -393,6 +396,7 @@
+ }
+ 
+ void RaytracingGeometry::_refresh_skinned_blas(BlasEntry &r_entry) {
++	RTCPU::Scope cpu_skin(RTCPU::SKIN_REFRESH);
+ 	if (r_entry.surface.blas.is_null()) {
+ 		return;
+ 	}
+--- a/servers/rendering/renderer_rd/environment/rt_scene.cpp
++++ b/servers/rendering/renderer_rd/environment/rt_scene.cpp
+@@ -28,6 +28,7 @@
+ /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+ /**************************************************************************/
+ 
++#include "servers/rendering/renderer_rd/environment/rt_cpu_profile.h"
+ #include "rt_scene.h"
+ 
+ #include "core/config/project_settings.h"
+@@ -258,6 +259,7 @@
+ }
+ 
+ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
++	RTCPU::Scope cpu_scene(RTCPU::SHADOW_SCENE);
+ 	const bool rtdbg = debug_enabled();
+ 	tlas_valid = false;
+ 
+@@ -373,7 +375,7 @@
+ 	}
+ 	tlas_contents_hash = contents_hash;
+ 
+-	Error err = RD::get_singleton()->tlas_build(tlas, instance_scratch);
++	Error err = RTCPU::measure(RTCPU::SHADOW_TLAS, [&]() { return RD::get_singleton()->tlas_build(tlas, instance_scratch); });
+ 	if (err != OK) {
+ 		ERR_PRINT_ONCE(vformat("Raytraced shadows: tlas_build() failed with error %d; no raytraced shadows will be cast.", (int)err));
+ 	}
+--- a/servers/rendering/renderer_rd/environment/rt_material_source.cpp
++++ b/servers/rendering/renderer_rd/environment/rt_material_source.cpp
+@@ -28,6 +28,7 @@
+ /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+ /**************************************************************************/
+ 
++#include "servers/rendering/renderer_rd/environment/rt_cpu_profile.h"
+ #include "rt_material_source.h"
+ 
+ #include "servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h"
+@@ -231,6 +232,7 @@
+ }
+ 
+ Error RaytracingMaterialSource::add_surface(RID p_material, const RendererSceneRender::RaytracingGIInstance &p_instance, uint32_t p_surface, const Color &p_color, const Color &p_custom) {
++	RTCPU::Scope cpu_material(RTCPU::MATERIAL_CONTEXT);
+ 	RD *rd = RD::get_singleton();
+ 	MaterialStorage *storage = MaterialStorage::get_singleton();
+ 	auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(storage->material_get_data(p_material, MaterialStorage::SHADER_TYPE_3D));
+@@ -346,6 +348,7 @@
+ }
+ 
+ bool RaytracingMaterialSource::end_frame() {
++	RTCPU::Scope cpu_material(RTCPU::MATERIAL_END);
+ 	RD *rd = RD::get_singleton();
+ 	for (TextureArray &array : texture_arrays) {
+ 		if (array.textures.size() > int(array.capacity)) {
+--- a/servers/rendering/rendering_device.cpp
++++ b/servers/rendering/rendering_device.cpp
+@@ -28,6 +28,7 @@
+ /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+ /**************************************************************************/
+ 
++#include "servers/rendering/renderer_rd/environment/rt_cpu_profile.h"
+ #include "rendering_device.h"
+ #include "rendering_device.compat.inc"
+ 
+@@ -1179,6 +1180,7 @@
+ }
+ 
+ Error RenderingDevice::buffer_update(RID p_buffer, uint32_t p_offset, uint32_t p_size, const void *p_data, bool p_skip_check) {
++	RTCPU::Scope cpu_scope(RTCPU::BUFFER_UPLOAD);
+ 	ERR_RENDER_THREAD_GUARD_V(ERR_UNAVAILABLE);
+ 
+ 	ERR_FAIL_COND_V_MSG(draw_list.active && !p_skip_check, ERR_INVALID_PARAMETER,
+@@ -1431,6 +1433,7 @@
+ }
+ 
+ uint64_t RenderingDevice::buffer_get_device_address(RID p_buffer) {
++	RTCPU::Scope cpu_scope(RTCPU::BUFFER_ADDRESS);
+ 	ERR_RENDER_THREAD_GUARD_V(0);
+ 
+ 	Buffer *buffer = _get_buffer_from_owner(p_buffer);
+--- /dev/null
++++ b/servers/rendering/renderer_rd/environment/rt_cpu_profile.h
+@@ -0,0 +1,33 @@
++#pragma once
++#include "core/os/os.h"
++#include "core/string/print_string.h"
++namespace RTCPU {
++enum Part { SHADOW_COLLECT, GI_COLLECT, SHADOW_SCENE, GI_SCENE, GI_LOOP, SHADOW_GEOMETRY, GI_GEOMETRY, SKIN_REFRESH, NEW_BLAS, MATERIAL_CONTEXT, MATERIAL_END, BUFFER_ADDRESS, BUFFER_UPLOAD, GI_TLAS, SHADOW_TLAS, EMITTER_UPDATE, COUNT };
++inline const char *names[] = { "shadow_collect", "gi_collect", "shadow_scene", "gi_scene", "gi_loop", "shadow_geometry", "gi_geometry", "skin_refresh", "new_blas", "material_context", "material_end", "buffer_address", "buffer_upload", "gi_tlas", "shadow_tlas", "emitter_update" };
++inline bool active = false;
++inline uint64_t serial = 0, elapsed[COUNT] = {}, calls[COUNT] = {};
++struct Scope {
++ Part part; uint64_t start; bool running;
++ Scope(Part p) : part(p), start(active ? OS::get_singleton()->get_ticks_usec() : 0), running(active) {}
++ void stop() { if (running) { elapsed[part] += OS::get_singleton()->get_ticks_usec() - start; calls[part]++; running = false; } }
++ ~Scope() { stop(); }
++};
++template<class F> auto measure(Part p, F f) { Scope s(p); return f(); }
++struct Session {
++ uint64_t start;
++ Session() {
++  static const bool enabled = OS::get_singleton()->get_environment("GODOT_RT_CPU_PROFILE") == "1";
++  active = enabled && (++serial % 8 == 0);
++  for (int i=0;i<COUNT;i++) { elapsed[i]=0; calls[i]=0; }
++  start = active ? OS::get_singleton()->get_ticks_usec() : 0;
++ }
++ ~Session() {
++  if (!active) { return; }
++  uint64_t total = OS::get_singleton()->get_ticks_usec() - start;
++  String line = "CPU_DETAIL {\"frame\":" + itos(serial) + ",\"total_us\":" + itos(total);
++  for (int i=0;i<COUNT;i++) { line += ",\"" + String(names[i]) + "_us\":" + itos(elapsed[i]) + ",\"" + String(names[i]) + "_calls\":" + itos(calls[i]); }
++  active = false;
++  print_line(line + "}");
++ }
++};
++}

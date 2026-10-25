@@ -30,6 +30,7 @@
 
 #include "rt_material_source.h"
 
+#include "core/os/os.h"
 #include "servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h"
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
@@ -224,7 +225,7 @@ bool RaytracingMaterialSource::update_buffer(RID &r_buffer, Vector<uint8_t> &r_p
 	}
 	ERR_FAIL_COND_V(r_buffer.is_null(), false);
 	if (!p_bytes.is_empty()) {
-		rd->buffer_update(r_buffer, 0, p_bytes.size(), p_bytes.ptr());
+		ERR_FAIL_COND_V(rd->buffer_update(r_buffer, 0, p_bytes.size(), p_bytes.ptr()) != OK, false);
 	}
 	r_previous = p_bytes;
 	return true;
@@ -235,11 +236,12 @@ Error RaytracingMaterialSource::add_surface(RID p_material, const RendererSceneR
 	MaterialStorage *storage = MaterialStorage::get_singleton();
 	auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(storage->material_get_data(p_material, MaterialStorage::SHADER_TYPE_3D));
 	Context context;
+	const Context *material_context = nullptr;
 	if (data && data->shader_data) {
 		Material &material = materials[p_material];
 		if (material.frame != frame) {
 			const SpatialShader &native = *data->shader_data;
-			const uint32_t *id = shader_ids.getptr(native.code);
+			const uint32_t *id = material.shader && material.code == native.code ? &material.shader : shader_ids.getptr(native.code);
 			if (!id) {
 				Shader compiled;
 				Error error = compile(RendererSceneRenderImplementation::RenderForwardClustered::get_singleton()->get_material_shader_compiler(), native, shaders.size() + 1, compiled);
@@ -257,6 +259,7 @@ Error RaytracingMaterialSource::add_surface(RID p_material, const RendererSceneR
 				return ERR_UNAVAILABLE;
 			}
 			material.shader = *id;
+			material.code = native.code;
 			ERR_FAIL_COND_V(!update_buffer(material.uniforms, material.uniform_bytes, data->get_uniform_data(true)), ERR_CANT_CREATE);
 			Vector<uint32_t> indices;
 			const Vector<RID> &textures = data->get_texture_data();
@@ -277,71 +280,153 @@ Error RaytracingMaterialSource::add_surface(RID p_material, const RendererSceneR
 				}
 			}
 			if (material.indices.is_null() || material.texture_indices != indices) {
-				if (material.indices.is_valid()) {
-					rd->free_rid(material.indices);
+				if (material.indices.is_null() || material.texture_indices.size() != indices.size()) {
+					if (material.indices.is_valid()) {
+						rd->free_rid(material.indices);
+					}
+					material.indices = rd->storage_buffer_create(MAX(indices.size() * int(sizeof(uint32_t)), 16), {}, 0, RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
 				}
-				material.indices = rd->storage_buffer_create(MAX(indices.size() * int(sizeof(uint32_t)), 16), {}, 0, RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
 				ERR_FAIL_COND_V(material.indices.is_null(), ERR_CANT_CREATE);
 				if (!indices.is_empty()) {
-					rd->buffer_update(material.indices, 0, indices.size() * sizeof(uint32_t), indices.ptr());
+					ERR_FAIL_COND_V(rd->buffer_update(material.indices, 0, indices.size() * sizeof(uint32_t), indices.ptr()) != OK, ERR_CANT_CREATE);
 				}
 				material.texture_indices = indices;
 			}
+			material.context.uniform_address = rd->buffer_get_device_address(material.uniforms);
+			material.context.texture_address = rd->buffer_get_device_address(material.indices);
+			material.context.info[0] = material.shader;
+			material.context.info[3] = native.uses_world_coordinates ? 4u : 0u;
+			static const bool validate = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_SCENE_CACHE").is_empty();
+			if (validate) {
+				if (!material.uniform_bytes.is_empty()) {
+					const Vector<uint8_t> bytes = rd->buffer_get_data(material.uniforms, 0, material.uniform_bytes.size());
+					ERR_FAIL_COND_V_MSG(bytes != data->get_uniform_data(true), ERR_BUG, "AMD GI material uniforms differ from native material data.");
+				}
+				if (!indices.is_empty()) {
+					const Vector<uint8_t> bytes = rd->buffer_get_data(material.indices, 0, indices.size() * sizeof(uint32_t));
+					ERR_FAIL_COND_V_MSG(bytes.size() != int64_t(indices.size() * sizeof(uint32_t)) || memcmp(bytes.ptr(), indices.ptr(), bytes.size()) != 0, ERR_BUG, "AMD GI texture indices differ from current dense texture order.");
+				}
+			}
+			// Offscreen GI consumers still need live render-target textures.
+			data->set_as_used();
 			material.frame = frame;
 		}
-		context.uniform_address = rd->buffer_get_device_address(material.uniforms);
-		context.texture_address = rd->buffer_get_device_address(material.indices);
-		context.info[0] = material.shader;
-		context.info[3] = data->shader_data->uses_world_coordinates ? 4u : 0u;
+		material_context = &material.context;
 	}
-	MeshStorage *meshes = MeshStorage::get_singleton();
-	void *surface = meshes->mesh_get_surface(p_instance.mesh, p_surface);
-	const uint64_t format = meshes->mesh_surface_get_format(surface);
-	const uint32_t count = meshes->mesh_surface_get_vertex_count(surface);
-	RenderingServer *server = RenderingServer::get_singleton();
-	const uint32_t stride = server->mesh_surface_get_format_attribute_stride(format, count);
-	const RID source = meshes->mesh_surface_get_attribute_buffer_rd_rid(p_instance.mesh, p_surface);
-	if (source.is_valid() && stride > 0) {
-		// Attribute buffers predate the optional GI consumer and need not have
-		// a device address. Copy only on a source revision, entirely on GPU.
-		Attributes &copy = attributes[source];
-		const uint64_t revision = meshes->mesh_surface_get_data_revision(surface);
-		if (copy.buffer.is_null()) {
-			copy.buffer = rd->storage_buffer_create(stride * count, {}, 0, RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
-			ERR_FAIL_COND_V(copy.buffer.is_null(), ERR_CANT_CREATE);
-			copy.revision = UINT64_MAX;
-		}
-		if (copy.revision != revision) {
-			rd->buffer_copy(source, copy.buffer, 0, 0, stride * count);
-			copy.revision = revision;
-		}
-		copy.frame = frame;
-		context.attribute_address = rd->buffer_get_device_address(copy.buffer);
-		context.attributes[3] = stride / sizeof(uint32_t);
-		const RSE::ArrayType builtin[] = { RSE::ARRAY_TEX_UV, RSE::ARRAY_TEX_UV2, RSE::ARRAY_COLOR };
-		for (uint32_t i = 0; i < 3; i++) {
-			if (format & (uint64_t(1) << builtin[i])) {
-				context.attributes[i] = server->mesh_surface_get_format_offset(format, count, builtin[i]) / sizeof(uint32_t);
-			}
-		}
-		for (uint32_t i = 0; i < 4; i++) {
-			if (format & (uint64_t(1) << (RSE::ARRAY_CUSTOM0 + i))) {
-				context.custom_offsets[i] = server->mesh_surface_get_format_offset(format, count, RSE::ARRAY_CUSTOM0 + i) / sizeof(uint32_t);
-				context.custom_formats[i] = (format >> (RSE::ARRAY_FORMAT_CUSTOM0_SHIFT + i * RSE::ARRAY_FORMAT_CUSTOM_BITS)) & RSE::ARRAY_FORMAT_CUSTOM_MASK;
-			}
-		}
+	Error layout_error = surface_context(p_instance.mesh, p_surface, context);
+	ERR_FAIL_COND_V(layout_error != OK, layout_error);
+	if (material_context) {
+		context.uniform_address = material_context->uniform_address;
+		context.texture_address = material_context->texture_address;
+		context.info[0] = material_context->info[0];
+		context.info[3] |= material_context->info[3];
 	}
-	const Vector4 uv_scale = meshes->mesh_surface_get_uv_scale(surface);
 	for (uint32_t i = 0; i < 4; i++) {
-		context.uv_scale[i] = uv_scale[i];
 		context.color[i] = p_color[i];
 		context.custom[i] = p_custom[i];
 	}
 	context.info[1] = p_instance.element;
 	context.info[2] = uint32_t(p_instance.uniforms_offset);
-	context.info[3] |= (format & RSE::ARRAY_FORMAT_TANGENT) ? 1u : 0u;
-	context.info[3] |= (format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES) ? 2u : 0u;
 	contexts.push_back(context);
+	return OK;
+}
+
+RaytracingMaterialSource::Context RaytracingMaterialSource::build_surface_context(uint64_t p_format, uint32_t p_count, const Vector4 &p_uv_scale, uint64_t p_attribute_address) {
+	Context context;
+	context.attribute_address = p_attribute_address;
+	if (p_attribute_address) {
+		RenderingServer *server = RenderingServer::get_singleton();
+		context.attributes[3] = server->mesh_surface_get_format_attribute_stride(p_format, p_count) / sizeof(uint32_t);
+		const RSE::ArrayType builtin[] = { RSE::ARRAY_TEX_UV, RSE::ARRAY_TEX_UV2, RSE::ARRAY_COLOR };
+		for (uint32_t i = 0; i < 3; i++) {
+			if (p_format & (uint64_t(1) << builtin[i])) {
+				context.attributes[i] = server->mesh_surface_get_format_offset(p_format, p_count, builtin[i]) / sizeof(uint32_t);
+			}
+		}
+		for (uint32_t i = 0; i < 4; i++) {
+			if (p_format & (uint64_t(1) << (RSE::ARRAY_CUSTOM0 + i))) {
+				context.custom_offsets[i] = server->mesh_surface_get_format_offset(p_format, p_count, RSE::ARRAY_CUSTOM0 + i) / sizeof(uint32_t);
+				context.custom_formats[i] = (p_format >> (RSE::ARRAY_FORMAT_CUSTOM0_SHIFT + i * RSE::ARRAY_FORMAT_CUSTOM_BITS)) & RSE::ARRAY_FORMAT_CUSTOM_MASK;
+			}
+		}
+	}
+	for (uint32_t i = 0; i < 4; i++) {
+		context.uv_scale[i] = p_uv_scale[i];
+	}
+	context.info[3] = (p_format & RSE::ARRAY_FORMAT_TANGENT) ? 1u : 0u;
+	context.info[3] |= (p_format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES) ? 2u : 0u;
+	return context;
+}
+
+Error RaytracingMaterialSource::surface_context(RID p_mesh, uint32_t p_surface, Context &r_context) {
+	MeshStorage *meshes = MeshStorage::get_singleton();
+	RD *rd = RD::get_singleton();
+	static const bool validate = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_SCENE_CACHE").is_empty();
+	MeshLayouts &mesh = mesh_layouts[p_mesh];
+	if (mesh.frame != frame) {
+		mesh.surfaces.resize(meshes->mesh_get_surface_count(p_mesh));
+		mesh.frame = frame;
+	}
+	ERR_FAIL_UNSIGNED_INDEX_V(p_surface, uint32_t(mesh.surfaces.size()), ERR_INVALID_PARAMETER);
+	SurfaceLayout &layout = mesh.surfaces.write[p_surface];
+	if (layout.frame != frame) {
+		// Poll each shared surface once per scene update. Native region writes
+		// increment data_revision without emitting scene dependency notifications.
+		void *surface = meshes->mesh_get_surface(p_mesh, p_surface);
+		const uint64_t format = meshes->mesh_surface_get_format(surface);
+		const uint32_t count = meshes->mesh_surface_get_vertex_count(surface);
+		const Vector4 uv_scale = meshes->mesh_surface_get_uv_scale(surface);
+		const RID source = meshes->mesh_surface_get_attribute_buffer_rd_rid(p_mesh, p_surface);
+		uint64_t address = 0;
+		if (source.is_valid()) {
+			const uint32_t stride = RenderingServer::get_singleton()->mesh_surface_get_format_attribute_stride(format, count);
+			if (stride > 0) {
+				Attributes &copy = attributes[source];
+				const uint32_t size = stride * count;
+				const uint64_t revision = meshes->mesh_surface_get_data_revision(surface);
+				if (copy.buffer.is_null() || copy.size != size) {
+					if (copy.buffer.is_valid()) {
+						rd->free_rid(copy.buffer);
+					}
+					copy.buffer = rd->storage_buffer_create(size, {}, 0, RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
+					ERR_FAIL_COND_V(copy.buffer.is_null(), ERR_CANT_CREATE);
+					copy.size = size;
+					copy.revision = UINT64_MAX;
+				}
+				if (copy.revision != revision) {
+					ERR_FAIL_COND_V(rd->buffer_copy(source, copy.buffer, 0, 0, size) != OK, ERR_CANT_CREATE);
+					copy.revision = revision;
+				}
+				copy.frame = frame;
+				address = rd->buffer_get_device_address(copy.buffer);
+				if (validate) {
+					ERR_FAIL_COND_V_MSG(rd->buffer_get_data(source, 0, size) != rd->buffer_get_data(copy.buffer, 0, size), ERR_BUG, "AMD GI source attributes differ from native attribute buffer.");
+				}
+			}
+		}
+		bool changed = layout.format != format || layout.count != count || layout.source != source || layout.context.attribute_address != address;
+		for (uint32_t i = 0; i < 4; i++) {
+			changed |= layout.context.uv_scale[i] != uv_scale[i];
+		}
+		if (changed) {
+			layout.context = build_surface_context(format, count, uv_scale, address);
+			layout.format = format;
+			layout.count = count;
+			layout.source = source;
+		}
+		layout.frame = frame;
+	}
+	r_context = layout.context;
+	if (validate) {
+		void *surface = meshes->mesh_get_surface(p_mesh, p_surface);
+		const RID source = meshes->mesh_surface_get_attribute_buffer_rd_rid(p_mesh, p_surface);
+		const Attributes *copy = attributes.getptr(source);
+		const uint64_t format = meshes->mesh_surface_get_format(surface);
+		const uint32_t count = meshes->mesh_surface_get_vertex_count(surface);
+		const bool has_attributes = RenderingServer::get_singleton()->mesh_surface_get_format_attribute_stride(format, count) > 0;
+		const Context reference = build_surface_context(format, count, meshes->mesh_surface_get_uv_scale(surface), copy && has_attributes ? rd->buffer_get_device_address(copy->buffer) : 0);
+		ERR_FAIL_COND_V_MSG(memcmp(&reference, &r_context, sizeof(Context)) != 0, ERR_BUG, "AMD GI cached surface layout differs from full reconstruction.");
+	}
 	return OK;
 }
 
@@ -359,12 +444,35 @@ bool RaytracingMaterialSource::end_frame() {
 		}
 		context_capacity = Math::next_power_of_2(MAX(contexts.size(), 1u));
 		context_buffer = rd->storage_buffer_create(16 + context_capacity * sizeof(Context));
+		uploaded_contexts.clear();
 	}
 	ERR_FAIL_COND_V(context_buffer.is_null(), false);
 	float header[4] = { float(RendererCompositorRD::get_singleton()->get_total_time()), float(contexts.size()), 0, 0 };
-	rd->buffer_update(context_buffer, 0, sizeof(header), header);
-	if (!contexts.is_empty()) {
-		rd->buffer_update(context_buffer, sizeof(header), contexts.size() * sizeof(Context), contexts.ptr());
+	ERR_FAIL_COND_V(rd->buffer_update(context_buffer, 0, sizeof(header), header) != OK, false);
+	uint32_t first_changed = 0;
+	while (first_changed < contexts.size() && first_changed < uploaded_contexts.size() && memcmp(&contexts[first_changed], &uploaded_contexts[first_changed], sizeof(Context)) == 0) {
+		first_changed++;
+	}
+	uint32_t end_changed = contexts.size();
+	while (end_changed > first_changed && end_changed <= uploaded_contexts.size() && memcmp(&contexts[end_changed - 1], &uploaded_contexts[end_changed - 1], sizeof(Context)) == 0) {
+		end_changed--;
+	}
+	if (end_changed > first_changed) {
+		// One coalesced range bounds transfer-command overhead even if changes
+		// are scattered. Dense IDs and source texture order remain unchanged.
+		ERR_FAIL_COND_V(rd->buffer_update(context_buffer, sizeof(header) + first_changed * sizeof(Context), (end_changed - first_changed) * sizeof(Context), contexts.ptr() + first_changed) != OK, false);
+	}
+	static const bool validate = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_SCENE_CACHE").is_empty();
+	if (validate) {
+		const Vector<uint8_t> uploaded = rd->buffer_get_data(context_buffer, 0, sizeof(header) + contexts.size() * sizeof(Context));
+		ERR_FAIL_COND_V_MSG(uploaded.size() != int64_t(sizeof(header) + contexts.size() * sizeof(Context)) || memcmp(uploaded.ptr(), header, sizeof(header)) != 0 || (!contexts.is_empty() && memcmp(uploaded.ptr() + sizeof(header), contexts.ptr(), contexts.size() * sizeof(Context)) != 0), false, "AMD GI context upload differs from full reconstruction.");
+	}
+	// Never publish the CPU upload snapshot before all transfer calls succeed.
+	if (uploaded_contexts.size() != contexts.size()) {
+		uploaded_contexts.resize(contexts.size());
+	}
+	if (end_changed > first_changed) {
+		memcpy(uploaded_contexts.ptr() + first_changed, contexts.ptr() + first_changed, (end_changed - first_changed) * sizeof(Context));
 	}
 	// Remove resources once their source is no longer in the collected scene.
 	LocalVector<RID> expired;
@@ -391,6 +499,15 @@ bool RaytracingMaterialSource::end_frame() {
 	}
 	for (RID rid : expired) {
 		attributes.erase(rid);
+	}
+	expired.clear();
+	for (const auto &entry : mesh_layouts) {
+		if (entry.value.frame != frame) {
+			expired.push_back(entry.key);
+		}
+	}
+	for (RID rid : expired) {
+		mesh_layouts.erase(rid);
 	}
 	return true;
 }
@@ -464,8 +581,10 @@ void RaytracingMaterialSource::clear() {
 	context_capacity = 0;
 	materials.clear();
 	attributes.clear();
+	mesh_layouts.clear();
 	texture_arrays.clear();
 	contexts.clear();
+	uploaded_contexts.clear();
 	shaders.clear();
 	shader_ids.clear();
 	shader_revision++;

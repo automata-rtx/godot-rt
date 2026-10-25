@@ -92,8 +92,11 @@ const int pass_id = AMD_GI_PASS;
 #define PASS_VALIDATE_SOURCE 54
 #define PASS_PREPARE_LIGHTS 55
 #define PASS_PREPARE_LIGHT_MASKS 56
+#define PASS_DEBUG_VIEW 57
+#define PASS_DEBUG_STATS 58
 #include "../oct_inc.glsl"
 #define AMD_GI_REFERENCE_RANDOM
+#define AMD_GI_EMITTER_STORAGE_OFFSET
 #include "amd_gi_cache_inc.glsl"
 #include "amd_gi_sampling_inc.glsl"
 #include "rt_gi_transport_inc.glsl"
@@ -172,8 +175,16 @@ layout(set = 0, binding = 10, std140) uniform Frame {
 	vec4 glossy;
 	uvec4 motion;
 	uvec4 emitters;
+	uvec4 options;
+	uvec4 reflection_options;
+	uvec4 debug_options;
+	vec4 debug_settings;
 }
 frame;
+#include "amd_gi_debug_counters_inc.glsl"
+uint gi_emitter_storage_offset() {
+	return frame.emitters.y;
+}
 struct Probe {
 	vec4 position;
 	vec4 normal;
@@ -1238,6 +1249,7 @@ void allocate_tile(uint id) {
 			return;
 		}
 	}
+	debug_cache_overflow(bucket / frame.cache_config.y);
 }
 void register_ray(uint id) {
 	bool secondary = pass_id == PASS_REGISTER_SECONDARY;
@@ -1966,12 +1978,39 @@ void filter_pixel(ivec2 pixel, uint id) {
 		imageStore(output_diffuse, pixel, vec4((irradiance / PI + frame.ambient.rgb) * params.exposure, center.position.w > 0.0 ? frame.ambient.a : 0.0));
 	}
 }
-#include "amd_gi_reflections_inc.glsl"
-#ifdef AMD_GI_DIAGNOSTIC_SOURCE
+#if defined(AMD_GI_DIAGNOSTIC_REFLECTION) && AMD_GI_PASS == PASS_REFLECTION_TRACE
+#define AMD_GI_REFLECTION_TRACE_RECORDING
+#endif
+#if defined(AMD_GI_DIAGNOSTIC_REFLECTION) && (AMD_GI_PASS == PASS_REFLECTION_CLASSIFY || AMD_GI_PASS == PASS_REFLECTION_MARK_FIREFLIES || AMD_GI_PASS == PASS_REFLECTION_FIRST || AMD_GI_PASS == PASS_REFLECTION_TEMPORAL || AMD_GI_PASS == PASS_REFLECTION_OUTPUT)
+#define AMD_GI_REFLECTION_RECORDING
+#endif
+#if defined(AMD_GI_DIAGNOSTIC_SOURCE) || defined(AMD_GI_REFLECTION_RECORDING)
 layout(set = 0, binding = 63, std430) buffer SourceValidation {
-	vec4 values[33];
+	vec4 values[];
 }
 source_validation;
+#endif
+#ifdef AMD_GI_REFLECTION_RECORDING
+uint reflection_diagnostic_base(ivec2 pixel) {
+	uvec4 roi = floatBitsToUint(source_validation.values[33]);
+	if (floatBitsToUint(source_validation.values[34]).x == 0u || any(lessThan(pixel, ivec2(roi.xy))) || any(greaterThanEqual(pixel, ivec2(roi.xy + roi.zw)))) {
+		return INVALID;
+	}
+	uvec2 local = uvec2(pixel) - roi.xy;
+	return 37u + (local.x + local.y * roi.z) * 48u;
+}
+void reflection_diagnostic_write(ivec2 pixel, uint slot, vec4 value) {
+	uint base = reflection_diagnostic_base(pixel);
+	if (base != INVALID) {
+		source_validation.values[base + slot] = value;
+	}
+}
+#endif
+// clang-format off
+#include "amd_gi_reflections_inc.glsl"
+#include "amd_gi_debug_inc.glsl"
+// clang-format on
+#ifdef AMD_GI_DIAGNOSTIC_SOURCE
 void validate_source(uint id) {
 	if (id == 0u) {
 		RayRecord hit = empty_ray();
@@ -2021,7 +2060,13 @@ void main() {
 		probe = keys.data[TILE_COUNT + active_index].state.x;
 		id = probe * TILE_CELLS + lane;
 	}
-#if AMD_GI_PASS == PASS_PREPARE_LIGHTS
+#if AMD_GI_PASS == PASS_DEBUG_VIEW
+	debug_view(ivec2(gl_GlobalInvocationID.xy));
+	return;
+#elif AMD_GI_PASS == PASS_DEBUG_STATS
+	debug_stats(id);
+	return;
+#elif AMD_GI_PASS == PASS_PREPARE_LIGHTS
 	prepare_light(id);
 	return;
 #elif AMD_GI_PASS == PASS_PREPARE_LIGHT_MASKS
@@ -2076,6 +2121,9 @@ void main() {
 
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 size = pass_id >= PASS_REFLECTION_LAST ? ivec2(params.size) : reflection_size();
+	if (pass_id == PASS_REFLECTION_FIRST && frame.reflection_options.x == 0u) {
+		size.x = int(params.size.x);
+	}
 	if (any(greaterThanEqual(pixel, size))) {
 		return;
 	}

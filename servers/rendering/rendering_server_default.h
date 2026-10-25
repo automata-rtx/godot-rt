@@ -810,6 +810,7 @@ public:
 	FUNC1RC(Size2i, viewport_get_internal_size, RID)
 	FUNC1RC(RSE::ViewportScaling3DMode, viewport_get_effective_scaling_3d_mode, RID)
 	FUNC1RC(String, viewport_get_upscaler_status, RID)
+	FUNC1RC(Dictionary, viewport_get_amd_gi_diagnostics, RID)
 	FUNC1RC(double, viewport_get_measured_render_time_cpu, RID)
 	FUNC1RC(double, viewport_get_measured_render_time_gpu, RID)
 	FUNC1RC(RID, viewport_find_from_screen_attachment, DisplayServerEnums::WindowID)

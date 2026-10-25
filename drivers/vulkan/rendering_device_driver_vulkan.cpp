@@ -2107,6 +2107,14 @@ RDD::BufferID RenderingDeviceDriverVulkan::buffer_create(uint64_t p_size, BitFie
 	buf_info->allocation.handle = allocation;
 	buf_info->allocation.size = alloc_info.size;
 	buf_info->size = original_size;
+	if (p_usage.has_flag(BUFFER_USAGE_DEVICE_ADDRESS_BIT)) {
+		// The address belongs to this bound VkBuffer for its entire lifetime.
+		// Query before publishing the buffer, so reads need no lazy-cache writes.
+		VkBufferDeviceAddressInfo address_info = {};
+		address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+		address_info.buffer = vk_buffer;
+		buf_info->device_address = vkGetBufferDeviceAddress(vk_device, &address_info);
+	}
 
 	return BufferID(buf_info);
 }
@@ -2222,11 +2230,7 @@ void RenderingDeviceDriverVulkan::buffer_flush(BufferID p_buffer) {
 
 uint64_t RenderingDeviceDriverVulkan::buffer_get_device_address(BufferID p_buffer) {
 	const BufferInfo *buf_info = (const BufferInfo *)p_buffer.id;
-	VkBufferDeviceAddressInfo address_info = {};
-	address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-	address_info.pNext = nullptr;
-	address_info.buffer = buf_info->vk_buffer;
-	return vkGetBufferDeviceAddress(vk_device, &address_info);
+	return buf_info->device_address;
 }
 
 /*****************/
@@ -6494,7 +6498,7 @@ void RenderingDeviceDriverVulkan::_acceleration_structure_create(VkAccelerationS
 
 	// Scratch address must be a multiple of minAccelerationStructureScratchOffsetAlignment.
 	r_accel_info->scratch_alignment = acceleration_structure_capabilities.min_acceleration_structure_scratch_offset_alignment;
-	r_accel_info->scratch_size = p_size_info.buildScratchSize + r_accel_info->scratch_alignment;
+	r_accel_info->scratch_size = MAX(p_size_info.buildScratchSize, p_size_info.updateScratchSize) + r_accel_info->scratch_alignment;
 
 	VkAccelerationStructureCreateInfoKHR accel_create_info = {};
 	accel_create_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
@@ -6557,7 +6561,7 @@ void RenderingDeviceDriverVulkan::command_build_blas(CommandBufferID p_cmd_buffe
 #endif
 }
 
-void RenderingDeviceDriverVulkan::command_build_tlas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer, BufferID p_instance_buffer, uint32_t p_instance_offset, uint32_t p_instance_count) {
+void RenderingDeviceDriverVulkan::command_build_tlas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer, BufferID p_instance_buffer, uint32_t p_instance_offset, uint32_t p_instance_count, bool p_update) {
 #if VULKAN_RAYTRACING_ENABLED
 	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
 	AccelerationStructureInfo *accel_info = (AccelerationStructureInfo *)p_acceleration_structure.id;
@@ -6566,6 +6570,8 @@ void RenderingDeviceDriverVulkan::command_build_tlas(CommandBufferID p_cmd_buffe
 	accel_info->range_infos[0].primitiveCount = p_instance_count;
 
 	VkAccelerationStructureBuildGeometryInfoKHR *build_info = &accel_info->build_info;
+	build_info->mode = p_update ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+	build_info->srcAccelerationStructure = p_update ? accel_info->vk_acceleration_structure : VK_NULL_HANDLE;
 	VkDeviceAddress scratch_address = buffer_get_device_address(p_scratch_buffer);
 	build_info->scratchData.deviceAddress = _align_up_address(scratch_address, accel_info->scratch_alignment);
 

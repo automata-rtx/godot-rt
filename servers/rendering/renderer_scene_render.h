@@ -423,6 +423,8 @@ public:
 	// renderer has nothing to say. Lives here rather than on RenderSceneBuffers because only the
 	// renderer knows which upscaler ran.
 	virtual String debug_get_upscaler_status(const Ref<RenderSceneBuffers> &p_render_buffers) const { return String(); }
+	virtual void set_amd_gi_collection_diagnostics(const Ref<RenderSceneBuffers> &p_buffers, const Dictionary &p_diagnostics) {}
+	virtual Dictionary debug_get_amd_gi_diagnostics(const Ref<RenderSceneBuffers> &p_render_buffers) const { return Dictionary(); }
 
 	virtual ~RendererSceneRender() {}
 };

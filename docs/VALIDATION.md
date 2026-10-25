@@ -1,5 +1,54 @@
 # Validating a Change to This Fork
 
+## CPU integration and scene metadata reuse (2026-10-24)
+
+Source implementation and review: [material/scene cache design](internals/rt-materials.md#persistent-scenematerial-research-2026-10-24).
+The owner currently requires fresh permission before Godot/game runtime tests.
+The Windows editor builds; a standalone native harness compiled the production
+`RenderingDeviceTLASUpdateState` test and passed 15 checks. This verifies eligibility
+fallbacks only, not Vulkan refit execution. No new GPU/performance result exists.
+
+After authorization, `./run.sh amd_gi_scene_metadata` enables
+`GODOT_AMD_GI_VALIDATE_SCENE_CACHE=1` and requires both fixture completion and engine
+oracle success, rejecting every engine/script error. It exercises shared material
+uniform edits, texture content/resource changes, null/restored shaders, next passes,
+shader layout/opacity/culling/emission changes, mirrored transforms, in-place UV and
+vertex edits, MultiMesh values/counts, scene membership, buffer growth and GI toggles.
+The engine compares cached collection/hit/layout data with uncached reconstruction,
+retained geometry dependencies with current resources, and actual GPU uniform,
+attribute, index and context/hit buffers with their source data. Diagnostic readbacks
+must be disabled for profiling. This is not full lifecycle or image-equivalence proof.
+
+Windows commands, once authorized, from the repository root:
+
+```powershell
+$env:VK_LOADER_LAYERS_DISABLE = 'VK_LAYER_RTSS'
+$env:GODOT_AMD_GI_VALIDATE_SCENE_CACHE = '1'
+& ./bin/godot.windows.editor.x86_64.console.exe --path docs/validation/shadow_validation --rendering-driver vulkan --audio-driver Dummy --windowed --resolution 321x181 res://amd_gi_scene_metadata.tscn
+Remove-Item Env:GODOT_AMD_GI_VALIDATE_SCENE_CACHE
+& ./bin/godot.windows.editor.x86_64.console.exe --path docs/validation/shadow_validation --rendering-driver vulkan --audio-driver Dummy --windowed --resolution 321x181 --script res://buffer_address_lifetime.gd
+```
+
+The address fixture checks repeated reads after writes and buffer destruction/reuse
+with 128 GPU cases; require zero failures and no engine/script errors. A fixture
+completion marker alone is insufficient. Also run the existing consequential,
+source-material, normal-decoding and emitter-update regressions before a Live World
+profile. Posed-buffer swaps, failed allocation retries, texture proxy/deletion and
+multi-scenario cases remain explicit coverage requirements. Do not infer their
+success from compilation or the new mutation fixture's coverage.
+
+After authorization, `./run.sh amd_gi_light_storage` checks blinking analytic lights
+against fixed emissive geometry. It exercises zero through 17 active lights,
+allocation growth through 32 slots, same-count light replacement and repeated
+on/off cycles. The runner enables `GODOT_AMD_GI_VALIDATE_LIGHT_STORAGE=1` and
+`GODOT_AMD_GI_VALIDATE_EMITTER_UPDATES=1`. The scorer requires zero normal emitter
+dispatches after warmup, successful copies across capacity boundaries, and byte
+agreement with deliberate full emitter regeneration. The reference dispatches are
+logged separately; they must not be mistaken for normal-path work. For a manually
+captured Windows log, run `score_amd_gi_light_storage.py <log-path>`. This fixture has
+not yet run on Godot. Its scorer passed synthetic acceptance and rejection checks;
+those checks establish the log assertions, not GPU behavior or gameplay performance.
+
 AMD GI GPU cost investigation on the RTX 5090: see the
 [2026-10-24 profile](validation/amd_gi_profile_2026_10_24/README.md), external
 fps-proto harness, per-frame evidence and temporary instrumentation patch.
@@ -408,3 +457,139 @@ and live uniforms. Unrelated partial writes must not invalidate known coordinate
 `run.sh amd_gi_emitter_coordinate_limits` requires explicit diagnostics for five
 unqualified mappings; a successful shader compile alone is not a filtering proof.
 The ordinary source-material oracle and emitter-room regression remain separate.
+
+### Source-only hardening, 2026-10-25
+
+The owner declined renderer/game runs for this pass. Prepared runtime regressions
+below are not recorded GPU passes. Keep grass hidden for future GI/game runs.
+
+- `tlas_instance_upload_lifetime.gd` is a standalone `--script` fixture in the
+  validation project. It records three TLAS builds and ray queries before each
+  submission, with a two-instance input capacity, repeated across eight frames.
+  It requires all 24 independently expected custom IDs; do not submit/read back
+  inside the three-build loop, which would hide same-frame overwrite defects.
+  Its compute shader compiled offline; the GPU test was not run.
+- `amd_gi_scene_metadata` now includes the game's bulk MultiMesh upload pattern:
+  transforms/colors/custom data, mirrored nonuniform parent, zero/restored visible
+  prefix, replacement with a transform-only resource and resource restoration.
+  The existing `amd_gi_multimesh` rendered comparison remains complementary.
+- `amd_gi_light_storage` now toggles a rejected additive/unshaded flare allocated
+  before supported emitters, and negative/positive analytic-light transitions.
+  Its scorer requires zero static transform repacking as well as zero ordinary
+  emitter regeneration after warmup. Normal and reference emitter records must
+  still match. This is not a firing performance measurement.
+  The source-only scorer check accepted a synthetic 136-update valid log and
+  rejected six corrupted variants, including repacking and missing counters.
+  Synthetic logs establish scorer behavior only, not rendered engine behavior.
+- `test_amd_gi_pipeline_preparation.cpp` tests the production candidate/retry helper
+  without a rendering device. The standalone native harness passed 141 checks:
+  each failing pass index, partial cleanup, required-pass filtering, readiness,
+  unchanged-revision recovery after repeated failures, revision/scene changes,
+  capped retry delay and bounded warnings. `test_rendering_device_tlas_update.cpp`
+  separately passed its existing 15 CPU eligibility checks; these do not prove
+  GPU refit equivalence or the new upload-lifetime regression.
+- Runtime pipeline fault injection is opt-in:
+  `GODOT_AMD_GI_FAIL_MATERIAL_PIPELINE=once:last` fails the final pass once;
+  `always:last` tests repeated failure with a static material revision. The latter
+  must never publish readiness. Retry delays are 1/2/4/8/16/30 seconds, capped at
+  30, with at most three preparation warnings per unchanged signature. The former
+  must recover on the same revision after the initial delay. No such runtime test
+  was launched. Preparation remains synchronous; old and candidate pipelines may
+  coexist temporarily, and incompatible old bindings are never rendered.
+
+Primary GI geometric normals: after permission to launch the renderer, run
+`docs/validation/shadow_validation/run.sh amd_gi_geometry_normal` (321x181), or
+open `res://amd_gi_geometry_normal.tscn` in the validation project with the Vulkan
+Forward+ renderer. The fixture constructs a sloped triangle with constant authored
+normals 79.697236 degrees away from its analytic face normal. A post-opaque
+compositor samples the actual GI geometry and shading attachments into a storage
+buffer, checking the face normal and authored normal separately with a 0.005
+vector-distance tolerance for their 10-bit UNORM encoding. Missing attachments,
+timeout, logged errors, or a missing `GI_GEOMETRY_NORMAL PASS:` marker fail the
+test. This checks the primary raster input, independently of the source-normal
+ray-hit fixture above. The CPU analytic orientation check passed: face normal
+`(-0.4472135955, 0, 0.8944271910)` matches `cross(dY, dX)` for the GI view's
+Y-flipped projection and positive-height Vulkan viewport. Runtime shader
+compilation and this GPU fixture have **not been run** for this change; the CPU
+check does not establish that this resolves the reported weapon reflection flicker.
+
+### Runtime GI diagnostics and visualizers (source-only, 2026-10-25)
+
+`debug/exclusion_reports` captures two distinct scopes: collection reports count
+scene objects (including hidden objects, camera-layer exclusions, GI-disabled
+objects and empty MultiMeshes), while transport reports count candidate surfaces
+and MultiMesh elements rejected by the material/geometry adapter. Each detailed
+list is capped at 4096 entries; reason totals and the truncated-entry count remain
+available. Collection entries include the originating ObjectID and render RID.
+These diagnostics do not change transport membership or saved game assets.
+
+Cache visualizers display paged **atlases**, with an 8x8 block for each actual
+occupied tile. They do not guess a directional cache key from the primary surface
+normal. Raw/filtered radiance, raw/filtered counts, filtering gain, selected mip,
+tile occupancy/age, coverage and indirect propagation use the renderer's live
+cache data. Bucket occupancy/overflow use a corresponding paged bucket atlas.
+The retained probe-pool views display radiance, seed age, occupancy and update
+activity, ordered by the previous-frame LRU list used by allocation. Activity
+colors are red for an empty slot, gray for unchanged, blue for a claimed update,
+and green for a replaced/evicted seed. Seed age is not radiance-update age: reuse
+can refresh radiance without replacing stored seed metadata. Disabled retained
+probe caching displays black and never reads its placeholder buffers.
+The occupied-tile list can reorder as tiles expire; this is a diagnostic layout,
+not temporal scene flickering. Mip selection uses AMD's 16-sample threshold; heat
+colors follow AMD's red/blue/green palette. Age is tile last-use age, not a
+per-cell update timestamp. Probe radiance and per-direction layouts match AMD's
+screen-probe arrangement. `debug/indirect_cache` selects the indirect component
+for the shared cache views; propagation mode selects it directly.
+
+Statistics are opt-in, and GPU readback is intentionally blocking only on sampled
+frames. Do not publish those sampled frames as performance measurements. Buffer
+65 contains 16 header words, `bucket_count` overflow-attempt counters, then
+occupancy and overflow histograms with `tiles_per_bucket + 1` bins each. The last
+overflow bin includes all counts at or above that limit. Overflow counts are
+failed allocation **attempts**, not unique missing tiles. Header words are:
+overflow attempts, occupied tiles, occupied buckets, sampled base cells, low/high
+sample sum, maximum sample count, active tiles, valid probes, updated probes,
+primary/secondary compact hit counts, full buckets, frame, base-cell capacity,
+valid retained probe slots. Sample sums use two words with an atomic carry to
+avoid 32-bit wrap.
+
+`python docs/validation/shadow_validation/score_amd_gi_debug_stats.py --self-test`
+accepts two synthetic snapshots (including a sum above 32 bits) and rejects 11
+corrupted snapshots. The same scorer accepts a raw GPU buffer dump with explicit
+`--buckets` and `--capacity`. Offline glslang compilation passed the allocation
+passes (12/15), debug display (57), and statistics (58), using the source adapter's
+empty-material fallback. These checks establish shader compilation and counter
+format invariants, **not rendered visual acceptance or driver execution**.
+
+When renderer execution is authorized, cycle every view at an awkward internal
+size (for example 321x181), with reflections and multibounce independently off/on;
+disabled resources must show black without reading their tiny placeholder buffers.
+Verify the last atlas page and page beyond capacity, max-age zero, mip levels0–3,
+and indirect-cache switching. Turn the diagnostics off and verify GPU counters
+stop being read back. Native albedo/alpha/specular/direct/indirect display modes
+must preserve the normal GI feedback capture before changing final display.
+
+
+### Runtime option integration, source-only, 2026-10-25
+
+- Windows MSVC editor build succeeded; final log at
+  `.artifacts/amd-gi-runtime-options-20261025/build-verified.log`.
+- All 116 production/capture GI GLSL variants compile offline with the adapter's
+  fallback material body; six native forward variants cover shaded/unshaded,
+  feedback and separate-specular output. This does not compile fps-proto materials
+  or create driver pipelines.
+- Sky mathematical/source-contract oracle: 147,790 checks. Split intermediate
+  layout oracle: 368,397 reads, including odd sizes and all checker phases.
+- Diagnostic scorer: two valid synthetic snapshots accepted, eleven corrupt
+  snapshots rejected. Existing pipeline recovery CPU helper: 141 checks.
+- Class XML parses, contains unique names, and covers all 18 new setting registrations.
+  XML was maintained directly: source-only permission excludes launching doctool.
+- Prepared `amd_gi_options.tscn` covers 36 runtime sampling/filter combinations,
+  32 display modes, cache/mip/page controls, radius limits and reporting switches.
+  **Not run.** Zero engine, renderer fixture or game launches in this work.
+
+The runtime gate now checks 38 declared storage buffers and 12 storage images for
+both shader-stage and pipeline-layout limits. Vulkan's aggregate descriptor limits
+are exposed under Godot's misleading `PER_UNIFORM_SET` names. Offline shader
+reflection counts include optional capture/debug declarations; unused globals are
+not filtered by the engine's reflection path.

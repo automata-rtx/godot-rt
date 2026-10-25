@@ -72,6 +72,13 @@ public:
 	const LocalVector<EmissiveRange> &get_emissive_ranges() const { return emissive_ranges; }
 
 private:
+	bool diagnostic_exclusions_enabled = false;
+	Dictionary diagnostic_exclusion_counts;
+	Array diagnostic_exclusions;
+	uint32_t diagnostic_exclusions_dropped = 0;
+	uint32_t diagnostic_input_instances = 0;
+	uint32_t diagnostic_accepted_surfaces = 0;
+	void record_exclusion(const char *p_reason, RID p_instance, RID p_resource = RID(), int32_t p_surface = -1, uint32_t p_element = 0, const String &p_shader = String());
 	RaytracingMaterialSource source_materials;
 	LocalVector<EmissiveRange> emissive_ranges;
 	// Tile layout must match atlas_position() in rt_gi_transport_inc.glsl.
@@ -104,7 +111,35 @@ private:
 	};
 
 	static_assert(sizeof(HitData) == 160);
+	struct PackedInstanceTransform {
+		RID instance;
+		uint32_t element = 0;
+		Transform3D transform;
+		float object_to_world[12] = {};
+		float normal_to_world[12] = {};
+		bool valid = false;
+	};
+	LocalVector<PackedInstanceTransform> packed_instance_transforms;
+	struct SurfaceGeometryKey {
+		RID instance, mesh, mesh_instance, vertices, indices, normals;
+		uint32_t element = 0, surface = 0, vertex_count = 0, index_stride = 0;
+		uint64_t revision = 0, format = 0;
+		bool operator==(const SurfaceGeometryKey &p_other) const {
+			return instance == p_other.instance && mesh == p_other.mesh && mesh_instance == p_other.mesh_instance && vertices == p_other.vertices && indices == p_other.indices && normals == p_other.normals && element == p_other.element && surface == p_other.surface && vertex_count == p_other.vertex_count && index_stride == p_other.index_stride && revision == p_other.revision && format == p_other.format;
+		}
+	};
+	struct SurfaceGeometryRecord {
+		SurfaceGeometryKey key;
+		HitData hit = {};
+	};
+	LocalVector<SurfaceGeometryRecord> surface_geometry_records;
+	LocalVector<HitData> uploaded_hits;
+	LocalVector<HitData> hit_scratch;
+	LocalVector<RD::AccelerationStructureInstance> instance_scratch;
+	LocalVector<uint64_t> geometry_revision_scratch;
+	static HitData build_hit_geometry(const RaytracingGeometry::Surface &p_geometry, uint64_t p_format, RID p_normal_buffer);
 	HashSet<RID> geometry_buffers;
+	bool geometry_buffers_dirty = true;
 	static_assert(sizeof(LightData) == 80);
 	LocalVector<LightData> previous_lights;
 	static bool light_history_compatible(const LightData &p_current, const LightData &p_previous);
@@ -190,6 +225,11 @@ private:
 	uint32_t instance_capacity = 0;
 	uint32_t light_capacity = 0;
 	RID tlas;
+	// Snapshot only successful builds. BLAS revisions also catch in-place
+	// rebuilds across an earlier scene-preparation failure.
+	LocalVector<RD::AccelerationStructureInstance> built_tlas_instances;
+	LocalVector<uint64_t> built_tlas_geometry_revisions;
+	bool tlas_built = false;
 	RID atlas[4];
 	RID hit_buffer;
 	RID light_buffer;
@@ -209,8 +249,9 @@ private:
 		}
 	};
 	LocalVector<EmitterBatch> previous_emitters;
+	LocalVector<EmitterBatch> emitter_batch_scratch;
 	bool emitter_buffer_valid = false;
-	bool update_emitters(const LocalVector<EmitterBatch> &p_batches, bool p_source_materials);
+	bool update_emitters(const LocalVector<EmitterBatch> &p_batches, bool p_source_materials, bool p_reference = false);
 	uint32_t light_count = 0;
 	uint32_t signature = 0;
 	uint64_t revision = 1;
@@ -219,6 +260,7 @@ private:
 	bool feedback_compatible = true;
 
 public:
+	Dictionary get_scene_diagnostics() const;
 	const RaytracingMaterialSource &get_source_materials() const { return source_materials; }
 	static constexpr uint32_t MAX_MOTION_BOUNDS = 8;
 	const LocalVector<AABB> &get_motion_bounds() const { return motion_bounds; }
@@ -226,6 +268,7 @@ public:
 	bool is_feedback_compatible() const { return feedback_compatible; }
 	uint32_t get_light_count() const { return light_count; }
 	uint32_t get_emitter_count() const { return emitter_count; }
+	uint32_t get_emitter_buffer_offset() const { return light_capacity * sizeof(LightData); }
 	uint32_t get_emitter_capacity() const { return emitter_capacity; }
 	uint64_t get_revision() const { return revision; }
 	uint64_t get_lighting_revision() const { return lighting_revision; }

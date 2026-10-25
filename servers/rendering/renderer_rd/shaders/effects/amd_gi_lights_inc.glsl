@@ -20,6 +20,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ********************************************************************/
 
+#include "amd_gi_sky_sampling_inc.glsl"
+
 // Capsaicin v1.3 GridStream default: 16 cells/axis, 64 strided reservoirs,
 // expanded-cell volume weights, jittered lookup and eight segments without
 // replacement. Analytic lights and emissive triangles share one distribution.
@@ -318,10 +320,11 @@ uint light_grid_segment(uint start, uint count, inout uint rng, out float pdf) {
 vec3 gi_light_target_normal(RayHit ray, vec3 brdf_normal, uint index, vec2 sample_params, float solid_angle, out vec3 direction, out float distance) {
 	vec3 incident;
 	if (index < gi_environment_count()) {
-		float theta = 2.0 * PI * sample_params.x;
-		float cosine = 1.0 - sample_params.y;
-		float sine = sin(acos(cosine));
-		direction = normalize(basis(ray.normal_mask.xyz) * vec3(sine * cos(theta), sine * sin(theta), cosine));
+		// Importance samples retain their world direction, so changing the sky
+		// distribution cannot reinterpret an old sample's seed with a new PDF.
+		// Upstream's sampled-light evaluation lacks its importance branch.
+		float unused_pdf;
+		direction = frame.options.x == 2u ? oct_to_vec3(sample_params) : gi_sample_environment(sample_params, ray.normal_mask.xyz, unused_pdf);
 		distance = params.max_distance;
 		incident = environment_radiance_cone(direction, solid_angle);
 	} else if (index - gi_environment_count() < params.light_count) {
@@ -415,7 +418,14 @@ vec3 resampled_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_c
 		vec2 sample_params = vec2(random_float(rng), random_float(rng));
 		float area_pdf = 1.0;
 		if (candidates[i] < gi_environment_count()) {
-			area_pdf = 1.0 / (2.0 * PI);
+			vec3 sampled_direction = gi_sample_environment(sample_params, ray.normal_mask.xyz, area_pdf);
+			if (frame.options.x == 2u) {
+				// Preserve the existing two-half parameter handoff while making
+				// importance replay independent of sky rotation/luminance changes.
+				// Signed oct coordinates retain more precision near the pole
+				// than adding the half-precision [0,1] mapping offset.
+				sample_params = vec3_to_oct(sampled_direction) * 2.0 - 1.0;
+			}
 		} else if (candidates[i] >= params.light_count + gi_environment_count()) {
 			float root = sqrt(sample_params.x);
 			sample_params = vec2(1.0 - root, sample_params.y * root);

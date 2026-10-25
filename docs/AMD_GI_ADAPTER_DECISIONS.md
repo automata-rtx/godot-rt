@@ -1,6 +1,6 @@
 # AMD GI approval boundaries
 
-Current as of 2026-10-24. AMD's pinned algorithm is the baseline. Further deviations
+Current as of 2026-10-25. AMD's pinned algorithm is the baseline. Further deviations
 require explicit owner approval with a high-confidence justification. A compatibility
 limitation is not permission to invent an alternative estimator or history policy.
 Read [current status](AMD_GI_IMPLEMENTATION.md) first. Exact prior proposals, proofs,
@@ -9,6 +9,10 @@ responses and withdrawn recommendations are preserved in the
 
 ## Approved, narrowly scoped
 
+- Negative/subtractive lights are explicitly unsupported by AMD GI for this game. Retain native direct lighting, exclude them from GI light sampling and outgoing-light feedback, and warn rather than invent signed cache transport.
+- Orthographic cameras are explicitly unsupported by AMD GI. Clear only the affected view's GI output and retain native lighting; do not evict shared perspective-view resources.
+- Fix TLAS input-buffer accounting, muzzle-flash integration overhead and material-pipeline preparation recovery without changing AMD estimators. Ordinary game-used MultiMesh remains required. Full shader-driven grass deformation depends on its performance cost and is not enabled by this approval.
+- Investigate shutdown crashes only; do not modify their suspected code paths or system configuration in this pass. Broader lifecycle work, prewarming/loading overlays and unrelated Godot compatibility remain deferred.
 - Preserve Godot's authored light attenuation, energy, masks and final material response at the integration boundary. This does not authorize coarse captures or estimator changes.
 - Transform hit geometry and shading normals to world space exactly once. The owner's conditional approval applied after source tracing proved localized AMD missing/double transforms, not an intentional screen/world split. Preserve their separate roles.
 - Read the multibounce bypass flag for its actual hit rather than the uncompacted index.
@@ -27,3 +31,25 @@ responses and withdrawn recommendations are preserved in the
 
 Only read the archived decision subsection/source proof relevant to a proposed change.
 Do not request approval again for the exact scope already approved above.
+
+
+## Runtime options authorization, 2026-10-25
+
+Owner requested all diagnostic tools, both sky samplers, debug visualizers and
+alternate AMD reflection denoising as live options. Implemented against Capsaicin
+`914b91596cd119eda85fbc1d3c7ee6ac391b1452` (GI 1.2). Cosine is the recommended sky
+default; existing AMD a-trous remains the reflection default. These recommendations
+are source-reviewed, not hardware-measured presets.
+
+Necessary sky integration corrections: Vulkan cube-face orientation, black-face
+and floating-point CDF endpoint handling, and storing importance sample world
+direction in the existing signed-half2 octahedral payload. Upstream stored-sample
+evaluation lacks its importance branch; retaining seeds would reconstruct the
+wrong direction or remap it when sky contents change. Direction storage preserves
+sample identity without another buffer/readback; half precision remains a measured
+CPU quantization limitation. No extra rays or replacement estimator was added.
+
+Diagnostics preserve complete direct-light feedback before display isolation.
+Paged visualizers expose actual directional cache tiles and retained probe slots.
+Readback is opt-in and sampled, with frame IDs. Source-only permission still applies.
+No prewarming, shutdown changes, game edits or new grass transport were included.

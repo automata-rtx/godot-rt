@@ -434,6 +434,7 @@ RID RenderingDevice::tlas_create(uint32_t p_max_instance_count, BitField<Acceler
 	acceleration_structure.draw_tracker->usage = RDG::RESOURCE_USAGE_ACCELERATION_STRUCTURE_READ_WRITE;
 
 	acceleration_structure.max_instance_count = p_max_instance_count;
+	acceleration_structure.allow_update = p_flags.has_flag(ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT);
 
 	RID id = acceleration_structure_owner.make_rid(acceleration_structure);
 #ifdef DEV_ENABLED
@@ -463,7 +464,7 @@ Error RenderingDevice::blas_build(RID p_blas) {
 	return OK;
 }
 
-Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance> p_instances) {
+Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance> p_instances, bool p_update) {
 	ERR_RENDER_THREAD_GUARD_V(ERR_UNAVAILABLE);
 
 	ERR_FAIL_COND_V_MSG(draw_list.active, ERR_INVALID_PARAMETER, "Building TLAS is forbidden during creation of a draw list.");
@@ -515,7 +516,9 @@ Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance
 		AccelerationStructure::InstanceBuffer instance_buffer;
 		instance_buffer.driver_id = instance_buffer_driver_id;
 		instance_buffer.frame_used = frames_drawn;
-		instance_buffer.used_size = 0;
+		// The queued build reads this mapped range at submission, not here.
+		// Reserve it now so another build in this frame cannot overwrite it.
+		instance_buffer.used_size = instance_buffer_used_size;
 		instance_buffer.data_ptr = data_ptr;
 
 		instance_buffer_index = tlas->instance_buffers.size();
@@ -529,8 +532,10 @@ Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance
 	thread_local LocalVector<RDG::ResourceTracker *> draw_trackers;
 	draw_trackers.clear();
 
+	bool all_active = true;
 	for (uint32_t i = 0; i < p_instances.size(); i++) {
 		const AccelerationStructureInstance &rd_instance = p_instances[i];
+		all_active = all_active && rd_instance.blas.is_valid();
 
 		RDD::AccelerationStructureInstance rdd_instance;
 		rdd_instance.transform = rd_instance.transform;
@@ -561,8 +566,12 @@ Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance
 		driver->acceleration_structure_instance_write(instance_buffer.data_ptr + instance_buffer_offset + (instance_size * i), rdd_instance);
 	}
 
-	draw_graph.add_tlas_build(tlas->driver_id, tlas->scratch_buffer, instance_buffer.driver_id, instance_buffer_offset, p_instances.size(), tlas->draw_tracker, draw_trackers);
+	// Updating requires the original build flags/count and unchanged active
+	// membership. Conservatively rebuild lists containing inactive instances.
+	const bool update = tlas->update_state.can_update(p_update, tlas->allow_update, p_instances.size(), all_active);
+	draw_graph.add_tlas_build(tlas->driver_id, tlas->scratch_buffer, instance_buffer.driver_id, instance_buffer_offset, p_instances.size(), tlas->draw_tracker, draw_trackers, update);
 
+	tlas->update_state.record_build(p_instances.size(), all_active);
 	tlas->invalidated = false;
 
 	return OK;

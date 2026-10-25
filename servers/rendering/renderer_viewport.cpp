@@ -1672,6 +1672,15 @@ RSE::ViewportScaling3DMode RendererViewport::viewport_get_effective_scaling_3d_m
 	return viewport->effective_scaling_3d_mode;
 }
 
+Dictionary RendererViewport::viewport_get_amd_gi_diagnostics(RID p_viewport) const {
+	const Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL_V(viewport, Dictionary());
+	if (viewport->render_buffers.is_null()) {
+		return Dictionary();
+	}
+	return RSG::scene->debug_get_amd_gi_diagnostics(viewport->render_buffers);
+}
+
 String RendererViewport::viewport_get_upscaler_status(RID p_viewport) const {
 	const Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL_V(viewport, String());

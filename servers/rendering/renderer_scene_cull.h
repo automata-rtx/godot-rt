@@ -346,6 +346,10 @@ public:
 		HashMap<RID, uint64_t> viewport_visibility_masks;
 
 		SelfList<Instance>::List instances;
+		// Membership/order only: eligibility and dynamic values are read every
+		// update. Retaining all instances also handles base-type changes in place.
+		LocalVector<Instance *> gi_ordered_instances;
+		bool gi_order_dirty = true;
 
 		LocalVector<RID> dynamic_lights;
 
@@ -1014,6 +1018,8 @@ public:
 	// Non-frustum-culled mesh list handed to the raytracing acceleration structure
 	// builder. Kept as a member so it is not reallocated every frame.
 	LocalVector<RendererSceneRender::RaytracingInstance> rt_instance_scratch;
+	LocalVector<RendererSceneRender::RaytracingGIInstance> gi_instance_scratch;
+	LocalVector<RID> gi_light_scratch;
 	LocalVector<Instance *> rt_caster_scratch;
 	LocalVector<AABB> rt_light_bounds_scratch;
 	LocalVector<AABB> rt_directional_bounds_scratch;
@@ -1409,6 +1415,7 @@ public:
 	/* Misc */
 	PASS1(set_debug_draw_mode, RSE::ViewportDebugDraw)
 	PASS1RC(String, debug_get_upscaler_status, const Ref<RenderSceneBuffers> &)
+	PASS1RC(Dictionary, debug_get_amd_gi_diagnostics, const Ref<RenderSceneBuffers> &)
 
 	PASS1(decals_set_filter, RSE::DecalFilter)
 	PASS1(light_projectors_set_filter, RSE::LightProjectorFilter)

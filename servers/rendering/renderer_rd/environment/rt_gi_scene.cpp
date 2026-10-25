@@ -47,6 +47,46 @@ using namespace RendererRD;
 RaytracingGIScene::RaytracingGIScene() {
 }
 
+void RaytracingGIScene::record_exclusion(const char *p_reason, RID p_instance, RID p_resource, int32_t p_surface, uint32_t p_element, const String &p_shader) {
+	if (!diagnostic_exclusions_enabled) {
+		return;
+	}
+	const String reason(p_reason);
+	diagnostic_exclusion_counts[reason] = int64_t(diagnostic_exclusion_counts.get(reason, 0)) + 1;
+	// Grass can contain hundreds of thousands of elements. Keep aggregate counts
+	// exact while bounding detailed report memory and main/render thread copying.
+	if (diagnostic_exclusions.size() >= 4096) {
+		diagnostic_exclusions_dropped++;
+		return;
+	}
+	Dictionary item;
+	item["reason"] = reason;
+	item["instance"] = p_instance;
+	item["resource"] = p_resource;
+	item["surface"] = p_surface;
+	item["element"] = p_element;
+	item["shader"] = p_shader;
+	diagnostic_exclusions.push_back(item);
+}
+
+Dictionary RaytracingGIScene::get_scene_diagnostics() const {
+	Dictionary result;
+	result["enabled"] = diagnostic_exclusions_enabled;
+	result["ready"] = ready;
+	result["frame"] = material_frame;
+	result["collected_instances"] = diagnostic_input_instances;
+	result["accepted_surfaces"] = diagnostic_accepted_surfaces;
+	result["lights"] = light_count;
+	result["emissive_triangles"] = emitter_count;
+	result["exclusion_counts"] = diagnostic_exclusion_counts.duplicate();
+	result["exclusions"] = diagnostic_exclusions.duplicate(true);
+	result["exclusions_truncated"] = diagnostic_exclusions_dropped;
+	// Collection policies (distance, GI mode and visibility) run before this
+	// adapter. This report explicitly describes only the supplied candidates.
+	result["scope"] = "transport_candidates_after_scene_collection";
+	return result;
+}
+
 bool RaytracingGIScene::resize_atlas(uint32_t p_layers) {
 	if (p_layers == atlas_layers) {
 		return true;
@@ -99,7 +139,7 @@ bool RaytracingGIScene::ensure_scene_buffers(uint32_t p_instances, uint32_t p_li
 	RD *rd = RD::get_singleton();
 	if (p_instances > instance_capacity) {
 		const uint32_t capacity = Math::next_power_of_2(MAX(64u, p_instances));
-		RID replacement_tlas = rd->tlas_create(capacity, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
+		RID replacement_tlas = rd->tlas_create(capacity, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT | RD::ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT);
 		RID replacement_hits = rd->storage_buffer_create(capacity * sizeof(HitData));
 		if (replacement_tlas.is_null() || replacement_hits.is_null()) {
 			if (replacement_tlas.is_valid()) {
@@ -115,25 +155,46 @@ bool RaytracingGIScene::ensure_scene_buffers(uint32_t p_instances, uint32_t p_li
 			rd->free_rid(hit_buffer);
 		}
 		tlas = replacement_tlas;
+		tlas_built = false;
+		built_tlas_instances.clear();
+		built_tlas_geometry_revisions.clear();
 		hit_buffer = replacement_hits;
+		uploaded_hits.clear();
 		instance_capacity = capacity;
 	}
 	const uint32_t required_emitters = Math::next_power_of_2(MAX(emitter_count, 1u));
 	const bool retain_emitters = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/enabled")) && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/emissive_sampling"));
 	if (light_buffer.is_null() || p_lights > light_capacity || required_emitters > emitter_storage_capacity || (!retain_emitters && emitter_storage_capacity > 1)) {
-		// Retain the flat triangle-light allocation across flickering emitters.
+		// Physical storage is independent of the active analytic light count.
+		// Flashing lights must not move every retained triangle-light record.
 		const uint32_t storage_capacity = retain_emitters ? MAX(required_emitters, emitter_storage_capacity) : 1;
-		RID replacement = rd->storage_buffer_create(Math::next_power_of_2(MAX(p_lights, 1u)) * sizeof(LightData) + storage_capacity * 64u);
+		const uint32_t analytic_capacity = MAX(light_capacity, Math::next_power_of_2(MAX(p_lights, 1u)));
+		RID replacement = rd->storage_buffer_create(analytic_capacity * sizeof(LightData) + storage_capacity * 64u);
 		if (replacement.is_null()) {
 			return false;
+		}
+		const bool preserve_emitters = retain_emitters && emitter_uses_source_materials && emitter_buffer_valid && light_buffer.is_valid();
+		if (preserve_emitters && !previous_emitters.is_empty()) {
+			const EmitterBatch &last = previous_emitters[previous_emitters.size() - 1];
+			const uint32_t retained_count = last.first_emitter + last.triangles;
+			// Copy before retiring the old buffer; RD keeps the queued transfer's
+			// resources alive. Only active records are needed, not unused capacity.
+			if (rd->buffer_copy(light_buffer, replacement, get_emitter_buffer_offset(), analytic_capacity * sizeof(LightData), retained_count * 64u) != OK) {
+				rd->free_rid(replacement);
+				return false;
+			}
+			static const bool validate_storage = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_LIGHT_STORAGE") == "1";
+			if (validate_storage) {
+				print_line(vformat("AMD GI light storage copy: lights=%d capacity=%d emitters=%d bytes=%d", p_lights, analytic_capacity, retained_count, retained_count * 64u));
+			}
 		}
 		if (light_buffer.is_valid()) {
 			rd->free_rid(light_buffer);
 		}
 		light_buffer = replacement;
-		light_capacity = Math::next_power_of_2(MAX(p_lights, 1u));
+		light_capacity = analytic_capacity;
 		emitter_storage_capacity = storage_capacity;
-		emitter_buffer_valid = false;
+		emitter_buffer_valid = preserve_emitters;
 	}
 	if (emitter_capacity != required_emitters) {
 		emitter_capacity = required_emitters;
@@ -423,15 +484,39 @@ uint32_t RaytracingGIScene::place_material_tiles(LocalVector<MaterialPlacement> 
 	return end;
 }
 
+RaytracingGIScene::HitData RaytracingGIScene::build_hit_geometry(const RaytracingGeometry::Surface &p_geometry, uint64_t p_format, RID p_normal_buffer) {
+	RD *rd = RD::get_singleton();
+	HitData hit = {};
+	hit.vertex_address = rd->buffer_get_device_address(p_geometry.vertex_buffer);
+	hit.index_address = p_geometry.index_buffer.is_valid() ? rd->buffer_get_device_address(p_geometry.index_buffer) : 0;
+	hit.index_stride = p_geometry.index_stride;
+	if (p_format & RSE::ARRAY_FORMAT_NORMAL) {
+		const uint32_t vertex_stride = RenderingServer::get_singleton()->mesh_surface_get_format_vertex_stride(p_format, p_geometry.vertex_count);
+		hit.normal_offset = p_geometry.vertex_count * vertex_stride / sizeof(uint32_t);
+		hit.normal_stride = RenderingServer::get_singleton()->mesh_surface_get_format_normal_tangent_stride(p_format, p_geometry.vertex_count) / sizeof(uint32_t);
+		hit.normal_address = rd->buffer_get_device_address(p_normal_buffer);
+		hit.material_flags = (p_format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES) ? 8u : 0u;
+	}
+	return hit;
+}
+
 void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights) {
+	static const bool trace_motion = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_HISTORY").is_empty();
+	static const bool validate_records = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_SCENE_CACHE") == "1";
 	ready = false;
 	feedback_compatible = true;
 	material_frame++;
-	geometry_buffers.clear();
 	motion_bounds.clear();
 	LocalVector<InstanceState> current_instances;
+	HashSet<RID> reference_geometry_buffers;
 	RD *rd = RD::get_singleton();
 	const bool use_source_materials = GLOBAL_GET("rendering/global_illumination/amd_gi/enabled");
+	diagnostic_exclusions_enabled = use_source_materials && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/exclusion_reports"));
+	diagnostic_exclusion_counts.clear();
+	diagnostic_exclusions.clear();
+	diagnostic_exclusions_dropped = 0;
+	diagnostic_input_instances = p_instances.size();
+	diagnostic_accepted_surfaces = 0;
 	uint32_t max_pages = 0, atlas_extent = 0;
 	HashMap<MaterialKey, uint32_t, MaterialKeyHasher> placement_offsets;
 	const uint32_t requested_tile_size = int(GLOBAL_GET("rendering/global_illumination/amd_gi/material_tile_size")) == 4 ? 4 : 8;
@@ -487,10 +572,15 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 		WARN_PRINT_ONCE("RT GI scene exceeds its bounded instance/light capacity; GI is suppressed.");
 		return;
 	}
-	LocalVector<RD::AccelerationStructureInstance> instances;
-	LocalVector<HitData> hits;
+	LocalVector<RD::AccelerationStructureInstance> &instances = instance_scratch;
+	LocalVector<uint64_t> &geometry_revisions = geometry_revision_scratch;
+	LocalVector<HitData> &hits = hit_scratch;
+	instances.clear();
+	geometry_revisions.clear();
+	hits.clear();
 	const bool emissive_sampling = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/enabled")) && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/emissive_sampling"));
-	LocalVector<EmitterBatch> emitter_batches;
+	LocalVector<EmitterBatch> &emitter_batches = emitter_batch_scratch;
+	emitter_batches.clear();
 	emitter_count = 0;
 	emissive_ranges.clear();
 	uint32_t resident_pages = 0;
@@ -505,7 +595,14 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	} else {
 		source_materials.clear();
 	}
+	packed_instance_transforms.resize(p_instances.size());
+	uint32_t instance_index = 0;
+	uint32_t repacked_transforms = 0;
 	for (const RendererSceneRender::RaytracingGIInstance &instance : p_instances) {
+		// Rejected effects (such as an additive muzzle flare) must not shift the
+		// transform cache for every supported object following them in RID order.
+		PackedInstanceTransform &packed_transform = packed_instance_transforms[instance_index];
+		bool transform_prepared = false;
 		InstanceState state;
 		state.instance = instance.instance;
 		state.element = instance.element;
@@ -513,6 +610,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 		Color instance_custom(0, 0, 0, 0);
 		if (instance.multimesh.is_valid()) {
 			if (meshes->multimesh_uses_indirect(instance.multimesh)) {
+				record_exclusion("gpu_indirect_multimesh", instance.instance, instance.multimesh, -1, instance.element);
 				WARN_PRINT_ONCE("RT GI cannot collect GPU-indirect MultiMesh transforms; this MultiMesh is omitted from the transport scene.");
 				if (use_source_materials) {
 					continue;
@@ -529,6 +627,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 		state.transform = instance.transform;
 		state.bounds = instance.world_bounds;
 		if (instance.mesh.is_null()) {
+			record_exclusion("unsupported_geometry_overlay_or_lightmap", instance.instance, RID(), -1, instance.element);
 			WARN_PRINT_ONCE("RT GI cannot transport this geometry class/overlay/lightmap combination; the instance is omitted from the transport scene.");
 			if (use_source_materials) {
 				continue;
@@ -553,10 +652,21 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 				// and additive effects. It cannot supply opaque transport geometry.
 				// Depth-writing blend materials continue below for stochastic coverage.
 				if (data->next_pass.is_null() && shader_data.uses_alpha_pass() && !shader_data.uses_depth_in_alpha_pass() && shader_data.depth_draw != RendererSceneRenderImplementation::SceneShaderForwardClustered::ShaderData::DEPTH_DRAW_ALWAYS && !shader_data.casts_shadows()) {
+					record_exclusion("forward_only_transparency", instance.instance, material, surface, instance.element, shader_data.path);
 					continue;
 				}
 				stochastic_alpha = shader_data.uses_alpha && !shader_data.uses_alpha_clip && shader_data.blend_mode == MaterialStorage::ShaderData::BLEND_MODE_MIX;
 				if (data->next_pass.is_valid() || shader_data.uses_screen_texture || shader_data.uses_depth_texture || shader_data.uses_normal_texture || shader_data.uses_position || shader_data.uses_vertex || shader_data.writes_modelview_or_projection || shader_data.uses_blend_alpha || (shader_data.uses_alpha && !shader_data.uses_alpha_clip && !stochastic_alpha) || shader_data.unshaded) {
+					const char *reason = data->next_pass.is_valid() ? "material_next_pass" : shader_data.uses_screen_texture ? "material_screen_texture"
+							: shader_data.uses_depth_texture																 ? "material_depth_texture"
+							: shader_data.uses_normal_texture																 ? "material_screen_normal_texture"
+							: shader_data.uses_position																		 ? "material_position_override"
+							: shader_data.uses_vertex																		 ? "material_vertex_displacement"
+							: shader_data.writes_modelview_or_projection													 ? "material_transform_override"
+							: shader_data.uses_blend_alpha																	 ? "material_blend_alpha"
+							: shader_data.unshaded																			 ? "material_unshaded"
+																															 : "material_unsupported_alpha";
+					record_exclusion(reason, instance.instance, material, surface, instance.element, shader_data.path);
 					WARN_PRINT_ONCE(vformat("RT GI cannot transport material %s (shader '%s'): vertex=%s position=%s transform=%s screen=%s depth=%s normal_texture=%s blend=%s alpha=%s unshaded=%s multipass=%s. This surface is omitted from AMD GI transport.", material, shader_data.path, shader_data.uses_vertex, shader_data.uses_position, shader_data.writes_modelview_or_projection, shader_data.uses_screen_texture, shader_data.uses_depth_texture, shader_data.uses_normal_texture, shader_data.uses_blend_alpha, shader_data.uses_alpha && !shader_data.uses_alpha_clip, shader_data.unshaded, data->next_pass.is_valid()));
 					if (use_source_materials) {
 						continue;
@@ -572,7 +682,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			if (capture_surface) {
 				tile_cursor = placement_offsets[key];
 			}
-			const uint64_t material_revision = materials->material_get_content_revision(material);
+			const uint64_t material_revision = (!use_source_materials || trace_motion) ? materials->material_get_content_revision(material) : 0;
 			Vector<Pair<RID, uint64_t>> texture_revisions;
 			bool reusable_pixels = !use_source_materials && data && data->shader_data && !data->shader_data->uses_time;
 			if (reusable_pixels) {
@@ -639,10 +749,12 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			RD::AccelerationStructureInstance rd_instance;
 			rd_instance.blas = geometry->blas;
 			void *source_surface = meshes->mesh_get_surface(instance.mesh, uint32_t(surface));
-			const uint64_t data_revision = meshes->mesh_surface_get_data_revision(source_surface);
+			const uint64_t data_revision = (!use_source_materials || trace_motion) ? meshes->mesh_surface_get_data_revision(source_surface) : 0;
 			const RID source_vertices = meshes->mesh_surface_get_vertex_buffer(source_surface);
-			const uint64_t pose_revision = instance.mesh_instance.is_valid() ? meshes->mesh_instance_get_last_change(instance.mesh_instance, surface) : 0;
-			state.pose_signature = hash_murmur3_one_64(pose_revision, state.pose_signature);
+			const uint64_t pose_revision = (!use_source_materials || trace_motion) && instance.mesh_instance.is_valid() ? meshes->mesh_instance_get_last_change(instance.mesh_instance, surface) : 0;
+			if (trace_motion) {
+				state.pose_signature = hash_murmur3_one_64(pose_revision, state.pose_signature);
+			}
 			rd_instance.transform = instance.transform;
 			rd_instance.id = instances.size();
 			rd_instance.mask = 0xFF;
@@ -751,25 +863,28 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 				resident_pages += material_pages.size();
 				surface_material.last_used = material_frame;
 			}
-			state.content_signature = hash_murmur3_one_64(instance.mesh.get_id(), state.content_signature);
-			state.content_signature = hash_murmur3_one_32(surface, state.content_signature);
-			state.content_signature = hash_murmur3_one_64(source_vertices.get_id(), state.content_signature);
-			state.content_signature = hash_murmur3_one_64(data_revision, state.content_signature);
-			state.content_signature = hash_murmur3_one_64(material.get_id(), state.content_signature);
-			state.content_signature = hash_murmur3_one_64(material_revision, state.content_signature);
-			state.content_signature = hash_murmur3_one_32(instance.layer_mask, state.content_signature);
-			state.content_signature = hash_murmur3_one_32(instance.shadow_surface_mask, state.content_signature);
-			for (const Pair<RID, uint64_t> &texture : texture_revisions) {
-				state.content_signature = hash_murmur3_one_64(texture.first.get_id(), state.content_signature);
-				state.content_signature = hash_murmur3_one_64(texture.second, state.content_signature);
-			}
-			for (int component = 0; component < 4; component++) {
-				state.content_signature = hash_murmur3_one_float(instance_color[component], state.content_signature);
-				state.content_signature = hash_murmur3_one_float(instance_custom[component], state.content_signature);
+			if (trace_motion) {
+				state.content_signature = hash_murmur3_one_64(instance.mesh.get_id(), state.content_signature);
+				state.content_signature = hash_murmur3_one_32(surface, state.content_signature);
+				state.content_signature = hash_murmur3_one_64(source_vertices.get_id(), state.content_signature);
+				state.content_signature = hash_murmur3_one_64(data_revision, state.content_signature);
+				state.content_signature = hash_murmur3_one_64(material.get_id(), state.content_signature);
+				state.content_signature = hash_murmur3_one_64(material_revision, state.content_signature);
+				state.content_signature = hash_murmur3_one_32(instance.layer_mask, state.content_signature);
+				state.content_signature = hash_murmur3_one_32(instance.shadow_surface_mask, state.content_signature);
+				for (const Pair<RID, uint64_t> &texture : texture_revisions) {
+					state.content_signature = hash_murmur3_one_64(texture.first.get_id(), state.content_signature);
+					state.content_signature = hash_murmur3_one_64(texture.second, state.content_signature);
+				}
+				for (int component = 0; component < 4; component++) {
+					state.content_signature = hash_murmur3_one_float(instance_color[component], state.content_signature);
+					state.content_signature = hash_murmur3_one_float(instance_custom[component], state.content_signature);
+				}
 			}
 			if (use_source_materials) {
 				Error source_error = source_materials.add_surface(material, instance, surface, instance_color, instance_custom);
 				if (source_error == ERR_UNAVAILABLE) {
+					record_exclusion("unsupported_shader_operation", instance.instance, material, surface, instance.element);
 					continue; // Unsupported shader operations affect only this surface.
 				}
 				if (source_error != OK) {
@@ -777,6 +892,8 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 				}
 			}
 			instances.push_back(rd_instance);
+			diagnostic_accepted_surfaces++;
+			geometry_revisions.push_back(geometry->revision);
 			const bool casts_shadow = surface < 32 ? (instance.shadow_surface_mask & (1u << surface)) != 0 : instance.shadow_surface_mask != 0;
 			uint32_t emitter_base = 0;
 			// Bound the optional light hierarchy independently of geometry. Overflow
@@ -787,51 +904,120 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 				emitter_batches.push_back({ geometry->vertex_buffer, geometry->index_buffer, instance.transform, geometry->vertex_count, geometry->index_stride, triangles, use_source_materials ? rd_instance.id : surface_material.first_tile, emitter_count, geometry->revision, surface_material.pixels_revision });
 				emitter_count += triangles;
 			}
-			HitData hit;
-			hit.first_tile = surface_material.first_tile;
-			hit.flags_emitter = emitter_base | (share_capture ? 0x80000000u : 0u) | (stochastic_alpha ? 0x40000000u : 0u);
-			hit.mask = instance.layer_mask;
-			hit.shadow_mask = casts_shadow ? instance.layer_mask : 0;
-			hit.vertex_address = rd->buffer_get_device_address(geometry->vertex_buffer);
-			hit.index_address = geometry->index_buffer.is_valid() ? rd->buffer_get_device_address(geometry->index_buffer) : 0;
-			hit.index_stride = geometry->index_stride;
-			hit.material_flags = material_flags;
-			for (uint32_t row = 0; row < 3; row++) {
-				for (uint32_t column = 0; column < 3; column++) {
-					hit.object_to_world[row * 4 + column] = instance.transform.basis.rows[row][column];
-				}
-				hit.object_to_world[row * 4 + 3] = instance.transform.origin[row];
-			}
-			MaterialStorage::store_basis_3x4(instance.transform.basis.inverse().transposed(), hit.normal_to_world);
-			// Read the same packed normals as Forward+, including the active pose
-			// buffer. Compressed source normals encode a tangent-frame axis; retain
-			// that source buffer even though the BLAS positions are dequantized.
+			// Pose buffers can alternate without replacing the mesh. Validate the
+			// current normal source independently of the retained BLAS metadata.
 			const uint64_t source_format = meshes->mesh_surface_get_format(source_surface);
 			RID normal_buffer = instance.mesh_instance.is_valid() ? meshes->mesh_instance_get_vertex_buffer(instance.mesh_instance, surface) : RID();
 			if (normal_buffer.is_null()) {
 				normal_buffer = source_vertices;
 			}
-			if (source_format & RSE::ARRAY_FORMAT_NORMAL) {
-				const uint32_t vertex_stride = RenderingServer::get_singleton()->mesh_surface_get_format_vertex_stride(source_format, geometry->vertex_count);
-				hit.normal_offset = geometry->vertex_count * vertex_stride / sizeof(uint32_t);
-				hit.normal_stride = RenderingServer::get_singleton()->mesh_surface_get_format_normal_tangent_stride(source_format, geometry->vertex_count) / sizeof(uint32_t);
-				hit.normal_address = rd->buffer_get_device_address(normal_buffer);
-				hit.material_flags |= (source_format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES) ? 8u : 0u;
-				geometry_buffers.insert(normal_buffer);
+			const SurfaceGeometryKey geometry_key{ instance.instance, instance.mesh, instance.mesh_instance, geometry->vertex_buffer, geometry->index_buffer, normal_buffer, instance.element, uint32_t(surface), geometry->vertex_count, geometry->index_stride, geometry->revision, source_format };
+			const uint32_t record_index = hits.size();
+			if (record_index == surface_geometry_records.size()) {
+				surface_geometry_records.push_back({ geometry_key, build_hit_geometry(*geometry, source_format, normal_buffer) });
+				geometry_buffers_dirty = true;
+			} else if (!(surface_geometry_records[record_index].key == geometry_key)) {
+				surface_geometry_records[record_index] = { geometry_key, build_hit_geometry(*geometry, source_format, normal_buffer) };
+				geometry_buffers_dirty = true;
 			}
-			geometry_buffers.insert(geometry->vertex_buffer);
-			if (geometry->index_buffer.is_valid()) {
-				geometry_buffers.insert(geometry->index_buffer);
+			HitData hit = surface_geometry_records[record_index].hit;
+			hit.first_tile = surface_material.first_tile;
+			hit.flags_emitter = emitter_base | (share_capture ? 0x80000000u : 0u) | (stochastic_alpha ? 0x40000000u : 0u);
+			hit.mask = instance.layer_mask;
+			hit.shadow_mask = casts_shadow ? instance.layer_mask : 0;
+			hit.material_flags |= material_flags;
+			if (!transform_prepared) {
+				// Cache only value-derived matrices, never borrowed geometry or
+				// material state. The key also guards collection-order changes.
+				if (!packed_transform.valid || packed_transform.instance != instance.instance || packed_transform.element != instance.element || packed_transform.transform != instance.transform) {
+					repacked_transforms++;
+					packed_transform.instance = instance.instance;
+					packed_transform.element = instance.element;
+					packed_transform.transform = instance.transform;
+					for (uint32_t row = 0; row < 3; row++) {
+						for (uint32_t column = 0; column < 3; column++) {
+							packed_transform.object_to_world[row * 4 + column] = instance.transform.basis.rows[row][column];
+						}
+						packed_transform.object_to_world[row * 4 + 3] = instance.transform.origin[row];
+					}
+					MaterialStorage::store_basis_3x4(instance.transform.basis.inverse().transposed(), packed_transform.normal_to_world);
+					packed_transform.valid = true;
+				}
+				transform_prepared = true;
+			}
+			memcpy(hit.object_to_world, packed_transform.object_to_world, sizeof(hit.object_to_world));
+			memcpy(hit.normal_to_world, packed_transform.normal_to_world, sizeof(hit.normal_to_world));
+			if (validate_records) {
+				reference_geometry_buffers.insert(geometry->vertex_buffer);
+				if (geometry->index_buffer.is_valid()) {
+					reference_geometry_buffers.insert(geometry->index_buffer);
+				}
+				if (source_format & RSE::ARRAY_FORMAT_NORMAL) {
+					reference_geometry_buffers.insert(normal_buffer);
+				}
+				// Reconstruct the original uncached record from current inputs. This
+				// deliberately bypasses both retained geometry and packed transforms.
+				HitData reference = build_hit_geometry(*geometry, source_format, normal_buffer);
+				reference.first_tile = surface_material.first_tile;
+				reference.flags_emitter = emitter_base | (share_capture ? 0x80000000u : 0u) | (stochastic_alpha ? 0x40000000u : 0u);
+				reference.mask = instance.layer_mask;
+				reference.shadow_mask = casts_shadow ? instance.layer_mask : 0;
+				reference.material_flags |= material_flags;
+				for (uint32_t row = 0; row < 3; row++) {
+					for (uint32_t column = 0; column < 3; column++) {
+						reference.object_to_world[row * 4 + column] = instance.transform.basis.rows[row][column];
+					}
+					reference.object_to_world[row * 4 + 3] = instance.transform.origin[row];
+				}
+				MaterialStorage::store_basis_3x4(instance.transform.basis.inverse().transposed(), reference.normal_to_world);
+				// Floating equality treats +0 and -0 as the same transform, just as
+				// Transform3D does. Compare matrices numerically and metadata by byte.
+				bool matches = memcmp(&hit, &reference, offsetof(HitData, object_to_world)) == 0;
+				for (uint32_t component = 0; component < 12; component++) {
+					matches = matches && hit.object_to_world[component] == reference.object_to_world[component] && hit.normal_to_world[component] == reference.normal_to_world[component];
+				}
+				ERR_FAIL_COND_MSG(!matches, vformat("AMD GI cached hit record differs from uncached preparation at surface %d.", record_index));
 			}
 			hits.push_back(hit);
 		}
-		if (instances.size() != first_surface) {
+		if (transform_prepared) {
+			instance_index++;
+		}
+		if (trace_motion && instances.size() != first_surface) {
 			current_instances.push_back(state);
 		}
 	}
+	packed_instance_transforms.resize(instance_index);
+	static const bool validate_light_storage = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_LIGHT_STORAGE") == "1";
+	if (validate_light_storage) {
+		print_line(vformat("AMD GI transform cache: repacked=%d", repacked_transforms));
+	}
+	geometry_buffers_dirty = geometry_buffers_dirty || surface_geometry_records.size() != hits.size();
+	surface_geometry_records.resize(hits.size());
+	if (geometry_buffers_dirty) {
+		geometry_buffers.clear();
+		for (const SurfaceGeometryRecord &record : surface_geometry_records) {
+			geometry_buffers.insert(record.key.vertices);
+			if (record.key.indices.is_valid()) {
+				geometry_buffers.insert(record.key.indices);
+			}
+			// Packed normals remain in their native (possibly posed/compressed)
+			// source buffer even when BLAS positions are dequantized separately.
+			if (record.key.format & RSE::ARRAY_FORMAT_NORMAL) {
+				geometry_buffers.insert(record.key.normals);
+			}
+		}
+		geometry_buffers_dirty = false;
+	}
+	if (validate_records) {
+		bool matches = reference_geometry_buffers.size() == geometry_buffers.size();
+		for (RID buffer : reference_geometry_buffers) {
+			matches = matches && geometry_buffers.has(buffer);
+		}
+		ERR_FAIL_COND_MSG(!matches, "AMD GI retained geometry dependencies differ from full reconstruction.");
+	}
 	// Bounds are diagnostic only. Reference history uses surface reprojection,
 	// never a swept-box invalidation; avoid collecting this unused work normally.
-	static const bool trace_motion = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_HISTORY").is_empty();
 	if (trace_motion) {
 		update_instance_history(current_instances);
 	}
@@ -854,10 +1040,17 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	for (RID instance : p_lights) {
 		RID light = storage->light_instance_get_base_light(instance);
 		const RSE::LightType type = storage->light_get_type(light);
+		if (use_source_materials && storage->light_is_negative(light)) {
+			record_exclusion("negative_light", instance, light);
+			WARN_PRINT_ONCE("AMD GI does not support negative lights; these lights contribute only to native direct lighting.");
+			continue;
+		}
 		if (type == RSE::LIGHT_DIRECTIONAL && storage->light_directional_get_sky_mode(light) == RSE::LIGHT_DIRECTIONAL_SKY_MODE_SKY_ONLY) {
+			record_exclusion("sky_only_light", instance, light);
 			continue;
 		}
 		if (storage->light_has_projector(light) || storage->light_is_distance_fade_enabled(light)) {
+			record_exclusion("light_projector_or_distance_fade", instance, light);
 			WARN_PRINT_ONCE("RT GI does not yet transport light projectors or distance fades; this light contributes only to native direct lighting.");
 			if (use_source_materials) {
 				continue;
@@ -865,6 +1058,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			return;
 		}
 		if (type != RSE::LIGHT_DIRECTIONAL && type != RSE::LIGHT_OMNI && type != RSE::LIGHT_SPOT) {
+			record_exclusion("unsupported_light_type", instance, light);
 			WARN_PRINT_ONCE("RT GI does not yet transport native area lights; this light contributes only to native direct lighting.");
 			if (use_source_materials) {
 				continue;
@@ -938,22 +1132,76 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	if (use_source_materials && !source_materials.end_frame()) {
 		return;
 	}
-	if (light_count != lights.size()) {
-		emitter_buffer_valid = false; // The active analytic prefix moved.
+	if (!use_source_materials && light_count != lights.size()) {
+		emitter_buffer_valid = false; // The legacy capture path uses a packed prefix.
 	}
 	light_count = lights.size();
-	if (light_count) {
-		rd->buffer_update(light_buffer, 0, lights.size() * sizeof(LightData), lights.ptr());
+	if (light_count && rd->buffer_update(light_buffer, 0, lights.size() * sizeof(LightData), lights.ptr()) != OK) {
+		return;
 	}
-	rd->buffer_update(hit_buffer, 0, hits.size() * sizeof(HitData), hits.ptr());
-	ready = rd->tlas_build(tlas, instances) == OK && update_emitters(emitter_batches, use_source_materials);
+	// Retain the dense GPU layout. One bounding changed span avoids both a full
+	// static-scene upload and thousands of small updates when objects move.
+	uint32_t first_changed_hit = hits.size();
+	uint32_t last_changed_hit = 0;
+	for (uint32_t i = 0; i < hits.size(); i++) {
+		if (i >= uploaded_hits.size() || memcmp(&hits[i], &uploaded_hits[i], sizeof(HitData)) != 0) {
+			first_changed_hit = MIN(first_changed_hit, i);
+			last_changed_hit = i;
+		}
+	}
+	if (first_changed_hit < hits.size()) {
+		const uint32_t changed_bytes = (last_changed_hit - first_changed_hit + 1) * sizeof(HitData);
+		if (rd->buffer_update(hit_buffer, first_changed_hit * sizeof(HitData), changed_bytes, hits.ptr() + first_changed_hit) != OK) {
+			return;
+		}
+		uploaded_hits.resize(hits.size());
+		memcpy(uploaded_hits.ptr() + first_changed_hit, hits.ptr() + first_changed_hit, changed_bytes);
+	} else {
+		uploaded_hits.resize(hits.size());
+	}
+	// Material contexts and geometry lifetimes are still validated every frame.
+	// Ordered TLAS IDs index the current hit and material records, and a BLAS
+	// rebuilt at the same RID has new bounds even when its handle is unchanged.
+	bool rebuild_tlas = !tlas_built || built_tlas_instances.size() != instances.size();
+	for (uint32_t i = 0; !rebuild_tlas && i < instances.size(); i++) {
+		const RD::AccelerationStructureInstance &current = instances[i];
+		const RD::AccelerationStructureInstance &built = built_tlas_instances[i];
+		rebuild_tlas = current.blas != built.blas || current.transform != built.transform || current.id != built.id || current.mask != built.mask || current.hit_sbt_range != built.hit_sbt_range || current.flags != built.flags || geometry_revisions[i] != built_tlas_geometry_revisions[i];
+	}
+	if (rebuild_tlas) {
+		// Match the reference's transform-only update path. A changed BLAS,
+		// geometry revision, count or instance metadata still takes a full build.
+		bool refit_tlas = tlas_built && built_tlas_instances.size() == instances.size();
+		for (uint32_t i = 0; refit_tlas && i < instances.size(); i++) {
+			const RD::AccelerationStructureInstance &current = instances[i];
+			const RD::AccelerationStructureInstance &built = built_tlas_instances[i];
+			refit_tlas = current.blas == built.blas && current.id == built.id && current.mask == built.mask && current.hit_sbt_range == built.hit_sbt_range && current.flags == built.flags && geometry_revisions[i] == built_tlas_geometry_revisions[i];
+		}
+		tlas_built = rd->tlas_build(tlas, instances, refit_tlas) == OK;
+		if (tlas_built) {
+			built_tlas_instances = instances;
+			built_tlas_geometry_revisions = geometry_revisions;
+		}
+	}
+	ready = tlas_built && update_emitters(emitter_batches, use_source_materials);
+	if (ready && validate_records) {
+		const Vector<uint8_t> uploaded = rd->buffer_get_data(hit_buffer, 0, hits.size() * sizeof(HitData));
+		const bool matches = uploaded.size() == int64_t(hits.size() * sizeof(HitData)) && memcmp(uploaded.ptr(), hits.ptr(), uploaded.size()) == 0;
+		if (!matches) {
+			ready = false;
+		}
+		ERR_FAIL_COND_MSG(!matches, "AMD GI retained hit buffer differs from current CPU records.");
+		if (material_frame % 60u == 1u) {
+			print_line(vformat("AMD GI scene cache validation: surfaces=%d hit_records_match=true hit_upload_match=true", hits.size()));
+		}
+	}
 	// Opt-in GPU oracle: retained/incremental records must match a complete
 	// regeneration byte for byte. Never enabled by a rendering preset.
 	if (ready && use_source_materials && emitter_count > 0 && OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_EMITTER_UPDATES") == "1") {
-		Vector<uint8_t> incremental = rd->buffer_get_data(light_buffer, light_count * sizeof(LightData), emitter_count * 64u);
+		Vector<uint8_t> incremental = rd->buffer_get_data(light_buffer, get_emitter_buffer_offset(), emitter_count * 64u);
 		emitter_buffer_valid = false;
-		ready = update_emitters(emitter_batches, true);
-		Vector<uint8_t> rebuilt = rd->buffer_get_data(light_buffer, light_count * sizeof(LightData), emitter_count * 64u);
+		ready = update_emitters(emitter_batches, true, true);
+		Vector<uint8_t> rebuilt = rd->buffer_get_data(light_buffer, get_emitter_buffer_offset(), emitter_count * 64u);
 		bool matches = incremental == rebuilt;
 		print_line(vformat("AMD GI emitter validation: triangles=%d matches=%s", emitter_count, matches));
 		ERR_FAIL_COND_MSG(!matches, "Incremental emitter records differ from a full rebuild.");
@@ -963,7 +1211,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 // Extract emissive triangle geometry and build a power hierarchy entirely on GPU.
 // Analytic lights occupy a fixed prefix of the same storage binding, keeping the
 // GI shader within the existing 32-storage-buffer device requirement.
-bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batches, bool p_source_materials) {
+bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batches, bool p_source_materials, bool p_reference) {
 	RD *rd = RD::get_singleton();
 	const bool full_update = !p_source_materials || !emitter_buffer_valid || emitter_uses_source_materials != p_source_materials || previous_emitters.size() != p_batches.size();
 	LocalVector<uint32_t> dirty_batches;
@@ -974,6 +1222,11 @@ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batch
 		if (full_update || batch_changed) {
 			dirty_batches.push_back(i);
 		}
+	}
+	static const bool validate_storage = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_LIGHT_STORAGE") == "1";
+	if (validate_storage) {
+		const uint32_t dispatches = (!changed && emitter_buffer_valid) || emitter_count == 0 ? 0 : dirty_batches.size();
+		print_line(vformat("AMD GI light storage: reference=%d lights=%d capacity=%d full=%d dispatches=%d emitters=%d", int(p_reference), light_count, light_capacity, int(full_update), dispatches, emitter_count));
 	}
 	if (!changed && emitter_buffer_valid) {
 		return true;
@@ -987,7 +1240,8 @@ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batch
 	// compares source offsets, buffer identities, geometry revisions and transforms,
 	// so repacked ranges are regenerated even when the batch count stays the same.
 	emitter_buffer_valid = false;
-	const uint32_t prefix = light_count * sizeof(LightData);
+	const uint32_t prefix_count = p_source_materials ? light_capacity : light_count;
+	const uint32_t prefix = prefix_count * sizeof(LightData);
 	if (full_update) {
 		rd->buffer_clear(light_buffer, prefix, emitter_capacity * 64u);
 	}
@@ -1014,10 +1268,10 @@ bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batch
 	struct Push {
 		float transform[16];
 		uint32_t geometry[4]; // source instance/tile, triangle count, index bytes, first emitter
-		uint32_t prefix[4]; // active analytic count
+		uint32_t prefix[4]; // physical analytic storage slots, independent of active count
 	} push = {};
 	static_assert(sizeof(Push) == 96);
-	push.prefix[0] = light_count;
+	push.prefix[0] = prefix_count;
 	RID last_set;
 	for (uint32_t batch_index : dirty_batches) {
 		const EmitterBatch &batch = p_batches[batch_index];

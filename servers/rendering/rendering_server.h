@@ -625,6 +625,7 @@ public:
 	// Debug only: how the active upscaler is configured, in words. The wording is not stable and
 	// nothing should be parsed out of it.
 	virtual String viewport_get_upscaler_status(RID p_viewport) const = 0;
+	virtual Dictionary viewport_get_amd_gi_diagnostics(RID p_viewport) const = 0;
 
 	virtual void viewport_set_measure_render_time(RID p_viewport, bool p_enable) = 0;
 	virtual double viewport_get_measured_render_time_cpu(RID p_viewport) const = 0;

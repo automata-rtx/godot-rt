@@ -66,6 +66,7 @@
 #define RB_TEX_BACK_DEPTH SNAME("back_depth")
 
 class RenderSceneBuffersRD : public RenderSceneBuffers {
+	Dictionary amd_gi_collection_diagnostics;
 	GDCLASS(RenderSceneBuffersRD, RenderSceneBuffers);
 
 private:
@@ -187,6 +188,8 @@ protected:
 	static void _bind_methods();
 
 public:
+	void set_amd_gi_collection_diagnostics(const Dictionary &p_diagnostics) { amd_gi_collection_diagnostics = p_diagnostics; }
+	Dictionary get_amd_gi_collection_diagnostics() const { return amd_gi_collection_diagnostics; }
 	RenderSceneBuffersRD();
 	virtual ~RenderSceneBuffersRD();
 

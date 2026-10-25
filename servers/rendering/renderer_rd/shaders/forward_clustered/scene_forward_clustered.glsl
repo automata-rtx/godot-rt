@@ -1219,6 +1219,7 @@ layout(location = 4) out vec4 gi_geometry_normal;
 layout(location = 5) out vec4 gi_primary_material;
 layout(location = 6) out vec4 gi_shading_normal;
 layout(location = 7) out float gi_roughness;
+vec3 gi_geometry_normal_view;
 #endif
 
 #ifdef MOTION_VECTORS
@@ -3463,6 +3464,32 @@ void fragment_shader(in SceneData scene_data) {
 #endif
 #endif
 
+	// Display-only GI isolation. Capture complete native outgoing lighting above
+	// first, so direct light continues to feed GI/SSGI/reflection histories.
+	uint amd_debug_view = (implementation_data.ss_effects_flags >> 8u) & 255u;
+	if (amd_debug_view == 1u || (amd_debug_view >= 18u && amd_debug_view <= 21u)) {
+#ifndef MODE_UNSHADED
+		if (amd_debug_view == 1u) {
+			emission = vec3(0);
+			diffuse_light = vec3(0);
+			direct_specular_light = vec3(0);
+		} else if (amd_debug_view == 21u) {
+			emission = vec3(0);
+			ambient_light = vec3(0);
+			indirect_specular_light = vec3(0);
+		} else {
+			emission = amd_debug_view == 18u ? albedo : (amd_debug_view == 19u ? vec3(alpha) : f0);
+			ambient_light = vec3(0);
+			diffuse_light = vec3(0);
+			direct_specular_light = vec3(0);
+			indirect_specular_light = vec3(0);
+		}
+#else
+		albedo = amd_debug_view == 18u ? albedo : (amd_debug_view == 19u ? vec3(alpha) : vec3(0));
+#endif
+		fog = vec4(0, 0, 0, 1);
+	}
+
 #ifdef MODE_SEPARATE_SPECULAR
 
 #ifdef MODE_UNSHADED
@@ -3519,7 +3546,7 @@ void fragment_shader(in SceneData scene_data) {
 	// blend shapes and instance motion. This is produced before GI tracing.
 	vec4 previous_view = scene_data_block.prev_data.inv_projection_matrix * prev_screen_position;
 	// Positive alpha also carries native metallic for probe BRDF guiding.
-	gi_geometry_normal = vec4(normalize(mat3(inv_view_matrix) * geo_normal) * 0.5 + 0.5, 1.0);
+	gi_geometry_normal = vec4(normalize(mat3(inv_view_matrix) * gi_geometry_normal_view) * 0.5 + 0.5, 1.0);
 	gi_shading_normal = vec4(normalize(mat3(inv_view_matrix) * normal) * 0.5 + 0.5, 1.0);
 	gi_roughness = roughness;
 	gi_primary_material = vec4(albedo, metallic);
@@ -3529,6 +3556,13 @@ void fragment_shader(in SceneData scene_data) {
 }
 
 void main() {
+#ifdef GI_PREVIOUS_POSITION
+	// Match Capsaicin's face normal from the actual rasterized surface, before
+	// fragment code can change LIGHT_VERTEX or any discard causes divergence.
+	// GI views use the Y-flipped projection and a positive-height viewport:
+	// framebuffer Y runs opposite view Y, hence cross(dY, dX).
+	gi_geometry_normal_view = normalize(cross(dFdyFine(vertex_interp), dFdxFine(vertex_interp)));
+#endif
 #ifdef UBERSHADER
 	bool front_facing = gl_FrontFacing;
 	if (uc_cull_mode() == POLYGON_CULL_BACK && !front_facing) {

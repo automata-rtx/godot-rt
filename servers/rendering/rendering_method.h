@@ -345,6 +345,7 @@ public:
 	// Debug only: how the active upscaler is configured for these buffers, in words, or an empty
 	// string when there is nothing to say.
 	virtual String debug_get_upscaler_status(const Ref<RenderSceneBuffers> &p_render_buffers) const = 0;
+	virtual Dictionary debug_get_amd_gi_diagnostics(const Ref<RenderSceneBuffers> &p_render_buffers) const = 0;
 
 	virtual TypedArray<Image> bake_render_uv2(RID p_base, const TypedArray<RID> &p_material_overrides, const Size2i &p_image_size) = 0;
 	virtual TypedArray<Image> bake_render_triangle_material(RID p_mesh, int p_surface, int p_first_triangle, int p_triangle_count, int p_tile_size, const Transform3D &p_transform, RID p_material_override) = 0;

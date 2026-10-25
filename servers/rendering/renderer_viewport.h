@@ -310,6 +310,7 @@ public:
 	Size2i viewport_get_internal_size(RID p_viewport) const;
 	RSE::ViewportScaling3DMode viewport_get_effective_scaling_3d_mode(RID p_viewport) const;
 	String viewport_get_upscaler_status(RID p_viewport) const;
+	Dictionary viewport_get_amd_gi_diagnostics(RID p_viewport) const;
 
 	float viewport_get_measured_render_time_cpu(RID p_viewport) const;
 	float viewport_get_measured_render_time_gpu(RID p_viewport) const;

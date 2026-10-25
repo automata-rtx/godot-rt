@@ -1643,6 +1643,17 @@ bool RendererSceneRenderRD::free(RID p_rid) {
 	return true;
 }
 
+void RendererSceneRenderRD::set_amd_gi_collection_diagnostics(const Ref<RenderSceneBuffers> &p_buffers, const Dictionary &p_diagnostics) {
+	Ref<RenderSceneBuffersRD> rb = p_buffers;
+	if (rb.is_valid()) {
+		rb->set_amd_gi_collection_diagnostics(p_diagnostics);
+	}
+}
+
+Dictionary RendererSceneRenderRD::debug_get_amd_gi_diagnostics(const Ref<RenderSceneBuffers> &p_render_buffers) const {
+	return RendererRD::AMDGI::get_diagnostics(p_render_buffers);
+}
+
 String RendererSceneRenderRD::debug_get_upscaler_status(const Ref<RenderSceneBuffers> &p_render_buffers) const {
 #ifdef STREAMLINE_ENABLED
 	const Ref<RenderSceneBuffersRD> rb = p_render_buffers;

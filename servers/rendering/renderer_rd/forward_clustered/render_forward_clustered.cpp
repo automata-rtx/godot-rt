@@ -847,6 +847,9 @@ uint32_t RenderForwardClustered::_setup_environment(const RenderDataRD *p_render
 			const bool cached_reflections = cached_gi && rd->has_texture(RB_SCOPE_AMD_GI, SNAME("reflection"));
 			ss_flags |= (environment_get_ssr_enabled(p_render_data->environment) || cached_reflections) ? (1 << 2) : 0;
 			ss_flags |= cached_reflections ? (1 << 4) : 0;
+			if (cached_gi) {
+				ss_flags |= uint32_t(CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/view")), 0, 31)) << 8;
+			}
 
 			if (rd.is_valid()) {
 				Ref<RenderBufferDataForwardClustered> rb_data;
@@ -2284,7 +2287,7 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 		rb->clear_context(RB_SCOPE_RTGI_VALIDATION);
 	}
 
-	if (amd_gi && rtgi_scene && rb_data.is_valid() && p_render_data->reflection_probe.is_null()) {
+	if (amd_gi && rtgi_scene && rb_data.is_valid() && p_render_data->reflection_probe.is_null() && !p_render_data->scene_data->cam_orthogonal) {
 		RENDER_TIMESTAMP("AMD GI");
 		const float exposure = p_render_data->camera_attributes.is_valid() ? RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes) : 1.0f;
 		RendererRD::AMDGI::Environment gi_environment;
@@ -2382,6 +2385,16 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	Ref<RenderSceneBuffersRD> rb = p_render_data->render_buffers;
 	ERR_FAIL_COND(rb.is_null());
+	if (p_render_data->scene_data->cam_orthogonal) {
+		if (RendererRD::AMDGI::is_enabled()) {
+			WARN_PRINT_ONCE("AMD GI does not support orthographic cameras; native lighting is retained.");
+		}
+		// Clear this view before selecting lighting variants. Keep the shared
+		// scene intact so an auxiliary orthographic view cannot evict the main GI.
+		if (rb->has_custom_data(RB_SCOPE_AMD_GI) || rb->has_texture(RB_SCOPE_AMD_GI, SNAME("diffuse"))) {
+			RendererRD::AMDGI::clear(rb);
+		}
+	}
 	Ref<RenderBufferDataForwardClustered> rb_data;
 	if (rb->has_custom_data(RB_SCOPE_FORWARD_CLUSTERED)) {
 		// Our forward clustered custom data buffer will only be available when we're rendering our normal view.
@@ -2486,7 +2499,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	// check if we need motion vectors
 	bool motion_vectors_required;
-	const bool using_gi_motion = !is_reflection_probe && amd_gi && rtgi_scene && rtgi_scene->is_ready() && rb_data.is_valid() && rb->get_msaa_3d() == RSE::VIEWPORT_MSAA_DISABLED;
+	const bool using_gi_motion = !is_reflection_probe && !p_render_data->scene_data->cam_orthogonal && amd_gi && rtgi_scene && rtgi_scene->is_ready() && rb_data.is_valid() && rb->get_msaa_3d() == RSE::VIEWPORT_MSAA_DISABLED;
 	if (using_debug_mvs) {
 		motion_vectors_required = true;
 	} else if (ce_needs_motion_vectors) {
@@ -2558,7 +2571,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			if (environment_get_sdfgi_enabled(p_render_data->environment) && get_debug_draw_mode() != RSE::VIEWPORT_DEBUG_DRAW_UNSHADED) {
 				using_sdfgi = true;
 			}
-			if (environment_get_ssr_enabled(p_render_data->environment) && !(amd_gi && rtgi_scene && rtgi_scene->is_ready() && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/enabled")))) {
+			// Until this material set is ready, produce native SSR if requested.
+			// A failed GI preparation must not fall back to a stale retained SSR texture.
+			const bool using_amd_gi_reflections = !p_render_data->scene_data->cam_orthogonal && amd_gi && rtgi_scene && rtgi_scene->is_ready() && amd_gi->has_material_pipelines(*rtgi_scene) && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/enabled"));
+			if (environment_get_ssr_enabled(p_render_data->environment) && !using_amd_gi_reflections) {
 				if (!p_render_data->transparent_bg) {
 					using_ssr = true;
 				} else {
@@ -3407,6 +3423,13 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 	RendererSceneRenderRD::_render_buffers_debug_draw(p_render_data);
 
 	RID render_target = rb->get_render_target();
+	const int amd_debug_view = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/view")), 0, 31);
+	const bool native_debug_view = amd_debug_view == 1 || (amd_debug_view >= 18 && amd_debug_view <= 21);
+	if (amd_gi && amd_debug_view != 0 && !native_debug_view && rb->has_texture(SNAME("amd_gi_debug"), SNAME("debug_output"))) {
+		const Size2i rtsize = texture_storage->render_target_get_size(render_target);
+		copy_effects->copy_to_fb_rect(rb->get_texture(SNAME("amd_gi_debug"), SNAME("debug_output")), texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, false);
+		return;
+	}
 
 	if (get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_SSAO && rb->has_texture(RB_SCOPE_SSAO, RB_FINAL)) {
 		RID final = rb->get_texture_slice(RB_SCOPE_SSAO, RB_FINAL, 0, 0);

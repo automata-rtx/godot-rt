@@ -30,7 +30,11 @@
 
 #include "amd_gi.h"
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
+#include "core/io/json.h"
 #include "core/os/os.h"
 #include "core/templates/hash_set.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
@@ -118,7 +122,9 @@ bool AMDGI::is_enabled() {
 
 bool AMDGI::is_supported() {
 	RD *rd = RD::get_singleton();
-	return rd->has_feature(RD::SUPPORTS_HALF_FLOAT) && rd->limit_get(RD::LIMIT_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE) >= 32 && rd->limit_get(RD::LIMIT_MAX_STORAGE_BUFFERS_PER_UNIFORM_SET) >= 32 && rd->limit_get(RD::LIMIT_MAX_COMPUTE_SHARED_MEMORY_SIZE) >= 32768 && rd->limit_get(RD::LIMIT_MAX_STORAGE_IMAGES_PER_SHADER_STAGE) >= 11 && rd->limit_get(RD::LIMIT_MAX_FRAMEBUFFER_COLOR_ATTACHMENTS) >= 8;
+	// Include the optional debug image/counters and capture buffer in the
+	// declared shader interface, even when their runtime branches are inactive.
+	return rd->has_feature(RD::SUPPORTS_HALF_FLOAT) && rd->limit_get(RD::LIMIT_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE) >= 38 && rd->limit_get(RD::LIMIT_MAX_STORAGE_BUFFERS_PER_UNIFORM_SET) >= 38 && rd->limit_get(RD::LIMIT_MAX_COMPUTE_SHARED_MEMORY_SIZE) >= 32768 && rd->limit_get(RD::LIMIT_MAX_STORAGE_IMAGES_PER_SHADER_STAGE) >= 12 && rd->limit_get(RD::LIMIT_MAX_STORAGE_IMAGES_PER_UNIFORM_SET) >= 12 && rd->limit_get(RD::LIMIT_MAX_FRAMEBUFFER_COLOR_ATTACHMENTS) >= 8;
 }
 
 // Explicit GPU readback diagnostic: verify the complete hash prefix, unique
@@ -247,6 +253,58 @@ static bool diagnostic_source_enabled() {
 	static const bool enabled = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_SOURCE").is_empty();
 	return enabled;
 }
+
+// Explicit opt-in, bounded readback. No descriptor or sampling changes in normal variants.
+struct ReflectionDiagnosticConfig {
+	String directory;
+	Rect2 roi = Rect2(704.0 / 1280.0, 419.0 / 720.0, 52.0 / 1280.0, 121.0 / 720.0);
+	uint32_t first = 300;
+	uint32_t count = 64;
+	bool enabled = false;
+};
+
+static const ReflectionDiagnosticConfig &reflection_diagnostic_config() {
+	static const ReflectionDiagnosticConfig config = [] {
+		ReflectionDiagnosticConfig result;
+		result.directory = OS::get_singleton()->get_environment("GODOT_AMD_GI_REFLECTION_DIAGNOSTICS");
+		if (!result.directory.is_empty()) {
+			result.enabled = DirAccess::dir_exists_absolute(result.directory) && !diagnostic_source_enabled();
+			ERR_FAIL_COND_V_MSG(!result.enabled, result, "Reflection diagnostics require an existing output directory and cannot run with GODOT_AMD_GI_VALIDATE_SOURCE.");
+			String first = OS::get_singleton()->get_environment("GODOT_AMD_GI_REFLECTION_DIAGNOSTICS_FIRST");
+			String count = OS::get_singleton()->get_environment("GODOT_AMD_GI_REFLECTION_DIAGNOSTICS_COUNT");
+			if (!first.is_empty()) {
+				result.first = uint32_t(CLAMP(first.to_int(), int64_t(0), int64_t(1000000)));
+			}
+			if (!count.is_empty()) {
+				result.count = uint32_t(CLAMP(count.to_int(), int64_t(1), int64_t(64)));
+			}
+			String roi = OS::get_singleton()->get_environment("GODOT_AMD_GI_REFLECTION_DIAGNOSTICS_ROI");
+			if (!roi.is_empty()) {
+				Vector<String> coordinates = roi.split(",");
+				bool valid = coordinates.size() == 4;
+				float values[4] = {};
+				for (int i = 0; valid && i < 4; i++) {
+					valid = coordinates[i].strip_edges().is_valid_float();
+					values[i] = coordinates[i].to_float();
+					valid = valid && Math::is_finite(values[i]) && values[i] >= 0.0f && values[i] <= 1.0f;
+				}
+				valid = valid && values[2] > values[0] && values[3] > values[1];
+				if (!valid) {
+					result.enabled = false;
+					ERR_PRINT("Reflection diagnostic ROI must be normalized x0,y0,x1,y1 with positive area inside [0,1].");
+					return result;
+				}
+				result.roi = Rect2(values[0], values[1], values[2] - values[0], values[3] - values[1]);
+			}
+		}
+		return result;
+	}();
+	return config;
+}
+
+static constexpr uint32_t REFLECTION_DIAGNOSTIC_HEADER = 37; // Original 33 source records plus four diagnostic header records.
+static constexpr uint32_t REFLECTION_DIAGNOSTIC_STRIDE = 48;
+static constexpr uint32_t REFLECTION_DIAGNOSTIC_BYTES = (REFLECTION_DIAGNOSTIC_HEADER + 32 * 80 * REFLECTION_DIAGNOSTIC_STRIDE) * 16;
 
 static bool diagnostic_hits_enabled() {
 	static const bool enabled = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_HITS").is_empty();
@@ -383,24 +441,40 @@ static bool validate_reflections(RID p_buffer, uint32_t p_count, RID p_queue, ui
 	return true;
 }
 
+Dictionary AMDGI::get_diagnostics(const Ref<RenderSceneBuffersRD> &p_buffers) {
+	if (p_buffers.is_null() || !is_enabled() || (!bool(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/statistics")) && !bool(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/exclusion_reports")))) {
+		return Dictionary();
+	}
+	Dictionary result;
+	if (p_buffers->has_custom_data(RB_SCOPE_AMD_GI)) {
+		Ref<ViewData> data = p_buffers->get_custom_data(RB_SCOPE_AMD_GI);
+		result = data->diagnostics.duplicate(true);
+	}
+	Dictionary collection = p_buffers->get_amd_gi_collection_diagnostics();
+	if (!collection.is_empty()) {
+		result["collection"] = collection.duplicate(true);
+	}
+	// The RenderingServer query is serialized onto the rendering thread.
+	// Querying this detached snapshot never schedules a GPU readback.
+	return result;
+}
+
+bool AMDGI::has_material_pipelines(const RaytracingGIScene &p_scene) const {
+	return material_preparation.is_ready(&p_scene, p_scene.get_source_materials().get_shader_revision());
+}
+
 bool AMDGI::prepare_material_pipelines(const RaytracingGIScene &p_scene) {
 	const auto &materials = p_scene.get_source_materials();
-	if (material_scene == &p_scene && material_revision == materials.get_shader_revision() && version.is_valid()) {
-		return pipelines[REFLECTION_OUTPUT].is_valid();
+	const uint64_t requested_revision = materials.get_shader_revision();
+	if (material_preparation.is_ready(&p_scene, requested_revision)) {
+		return true;
 	}
-	material_scene = &p_scene;
-	material_revision = materials.get_shader_revision();
+	if (!material_preparation.can_attempt(&p_scene, requested_revision, OS::get_singleton()->get_ticks_usec())) {
+		return false;
+	}
 	RD *rd = RD::get_singleton();
-	for (RID &pipeline : pipelines) {
-		if (pipeline.is_valid()) {
-			rd->free_rid(pipeline);
-			pipeline = RID();
-		}
-	}
-	if (version.is_valid()) {
-		shader.version_free(version);
-	}
-	version = shader.version_create();
+	const RID candidate_version = shader.version_create();
+	RID candidate_pipelines[PASS_COUNT];
 	Vector<String> defines;
 	if (OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_LIGHT_GRID") == "1") {
 		defines.push_back("#define AMD_GI_VALIDATE_LIGHT_GRID\n");
@@ -411,21 +485,49 @@ bool AMDGI::prepare_material_pipelines(const RaytracingGIScene &p_scene) {
 	if (diagnostic_source_enabled()) {
 		defines.push_back("#define AMD_GI_DIAGNOSTIC_SOURCE\n");
 	}
-	const uint64_t start_usec = OS::get_singleton()->get_ticks_usec();
-	print_verbose(vformat("AMD GI: compiling material shader revision %d.", material_revision));
-	shader.version_set_compute_code(version, {}, "", materials.get_shader_source(), defines);
-	for (uint32_t i = 0; i < PASS_COUNT; i++) {
-		if (i == VALIDATE_SOURCE && !diagnostic_source_enabled()) {
-			continue;
-		}
-		RID compiled = shader.version_get_shader(version, i);
-		ERR_FAIL_COND_V(compiled.is_null(), false);
-		pipelines[i] = rd->compute_pipeline_create(compiled);
-		ERR_FAIL_COND_V(pipelines[i].is_null(), false);
+	if (reflection_diagnostic_config().enabled) {
+		defines.push_back("#define AMD_GI_DIAGNOSTIC_REFLECTION\n");
 	}
+	const uint64_t start_usec = OS::get_singleton()->get_ticks_usec();
+	print_verbose(vformat("AMD GI: compiling material shader revision %d.", requested_revision));
+	// Diagnostic-only injection: once:last tests recovery after all ordinary
+	// render passes exist; always:last tests bounded retry under persistent failure.
+	const String injection = OS::get_singleton()->get_environment("GODOT_AMD_GI_FAIL_MATERIAL_PIPELINE");
+	const bool inject_failure = injection == "always:last" || (injection == "once:last" && !material_failure_injected);
+	uint32_t failed_pass = 0;
+	if (candidate_version.is_valid()) {
+		shader.version_set_compute_code(candidate_version, {}, "", materials.get_shader_source(), defines);
+		failed_pass = amd_gi_prepare_pipeline_candidate(candidate_pipelines, [&](uint32_t p_pass) { return p_pass != VALIDATE_SOURCE || diagnostic_source_enabled(); }, [&](uint32_t p_pass) -> RID {
+					if (inject_failure && p_pass == PASS_COUNT - 1) {
+						material_failure_injected = true;
+						return RID();
+					}
+					const RID compiled = shader.version_get_shader(candidate_version, p_pass);
+					return compiled.is_valid() ? rd->compute_pipeline_create(compiled) : RID(); }, [&](RID p_pipeline) { rd->free_rid(p_pipeline); });
+	}
+	if (failed_pass != PASS_COUNT) {
+		if (candidate_version.is_valid()) {
+			shader.version_free(candidate_version);
+		}
+		if (material_preparation.record_failure(OS::get_singleton()->get_ticks_usec())) {
+			WARN_PRINT(vformat("AMD GI material revision %d could not prepare pass %d. GI is skipped for this material set; preparation will retry with a capped backoff (up to 30 seconds). Repeated warnings stop after three failures.", requested_revision, failed_pass));
+		}
+		return false;
+	}
+	// Publish only a complete shader/pipeline set. Older resources are retained
+	// during preparation but are never used with an incompatible requested ABI.
+	for (uint32_t i = 0; i < PASS_COUNT; i++) {
+		if (pipelines[i].is_valid()) {
+			rd->free_rid(pipelines[i]);
+		}
+		pipelines[i] = candidate_pipelines[i];
+	}
+	if (version.is_valid()) {
+		shader.version_free(version);
+	}
+	version = candidate_version;
+	material_preparation.publish(&p_scene, requested_revision);
 	print_verbose(vformat("AMD GI: material pipelines ready in %.3f ms.", (OS::get_singleton()->get_ticks_usec() - start_usec) / 1000.0));
-	material_scene = &p_scene;
-	material_revision = materials.get_shader_revision();
 	return true;
 }
 
@@ -590,13 +692,15 @@ void AMDGI::ViewData::free_data() {
 	}
 	environment_source = RID();
 	environment_mips.clear();
-	for (RID *handle : { &feedback_lights, &frame_uniform, &probes[0], &probes[1], &radiance[0], &radiance[1], &pixels[0], &pixels[1], &rays, &keys, &cache[0], &cache[1], &owners, &scratch, &spawn, &queues, &probe_mask, &work, &cached_probes, &cached_state, &cached_order[0], &cached_order[1], &light_reservoirs[0], &light_reservoirs[1], &indirect_cache[0], &indirect_cache[1], &secondary_rays, &reflection_samples, &reflection_history[0], &reflection_history[1], &light_grid, &hit_samples, &direct_updates, &source_validation }) {
+	for (RID *handle : { &feedback_lights, &frame_uniform, &debug_stats, &probes[0], &probes[1], &radiance[0], &radiance[1], &pixels[0], &pixels[1], &rays, &keys, &cache[0], &cache[1], &owners, &scratch, &spawn, &queues, &probe_mask, &work, &cached_probes, &cached_state, &cached_order[0], &cached_order[1], &light_reservoirs[0], &light_reservoirs[1], &indirect_cache[0], &indirect_cache[1], &secondary_rays, &reflection_samples, &reflection_history[0], &reflection_history[1], &light_grid, &hit_samples, &direct_updates, &source_validation }) {
 		if (handle->is_valid()) {
 			RD::get_singleton()->free_rid(*handle);
 			*handle = RID();
 		}
 	}
 	feedback_light_bytes = 0;
+	debug_stats_bytes = 0;
+	diagnostics.clear();
 	valid = false;
 	previous_analytic_count = 0;
 	previous_emitter_count = 0;
@@ -633,10 +737,11 @@ void AMDGI::clear(const Ref<RenderSceneBuffersRD> &p_buffers) {
 	}
 	p_buffers->clear_context(RB_SCOPE_AMD_GI);
 	p_buffers->clear_context(RB_SCOPE_AMD_GI_GEOMETRY);
+	p_buffers->clear_context(SNAME("amd_gi_debug"));
 }
 
 bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffersRD> &p_buffers, RID p_normals, const Projection &p_projection, const Transform3D &p_camera, float p_exposure, const Environment &p_environment) {
-	if (!p_scene.is_ready() || p_normals.is_null() || !prepare_material_pipelines(p_scene)) {
+	if (p_projection.is_orthogonal() || !p_scene.is_ready() || p_normals.is_null() || !prepare_material_pipelines(p_scene)) {
 		return false;
 	}
 	RD *rd = RD::get_singleton();
@@ -683,10 +788,19 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	const float firefly_low = CLAMP(float(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/firefly_low_threshold")), 0.0f, 1.0f);
 	const float firefly_high = CLAMP(float(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/firefly_high_threshold")), 0.0f, 1.0f);
 	const bool reflection_compaction = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/ray_compaction"));
-	const bool reflection_fireflies = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/firefly_filter")) && denoiser;
+	const bool reflection_fireflies = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/firefly_filter"));
+	const uint32_t sky_sampling = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/sky_sampling")), 0, 2);
+	const uint32_t reflection_mode = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/denoiser")), 0, 2);
+	const char *radius_suffix = reflection_stride == 2 ? "half" : "full";
+	const uint32_t split_radius = CLAMP(int(GLOBAL_GET(String("rendering/global_illumination/amd_gi/reflections/split_radius_") + radius_suffix)), 1, 32);
+	const uint32_t mark_radius = CLAMP(int(GLOBAL_GET(String("rendering/global_illumination/amd_gi/reflections/firefly_mark_radius_") + radius_suffix)), 0, 16);
+	const uint32_t cleanup_radius = CLAMP(int(GLOBAL_GET(String("rendering/global_illumination/amd_gi/reflections/firefly_cleanup_radius_") + radius_suffix)), 0, 16);
+	const uint32_t reflection_radii = split_radius | (mark_radius << 8) | (cleanup_radius << 16);
+	const uint32_t debug_view = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/view")), 0, 31);
+	const bool debug_statistics = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/statistics"));
 	const uint32_t reflection_filter_passes = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/filter_passes")), 2, 8);
 	const Size2i reflection_size = reflections ? Size2i((size.x + reflection_stride - 1) / reflection_stride, (size.y + reflection_stride - 1) / reflection_stride) : Size2i(1, 1);
-	const uint32_t configuration = uint32_t(multibounce) | (uint32_t(denoiser) << 1) | (uint32_t(importance_sampling) << 2) | (uint32_t(adaptive_sampling) << 3) | (uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/emissive_sampling"))) << 4) | (uint32_t(reflection_fireflies) << 5) | (uint32_t(brdf_sampling) << 6);
+	const uint32_t configuration = uint32_t(multibounce) | (uint32_t(denoiser) << 1) | (uint32_t(importance_sampling) << 2) | (uint32_t(adaptive_sampling) << 3) | (uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/emissive_sampling"))) << 4) | (uint32_t(reflection_fireflies) << 5) | (uint32_t(brdf_sampling) << 6) | (sky_sampling << 7);
 	Ref<ViewData> data;
 	if (p_buffers->has_custom_data(RB_SCOPE_AMD_GI)) {
 		data = p_buffers->get_custom_data(RB_SCOPE_AMD_GI);
@@ -695,7 +809,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		data.instantiate();
 		p_buffers->set_custom_data(RB_SCOPE_AMD_GI, data);
 	}
-	if (data->size != size || data->stride != stride || data->probe_cache != probe_cache || data->light_resampling != light_resampling || data->multibounce != multibounce || data->reflection_stride != reflection_stride || data->screen_feedback != screen_feedback || data->cache_all_hits != cache_all_hits || data->cache_buckets != cache_buckets) {
+	if (data->size != size || data->stride != stride || data->probe_cache != probe_cache || data->light_resampling != light_resampling || data->multibounce != multibounce || data->reflection_stride != reflection_stride || data->screen_feedback != screen_feedback || data->cache_all_hits != cache_all_hits || data->cache_buckets != cache_buckets || data->reflection_mode != reflection_mode) {
 		data->free_data();
 		p_buffers->clear_context(RB_SCOPE_AMD_GI);
 		data->size = size;
@@ -707,14 +821,15 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		data->cache_all_hits = cache_all_hits;
 		data->cache_buckets = cache_buckets;
 		data->reflection_stride = reflection_stride;
+		data->reflection_mode = reflection_mode;
 		const uint32_t reflection_bytes = reflections ? reflection_size.x * reflection_size.y * 64 : 16;
 		data->reflection_samples = rd->storage_buffer_create(reflection_bytes);
 		for (int i = 0; i < 2; i++) {
 			data->reflection_history[i] = rd->storage_buffer_create(reflections ? size.x * size.y * 64 : 16);
 		}
 		data->frame_uniform = rd->uniform_buffer_create(sizeof(FrameUniform));
-		if (diagnostic_source_enabled()) {
-			data->source_validation = rd->storage_buffer_create(33 * 16);
+		if (diagnostic_source_enabled() || reflection_diagnostic_config().enabled) {
+			data->source_validation = rd->storage_buffer_create(reflection_diagnostic_config().enabled ? REFLECTION_DIAGNOSTIC_BYTES : 33 * 16);
 		}
 		for (int i = 0; i < 2; i++) {
 			data->probes[i] = rd->storage_buffer_create(probe_count * 128); // position, normal, SH9, seed/age/update slot
@@ -756,13 +871,26 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	}
 	const uint32_t environment_count = p_environment.radiance.is_valid() ? 1u : 0u;
 	const bool light_settings_changed = data->update_light_order(p_scene, environment_count);
-	const bool configuration_changed = data->configuration != configuration || data->cell_size != cell_size || data->continuation != probability || data->max_distance != max_distance || data->reflection_roughness != reflection_roughness || data->reflection_filter_passes != reflection_filter_passes || data->reflection_trace_roughness != reflection_trace_roughness || data->firefly_low != firefly_low || data->firefly_high != firefly_high;
+	const bool configuration_changed = data->configuration != configuration || data->cell_size != cell_size || data->continuation != probability || data->max_distance != max_distance || data->reflection_roughness != reflection_roughness || data->reflection_filter_passes != reflection_filter_passes || data->reflection_trace_roughness != reflection_trace_roughness || data->firefly_low != firefly_low || data->firefly_high != firefly_high || data->reflection_radii != reflection_radii;
 	const bool reset = !data->valid || configuration_changed || light_settings_changed;
 	static const bool trace_history = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_HISTORY").is_empty();
 	if (trace_history && reset) {
 		print_line(vformat("AMD GI reset reasons: frame=%d invalid=%s configuration=%s light_settings=%s", data->frame, !data->valid, configuration_changed, light_settings_changed));
 	}
 	FrameUniform frame = {};
+	frame.options[0] = sky_sampling;
+	frame.options[1] = reflections;
+	frame.reflection_options[0] = reflection_mode;
+	frame.reflection_options[1] = split_radius;
+	frame.reflection_options[2] = mark_radius;
+	frame.reflection_options[3] = cleanup_radius;
+	frame.debug_options[0] = debug_view;
+	frame.debug_options[1] = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/mip")), 0, 3);
+	frame.debug_options[2] = uint32_t(debug_statistics || debug_view == 17) | (uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/indirect_cache"))) << 1);
+	frame.debug_options[3] = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/max_age")), 0, 1000);
+	frame.debug_settings[0] = CLAMP(float(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/exposure")), -16.0f, 16.0f);
+	frame.debug_settings[1] = CLAMP(float(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/sample_scale")), 1.0f, 1000.0f);
+	frame.debug_settings[2] = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/atlas_page")), 0, 65535);
 	frame.cache_config[0] = cache_buckets;
 	frame.cache_config[1] = 16;
 	for (int axis = 0; axis < 3; axis++) {
@@ -778,7 +906,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	frame.glossy[2] = firefly_high;
 	frame.glossy[3] = p_environment.temporal_exposure_scale;
 	frame.emitters[0] = p_scene.get_emitter_count();
-	frame.emitters[1] = 0; // Flat emitter list; no proposal hierarchy.
+	frame.emitters[1] = p_scene.get_emitter_buffer_offset() / 16u; // Physical uvec4 offset; logical light IDs stay dense.
 	frame.emitters[2] = probe_count * 3 + update_count * 2;
 	frame.emitters[3] = reflection_compaction && reflections;
 	frame.motion[0] = p_scene.get_motion_bounds().size();
@@ -828,12 +956,32 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	const uint32_t index = data->index;
 	const uint32_t usage = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT;
 	RID output = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("diffuse"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage);
+	const bool debug_compute_view = debug_view != 0 && debug_view != 1 && !(debug_view >= 18 && debug_view <= 21);
+	if (!debug_compute_view) {
+		p_buffers->clear_context(SNAME("amd_gi_debug"));
+	}
+	RID debug_output = p_buffers->create_texture(debug_compute_view ? SNAME("amd_gi_debug") : RB_SCOPE_AMD_GI, debug_compute_view ? SNAME("debug_output") : SNAME("debug_placeholder"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, debug_compute_view ? size : Size2i(1, 1));
+	const uint32_t debug_bytes = (debug_statistics || debug_view == 17) ? (16 + cache_buckets + 2 * 17) * sizeof(uint32_t) : 16;
+	if (data->debug_stats_bytes != debug_bytes) {
+		if (data->debug_stats.is_valid()) {
+			rd->free_rid(data->debug_stats);
+		}
+		data->debug_stats = rd->storage_buffer_create(debug_bytes);
+		data->debug_stats_bytes = debug_bytes;
+		data->diagnostics.clear();
+	}
+	if (debug_statistics || debug_view == 17) {
+		rd->buffer_clear(data->debug_stats, 0, debug_bytes);
+	}
+	const uint32_t readback_interval = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/readback_interval")), 1, 3600);
+	const bool readback_statistics = debug_statistics && (data->frame % readback_interval == 0 || !data->diagnostics.has("gpu"));
 	RID blur_mask = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("blur_mask"), RD::DATA_FORMAT_R8_SNORM, usage);
 	RID intermediate = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("filter"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage);
 	RID reflection_output = p_buffers->create_texture(RB_SCOPE_AMD_GI, reflections ? SNAME("reflection") : SNAME("reflection_placeholder"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, reflections ? size : Size2i(1, 1));
-	RID reflection_filter_a = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("reflection_filter_a"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, reflection_size);
+	const Size2i split_size = reflections && reflection_mode == 0 ? Size2i(size.x, reflection_size.y) : reflection_size;
+	RID reflection_filter_a = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("reflection_filter_a"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, split_size);
 	RID reflection_filter_b = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("reflection_filter_b"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, reflection_size);
-	RID reflection_moments_a = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("reflection_moments_a"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, reflection_size);
+	RID reflection_moments_a = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("reflection_moments_a"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, split_size);
 	RID reflection_moments_b = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("reflection_moments_b"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, reflection_size);
 	RID near_field_occlusion = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("near_field_occlusion"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage);
 	RID near_field_lighting = p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("near_field_lighting"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage);
@@ -842,6 +990,9 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	RID feedback = screen_feedback ? p_buffers->create_texture(RB_SCOPE_AMD_GI, SNAME("feedback"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT) : TextureStorage::get_singleton()->texture_rd_get_default(TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
 	RID sampler = MaterialStorage::get_singleton()->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 	LocalVector<RD::Uniform> uniforms;
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 64, debug_output));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 65, data->debug_stats));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 67, Vector<RID>{ sampler, reflection_output }));
 	p_scene.append_uniforms(uniforms, sampler);
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 1, Vector<RID>{ sampler, p_buffers->get_depth_texture() }));
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 2, Vector<RID>{ sampler, p_normals }));
@@ -889,7 +1040,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 57, near_field_lighting));
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 59, data->work));
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 62, data->direct_updates));
-	if (diagnostic_source_enabled()) {
+	if (diagnostic_source_enabled() || reflection_diagnostic_config().enabled) {
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 63, data->source_validation));
 	}
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 60, Vector<RID>{ sampler, p_buffers->get_texture(RB_SCOPE_AMD_GI_GEOMETRY, SNAME("shading_normal")) }));
@@ -920,6 +1071,33 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		data->frame = 1;
 	}
 	push.frame = data->frame++;
+	const ReflectionDiagnosticConfig &reflection_diagnostic = reflection_diagnostic_config();
+	const bool reflection_capture = reflection_diagnostic.enabled && reflections && reflection_compaction && push.frame >= reflection_diagnostic.first && push.frame - reflection_diagnostic.first < reflection_diagnostic.count;
+	uint32_t reflection_diagnostic_header[16] = {};
+	if (reflection_diagnostic.enabled) {
+		// Normalized output coordinates map to internal pixels, including DLSS scaling.
+		const Rect2 &roi = reflection_diagnostic.roi;
+		const Vector2 center = roi.get_center();
+		const uint32_t width = MIN(32u, MAX(1u, uint32_t(size.x * roi.size.x)));
+		const uint32_t height = MIN(80u, MAX(1u, uint32_t(size.y * roi.size.y)));
+		reflection_diagnostic_header[0] = uint32_t(CLAMP(int32_t(size.x * center.x) - int32_t(width / 2), 0, size.x - int32_t(width)));
+		reflection_diagnostic_header[1] = uint32_t(CLAMP(int32_t(size.y * center.y) - int32_t(height / 2), 0, size.y - int32_t(height)));
+		reflection_diagnostic_header[2] = width;
+		reflection_diagnostic_header[3] = height;
+		reflection_diagnostic_header[4] = reflection_capture;
+		reflection_diagnostic_header[5] = push.frame;
+		reflection_diagnostic_header[6] = size.x;
+		reflection_diagnostic_header[7] = size.y;
+		reflection_diagnostic_header[8] = reflection_stride;
+		reflection_diagnostic_header[9] = reset;
+		reflection_diagnostic_header[10] = reflection_mode != 2;
+		reflection_diagnostic_header[11] = 2; // Layout version.
+		if (reflection_capture) {
+			rd->buffer_clear(data->source_validation, 0, REFLECTION_DIAGNOSTIC_BYTES);
+		}
+		rd->buffer_update(data->source_validation, 33 * 16, sizeof(reflection_diagnostic_header), reflection_diagnostic_header);
+		WARN_PRINT_ONCE("Reflection diagnostics synchronously read GPU data during the selected frames; do not use these frames for performance measurements. Compaction must be enabled.");
+	}
 	const uint32_t proposal_strata = MIN(64u, MAX(proposal_lights, 1u));
 	const uint32_t proposal_leaves = (proposal_lights + proposal_strata * 64 - 1) / (proposal_strata * 64);
 	const uint32_t proposal_tops = (proposal_leaves + 63) / 64;
@@ -973,7 +1151,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		if (!reflection_fireflies && (pass == REFLECTION_MARK_FIREFLIES || pass == REFLECTION_CLEAN_FIREFLIES)) {
 			continue;
 		}
-		if ((!reflections && pass >= REFLECTION_CLASSIFY) || (!denoiser && pass >= REFLECTION_FIRST && pass <= REFLECTION_TEMPORAL)) {
+		if ((!reflections && pass >= REFLECTION_CLASSIFY) || (reflection_mode == 2 && pass >= REFLECTION_FIRST && pass <= REFLECTION_TEMPORAL)) {
 			continue;
 		}
 		if (!multibounce && ((pass >= POPULATE && pass <= REGISTER_SECONDARY) || (pass >= UPDATE_INDIRECT && pass <= SHADE_INDIRECT_HITS))) {
@@ -1018,6 +1196,9 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 			continue;
 		}
 		if (pass == REFLECTION_ITER) {
+			if (reflection_mode != 1) {
+				continue;
+			}
 			for (uint32_t iteration = 1; iteration + 1 < reflection_filter_passes; iteration++) {
 				push.samples = iteration;
 				rd->compute_list_set_push_constant(list, &push, sizeof(push));
@@ -1065,6 +1246,8 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 			rd->compute_list_dispatch(list, (probe_count + 63) / 64, 1, 1);
 		} else if (pass == STORE_CACHED) {
 			rd->compute_list_dispatch(list, MIN(probe_count, 65535u), (probe_count + 65534u) / 65535u, 1);
+		} else if (pass == REFLECTION_FIRST && reflection_mode == 0) {
+			rd->compute_list_dispatch_threads(list, split_size.x, split_size.y, 1);
 		} else if (pass >= REFLECTION_CLASSIFY && pass < REFLECTION_LAST) {
 			rd->compute_list_dispatch_threads(list, reflection_size.x, reflection_size.y, 1);
 		} else if (pass >= NEAR_FIELD) {
@@ -1094,7 +1277,108 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 			rd->compute_list_add_barrier(list);
 		}
 	}
+	for (uint32_t debug_pass : { uint32_t(DEBUG_VIEW), uint32_t(DEBUG_STATS) }) {
+		if ((debug_pass == DEBUG_VIEW && !debug_compute_view) || (debug_pass == DEBUG_STATS && !readback_statistics)) {
+			continue;
+		}
+		RID pass_shader = shader.version_get_shader(version, debug_pass);
+		RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(pass_shader, 0, uniforms);
+		RID material_set = UniformSetCacheRD::get_singleton()->get_cache_vec(pass_shader, 1, material_uniforms);
+		if (set.is_null() || material_set.is_null()) {
+			rd->compute_list_end();
+			data->valid = false;
+			ERR_FAIL_V(false);
+		}
+		rd->compute_list_bind_compute_pipeline(list, pipelines[debug_pass]);
+		rd->compute_list_bind_uniform_set(list, set, 0);
+		rd->compute_list_bind_uniform_set(list, material_set, 1);
+		rd->compute_list_set_push_constant(list, &push, sizeof(push));
+		if (debug_pass == DEBUG_VIEW) {
+			rd->compute_list_dispatch_threads(list, size.x, size.y, 1);
+		} else {
+			rd->compute_list_dispatch(list, (MAX(cache_buckets, probe_count) + 63) / 64, 1, 1);
+		}
+		rd->compute_list_add_barrier(list);
+	}
 	rd->compute_list_end();
+	if (debug_statistics || bool(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/exclusion_reports"))) {
+		data->diagnostics["frame"] = push.frame;
+		data->diagnostics["scene"] = p_scene.get_scene_diagnostics();
+		data->diagnostics["gpu_readback_enabled"] = debug_statistics;
+		data->diagnostics["size"] = size;
+		data->diagnostics["sky_sampling"] = sky_sampling;
+		data->diagnostics["reflection_denoiser"] = reflection_mode;
+		if (!debug_statistics) {
+			data->diagnostics.erase("gpu");
+		}
+	} else {
+		data->diagnostics.clear();
+	}
+	if (readback_statistics) {
+		// Deliberately opt-in and decimated. Overlay queries read this snapshot,
+		// never the GPU. These sampled frames are not performance measurements.
+		Vector<uint8_t> bytes = rd->buffer_get_data(data->debug_stats);
+		if (bytes.size() == debug_bytes) {
+			const uint32_t *values = reinterpret_cast<const uint32_t *>(bytes.ptr());
+			Dictionary gpu;
+			static const char *names[] = { "overflow_attempts", "occupied_tiles", "occupied_buckets", "sampled_cells", "sample_sum_low", "sample_sum_high", "maximum_samples", "active_tiles", "valid_probes", "updated_probes", "primary_hit_records", "secondary_hit_records", "full_buckets", "frame", "base_cell_capacity", "valid_cached_probes" };
+			for (uint32_t i = 0; i < 16; i++) {
+				gpu[names[i]] = values[i];
+			}
+			gpu["sample_sum"] = int64_t(uint64_t(values[4]) | (uint64_t(values[5]) << 32));
+			gpu["bucket_capacity"] = cache_buckets;
+			gpu["tile_capacity"] = cache_tiles;
+			gpu["overflow_is_attempts_not_unique_tiles"] = true;
+			PackedInt32Array occupancy, overflow;
+			occupancy.resize(17);
+			overflow.resize(17);
+			for (uint32_t i = 0; i < 17; i++) {
+				occupancy.set(i, values[16 + cache_buckets + i]);
+				overflow.set(i, values[16 + cache_buckets + 17 + i]);
+			}
+			gpu["occupancy_histogram"] = occupancy;
+			gpu["overflow_histogram"] = overflow;
+			data->diagnostics["gpu"] = gpu;
+		}
+	}
+	if (reflection_capture) {
+		const uint32_t record_count = reflection_diagnostic_header[2] * reflection_diagnostic_header[3];
+		Vector<uint8_t> bytes = rd->buffer_get_data(data->source_validation, 0, (REFLECTION_DIAGNOSTIC_HEADER + record_count * REFLECTION_DIAGNOSTIC_STRIDE) * 16);
+		ERR_FAIL_COND_V(bytes.size() != int64_t((REFLECTION_DIAGNOSTIC_HEADER + record_count * REFLECTION_DIAGNOSTIC_STRIDE) * 16), false);
+		const String stem = reflection_diagnostic.directory.path_join(vformat("reflection-view-%d-%dx%d-frame-%d", uint64_t(p_buffers->get_instance_id()), size.x, size.y, push.frame));
+		Ref<FileAccess> binary = FileAccess::open(stem + ".bin", FileAccess::WRITE);
+		ERR_FAIL_COND_V(binary.is_null(), false);
+		ERR_FAIL_COND_V(!binary->store_buffer(bytes), false);
+		Dictionary metadata;
+		metadata["layout_version"] = 2;
+		metadata["trace_provenance_version"] = 2;
+		metadata["frame"] = push.frame;
+		metadata["engine_frames_drawn"] = Engine::get_singleton()->get_frames_drawn();
+		metadata["width"] = size.x;
+		metadata["height"] = size.y;
+		metadata["roi_x"] = reflection_diagnostic_header[0];
+		metadata["roi_y"] = reflection_diagnostic_header[1];
+		metadata["roi_width"] = reflection_diagnostic_header[2];
+		metadata["roi_height"] = reflection_diagnostic_header[3];
+		Array requested_roi;
+		requested_roi.push_back(reflection_diagnostic.roi.position.x);
+		requested_roi.push_back(reflection_diagnostic.roi.position.y);
+		requested_roi.push_back(reflection_diagnostic.roi.get_end().x);
+		requested_roi.push_back(reflection_diagnostic.roi.get_end().y);
+		metadata["requested_roi_normalized"] = requested_roi;
+		metadata["firefly_filter"] = reflection_fireflies;
+		metadata["header_vec4_count"] = REFLECTION_DIAGNOSTIC_HEADER;
+		metadata["record_vec4_count"] = REFLECTION_DIAGNOSTIC_STRIDE;
+		metadata["reflection_stride"] = reflection_stride;
+		metadata["trace_roughness"] = reflection_trace_roughness;
+		metadata["probe_roughness"] = reflection_roughness;
+		metadata["reset"] = reset;
+		metadata["denoiser"] = denoiser;
+		Ref<FileAccess> json = FileAccess::open(stem + ".json", FileAccess::WRITE);
+		ERR_FAIL_COND_V(json.is_null(), false);
+		json->store_string(JSON::stringify(metadata, "\t"));
+		print_line(vformat("AMD GI reflection diagnostic: %s records=%d bytes=%d", stem, record_count, bytes.size()));
+	}
 	if (OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_LIGHT_GRID") == "1") {
 		Vector<uint8_t> result = rd->buffer_get_data(data->light_grid, 28, 4);
 		ERR_FAIL_COND_V(result.size() != 4, false);
@@ -1186,5 +1470,6 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	data->firefly_low = firefly_low;
 	data->firefly_high = firefly_high;
 	data->reflection_filter_passes = reflection_filter_passes;
+	data->reflection_radii = reflection_radii;
 	return true;
 }

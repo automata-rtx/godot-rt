@@ -4197,6 +4197,13 @@
 				[b]Note:[/b] When GPU utilization is low enough during a certain period of time, GPUs will decrease their power state (which in turn decreases core and memory clock speeds). This can cause the reported GPU time to increase if GPU utilization is kept low enough by a framerate cap (compared to what it would be at the GPU's highest power state). Keep this in mind when benchmarking using [method viewport_get_measured_render_time_gpu]. This behavior can be overridden in the graphics driver settings at the cost of higher power usage.
 			</description>
 		</method>
+		<method name="viewport_get_amd_gi_diagnostics" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="viewport" type="RID" />
+			<description>
+				Returns a detached AMD GI diagnostic snapshot for [param viewport]. Enable [member ProjectSettings.rendering/global_illumination/amd_gi/debug/statistics] for periodically sampled GPU counters or [member ProjectSettings.rendering/global_illumination/amd_gi/debug/exclusion_reports] for object exclusion reports. Returns an empty dictionary when both are disabled or AMD GI is unavailable. The dictionary includes [code]frame[/code], [code]scene[/code], [code]collection[/code], and, after a sample, [code]gpu[/code]. The GPU snapshot has its own frame number; it is not necessarily from the current frame. Querying never initiates GPU readback, but synchronizes with the rendering thread. Poll at a modest rate for debug overlays.
+			</description>
+		</method>
 		<method name="viewport_get_render_info">
 			<return type="int" />
 			<param index="0" name="viewport" type="RID" />

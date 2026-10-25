@@ -900,6 +900,9 @@ void RendererSceneCull::instance_set_scenario(RID p_instance, RID p_scenario) {
 
 	if (instance->scenario) {
 		instance->scenario->instances.remove(&instance->scenario_item);
+		instance->scenario->gi_order_dirty = true;
+		// Never leave a removed/freed instance pointer in the retained list.
+		instance->scenario->gi_ordered_instances.clear();
 
 		if (instance->indexer_id.is_valid()) {
 			_unpair_instance(instance);
@@ -967,6 +970,7 @@ void RendererSceneCull::instance_set_scenario(RID p_instance, RID p_scenario) {
 		instance->scenario = scenario;
 
 		scenario->instances.add(&instance->scenario_item);
+		scenario->gi_order_dirty = true;
 
 		switch (instance->base_type) {
 			case RSE::INSTANCE_LIGHT: {
@@ -3869,9 +3873,12 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			}
 		}
 		const uint64_t rt_gathered = rt_time ? OS::get_singleton()->get_ticks_usec() : 0;
-		LocalVector<RendererSceneRender::RaytracingGIInstance> gi_instances;
-		LocalVector<RID> gi_lights;
+		LocalVector<RendererSceneRender::RaytracingGIInstance> &gi_instances = gi_instance_scratch;
+		LocalVector<RID> &gi_lights = gi_light_scratch;
+		gi_instances.clear();
+		gi_lights.clear();
 		const bool rtgi_requested = scene_render->is_rtgi_enabled(p_environment, p_render_buffers);
+		scene_render->set_amd_gi_collection_diagnostics(p_render_buffers, Dictionary());
 		if (rtgi_requested && scene_cull_result.voxel_gi_instances.size() > 0) {
 			WARN_PRINT_ONCE("RT GI requires VoxelGI disabled; native settings have not been changed.");
 		}
@@ -3879,6 +3886,10 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			// One camera-centered query, independent of both the frustum and shadow
 			// caster predicates. Reflectors behind the camera still contribute.
 			const bool amd_requested = GLOBAL_GET("rendering/global_illumination/amd_gi/enabled");
+			const bool exclusion_reports = amd_requested && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/exclusion_reports"));
+			Dictionary exclusion_counts;
+			Array exclusion_entries;
+			uint32_t exclusion_truncated = 0;
 			const real_t distance = MAX(real_t(GLOBAL_GET(amd_requested ? "rendering/global_illumination/amd_gi/max_distance" : "rendering/global_illumination/rt_validation/max_distance")), real_t(1.0));
 			const AABB bounds(p_camera_data->main_transform.origin - Vector3(distance, distance, distance), Vector3(distance, distance, distance) * 2);
 			struct GIInstanceSort {
@@ -3892,9 +3903,32 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				uint32_t layers;
 				AABB bounds;
 				bool source_materials;
+				Dictionary *exclusion_counts = nullptr;
+				Array *exclusion_entries = nullptr;
+				uint32_t *exclusion_truncated = nullptr;
+				void record_exclusion(Instance *p_instance, const char *p_reason) {
+					if (!exclusion_counts) {
+						return;
+					}
+					const String reason(p_reason);
+					(*exclusion_counts)[reason] = int64_t(exclusion_counts->get(reason, 0)) + 1;
+					if (exclusion_entries->size() >= 4096) {
+						(*exclusion_truncated)++;
+						return;
+					}
+					Dictionary entry;
+					entry["instance"] = p_instance->self;
+					entry["object_id"] = uint64_t(p_instance->object_id);
+					entry["resource"] = p_instance->base;
+					entry["reason"] = reason;
+					exclusion_entries->push_back(entry);
+				}
 				bool operator()(void *p_data) {
 					Instance *instance = static_cast<Instance *>(p_data);
 					if (!instance->visible || !(instance->layer_mask & layers)) {
+						if (instance->base_type == RSE::INSTANCE_LIGHT || ((1 << instance->base_type) & RSE::INSTANCE_GEOMETRY_MASK)) {
+							record_exclusion(instance, !instance->visible ? "hidden" : "camera_layer_mask");
+						}
 						return false;
 					}
 					if (!source_materials && (instances.size() > RendererSceneRender::MAX_RT_GI_INSTANCES || lights.size() > RendererSceneRender::MAX_RT_GI_LIGHTS)) {
@@ -3908,6 +3942,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 						// procedural grass) remain screen-space receivers without adding
 						// unsupported/deforming geometry to this transport scene.
 						if (!instance->baked_light && !instance->dynamic_gi) {
+							record_exclusion(instance, "gi_mode_disabled");
 							return false;
 						}
 						RendererSceneRender::RaytracingGIInstance gi;
@@ -3929,11 +3964,15 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 							gi.multimesh = instance->base;
 							gi.mesh = RSG::mesh_storage->multimesh_get_mesh(gi.multimesh);
 							if (gi.mesh.is_null()) {
+								record_exclusion(instance, "multimesh_without_mesh");
 								return false;
 							}
 							const int total = RSG::mesh_storage->multimesh_get_instance_count(gi.multimesh);
 							const int visible = RSG::mesh_storage->multimesh_get_visible_instances(gi.multimesh);
 							const int count = visible < 0 ? total : MIN(visible, total);
+							if (count == 0) {
+								record_exclusion(instance, "multimesh_zero_visible_instances");
+							}
 							const AABB mesh_bounds = RSG::mesh_storage->mesh_get_aabb(gi.mesh, RID());
 							for (int element = 0; element < count; element++) {
 								gi.element = element;
@@ -3953,12 +3992,23 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 					}
 					return false;
 				}
-			} collect{ gi_instances, gi_lights, p_visible_layers, bounds, amd_requested };
+			} collect{ gi_instances, gi_lights, p_visible_layers, bounds, amd_requested, exclusion_reports ? &exclusion_counts : nullptr, exclusion_reports ? &exclusion_entries : nullptr, exclusion_reports ? &exclusion_truncated : nullptr };
 			if (amd_requested) {
 				// Reference GI traces the participating scene, including off-screen
 				// secondary receivers. A camera-centered box clips valid bounces.
-				for (SelfList<Instance> *entry = scenario->instances.first(); entry; entry = entry->next()) {
-					collect(entry->self());
+				if (scenario->gi_order_dirty) {
+					scenario->gi_ordered_instances.clear();
+					for (SelfList<Instance> *entry = scenario->instances.first(); entry; entry = entry->next()) {
+						scenario->gi_ordered_instances.push_back(entry->self());
+					}
+					struct InstanceRIDSort {
+						bool operator()(const Instance *p_a, const Instance *p_b) const { return p_a->self < p_b->self; }
+					};
+					scenario->gi_ordered_instances.sort_custom<InstanceRIDSort>();
+					scenario->gi_order_dirty = false;
+				}
+				for (Instance *instance : scenario->gi_ordered_instances) {
+					collect(instance);
 				}
 			} else {
 				scenario->indexers[Scenario::INDEXER_GEOMETRY].aabb_query(bounds, collect);
@@ -3972,8 +4022,42 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			// BVH traversal order changes during balancing, even in a static
 			// scene. Stable instance/light order preserves hit IDs, material page
 			// layout, and temporal history; traversal order is not a scene change.
-			gi_instances.sort_custom<GIInstanceSort>();
+			// AMD membership is already RID-sorted; each MultiMesh emits elements
+			// in ascending order. The bounded diagnostic still uses BVH traversal.
+			if (!amd_requested) {
+				gi_instances.sort_custom<GIInstanceSort>();
+			}
 			gi_lights.sort();
+			if (exclusion_reports) {
+				Dictionary diagnostics;
+				diagnostics["enabled"] = true;
+				diagnostics["scope"] = "scene_collection_objects";
+				diagnostics["exclusion_counts"] = exclusion_counts;
+				diagnostics["exclusions"] = exclusion_entries;
+				diagnostics["exclusions_truncated"] = exclusion_truncated;
+				scene_render->set_amd_gi_collection_diagnostics(p_render_buffers, diagnostics);
+			}
+			static const bool validate_gi_cache = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_SCENE_CACHE") == "1";
+			if (amd_requested && validate_gi_cache) {
+				LocalVector<RendererSceneRender::RaytracingGIInstance> reference_instances;
+				LocalVector<RID> reference_lights;
+				CollectGI reference{ reference_instances, reference_lights, p_visible_layers, bounds, true };
+				for (SelfList<Instance> *entry = scenario->instances.first(); entry; entry = entry->next()) {
+					reference(entry->self());
+				}
+				reference_instances.sort_custom<GIInstanceSort>();
+				reference_lights.sort();
+				bool matches = reference_instances.size() == gi_instances.size() && reference_lights.size() == gi_lights.size();
+				for (uint32_t i = 0; matches && i < gi_instances.size(); i++) {
+					const RendererSceneRender::RaytracingGIInstance &a = gi_instances[i];
+					const RendererSceneRender::RaytracingGIInstance &b = reference_instances[i];
+					matches = a.instance == b.instance && a.multimesh == b.multimesh && a.element == b.element && a.world_bounds == b.world_bounds && a.mesh == b.mesh && a.mesh_instance == b.mesh_instance && a.transform == b.transform && a.material_override == b.material_override && a.materials == b.materials && a.uniforms_offset == b.uniforms_offset && a.shadow_surface_mask == b.shadow_surface_mask && a.layer_mask == b.layer_mask;
+				}
+				for (uint32_t i = 0; matches && i < gi_lights.size(); i++) {
+					matches = gi_lights[i] == reference_lights[i];
+				}
+				ERR_FAIL_COND_MSG(!matches, "AMD GI collection cache differs from full scene reconstruction.");
+			}
 			// GI also traces off-screen non-casters. Their pose may not have been
 			// requested by either the visible list or the shadow collection.
 			bool update_gi_poses = false;

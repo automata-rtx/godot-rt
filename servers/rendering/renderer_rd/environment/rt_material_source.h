@@ -78,13 +78,27 @@ private:
 		RID uniforms, indices;
 		Vector<uint8_t> uniform_bytes;
 		Vector<uint32_t> texture_indices;
+		String code;
+		Context context;
 		uint32_t shader = 0;
+		uint64_t frame = 0;
+	};
+	struct SurfaceLayout {
+		Context context;
+		RID source;
+		uint64_t format = UINT64_MAX;
+		uint64_t frame = 0;
+		uint32_t count = 0;
+	};
+	struct MeshLayouts {
+		Vector<SurfaceLayout> surfaces;
 		uint64_t frame = 0;
 	};
 	struct Attributes {
 		RID buffer;
 		uint64_t revision = 0;
 		uint64_t frame = 0;
+		uint32_t size = 0;
 	};
 	struct TextureArray {
 		ShaderLanguage::DataType type;
@@ -95,16 +109,20 @@ private:
 	};
 	HashMap<RID, Material> materials;
 	HashMap<RID, Attributes> attributes;
+	HashMap<RID, MeshLayouts> mesh_layouts;
 	HashMap<String, uint32_t> shader_ids;
 	Vector<Shader> shaders;
 	Vector<TextureArray> texture_arrays;
 	LocalVector<Context> contexts;
+	LocalVector<Context> uploaded_contexts;
 	RID context_buffer;
 	uint32_t context_capacity = 0;
 	uint64_t frame = 0;
 	uint64_t shader_revision = 1;
 	int texture_array(ShaderLanguage::DataType p_type, RID p_fallback);
 	bool update_buffer(RID &r_buffer, Vector<uint8_t> &r_previous, const Vector<uint8_t> &p_bytes);
+	Error surface_context(RID p_mesh, uint32_t p_surface, Context &r_context);
+	static Context build_surface_context(uint64_t p_format, uint32_t p_count, const Vector4 &p_uv_scale, uint64_t p_attribute_address);
 	struct TextureContext {
 		HashMap<StringName, String> arrays;
 		HashMap<StringName, uint32_t> offsets;

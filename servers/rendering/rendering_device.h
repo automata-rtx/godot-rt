@@ -44,6 +44,7 @@
 #include "servers/rendering/rendering_device_driver.h"
 #include "servers/rendering/rendering_device_enums.h"
 #include "servers/rendering/rendering_device_graph.h"
+#include "servers/rendering/rendering_device_tlas_update.h"
 
 class RDTextureFormat;
 class RDTextureView;
@@ -1344,6 +1345,8 @@ private:
 
 		// --- Top Level ---
 		uint32_t max_instance_count = 0;
+		bool allow_update = false;
+		RenderingDeviceTLASUpdateState update_state;
 
 		struct InstanceBuffer {
 			RDD::BufferID driver_id;
@@ -1393,7 +1396,7 @@ public:
 	};
 
 	Error blas_build(RID p_blas);
-	Error tlas_build(RID p_tlas, Span<AccelerationStructureInstance> p_instances);
+	Error tlas_build(RID p_tlas, Span<AccelerationStructureInstance> p_instances, bool p_update = false);
 
 private:
 	/**********************************/

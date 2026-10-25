@@ -69,8 +69,15 @@ Light gi_light(uint index) {
 			uintBitsToFloat(c.xyz), uintBitsToFloat(c.w), uintBitsToFloat(d.x), uintBitsToFloat(d.y), d.z, d.w,
 			uintBitsToFloat(e.x), e.y, e.zw);
 }
+#ifdef AMD_GI_EMITTER_STORAGE_OFFSET
+uint gi_emitter_storage_offset();
+#else
+uint gi_emitter_storage_offset() {
+	return params.light_count * 5u;
+}
+#endif
 Emitter gi_emitter(uint index) {
-	uint first = params.light_count * 5u + index * 4u;
+	uint first = gi_emitter_storage_offset() + index * 4u;
 	return Emitter(uintBitsToFloat(lights.data[first]), uintBitsToFloat(lights.data[first + 1u]), uintBitsToFloat(lights.data[first + 2u]), uintBitsToFloat(lights.data[first + 3u]));
 }
 
