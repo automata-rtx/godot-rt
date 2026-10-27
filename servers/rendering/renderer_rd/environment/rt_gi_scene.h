@@ -120,6 +120,50 @@ private:
 		bool valid = false;
 	};
 	LocalVector<PackedInstanceTransform> packed_instance_transforms;
+	struct GeometryPreparationKey {
+		RID mesh, mesh_instance;
+		uint32_t surface = 0;
+		bool operator==(const GeometryPreparationKey &p_other) const {
+			return mesh == p_other.mesh && mesh_instance == p_other.mesh_instance && surface == p_other.surface;
+		}
+		static uint32_t hash(const GeometryPreparationKey &p_key) {
+			uint32_t h = hash_murmur3_one_64(p_key.mesh.get_id());
+			h = hash_murmur3_one_64(p_key.mesh_instance.get_id(), h);
+			return hash_murmur3_one_32(p_key.surface, h);
+		}
+	};
+	struct GeometryPreparation {
+		RaytracingGeometry::Surface geometry;
+		RID source_vertices, normal_buffer;
+		uint64_t source_format = 0, data_revision = 0, pose_revision = 0;
+		uint64_t update = 0;
+		bool operator==(const GeometryPreparation &p_other) const {
+			return geometry.blas == p_other.geometry.blas && geometry.vertex_buffer == p_other.geometry.vertex_buffer && geometry.index_buffer == p_other.geometry.index_buffer && geometry.vertex_count == p_other.geometry.vertex_count && geometry.index_count == p_other.geometry.index_count && geometry.index_stride == p_other.geometry.index_stride && geometry.revision == p_other.geometry.revision && source_vertices == p_other.source_vertices && normal_buffer == p_other.normal_buffer && source_format == p_other.source_format && data_revision == p_other.data_revision && pose_revision == p_other.pose_revision;
+		}
+	};
+	// Entries own values only. Each unique source is revalidated once per scene
+	// update (not once per global frame); successful copies can then be shared.
+	HashMap<GeometryPreparationKey, GeometryPreparation, GeometryPreparationKey> geometry_preparations;
+	bool prepare_geometry(RaytracingGeometry &p_geometry, const GeometryPreparationKey &p_key, GeometryPreparation &r_prepared);
+	struct RetainedSurface {
+		RID material, next_pass;
+		String shader_code;
+		bool has_shader = false;
+		GeometryPreparation geometry;
+		RaytracingMaterialSource::Context context;
+	};
+	struct RetainedGroup {
+		RendererSceneRender::RaytracingGIInstance input;
+		Vector<RetainedSurface> surfaces;
+		uint32_t input_count = 1, first_surface = 0, surface_count = 0, accepted_instances = 0;
+		uint32_t first_emitter_batch = 0, emitter_batches = 0, first_emitter = 0, emitter_triangles = 0;
+		bool reusable = false;
+		bool has_emission = false;
+		bool emissive_sampling = false;
+	};
+	LocalVector<RetainedGroup> retained_groups, retained_group_scratch;
+	bool retained_groups_valid = false;
+	static bool same_group_input(const RendererSceneRender::RaytracingGIInstance &p_a, const RendererSceneRender::RaytracingGIInstance &p_b);
 	struct SurfaceGeometryKey {
 		RID instance, mesh, mesh_instance, vertices, indices, normals;
 		uint32_t element = 0, surface = 0, vertex_count = 0, index_stride = 0;
@@ -250,8 +294,11 @@ private:
 	};
 	LocalVector<EmitterBatch> previous_emitters;
 	LocalVector<EmitterBatch> emitter_batch_scratch;
+	struct RecordRange {
+		uint32_t begin = 0, end = 0;
+	};
 	bool emitter_buffer_valid = false;
-	bool update_emitters(const LocalVector<EmitterBatch> &p_batches, bool p_source_materials, bool p_reference = false);
+	bool update_emitters(const LocalVector<EmitterBatch> &p_batches, bool p_source_materials, bool p_reference = false, const LocalVector<RecordRange> *p_changed_ranges = nullptr);
 	uint32_t light_count = 0;
 	uint32_t signature = 0;
 	uint64_t revision = 1;
@@ -274,6 +321,7 @@ public:
 	uint64_t get_lighting_revision() const { return lighting_revision; }
 	void append_uniforms(LocalVector<RD::Uniform> &r_uniforms, RID p_sampler) const;
 	void add_geometry_reads(RD::ComputeListID p_list) const;
+	void append_geometry_buffer_reads(LocalVector<RID> &r_buffers) const;
 	void update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights);
 	RaytracingGIScene();
 	~RaytracingGIScene();

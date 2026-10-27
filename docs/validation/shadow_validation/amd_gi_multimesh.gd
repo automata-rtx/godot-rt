@@ -4,6 +4,11 @@ const GI := "rendering/global_illumination/amd_gi/"
 
 
 func _run() -> void:
+	var retained_subjects := OS.get_environment("GODOT_AMD_GI_TEST_NONEMISSIVE_MULTIMESH") == "1"
+	if retained_subjects:
+		print("RETAINED_MULTIMESH nonemissive=true")
+	else:
+		print("RETAINED_MULTIMESH emissive=true")
 	ProjectSettings.set_setting(GI + "enabled", false)
 	ProjectSettings.set_setting(GI + "probe_spacing", 16)
 	ProjectSettings.set_setting(GI + "denoiser", true)
@@ -19,6 +24,8 @@ func _run() -> void:
 		transforms.append(model)
 		var shader := Shader.new()
 		shader.code = "shader_type spatial; uniform vec4 tint; uniform vec4 custom; uniform float element; void fragment() { ALBEDO=tint.rgb; EMISSION=custom.rgb*(0.1+element*0.1); ROUGHNESS=1.0; SPECULAR=0.0; }"
+		if retained_subjects:
+			shader.code = shader.code.replace("EMISSION=", "ALBEDO+=")
 		var material := ShaderMaterial.new()
 		material.shader = shader
 		material.set_shader_parameter("tint", Vector4(colors[i].r, colors[i].g, colors[i].b, colors[i].a))
@@ -35,6 +42,8 @@ func _run() -> void:
 		box.queue_free()
 	var shader := Shader.new()
 	shader.code = "shader_type spatial; varying flat float element; varying vec4 custom; void vertex() { element=float(INSTANCE_ID); custom=INSTANCE_CUSTOM; } void fragment() { ALBEDO=COLOR.rgb; EMISSION=custom.rgb*(0.1+element*0.1); ROUGHNESS=1.0; SPECULAR=0.0; }"
+	if retained_subjects:
+		shader.code = shader.code.replace("EMISSION=", "ALBEDO+=")
 	var material := ShaderMaterial.new()
 	material.shader = shader
 	var mesh := BoxMesh.new()
@@ -56,8 +65,10 @@ func _run() -> void:
 	await _settle(12)
 	await _capture("multimesh_off")
 	ProjectSettings.set_setting(GI + "enabled", true)
+	print("RETAINED_MULTIMESH stage on")
 	await _settle(64)
 	await _capture("multimesh_on")
+	print("RETAINED_MULTIMESH stage end_on")
 	# Explicitly excluded procedural geometry must not consume the GI instance
 	# budget or suppress the scene because its vertex shader cannot be captured.
 	var excluded := MultiMeshInstance3D.new()
@@ -93,17 +104,22 @@ func _run() -> void:
 		multi.set_instance_transform(0, moved)
 		await _settle(1)
 	multi.set_instance_transform(0, transforms[0])
+	print("RETAINED_MULTIMESH stage restored")
 	await _settle(64)
 	await _capture("multimesh_restored")
+	print("RETAINED_MULTIMESH stage end_restored")
 	print("stage multimesh: color/custom update")
 	multi.set_instance_color(0, Color(0.1, 0.65, 0.1))
 	multi.set_instance_custom_data(1, Color(0.1, 2.0, 0.1, 0))
+	print("RETAINED_MULTIMESH stage updated")
 	await _settle(64)
 	await _capture("multimesh_updated")
+	print("RETAINED_MULTIMESH stage end_updated")
 	for i in 2:
 		multi.set_instance_color(i, colors[i])
 		multi.set_instance_custom_data(i, custom[i])
 	ProjectSettings.set_setting(GI + "enabled", false)
 	await _settle(12)
 	await _capture("multimesh_disabled_after")
+	print("AMD MultiMesh capture finished: %d failures" % _failures)
 	get_tree().quit(1 if _failures else 0)

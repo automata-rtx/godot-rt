@@ -294,6 +294,7 @@
 # Fork-specific design documents
 
 /docs/                                        @automata-rtx
+/GodotForkDocs/                               @automata-rtx
 
 # Buildsystem (After everything to catch all)
 

@@ -1348,6 +1348,18 @@ private:
 		bool allow_update = false;
 		RenderingDeviceTLASUpdateState update_state;
 
+		// CPU preparation only: GPU builds still receive a complete, separately
+		// reserved upload range and the complete BLAS tracker list every time.
+		struct CachedInstance {
+			RID blas;
+			RDD::AccelerationStructureInstance driver_instance;
+		};
+		LocalVector<CachedInstance> cached_instances;
+		LocalVector<uint8_t> cached_instance_bytes;
+		LocalVector<RDG::ResourceTracker *> cached_blas_trackers;
+		bool instance_cache_valid = false;
+		bool cached_instances_all_active = false;
+
 		struct InstanceBuffer {
 			RDD::BufferID driver_id;
 			uint64_t frame_used = 0;
@@ -1693,6 +1705,28 @@ public:
 	// Native BDA consumers must declare reads which descriptors cannot track.
 	// Applies to this list segment; declare again after compute_list_add_barrier.
 	void compute_list_add_buffer_read(ComputeListID p_list, RID p_buffer);
+	// Native-only batch for repeatedly declaring the same BDA source buffers.
+	// Stores full RIDs and their validated owner type, never borrowed pointers.
+	class BufferReadGroup {
+		friend class RenderingDevice;
+		enum OwnerType : uint8_t { VERTEX,
+			INDEX,
+			UNIFORM,
+			STORAGE };
+		struct Entry {
+			RID buffer;
+			OwnerType owner;
+		};
+		ObjectID device;
+		LocalVector<Entry> entries;
+
+	public:
+		BufferReadGroup() = default;
+	};
+	Error buffer_read_group_prepare(BufferReadGroup &r_group, Span<RID> p_buffers);
+	// Every replay validates RID generations and uses current transfer/tracker state.
+	// A failure must prevent the caller's following dispatch.
+	Error compute_list_add_buffer_read_group(ComputeListID p_list, const BufferReadGroup &p_group, bool p_validate = false);
 	void compute_list_add_barrier(ComputeListID p_list);
 
 	void compute_list_end();

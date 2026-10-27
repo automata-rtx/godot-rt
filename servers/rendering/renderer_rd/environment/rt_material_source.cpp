@@ -190,7 +190,10 @@ Error RaytracingMaterialSource::compile(const ShaderCompiler &p_native_compiler,
 
 void RaytracingMaterialSource::begin_frame() {
 	frame++;
-	contexts.clear();
+	context_cursor = 0;
+	prepared_calls = 0;
+	prepared_hits = 0;
+	prepared_unique = 0;
 	for (TextureArray &array : texture_arrays) {
 		array.textures.clear();
 		array.indices.clear();
@@ -231,7 +234,44 @@ bool RaytracingMaterialSource::update_buffer(RID &r_buffer, Vector<uint8_t> &r_p
 	return true;
 }
 
-Error RaytracingMaterialSource::add_surface(RID p_material, const RendererSceneRender::RaytracingGIInstance &p_instance, uint32_t p_surface, const Color &p_color, const Color &p_custom) {
+Error RaytracingMaterialSource::prepare_surface(RID p_material, RID p_mesh, uint32_t p_surface, Context &r_context) {
+	static const bool disabled = !OS::get_singleton()->get_environment("GODOT_AMD_GI_DISABLE_PREPARED_CONTEXTS").is_empty();
+	static const bool validate = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_SCENE_CACHE").is_empty();
+	static const bool trace = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_PREPARED_CONTEXTS").is_empty();
+	if (disabled) {
+		return prepare_surface_uncached(p_material, p_mesh, p_surface, r_context);
+	}
+	if (trace) {
+		prepared_calls++;
+	}
+	const PreparedSurfaceKey key{ p_material, p_mesh, p_surface };
+	const PreparedSurface *prepared = prepared_surfaces.getptr(key);
+	if (prepared && prepared->frame == frame) {
+		if (validate) {
+			Context reference;
+			Error error = prepare_surface_uncached(p_material, p_mesh, p_surface, reference);
+			ERR_FAIL_COND_V(error != OK, error);
+			ERR_FAIL_COND_V_MSG(memcmp(&reference, &prepared->context, sizeof(Context)) != 0, ERR_BUG, "AMD GI prepared surface context differs from current source reconstruction.");
+		}
+		r_context = prepared->context;
+		if (trace) {
+			prepared_hits++;
+		}
+		return OK;
+	}
+	// Preserve first-use material/texture ordering and native region-write
+	// polling. Failures are never cached and retain the original retry path.
+	Error error = prepare_surface_uncached(p_material, p_mesh, p_surface, r_context);
+	if (error == OK) {
+		prepared_surfaces.insert(key, { r_context, frame });
+		if (trace) {
+			prepared_unique++;
+		}
+	}
+	return error;
+}
+
+Error RaytracingMaterialSource::prepare_surface_uncached(RID p_material, RID p_mesh, uint32_t p_surface, Context &r_context) {
 	RD *rd = RD::get_singleton();
 	MaterialStorage *storage = MaterialStorage::get_singleton();
 	auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(storage->material_get_data(p_material, MaterialStorage::SHADER_TYPE_3D));
@@ -313,7 +353,7 @@ Error RaytracingMaterialSource::add_surface(RID p_material, const RendererSceneR
 		}
 		material_context = &material.context;
 	}
-	Error layout_error = surface_context(p_instance.mesh, p_surface, context);
+	Error layout_error = surface_context(p_mesh, p_surface, context);
 	ERR_FAIL_COND_V(layout_error != OK, layout_error);
 	if (material_context) {
 		context.uniform_address = material_context->uniform_address;
@@ -321,14 +361,45 @@ Error RaytracingMaterialSource::add_surface(RID p_material, const RendererSceneR
 		context.info[0] = material_context->info[0];
 		context.info[3] |= material_context->info[3];
 	}
+	r_context = context;
+	return OK;
+}
+
+Error RaytracingMaterialSource::add_surface(RID p_material, const RendererSceneRender::RaytracingGIInstance &p_instance, uint32_t p_surface, const Color &p_color, const Color &p_custom, Context *r_base_context, bool p_validate_retained) {
+	Context context;
+	Error error = prepare_surface(p_material, p_instance.mesh, p_surface, context);
+	if (error != OK) {
+		return error;
+	}
+	if (r_base_context) {
+		*r_base_context = context;
+	}
 	for (uint32_t i = 0; i < 4; i++) {
 		context.color[i] = p_color[i];
 		context.custom[i] = p_custom[i];
 	}
 	context.info[1] = p_instance.element;
 	context.info[2] = uint32_t(p_instance.uniforms_offset);
-	contexts.push_back(context);
+	if (p_validate_retained) {
+		ERR_FAIL_COND_V_MSG(context_cursor >= contexts.size() || memcmp(&contexts[context_cursor], &context, sizeof(Context)) != 0, ERR_BUG, "AMD GI retained material context differs from full reconstruction.");
+	}
+	if (context_cursor >= contexts.size() || memcmp(&contexts[context_cursor], &context, sizeof(Context)) != 0) {
+		context_dirty_begin = MIN(context_dirty_begin, context_cursor);
+		context_dirty_end = MAX(context_dirty_end, context_cursor + 1);
+	}
+	if (context_cursor == contexts.size()) {
+		contexts.push_back(context);
+	} else {
+		contexts[context_cursor] = context;
+	}
+	context_cursor++;
 	return OK;
+}
+
+bool RaytracingMaterialSource::retain_contexts(uint32_t p_count) {
+	ERR_FAIL_COND_V(context_cursor > contexts.size() || p_count > contexts.size() - context_cursor, false);
+	context_cursor += p_count;
+	return true;
 }
 
 RaytracingMaterialSource::Context RaytracingMaterialSource::build_surface_context(uint64_t p_format, uint32_t p_count, const Vector4 &p_uv_scale, uint64_t p_attribute_address) {
@@ -431,6 +502,7 @@ Error RaytracingMaterialSource::surface_context(RID p_mesh, uint32_t p_surface, 
 }
 
 bool RaytracingMaterialSource::end_frame() {
+	contexts.resize(context_cursor);
 	RD *rd = RD::get_singleton();
 	for (TextureArray &array : texture_arrays) {
 		if (array.textures.size() > int(array.capacity)) {
@@ -445,15 +517,26 @@ bool RaytracingMaterialSource::end_frame() {
 		context_capacity = Math::next_power_of_2(MAX(contexts.size(), 1u));
 		context_buffer = rd->storage_buffer_create(16 + context_capacity * sizeof(Context));
 		uploaded_contexts.clear();
+		context_dirty_begin = 0;
+		context_dirty_end = contexts.size();
 	}
 	ERR_FAIL_COND_V(context_buffer.is_null(), false);
 	float header[4] = { float(RendererCompositorRD::get_singleton()->get_total_time()), float(contexts.size()), 0, 0 };
 	ERR_FAIL_COND_V(rd->buffer_update(context_buffer, 0, sizeof(header), header) != OK, false);
-	uint32_t first_changed = 0;
-	while (first_changed < contexts.size() && first_changed < uploaded_contexts.size() && memcmp(&contexts[first_changed], &uploaded_contexts[first_changed], sizeof(Context)) == 0) {
+	uint32_t first_changed = MIN(context_dirty_begin, contexts.size());
+	uint32_t end_changed = MIN(context_dirty_end, contexts.size());
+	static const bool disable_changed_ranges = !OS::get_singleton()->get_environment("GODOT_AMD_GI_DISABLE_CHANGED_RANGES").is_empty();
+	if (disable_changed_ranges) {
+		first_changed = 0;
+		end_changed = contexts.size();
+	}
+	if (contexts.size() > uploaded_contexts.size()) {
+		first_changed = MIN(first_changed, uploaded_contexts.size());
+		end_changed = contexts.size();
+	}
+	while (first_changed < end_changed && first_changed < uploaded_contexts.size() && memcmp(&contexts[first_changed], &uploaded_contexts[first_changed], sizeof(Context)) == 0) {
 		first_changed++;
 	}
-	uint32_t end_changed = contexts.size();
 	while (end_changed > first_changed && end_changed <= uploaded_contexts.size() && memcmp(&contexts[end_changed - 1], &uploaded_contexts[end_changed - 1], sizeof(Context)) == 0) {
 		end_changed--;
 	}
@@ -473,6 +556,21 @@ bool RaytracingMaterialSource::end_frame() {
 	}
 	if (end_changed > first_changed) {
 		memcpy(uploaded_contexts.ptr() + first_changed, contexts.ptr() + first_changed, (end_changed - first_changed) * sizeof(Context));
+	}
+	context_dirty_begin = UINT32_MAX;
+	context_dirty_end = 0;
+	LocalVector<PreparedSurfaceKey> expired_prepared;
+	for (const auto &entry : prepared_surfaces) {
+		if (entry.value.frame != frame) {
+			expired_prepared.push_back(entry.key);
+		}
+	}
+	for (const PreparedSurfaceKey &key : expired_prepared) {
+		prepared_surfaces.erase(key);
+	}
+	static const bool trace_prepared = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_PREPARED_CONTEXTS").is_empty();
+	if (trace_prepared) {
+		print_line(vformat("AMD GI prepared contexts: calls=%d hits=%d unique_successful_keys=%d", prepared_calls, prepared_hits, prepared_unique));
 	}
 	// Remove resources once their source is no longer in the collected scene.
 	LocalVector<RID> expired;
@@ -561,6 +659,20 @@ void RaytracingMaterialSource::add_buffer_reads(RD::ComputeListID p_list) const 
 	}
 }
 
+void RaytracingMaterialSource::append_buffer_reads(LocalVector<RID> &r_buffers) const {
+	for (const auto &entry : materials) {
+		if (entry.value.frame == frame) {
+			r_buffers.push_back(entry.value.uniforms);
+			r_buffers.push_back(entry.value.indices);
+		}
+	}
+	for (const auto &entry : attributes) {
+		if (entry.value.frame == frame) {
+			r_buffers.push_back(entry.value.buffer);
+		}
+	}
+}
+
 void RaytracingMaterialSource::clear() {
 	RD *rd = RD::get_singleton();
 	for (const auto &entry : materials) {
@@ -579,6 +691,10 @@ void RaytracingMaterialSource::clear() {
 	}
 	context_buffer = RID();
 	context_capacity = 0;
+	context_cursor = 0;
+	context_dirty_begin = UINT32_MAX;
+	context_dirty_end = 0;
+	prepared_surfaces.clear();
 	materials.clear();
 	attributes.clear();
 	mesh_layouts.clear();

@@ -29,7 +29,9 @@ func run_test():
 		quit(1)
 		return
 	var vertices := PackedVector3Array([Vector3(-0.5, -0.5, 0), Vector3(0.5, -0.5, 0), Vector3(0, 0.5, 0)]).to_byte_array()
-	var vertex_buffer := rd.vertex_buffer_create(vertices.size(), vertices, RenderingDevice.BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT)
+	var usage := RenderingDevice.BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT | RenderingDevice.BUFFER_CREATION_DEVICE_ADDRESS_BIT
+	var vertex_buffer := rd.vertex_buffer_create(vertices.size(), vertices, usage)
+	assert(rd.buffer_get_device_address(vertex_buffer) != 0, "BLAS input must have a device address")
 	var geometry := RDAccelerationStructureGeometry.new()
 	geometry.vertex_buffer = vertex_buffer
 	geometry.vertex_count = 3

@@ -1987,8 +1987,11 @@ void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<Raytracing
 		return;
 	}
 	RendererRD::RaytracingGeometry &geometry = raytracing_scene->get_geometry();
+	static const bool profile_rt_cpu = OS::get_singleton()->get_environment("GODOT_RT_CPU_PROFILE") == "1";
+	const uint64_t profile_start = profile_rt_cpu ? OS::get_singleton()->get_ticks_usec() : 0;
 	geometry.begin_update();
 	raytracing_scene->update(p_instances);
+	const uint64_t profile_shadow_end = profile_rt_cpu ? OS::get_singleton()->get_ticks_usec() : 0;
 	if (!p_gi_instances.is_empty()) {
 		if (!rtgi_scene) {
 			rtgi_scene = memnew(RendererRD::RaytracingGIScene);
@@ -2026,7 +2029,22 @@ void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<Raytracing
 			amd_gi = nullptr;
 		}
 	}
+	const uint64_t profile_gi_end = profile_rt_cpu ? OS::get_singleton()->get_ticks_usec() : 0;
 	geometry.end_update();
+	if (profile_rt_cpu) {
+		static uint32_t profile_count = 0;
+		static uint64_t shadow_usec = 0;
+		static uint64_t gi_usec = 0;
+		static uint64_t eviction_usec = 0;
+		shadow_usec += profile_shadow_end - profile_start;
+		gi_usec += profile_gi_end - profile_shadow_end;
+		eviction_usec += OS::get_singleton()->get_ticks_usec() - profile_gi_end;
+		if (++profile_count == 120) {
+			print_line(vformat("RT CPU scene: samples=%d shadow_us=%d gi_us=%d eviction_us=%d shadow_instances=%d gi_instances=%d", profile_count, shadow_usec / profile_count, gi_usec / profile_count, eviction_usec / profile_count, p_instances.size(), p_gi_instances.size()));
+			profile_count = 0;
+			shadow_usec = gi_usec = eviction_usec = 0;
+		}
+	}
 }
 
 void RendererSceneRenderRD::init() {

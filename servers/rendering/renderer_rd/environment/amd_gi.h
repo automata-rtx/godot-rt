@@ -158,10 +158,21 @@ private:
 	};
 	static_assert(sizeof(PushConstant) == 128);
 	static_assert(sizeof(FrameUniform) == 528);
+	struct BindingReuse {
+		LocalVector<RD::Uniform> uniforms;
+		// Borrowed from UniformSetCacheRD; never free these handles ourselves.
+		RID sets[PASS_COUNT];
+		void clear();
+		void update(const LocalVector<RD::Uniform> &p_uniforms);
+		RID get_uniform_set(uint32_t p_pass, RID p_shader, uint32_t p_set, const LocalVector<RD::Uniform> &p_uniforms, bool p_validate);
+	};
 	struct ViewData : public RenderBufferCustomDataRD {
 		GDCLASS(ViewData, RenderBufferCustomDataRD);
 
 	public:
+		RID binding_version;
+		BindingReuse bindings[2]; // Set 0 swaps history resources each frame.
+		BindingReuse material_bindings;
 		RID frame_uniform;
 		RID debug_stats;
 		uint32_t debug_stats_bytes = 0;

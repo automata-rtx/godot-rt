@@ -653,6 +653,54 @@ AMDGI::~AMDGI() {
 	}
 }
 
+void AMDGI::BindingReuse::clear() {
+	uniforms.clear();
+	for (RID &set : sets) {
+		set = RID();
+	}
+}
+
+void AMDGI::BindingReuse::update(const LocalVector<RD::Uniform> &p_uniforms) {
+	// Compare the complete request once per render, including entries a given
+	// shader variant does not consume. This preserves UniformSetCacheRD's key.
+	bool matches = uniforms.size() == p_uniforms.size();
+	for (uint32_t i = 0; matches && i < uniforms.size(); i++) {
+		const RD::Uniform &previous = uniforms[i];
+		const RD::Uniform &current = p_uniforms[i];
+		matches = previous.uniform_type == current.uniform_type && previous.binding == current.binding && previous.get_id_count() == current.get_id_count();
+		for (uint32_t j = 0; matches && j < current.get_id_count(); j++) {
+			matches = previous.get_id(j) == current.get_id(j);
+		}
+	}
+	if (matches) {
+		return;
+	}
+	uniforms = p_uniforms;
+	for (RID &set : sets) {
+		set = RID();
+	}
+}
+
+RID AMDGI::BindingReuse::get_uniform_set(uint32_t p_pass, RID p_shader, uint32_t p_set, const LocalVector<RD::Uniform> &p_uniforms, bool p_validate) {
+	RID &set = sets[p_pass];
+	// A resource can invalidate a descriptor even when our requested RIDs have
+	// not changed. RD and its ordinary cache remain the lifetime authority.
+	if (set.is_valid() && RD::get_singleton()->uniform_set_is_valid(set)) {
+		if (p_validate) {
+			RID reference = UniformSetCacheRD::get_singleton()->get_cache_vec(p_shader, p_set, p_uniforms);
+			ERR_FAIL_COND_V_MSG(set != reference, RID(), "AMDGI binding reuse differs from the ordinary uniform set cache.");
+			static bool reported = false;
+			if (!reported) {
+				print_line("AMDGI bindings oracle: checked=true");
+				reported = true;
+			}
+		}
+		return set;
+	}
+	set = UniformSetCacheRD::get_singleton()->get_cache_vec(p_shader, p_set, p_uniforms);
+	return set;
+}
+
 bool AMDGI::ViewData::update_light_order(const RaytracingGIScene &p_scene, uint32_t p_environment_count) {
 	// Capsaicin LightBuilder orders environment, directional, point, spot, area.
 	// Reservoirs retain indices, not persistent object identities. Light settings
@@ -686,6 +734,10 @@ bool AMDGI::ViewData::ensure_light_grid(uint32_t p_emitters, uint32_t p_lights) 
 }
 
 void AMDGI::ViewData::free_data() {
+	binding_version = RID();
+	bindings[0].clear();
+	bindings[1].clear();
+	material_bindings.clear();
 	if (environment_cube.is_valid()) {
 		RD::get_singleton()->free_rid(environment_cube);
 		environment_cube = RID();
@@ -1049,6 +1101,27 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 58, Vector<RID>{ sampler, exposure_texture }));
 	LocalVector<RD::Uniform> material_uniforms;
 	p_scene.get_source_materials().append_uniforms(material_uniforms);
+	static const bool disable_binding_reuse = OS::get_singleton()->get_environment("GODOT_AMD_GI_DISABLE_BINDING_REUSE") == "1";
+	static const bool validate_bindings = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_BINDINGS") == "1";
+	if (!disable_binding_reuse) {
+		// Shader versions are published atomically after complete preparation.
+		// Their full RID identity also covers same-layout shader replacements.
+		if (data->binding_version != version) {
+			data->bindings[0].clear();
+			data->bindings[1].clear();
+			data->material_bindings.clear();
+			data->binding_version = version;
+		}
+		data->bindings[index].update(uniforms);
+		data->material_bindings.update(material_uniforms);
+	}
+	auto get_uniform_set = [&](uint32_t p_pass, RID p_shader, uint32_t p_set) {
+		if (disable_binding_reuse) {
+			return UniformSetCacheRD::get_singleton()->get_cache_vec(p_shader, p_set, p_set == 0 ? uniforms : material_uniforms);
+		}
+		BindingReuse &reuse = p_set == 0 ? data->bindings[index] : data->material_bindings;
+		return reuse.get_uniform_set(p_pass, p_shader, p_set, p_set == 0 ? uniforms : material_uniforms, validate_bindings);
+	};
 	PushConstant push = {};
 	MaterialStorage::store_camera(view_projection.inverse(), push.inv_view_projection);
 	const Quaternion rotation = p_camera.basis.get_rotation_quaternion();
@@ -1102,19 +1175,57 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	const uint32_t proposal_leaves = (proposal_lights + proposal_strata * 64 - 1) / (proposal_strata * 64);
 	const uint32_t proposal_tops = (proposal_leaves + 63) / 64;
 	rd->buffer_clear(data->light_grid, 32 + (16 * 16 * 16 * 64 + p_scene.get_emitter_count()) * 16, (proposal_leaves + proposal_tops) * 64 * 16);
+	static const bool disable_buffer_read_groups = OS::get_singleton()->get_environment("GODOT_AMD_GI_DISABLE_BUFFER_READ_GROUPS") == "1";
+	static const bool validate_buffer_read_groups = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_BUFFER_READ_GROUPS") == "1";
+	RD::BufferReadGroup source_buffer_reads;
+	if (!disable_buffer_read_groups) {
+		// Source preparation has finished. Collect once for this render call;
+		// each pass still declares reads using the buffers' current trackers.
+		LocalVector<RID> buffers;
+		p_scene.append_geometry_buffer_reads(buffers);
+		p_scene.get_source_materials().append_buffer_reads(buffers);
+		if (rd->buffer_read_group_prepare(source_buffer_reads, buffers) != OK) {
+			data->valid = false;
+			ERR_FAIL_V(false);
+		}
+	}
+	auto add_source_buffer_reads = [&](RD::ComputeListID p_list) {
+		if (disable_buffer_read_groups) {
+			p_scene.add_geometry_reads(p_list);
+			p_scene.get_source_materials().add_buffer_reads(p_list);
+			return OK;
+		}
+		const Error error = rd->compute_list_add_buffer_read_group(p_list, source_buffer_reads, validate_buffer_read_groups);
+		if (validate_buffer_read_groups && error == OK) {
+			static bool reported_validation = false;
+			if (!reported_validation) {
+				reported_validation = true;
+				print_line("AMD GI buffer-read group validation enabled: typed owners match original RID resolution.");
+			}
+		}
+		return error;
+	};
 	// Pass boundaries are explicit: no dispatch reads concurrently written radiance.
 	RD::ComputeListID list = rd->compute_list_begin();
 	for (uint32_t pass = 0; pass < PREPARE_LIGHTS; pass++) {
 		if (pass == LIGHT_GRID_DISPATCH) {
 			for (uint32_t preparation : { uint32_t(PREPARE_LIGHTS), uint32_t(PREPARE_LIGHT_MASKS) }) {
 				RID preparation_shader = shader.version_get_shader(version, preparation);
-				RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(preparation_shader, 0, uniforms);
-				RID materials = UniformSetCacheRD::get_singleton()->get_cache_vec(preparation_shader, 1, material_uniforms);
+				RID set = get_uniform_set(preparation, preparation_shader, 0);
+				RID materials = get_uniform_set(preparation, preparation_shader, 1);
+				if (set.is_null() || materials.is_null()) {
+					rd->compute_list_end();
+					data->valid = false;
+					ERR_FAIL_V(false);
+				}
 				rd->compute_list_bind_compute_pipeline(list, pipelines[preparation]);
 				rd->compute_list_bind_uniform_set(list, set, 0);
 				rd->compute_list_bind_uniform_set(list, materials, 1);
-				p_scene.add_geometry_reads(list);
-				p_scene.get_source_materials().add_buffer_reads(list);
+				if (add_source_buffer_reads(list) != OK) {
+					rd->compute_list_end();
+					data->valid = false;
+					ERR_FAIL_V(false);
+				}
 				rd->compute_list_set_push_constant(list, &push, sizeof(push));
 				uint32_t groups = preparation == PREPARE_LIGHTS ? (proposal_lights + 63) / 64 : proposal_leaves;
 				uint32_t columns = MIN(MAX(groups, 1u), 1024u);
@@ -1125,8 +1236,8 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		if (pass == VALIDATE_SOURCE) {
 			if (diagnostic_source_enabled()) {
 				RID pass_shader = shader.version_get_shader(version, pass);
-				RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(pass_shader, 0, uniforms);
-				RID material_set = UniformSetCacheRD::get_singleton()->get_cache_vec(pass_shader, 1, material_uniforms);
+				RID set = get_uniform_set(pass, pass_shader, 0);
+				RID material_set = get_uniform_set(pass, pass_shader, 1);
 				if (set.is_null() || material_set.is_null()) {
 					rd->compute_list_end();
 					data->valid = false;
@@ -1135,8 +1246,11 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 				rd->compute_list_bind_compute_pipeline(list, pipelines[pass]);
 				rd->compute_list_bind_uniform_set(list, set, 0);
 				rd->compute_list_bind_uniform_set(list, material_set, 1);
-				p_scene.add_geometry_reads(list);
-				p_scene.get_source_materials().add_buffer_reads(list);
+				if (add_source_buffer_reads(list) != OK) {
+					rd->compute_list_end();
+					data->valid = false;
+					ERR_FAIL_V(false);
+				}
 				rd->compute_list_set_push_constant(list, &push, sizeof(push));
 				rd->compute_list_dispatch(list, 1, 1, 1);
 			}
@@ -1165,8 +1279,8 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		}
 		// Cache bindings against the selected variant's reflected resources.
 		RID pass_shader = shader.version_get_shader(version, pass);
-		RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(pass_shader, 0, uniforms);
-		RID material_set = UniformSetCacheRD::get_singleton()->get_cache_vec(pass_shader, 1, material_uniforms);
+		RID set = get_uniform_set(pass, pass_shader, 0);
+		RID material_set = get_uniform_set(pass, pass_shader, 1);
 		if (set.is_null() || material_set.is_null()) {
 			rd->compute_list_end();
 			data->valid = false;
@@ -1176,8 +1290,11 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		rd->compute_list_bind_uniform_set(list, set, 0);
 		rd->compute_list_bind_uniform_set(list, material_set, 1);
 		if (pass == LIGHT_GRID || pass == TRACE || pass == POPULATE || pass == SHADE_HITS || pass == UPDATE || pass == SHADE_INDIRECT_HITS || pass == RESOLVE || pass == REFLECTION_TRACE) {
-			p_scene.add_geometry_reads(list);
-			p_scene.get_source_materials().add_buffer_reads(list);
+			if (add_source_buffer_reads(list) != OK) {
+				rd->compute_list_end();
+				data->valid = false;
+				ERR_FAIL_V(false);
+			}
 		}
 		if (pass == SHADE_HITS || (pass == RESERVOIR_COMPACT && cache_all_hits)) {
 			// GenerateReservoirs precedes GenerateMultibounceReservoirs. Keep
@@ -1185,8 +1302,11 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 			for (uint32_t bounce = 0; bounce < (multibounce ? 2u : 1u); bounce++) {
 				push.samples = bounce;
 				if (pass == SHADE_HITS) {
-					p_scene.add_geometry_reads(list);
-					p_scene.get_source_materials().add_buffer_reads(list);
+					if (add_source_buffer_reads(list) != OK) {
+						rd->compute_list_end();
+						data->valid = false;
+						ERR_FAIL_V(false);
+					}
 				}
 				rd->compute_list_set_push_constant(list, &push, sizeof(push));
 				rd->compute_list_dispatch_indirect(list, data->work, 32 + bounce * 16);
@@ -1282,8 +1402,8 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 			continue;
 		}
 		RID pass_shader = shader.version_get_shader(version, debug_pass);
-		RID set = UniformSetCacheRD::get_singleton()->get_cache_vec(pass_shader, 0, uniforms);
-		RID material_set = UniformSetCacheRD::get_singleton()->get_cache_vec(pass_shader, 1, material_uniforms);
+		RID set = get_uniform_set(debug_pass, pass_shader, 0);
+		RID material_set = get_uniform_set(debug_pass, pass_shader, 1);
 		if (set.is_null() || material_set.is_null()) {
 			rd->compute_list_end();
 			data->valid = false;

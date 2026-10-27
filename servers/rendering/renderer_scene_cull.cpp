@@ -97,6 +97,27 @@ static float get_halton_value(int p_index, int p_base) {
 
 /* EVENT QUEUING */
 
+bool RendererSceneCull::InstanceGeometryData::RTMultiMeshExpansion::prepare(RID p_multimesh, RID p_mesh, uint64_t p_revision, const Transform3D &p_transform, const AABB &p_bounds, uint32_t p_count) {
+	if (multimesh == p_multimesh && mesh == p_mesh && revision == p_revision && parent_transform == p_transform && mesh_bounds == p_bounds && elements.size() == p_count) {
+		return true;
+	}
+	elements.resize(p_count);
+	// Global monotonic identity also distinguishes destroyed/recreated parent
+	// expansion caches, and stays unchanged across repeated same-frame passes.
+	static SafeNumeric<uint64_t> next_generation;
+	generation = next_generation.increment();
+	for (uint32_t element = 0; element < p_count; element++) {
+		elements[element].transform = p_transform * RSG::mesh_storage->multimesh_instance_get_transform(p_multimesh, element);
+		elements[element].bounds = elements[element].transform.xform(p_bounds);
+	}
+	multimesh = p_multimesh;
+	mesh = p_mesh;
+	revision = p_revision;
+	parent_transform = p_transform;
+	mesh_bounds = p_bounds;
+	return false;
+}
+
 void RendererSceneCull::tick() {
 	if (_interpolation_data.interpolation_enabled) {
 		update_interpolation_tick(true);
@@ -3568,8 +3589,13 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	if (scene_render->is_raytracing_scene_available() && !p_reflection_probe.is_valid()) {
 		RENDER_TIMESTAMP("Update RT Acceleration Structures");
 
-		const bool rt_time = scene_render->is_raytracing_debug_enabled();
+		static const bool rt_profile = OS::get_singleton()->get_environment("GODOT_RT_CPU_PROFILE") == "1";
+		static const bool disable_shadow_reuse = OS::get_singleton()->get_environment("GODOT_RT_DISABLE_SHADOW_REUSE") == "1";
+		static const bool validate_shadow_reuse = OS::get_singleton()->get_environment("GODOT_RT_VALIDATE_SHADOW_REUSE") == "1";
+		const bool rt_time = scene_render->is_raytracing_debug_enabled() || rt_profile;
 		const uint64_t rt_started = rt_time ? OS::get_singleton()->get_ticks_usec() : 0;
+		uint64_t rt_multimesh_usec = 0;
+		uint32_t rt_multimesh_reused = 0, rt_multimesh_prepared = 0;
 
 		// A multimesh contributes one entry per element, so a single GridMap
 		// octant can be worth hundreds. Bounded so that a pathological scene
@@ -3758,7 +3784,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				break;
 			}
 
-			const InstanceGeometryData *caster_geom = static_cast<const InstanceGeometryData *>(instance->base_data);
+			InstanceGeometryData *caster_geom = static_cast<InstanceGeometryData *>(instance->base_data);
 
 			if (instance->base_type == RSE::INSTANCE_MESH) {
 				RendererSceneRender::RaytracingInstance rt_instance;
@@ -3801,19 +3827,45 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 			const AABB mesh_aabb = RSG::mesh_storage->mesh_get_aabb(mesh, RID());
 			dbg_multimesh++;
+			const uint64_t mm_started = rt_profile ? OS::get_singleton()->get_ticks_usec() : 0;
+			// Do not eagerly allocate a huge expansion for a shadow-only field
+			// whose original gather stops as soon as the caster ceiling is met.
+			const uint64_t element_revision = !disable_shadow_reuse && count <= int(MAX_RT_CASTERS) ? RSG::mesh_storage->multimesh_get_buffer_revision(multimesh) : 0;
+			InstanceGeometryData::RTMultiMeshExpansion *expansion = nullptr;
+			bool expansion_reused = false;
+			if (element_revision != 0) {
+				expansion = &caster_geom->rt_multimesh_expansion;
+				expansion_reused = expansion->prepare(multimesh, mesh, element_revision, instance->transform, mesh_aabb, count);
+				if (expansion_reused) {
+					rt_multimesh_reused += count;
+				} else {
+					rt_multimesh_prepared += count;
+				}
+			} else {
+				rt_multimesh_prepared += count;
+			}
 
 			for (int element = 0; element < count; element++) {
 				if (rt_instance_scratch.size() >= MAX_RT_CASTERS) {
 					break;
 				}
 
-				const Transform3D element_transform = instance->transform * RSG::mesh_storage->multimesh_instance_get_transform(multimesh, element);
+				const Transform3D element_transform = expansion ? expansion->elements[element].transform : instance->transform * RSG::mesh_storage->multimesh_instance_get_transform(multimesh, element);
 
 				// The instance's own bounds cover the whole multimesh, so an element
 				// of it can still be far outside every light. Culling per element
 				// keeps a large GridMap octant from filling the structure.
 				bool reached = false;
-				const AABB element_bounds = element_transform.xform(mesh_aabb);
+				const AABB element_bounds = expansion ? expansion->elements[element].bounds : element_transform.xform(mesh_aabb);
+				if (validate_shadow_reuse && expansion) {
+					const Transform3D reference = instance->transform * RSG::mesh_storage->multimesh_instance_get_transform(multimesh, element);
+					ERR_FAIL_COND_MSG(element_transform != reference || element_bounds != reference.xform(mesh_aabb), "RT shadow MultiMesh expansion differs from full reconstruction.");
+					static bool reported = false;
+					if (!reported && expansion_reused) {
+						print_line("RT shadow MultiMesh oracle: checked=true");
+						reported = true;
+					}
+				}
 				for (const AABB &light_bounds : rt_light_bounds_scratch) {
 					if (light_bounds.intersects(element_bounds)) {
 						reached = true;
@@ -3853,6 +3905,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				rt_instance.surface_mask = caster_geom->shadow_caster_surface_mask;
 				rt_instance_scratch.push_back(rt_instance);
 			}
+			if (rt_profile) {
+				rt_multimesh_usec += OS::get_singleton()->get_ticks_usec() - mm_started;
+			}
 		}
 
 		if (dbg_skinned > 0) {
@@ -3873,11 +3928,16 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			}
 		}
 		const uint64_t rt_gathered = rt_time ? OS::get_singleton()->get_ticks_usec() : 0;
+		if (rt_profile) {
+			print_line(vformat("RT_CPU shadow_gather: usec=%d multimesh_usec=%d instances=%d mm_prepared=%d mm_reused=%d", rt_gathered - rt_started, rt_multimesh_usec, rt_instance_scratch.size(), rt_multimesh_prepared, rt_multimesh_reused));
+		}
 		LocalVector<RendererSceneRender::RaytracingGIInstance> &gi_instances = gi_instance_scratch;
 		LocalVector<RID> &gi_lights = gi_light_scratch;
-		gi_instances.clear();
 		gi_lights.clear();
 		const bool rtgi_requested = scene_render->is_rtgi_enabled(p_environment, p_render_buffers);
+		if (!rtgi_requested || scene_cull_result.voxel_gi_instances.size() > 0) {
+			gi_instances.clear();
+		}
 		scene_render->set_amd_gi_collection_diagnostics(p_render_buffers, Dictionary());
 		if (rtgi_requested && scene_cull_result.voxel_gi_instances.size() > 0) {
 			WARN_PRINT_ONCE("RT GI requires VoxelGI disabled; native settings have not been changed.");
@@ -3906,6 +3966,20 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				Dictionary *exclusion_counts = nullptr;
 				Array *exclusion_entries = nullptr;
 				uint32_t *exclusion_truncated = nullptr;
+				bool reuse_expansion = true;
+				bool reuse_inputs = false;
+				uint32_t instance_count = 0;
+				uint32_t retained_inputs = 0;
+				uint32_t reused_elements = 0;
+				uint32_t prepared_elements = 0;
+				void emit_instance(const RendererSceneRender::RaytracingGIInstance &p_instance) {
+					if (instance_count < instances.size()) {
+						instances[instance_count] = p_instance;
+					} else {
+						instances.push_back(p_instance);
+					}
+					instance_count++;
+				}
 				void record_exclusion(Instance *p_instance, const char *p_reason) {
 					if (!exclusion_counts) {
 						return;
@@ -3931,7 +4005,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 						}
 						return false;
 					}
-					if (!source_materials && (instances.size() > RendererSceneRender::MAX_RT_GI_INSTANCES || lights.size() > RendererSceneRender::MAX_RT_GI_LIGHTS)) {
+					if (!source_materials && (instance_count > RendererSceneRender::MAX_RT_GI_INSTANCES || lights.size() > RendererSceneRender::MAX_RT_GI_LIGHTS)) {
 						return true; // Keep one overflow entry so the renderer rejects the scene.
 					}
 					if (instance->base_type == RSE::INSTANCE_LIGHT) {
@@ -3974,25 +4048,68 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 								record_exclusion(instance, "multimesh_zero_visible_instances");
 							}
 							const AABB mesh_bounds = RSG::mesh_storage->mesh_get_aabb(gi.mesh, RID());
+							const uint64_t element_revision = source_materials && reuse_expansion ? RSG::mesh_storage->multimesh_get_buffer_revision(gi.multimesh) : 0;
+							InstanceGeometryData::RTMultiMeshExpansion *expansion = nullptr;
+							if (element_revision != 0) {
+								expansion = &static_cast<InstanceGeometryData *>(instance->base_data)->rt_multimesh_expansion;
+								if (expansion->prepare(gi.multimesh, gi.mesh, element_revision, instance->transform, mesh_bounds, count)) {
+									reused_elements += count;
+								} else {
+									prepared_elements += count;
+								}
+							} else {
+								prepared_elements += count;
+							}
+							if (reuse_inputs && expansion && expansion->generation != 0 && count > 0 && uint32_t(count) <= instances.size() - instance_count) {
+								const RendererSceneRender::RaytracingGIInstance &previous = instances[instance_count];
+								// All eligibility and shared fields above are current. The
+								// globally unique expansion generation also covers every
+								// child transform/bounds and the complete visible count.
+								// Only [0, instance_count) has been overwritten this pass:
+								// the remaining suffix is intact. An offset into the middle
+								// of an old group cannot pass the element-zero guard.
+								if (previous.element == 0 && previous.group_count == uint32_t(count) && previous.group_generation == expansion->generation &&
+										previous.instance == gi.instance && previous.multimesh == gi.multimesh && previous.mesh == gi.mesh && previous.mesh_instance == gi.mesh_instance &&
+										previous.material_override == gi.material_override && previous.materials == gi.materials && previous.uniforms_offset == gi.uniforms_offset &&
+										previous.shadow_surface_mask == gi.shadow_surface_mask && previous.layer_mask == gi.layer_mask) {
+									instance_count += count;
+									retained_inputs += count;
+									return false;
+								}
+							}
 							for (int element = 0; element < count; element++) {
 								gi.element = element;
-								gi.transform = instance->transform * RSG::mesh_storage->multimesh_instance_get_transform(gi.multimesh, element);
-								gi.world_bounds = gi.transform.xform(mesh_bounds);
+								gi.group_generation = expansion ? expansion->generation : 0;
+								gi.group_count = expansion && element == 0 ? uint32_t(count) : 1;
+								if (expansion) {
+									gi.transform = expansion->elements[element].transform;
+									gi.world_bounds = expansion->elements[element].bounds;
+								} else {
+									gi.transform = instance->transform * RSG::mesh_storage->multimesh_instance_get_transform(gi.multimesh, element);
+									gi.world_bounds = gi.transform.xform(mesh_bounds);
+								}
 								if (!source_materials && !bounds.intersects(gi.world_bounds)) {
 									continue;
 								}
-								instances.push_back(gi);
-								if (!source_materials && instances.size() > RendererSceneRender::MAX_RT_GI_INSTANCES) {
+								emit_instance(gi);
+								if (!source_materials && instance_count > RendererSceneRender::MAX_RT_GI_INSTANCES) {
 									return true;
 								}
 							}
 						} else {
-							instances.push_back(gi);
+							emit_instance(gi);
 						}
 					}
 					return false;
 				}
 			} collect{ gi_instances, gi_lights, p_visible_layers, bounds, amd_requested, exclusion_reports ? &exclusion_counts : nullptr, exclusion_reports ? &exclusion_entries : nullptr, exclusion_reports ? &exclusion_truncated : nullptr };
+			static const bool disable_scene_reuse = OS::get_singleton()->get_environment("GODOT_AMD_GI_DISABLE_SCENE_REUSE") == "1";
+			static const bool disable_input_reuse = OS::get_singleton()->get_environment("GODOT_AMD_GI_DISABLE_INPUT_REUSE") == "1";
+			collect.reuse_expansion = !disable_scene_reuse;
+			collect.reuse_inputs = amd_requested && !disable_scene_reuse && !disable_input_reuse;
+			if (!collect.reuse_inputs) {
+				gi_instances.clear();
+			}
 			if (amd_requested) {
 				// Reference GI traces the participating scene, including off-screen
 				// secondary receivers. A camera-centered box clips valid bounces.
@@ -4019,6 +4136,8 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 					}
 				}
 			}
+			// Publish only this pass's complete prefix, including empty scenes.
+			gi_instances.resize(collect.instance_count);
 			// BVH traversal order changes during balancing, even in a static
 			// scene. Stable instance/light order preserves hit IDs, material page
 			// layout, and temporal history; traversal order is not a scene change.
@@ -4038,10 +4157,15 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				scene_render->set_amd_gi_collection_diagnostics(p_render_buffers, diagnostics);
 			}
 			static const bool validate_gi_cache = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_SCENE_CACHE") == "1";
+			static const bool trace_scene_reuse = OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_SCENE_REUSE") == "1";
+			if (amd_requested && trace_scene_reuse) {
+				print_line(vformat("AMD GI MultiMesh reuse: reused=%d prepared=%d retained_inputs=%d", collect.reused_elements, collect.prepared_elements, collect.retained_inputs));
+			}
 			if (amd_requested && validate_gi_cache) {
 				LocalVector<RendererSceneRender::RaytracingGIInstance> reference_instances;
 				LocalVector<RID> reference_lights;
 				CollectGI reference{ reference_instances, reference_lights, p_visible_layers, bounds, true };
+				reference.reuse_expansion = false;
 				for (SelfList<Instance> *entry = scenario->instances.first(); entry; entry = entry->next()) {
 					reference(entry->self());
 				}

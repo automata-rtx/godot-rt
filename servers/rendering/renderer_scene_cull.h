@@ -624,6 +624,22 @@ public:
 	void _instance_queue_update(Instance *p_instance, bool p_update_aabb, bool p_update_dependencies = false) const;
 
 	struct InstanceGeometryData : public InstanceBaseData {
+		struct RTMultiMeshElement {
+			Transform3D transform;
+			AABB bounds;
+		};
+		struct RTMultiMeshExpansion {
+			RID multimesh, mesh;
+			uint64_t revision = 0;
+			uint64_t generation = 0;
+			Transform3D parent_transform;
+			AABB mesh_bounds;
+			LocalVector<RTMultiMeshElement> elements;
+			bool prepare(RID p_multimesh, RID p_mesh, uint64_t p_revision, const Transform3D &p_transform, const AABB &p_bounds, uint32_t p_count);
+		};
+		// Value-only data; instance eligibility, masks and material state remain
+		// live. Base-data destruction releases this when the instance changes type.
+		RTMultiMeshExpansion rt_multimesh_expansion;
 		RenderGeometryInstance *geometry_instance = nullptr;
 		HashSet<Instance *> lights;
 		bool can_cast_shadows;
@@ -1018,6 +1034,8 @@ public:
 	// Non-frustum-culled mesh list handed to the raytracing acceleration structure
 	// builder. Kept as a member so it is not reallocated every frame.
 	LocalVector<RendererSceneRender::RaytracingInstance> rt_instance_scratch;
+	// AMD collection keeps complete unchanged MultiMesh ranges in place. A
+	// per-pass cursor replaces changed prefixes and trims the previous tail.
 	LocalVector<RendererSceneRender::RaytracingGIInstance> gi_instance_scratch;
 	LocalVector<RID> gi_light_scratch;
 	LocalVector<Instance *> rt_caster_scratch;

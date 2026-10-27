@@ -245,6 +245,7 @@ private:
 		uint32_t motion_vectors_current_offset = 0;
 		uint32_t motion_vectors_previous_offset = 0;
 		uint64_t motion_vectors_last_change = -1;
+		uint64_t buffer_revision = 1;
 		uint32_t stride_cache = 0;
 		uint32_t color_offset_cache = 0;
 		uint32_t custom_data_offset_cache = 0;
@@ -721,6 +722,7 @@ public:
 	virtual RID _multimesh_get_command_buffer_rd_rid(RID p_multimesh) const override;
 	virtual RID _multimesh_get_buffer_rd_rid(RID p_multimesh) const override;
 	virtual Vector<float> _multimesh_get_buffer(RID p_multimesh) const override;
+	virtual uint64_t multimesh_get_buffer_revision(RID p_multimesh) const override;
 
 	virtual void _multimesh_set_visible_instances(RID p_multimesh, int p_visible) override;
 	virtual int _multimesh_get_visible_instances(RID p_multimesh) const override;

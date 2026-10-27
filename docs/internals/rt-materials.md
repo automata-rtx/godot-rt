@@ -1,189 +1,110 @@
-# RT materials: current implementation map
+# Shared RT geometry and AMD GI material adaptation
 
-Start with [AMD GI status/limits](../AMD_GI_IMPLEMENTATION.md) and
-[approved boundaries](../AMD_GI_ADAPTER_DECISIONS.md). The complete old material
-capture guide is preserved in [the archive](../history/AMD_GI_ARCHIVE.md#snapshot-rt-materials);
-read it only when changing the legacy validator.
+Use this document when modifying caches, material evaluation or the shared acceleration structures. It complements [RT-shadow internals](rt-shadows.md) and [AMD GI internals](amd-gi.md). Paths are relative to the engine root. The AMD baseline policy applies: retain AMD GI's estimator, light ordering and history rules unless a documented, justified Godot integration requirement demands a change.
 
-## AMD GI source materials
+## Why this adapter exists
 
-- `servers/rendering/renderer_rd/environment/rt_material_source.{h,cpp}` compiles native vertex/fragment material programs into GI compute helpers. Native material/global/instance uniforms, texture/sampler bindings and packed vertex attributes are inputs.
-- `rt_gi_scene.cpp` collects supported surfaces/lights and reports omissions. `renderer_scene_cull.cpp` supplies scene instances and honors `GI_MODE_DISABLED`.
-- Shared `RaytracingGeometry` supplies BLAS triangle positions/indices and posed geometry. Source attribute copies gain device addresses only on revisions; no CPU mesh readback or triangle material atlas is used for AMD GI.
-- `rt_material_source_inc.glsl` reconstructs native material inputs at hits. Vertex outputs/varyings are interpolated. Geometry and shading normals remain distinct and transform once; the screen shading-normal path includes normal maps.
-- `ShaderCompiler` has an opt-in affine coordinate analysis used by this consumer. Supported emitter mappings supply triangle-corner coordinates to AMD's existing footprint formula. Ordinary UV0 retains its helper. No additional rays, passes, buffers or full material invocations are added by this correction; hardware cost is unmeasured.
-- Explicit authored texture LOD/gradient reads remain explicit. Vertex implicit reads use mip zero. Unknown emitter mappings warn and retain fallback filtering; raster-derivative shaders are omitted rather than receiving invented zero derivatives.
-- Resource/shader initialization is gated by GI enable. Disable releases the source consumer resources. Compilation/first-use and target-hardware cost still need profiling.
+Godot materials, shader assignments, textures and instance values can change independently of meshes. The imported Capsaicin application path does not supply a general Godot-style independent-material-update contract. Copying that restriction would break supported project behavior. The adapter therefore separates persistent geometry/layout metadata from live material and instance values; it does not substitute a different GI estimator.
 
-`GODOT_AMD_GI_VALIDATE_SOURCE=1` enables diagnostic known-value readbacks; it is not
-normal frame rendering. Source, mapped emitter, winding and deformation fixtures
-are in `docs/validation/shadow_validation/`. See [validation](../VALIDATION.md).
+The active AMD path uses `renderer_rd/environment/rt_material_source.{h,cpp}`, `rt_gi_scene.{h,cpp}` and `shaders/effects/rt_material_source_inc.glsl` under `servers/rendering/`. The standalone/legacy validation path uses `rt_material_capture.cpp` and `rt_material_expand.glsl`. Its capture atlas and `material_atlas_mb`, `material_preparation_budget`, `material_tile_size` and `material_adaptive_resolution` controls are **not AMD source-material optimizations**. Keep the two consumers distinct.
 
-## Legacy capture is a separate consumer
+## Source evaluation contract
 
-The uncached `rt_validation` integrator and standalone material-bake diagnostic
-still use `rt_material_capture.cpp` / `rt_material_expand.glsl` and the capture atlas.
-The `material_atlas_mb`, `material_preparation_budget`, `material_tile_size` and
-`material_adaptive_resolution` controls do not improve current AMD GI materials.
-Do not reintroduce their coarse material representation into AMD GI.
+`RaytracingMaterialSource::compile` reuses the native spatial `ShaderCompiler` to produce vertex/fragment helpers. Native material uniform layout must match the generated block exactly; the implementation compares total size and offsets. Global and instance uniforms, texture/sampler types, packed vertex attributes and per-instance inputs remain native inputs.
 
-## Persistent scene/material research: 2026-10-24
+At a hit, source evaluation executes vertex helpers at triangle corners and interpolates supported outputs/varyings before fragment evaluation. This reconstructs material inputs; it does **not** deform the BLAS to follow arbitrary shader-written vertex positions. Skinning/blend shapes use the current posed mesh buffers through shared `RaytracingGeometry`.
 
-Research baseline: `4ca77d59c70b0fd9558cd41657819649e99d3931`, with independent
-material, scene and adversarial investigations. The owner subsequently requested
-completion of the researched integration in the same effort. The implementation
-below follows those findings. Keep AMD's estimator, light ordering and history rules.
+Keep geometric and shading normals distinct, including tangent handedness and coordinate transforms. The primary GI attachment obtains a face geometric normal from raster-position derivatives; normal-mapped shading normals remain separate. Do not substitute an interpolated authored normal for geometric rejection/offset rules simply because both are named “normal.” This distinction was relevant to localized glossy-surface artifacts and remains an important porting contract.
 
-AMD Capsaicin GI-1.2 (`914b91596cd119eda85fbc1d3c7ee6ac391b1452`) separates
-[persistent instances, transforms and materials](https://github.com/GPUOpen-LibrariesAndSDKs/Capsaicin/blob/914b91596cd119eda85fbc1d3c7ee6ac391b1452/src/core/src/capsaicin/capsaicin_internal_scene.cpp#L1388-L1682).
-Its material update is gated by mesh changes and explicitly does not support
-independent material changes. Adopt the separation of metadata and changing
-values; do not import this application restriction into Godot.
+Material programs requiring raster derivatives (`dFdx`, `dFdy`, `fwidth`, their fine/coarse variants or `textureQueryLod`) are omitted from GI transport with a warning. Inventing zero derivatives would silently alter their meaning. Explicit `textureLod`/`textureGrad` accesses remain authored. Vertex implicit texture reads use mip zero. The compiler's opt-in affine coordinate analysis qualifies supported emitter mappings for AMD's triangle-footprint filtering; unsupported mappings retain the existing fallback and warn. Do not advertise universal derivative, filtering or custom-deformation support.
 
-### Invalidation findings
+## GI alpha candidates, winding and shadow masks
 
-Source locations below identify functions rather than relying on mutable line
-numbers. Native material/mesh/texture storage lives in `renderer_rd/storage_rd/`.
+`RaytracingGIScene::update_scene` gives GI TLAS instances both `TRIANGLE_FACING_CULL_DISABLE` and `TRIANGLE_FLIP_FACING`: native clockwise winding must reach Vulkan's candidate front-face test correctly. Alpha-bearing programs (`uses_alpha`, `uses_alpha_clip` or `uses_discard`) additionally use `FORCE_NO_OPAQUE`, overriding the shared BLAS's opaque geometry. These GI flags do not change the separate opaque RT-shadow query.
 
-| Change | Required behavior | Existing mechanism and limitation |
-| --- | --- | --- |
-| Local uniform value | Update one material's uniform bytes; retain context if layout/address stays stable | `MaterialStorage::_material_queue_update` advances `content_revision`; in-place uniform updates need not emit dependency notifications. |
-| Shader assignment/code, including removal | Recheck support, layout, culling, opacity, emission and surface admission | `material_set_shader` with a null shader has a notification path without a content-revision increment. Shader code changes queue owning materials. Never retain raw `MaterialData*` across assignment. |
-| Next pass | Recheck surface admission and dense indices | `material_set_next_pass` notifies dependencies without advancing material content revision. |
-| Texture binding/default/global texture | Resolve current RD view and typed descriptor slot; refresh indices and any changed buffer addresses | Queued updates exist, but current per-frame traversal repacks texture indices. Same material RID does not imply stable index-buffer contents or address. |
-| Texture pixel edit | Sample current content without rebuilding unchanged metadata | In-place updates do not require new context bytes. They still require correct resource dependencies and current emission evaluation. |
-| Texture replacement/proxy/deletion | Refresh descriptors and invalidate old resources | `TextureStorage::texture_replace` / `texture_proxy_update` and native descriptor invalidation need lifecycle tests, including sRGB views. |
-| Global numeric/instance uniform value | Update shared GPU uniform storage | Current generated shaders already read that storage. An instance uniform allocation/offset change still changes its context. |
-| TIME and other frame inputs | Keep the frame header and shading current | Metadata reuse must not cache emitted RGB or material evaluation results. |
-| Mesh vertex/index/attribute/skin region | Revalidate geometry and attribute copies | `mesh_surface_update_*_region` advances source revisions without a general dependency notification. |
-| MultiMesh color/custom | Refresh affected context fields | `multimesh_instance_set_color` / `multimesh_instance_set_custom_data` mark the buffer dirty without a general scene dependency notification. |
-| Overrides, transforms, visibility and membership | Resolve effective materials and participating surfaces | These use several setters and dirty paths; no single existing scene event covers all of them. |
-| Resource destruction/reuse | Evict or repair every borrowed reference | Keys must contain full RID generations, not local indices. |
-| Scenario/viewport switch, disable, retry | Publish a complete current snapshot | GI scene storage is renderer-level; multiple updates can occur within one global frame. |
+In the production `AMD_GI_REFERENCE_RANDOM` path of `rt_gi_transport_inc.glsl`, ordinary transport uses `gl_RayFlagsNoneEXT`; a nonzero shadow mask uses `gl_RayFlagsNoOpaqueEXT` so even opaque candidates receive full 32-bit shadow-layer filtering. The TLAS traversal mask remains `0xff`. A candidate's hit-record shadow mask is its native instance layer mask when the surface casts shadows, otherwise zero. Keep that field distinct from its transport/light layer mask.
 
-Neither dependency notifications alone nor material revisions alone are a
-complete invalidation mechanism. Whole-scene early-outs based on either would
-miss supported Godot changes.
+Candidate processing applies native front/back material culling only to nonopaque materials, evaluates their source opacity, and confirms covered triangles. Source `discard` produces zero opacity. Current non-stochastic coverage uses `opacity > 0.5`; admitted mix-alpha programs without alpha clipping use an object-position/frame hash as a stochastic threshold. This models straight-through fractional coverage, not refraction. It does not establish exact parity with every raster alpha-scissor threshold, alpha-hash control or antialiasing mode. Preserve the actual admission/exclusion rules and test foliage/transparent cases rather than describing all native alpha behavior as automatically supported.
 
-### Implemented adaptation and deliberate boundaries
+## Invalidation matrix
 
-1. Retain the existing dense output order. Successful surface traversal assigns
-   TLAS custom IDs, hit/context indices and emitter material references together.
-   Persistent CPU cache keys must not become a new GPU index scheme.
-2. Poll current unique material/mesh inputs after queued native updates finish,
-   rather than trusting incomplete notification/revision coverage. Material
-   eligibility still reads current data/shader/next-pass state. Each used material
-   prepares its shared context once per scene update; current uniform bytes and
-   texture bindings are checked while shader selection and allocations persist.
-3. Separate shared mesh layout templates, material metadata, per-instance values
-   and transform/pose data. Avoid duplicating full material state per surface.
-   Reuse allocated uniform/index buffers when possible; refresh all borrowing
-   contexts when addresses or descriptor indices change.
-4. Compare current context/hit bytes against the last successful upload and send
-   one bounding changed span, avoiding many tiny transfers and unchanged writes.
-   Reallocation publishes complete contents. Snapshots copy only the changed span.
-   The TIME header and live shader/global/instance values remain current.
-5. Preserve existing dense typed texture ordering. Stable-sized texture-index
-   buffers update in place. Persistent sparse descriptor slots are unnecessary
-   for this design and are not introduced; they would add retirement/capacity rules.
-6. Cache complete scenario membership in RID order, invalidated by scenario
-   insertion/removal. Retain all instance types, so base-type edits stay visible.
-   Reevaluate eligibility, transforms, overrides, masks and MultiMesh values every
-   update. This avoids repeated sorting without relying on incomplete dirty events.
+No single dependency notification or material revision covers all of Godot's supported mutations. Retaining a RID is not evidence that its bytes, layout or borrowed resources are unchanged.
 
-Retained metadata must still register every required `compute_list_add_buffer_read`.
-The current source adapter expires resources not touched in the current update;
-any future skip path must retain both resources and their dependency registration.
-Dirty generations must be committed only after successful preparation, with
-failure/retry and multiple-view updates handled explicitly.
+| Mutation | Required adapter behavior |
+| --- | --- |
+| Local uniform value | Compare current uniform bytes and update retained storage without rebuilding unchanged mesh metadata. |
+| Shader reassignment, code edit or removal | Re-resolve native material data, compile/support status, layout, culling/emission and surface admission. Do not retain raw `MaterialData*` across assignment. |
+| Next pass or material override | Recheck effective material/admission and resulting dense indices; notification and content-revision coverage differ. |
+| Texture binding, default or global texture | Resolve current typed texture descriptors; rewrite indices and refresh contexts if addresses change. |
+| In-place texture pixels | Sample current contents; retain metadata only with correct GPU read/write dependencies. |
+| Texture replacement, proxy or destruction | Repair descriptors and borrowed resources, including the appropriate color-space view. |
+| Global/instance numeric uniforms | Use current shared uniform buffers; a changed instance allocation/offset changes context metadata. |
+| `TIME` and frame inputs | Update the frame header and evaluate live shading. Never cache evaluated emission/RGB as material metadata. |
+| Vertex/index region | Advance geometry revision and rebuild affected BLAS, even when the buffer RID is unchanged. |
+| Attribute/skin region | Advance data revision and refresh corresponding source attribute copies/pose processing. |
+| MultiMesh transform/color/custom data | Refresh per-element geometry/context values; ordinary scene notifications are insufficient. |
+| Visibility, base type, membership, layer/GI policy | Reevaluate admission and ordering, including supported-to-unsupported transitions. |
+| RID destruction/reuse | Use full generations in keys and remove or repair every borrowed handle. |
+| Scenario/viewport change, disable/re-enable or failed preparation | Publish a complete current snapshot; multiple scene updates can occur within a global frame. |
 
-The source adapter now calls `MaterialData::set_as_used()` once per used material
-per scene update, following Godot's native render-target usage contract for
-offscreen GI consumers. Runtime render-target behavior still requires validation.
+Read `MeshStorage::mesh_surface_update_*_region`, `MaterialStorage::material_set_shader`, `material_set_next_pass`, `_material_queue_update`, texture replacement/proxy paths and MultiMesh setters when porting these rules. A future native API may improve notification coverage; verify it rather than deleting checks by assumption.
 
-### Adversarial validation
+## Implemented CPU reuse
 
-Use the current full reconstruction as an oracle: compare context bytes, dense
-IDs, effective descriptors, hit flags, emitter ranges and material outputs after
-shared uniform edits; texture replacement/proxy/deletion; shader-to-null and
-supported/unsupported transitions; next-pass/override changes; TIME/global/instance
-updates; same-buffer mesh edits; MultiMesh transform/color/custom changes;
-insertion/removal/RID reuse; buffer growth; disable/re-enable; scenario switches;
-and a failed update followed by retry. Preserve all indirect buffer dependencies.
+- Scenario membership is retained in full-RID order, invalidated on insertion/removal. It retains all instance types so base-type edits remain visible. Collection continues reading current eligibility, transforms, materials, masks and MultiMesh values.
+- `RaytracingGIScene::SurfaceGeometryKey` validates full instance/mesh/posed-buffer identities, element/surface, buffer identities, formats and geometry revision before reusing a hit-geometry template. Current posed normal data must still be selected.
+- Each unique material prepares shared context once per scene update. Shader selection and allocations persist; current native uniform bytes and texture bindings are polled after native preparation. `MaterialData::set_as_used()` preserves Godot's render-target usage contract even for offscreen GI consumers.
+- Typed texture ordering remains dense. Stable-size index buffers update in place; descriptor/index/address changes repair every borrowing context.
+- Context and hit buffers compare against the last successfully uploaded contents and update one bounding changed span. Reallocation uploads all contents. Header time and current source/global/instance values remain live.
+- Dense GPU order remains the contract: admitted TLAS custom IDs, hit records, source contexts and emitter references use the same surface order. CPU cache keys are not a replacement GPU indexing scheme.
 
-The mutation fixture `amd_gi_scene_metadata` and the opt-in
-`GODOT_AMD_GI_VALIDATE_SCENE_CACHE=1` oracles compare collection, geometry records,
-dependencies, attribute copies, material uniform/index data and uploaded contexts
-against current source inputs. They are diagnostic readbacks, never a performance
-mode. The fixture is added but not run under the owner's source-only restriction.
-Posed-buffer swapping, texture proxy/deletion, failed allocation retries and
-multi-scenario GPU comparisons remain runtime coverage requirements; do not claim
-that the new fixture alone exercises every lifecycle case listed above.
+`RaytracingGIScene::retained_groups` additionally retains complete dense Hit/AS/Context ranges for unchanged ordinary instances or collector-stamped MultiMesh parents. Reuse requires matching full identities, input count/generation, dense offset, transform, effective materials, uniform offset, masks and surface count. `RaytracingMaterialSource::prepare_surface` still refreshes current unique resources in original first-use order. Shader code/`next_pass`, geometry/pose/data revisions and the resulting base Context must match before cursors can skip a group. Numeric uniforms, texture contents, `TIME` and resource-usage touches stay live. This removes repeated record construction; it does not cache evaluated lighting.
 
-The agents rejected using `RenderingDevice::acceleration_structure_is_valid`
-as a TLAS-content validity check: it tests ownership only. The separate narrow
-TLAS optimization compares ordered input fields and per-surface geometry revisions
-retained from successful builds. Surface geometry templates validate current full
-resource IDs, buffer identities, format and geometry revisions. Packed transforms
-retain values derived from the exact transform. The Vulkan address cache belongs
-to the actual buffer lifetime. None bypasses native geometry/material validation.
+Source-mode emitter batches/ranges contain geometry and source IDs, so unchanged emission-writing groups can retain them too. Reuse additionally requires matching batch/triangle prefixes and emissive-sampling state. Earlier emitter membership/count changes or sampling toggles reconstruct offsets; native emission evaluation and GPU emitter-update behavior stay unchanged. Exclusion-report and motion-history modes use full traversal. Changed or incompletely stamped groups fall back to the existing path. Arrays truncate at final cursors, and failed preparation invalidates group reuse until a complete update succeeds. The [retention design](../validation/gi_cpu_retention_2026_10_26/SCENE_PLAN.md) records these guards; [runtime evidence and limits](../validation/gi_cpu_retention_2026_10_26/RESULTS.md) distinguish current passes from the unresolved legacy material-response scorer. High-churn scenes can pay reconstruction overhead and require separate timing.
 
-RenderingDevice, its graph and Vulkan now support an explicit TLAS update request.
-GI requests in-place refit only for transform changes with otherwise identical
-ordered topology/flags and geometry revisions. RD additionally requires initial
-ALLOW_UPDATE, a submitted prior build, equal nonzero count and all-active lists;
-otherwise it records a full build. Scratch covers both build and update sizes,
-and graph acceleration-structure read/write dependencies remain intact. D3D12 and
-Metal RT stubs have compatible signatures; their RT support is not expanded.
-BLAS refitting is not added: the measured workload had no skinned BLAS refreshes,
-and AMD's animated path can itself force fresh builds. Its skinning is not a
-universal refit-only model.
+Preserve graph-visible reads for native uniforms, descriptor-index buffers and copied attributes on every consuming dispatch. `add_buffer_reads` and `append_buffer_reads` expose the same live resource set; batching dependency lookup must preserve the reads themselves. Buffer-device addresses hide bindings from ordinary descriptor discovery. Group refresh touches retained source resources each update so pruning cannot evict a skipped group's dependencies.
 
-Validation completed without starting Godot: Windows editor compilation, independent
-cross-review, formatting/whitespace/spelling and shell syntax checks. The production
-TLAS eligibility test compiled as a standalone native test and passed 15 checks.
-GPU refit correctness and CPU/GPU performance are unmeasured. Retained CPU records
-consume additional memory proportional to scene size; vectors retain peak capacity.
+The subsequent CPU follow-up memoizes successful base Context preparation by full
+material/mesh/surface identity within one scene-update epoch. Per-instance fields
+are applied afterward; first-use refresh and dense texture order remain unchanged.
+Pending Context write intervals survive failed preparation/uploads. Scene record
+comparisons use reconstructed group ranges only when the previous complete scene
+was successfully published; otherwise they recover through full comparison.
+See the [implementation and review](../validation/gi_cpu_retention_2026_10_26/CPU_FOLLOWUP_IMPLEMENTATION.md)
+for bypass/oracle controls and the explicit lack of new runtime evidence.
 
-### Muzzle-light storage and primary face normals (2026-10-24)
+## GI TLAS and upload reuse
 
-The owner's follow-up test reports improved overall performance, but firing-time
-CPU spikes and localized gold AK reflection flicker. These are observations, not
-a controlled before/after measurement of the fixes below.
+The GI TLAS compares the exact ordered instance fields and per-surface geometry revisions against the last successful build. Identical inputs skip work. Transform-only changes can request in-place TLAS refit only when topology, instance ordering, IDs, masks, SBT range, flags and geometry revisions remain compatible.
 
-The game's muzzle-flash script changes visibility for 45 ms and randomizes its
-transform. It does not mutate a material or shader. Its additive, unshaded mesh
-is excluded from the source-material GI scene; the child OmniLight changes the
-analytic-light list. Previously the emitter region began at
-`active_light_count * sizeof(LightData)`. Each count transition invalidated all
-emitter geometry, even for unchanged static surfaces. The earlier large-level
-profile contained 12,563 batches, making this a substantial command-recording
-path. This is a source-level explanation consistent with the reported spikes;
-no new firing profile establishes its exact contribution.
+The GI allocation includes `ALLOW_UPDATE`. RenderingDevice additionally checks a submitted prior build, matching nonzero instance count and all-active lists; otherwise the request falls back to a full build. Scratch storage covers both build and update requirements. Vulkan uses the same AS for source/destination in update mode, with graph-visible AS read/write dependencies. Other driver interface signatures match, without claiming their RT support has expanded.
 
-AMD GI now addresses emitters after the retained analytic capacity. The existing
-frame `emitters.y` word carries that physical offset in `uvec4` units. The active
-count and all dense logical light IDs remain unchanged. Buffer growth copies the
-last successful emitter span before retiring the old allocation; failed copies
-do not publish the replacement. The legacy capture path retains its packed
-active-count prefix and invalidation. No extra descriptor, sampling change or
-history reset is introduced. Capacity growth still incurs allocation/transfer
-cost, but repeated visibility changes within capacity do not rebuild emitters.
+`acceleration_structure_is_valid()` establishes resource ownership, **not** current TLAS contents. Preserve successful-build snapshots, native dependency tracking and lifetime-bound Vulkan buffer-address caching. Shadow TLAS still uses full builds/hash reuse, and changing poses still rebuild BLAS; the GI TLAS refit does not optimize either path.
 
-AMD's pinned `visibility_buffer.frag` derives the primary face normal with
-`normalize(cross(ddy_fine(world), ddx_fine(world)))`, separately from authored
-vertex and normal-map shading normals. The Godot GI attachment instead used
-its native `geo_normal`, which is the interpolated pre-normal-map normal. Those
-are different inputs to ray-origin offsets and reflection plane filtering.
-The correction is confined to the GI attachment: derive the actual face normal
-from rasterized position derivatives before fragment material changes/discards,
-then transform to world space. Native Godot lighting and the GI shading-normal
-attachment preserve their existing authored normals.
+Both GI and shadows also use [shared CPU submission reuse](rt-shadows.md#shared-cpu-submission-reuse)
+inside RenderingDevice. Retained native instance bytes and BLAS dependencies
+reduce CPU preparation; they do not change GI refit eligibility or allow partial
+GPU inputs, skipped graph reads, or reuse after a dependent BLAS rebuild/free.
 
-Read-only decoding of the actual gold AK body found 1,773 triangles, of which
-20 have a corner normal more than 10 degrees from the face normal and four exceed
-30 degrees. The maximum is about 87.6 degrees on a tiny triangle. The gold
-material is a plain metallic StandardMaterial3D with roughness 0.25 and no normal
-map. This supports investigating the semantic mismatch, but does not prove it
-is the sole cause of the visible flicker. Meshes/materials are not edited; no
-denoiser thresholds, roughness clamps or ray-bias constants are changed.
+Analytic light count and emissive light-table location must be independent. `RaytracingGIScene::_ensure_buffers` anchors the emitter span at retained analytic **capacity**, not current active analytic count. Toggling a muzzle light within capacity therefore does not move the emitter table and spuriously force full emitter regeneration. Capacity growth copies the retained emitter span to its new offset before publishing replacement storage; copy/allocation failure must not publish a partly relocated table. This addresses a structural firing-time cost without changing AMD's sampling order.
+
+## Failure and resource lifecycle
+
+Only successful preparation/build/upload may advance reusable snapshots and dirty-state commitments. Unsupported source shaders are omitted through `ERR_UNAVAILABLE`; other preparation failures reject the update instead of blessing incomplete records. The consumer must then take its failed-preparation recovery path, invalidate stale results as required and retry with current inputs. Treat resource-handle validity, preparation success and history usability as three different conditions.
+
+GI disable releases source-consumer resources. Shared geometry's `release_gi_only()` retains current shadow users. Preserve native buffer/descriptor invalidation and graph retirement when replacing resources; do not add device-wide waits as a substitute for correct ownership. Shutdown order and external upscaler cleanup are covered by their own integration notes.
+
+## Porting and adversarial checks
+
+Source inspection establishes these contracts, not exhaustive runtime correctness. Required regression cases include:
+
+- Independent uniform, shader-to-null, next-pass, override, texture binding/pixel/proxy/deletion and supported/unsupported shader transitions.
+- Live `TIME`, global/instance uniforms and render-target textures, including offscreen transport users.
+- Same-buffer geometry edits; posed-buffer rotation; source attribute revisions; MultiMesh transform/color/custom updates.
+- Instance insertion/removal/RID reuse; buffer capacity growth; material sharing across many surfaces; transient analytic lights while emitters remain present.
+- Failed allocation/upload/build followed by retry; disable/re-enable; multiple viewports/scenarios; cleanup with retained/shared resources.
+- Compare cached preparation with a full reconstruction: dense IDs, context/hit bytes, descriptors, dependency lists, emitter spans and actual shading results.
+
+`GODOT_AMD_GI_VALIDATE_SCENE_CACHE=1` enables reconstruction/readback oracles. A retained-group candidate is fully reconstructed and its Context, Hit, AS fields/revision, emitter batches/ranges and dense counts compared before overwrite; per-group RID logs prove that the intended fixture subject was checked. Test both emissive and nonemissive subjects, sampling toggles and changed earlier emitter prefixes. `GODOT_AMD_GI_DISABLE_RETAINED_GROUPS=1` bypasses group reuse, and `GODOT_AMD_GI_TRACE_RETAINED_GROUPS=1` reports actual reuse/oracle, emitter reuse and reconstructed emission-group coverage. `GODOT_AMD_GI_VALIDATE_SOURCE=1` enables known-value source diagnostics.
+
+These are diagnostic modes, not valid performance measurements. Fixtures live under `docs/validation/shadow_validation/`; follow [validation](../VALIDATION.md) and the [retention acceptance plan](../validation/gi_cpu_retention_2026_10_26/SCENE_PLAN.md#adversarial-checks-and-validation). A fixture's presence or a successful build does not prove every lifecycle case above has passed on the target GPU.

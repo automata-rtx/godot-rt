@@ -1629,6 +1629,7 @@ void MeshStorage::_multimesh_allocate_data(RID p_multimesh, int p_instances, RSE
 	if (multimesh->instances == p_instances && multimesh->xform_format == p_transform_format && multimesh->uses_colors == p_use_colors && multimesh->uses_custom_data == p_use_custom_data) {
 		return;
 	}
+	multimesh->buffer_revision++;
 
 	if (multimesh->buffer.is_valid()) {
 		RD::get_singleton()->free_rid(multimesh->buffer);
@@ -1962,6 +1963,7 @@ void MeshStorage::_multimesh_instance_set_transform(RID p_multimesh, int p_index
 	ERR_FAIL_NULL(multimesh);
 	ERR_FAIL_INDEX(p_index, multimesh->instances);
 	ERR_FAIL_COND(multimesh->xform_format != RSE::MULTIMESH_TRANSFORM_3D);
+	multimesh->buffer_revision++;
 
 	_multimesh_make_local(multimesh);
 
@@ -1999,6 +2001,7 @@ void MeshStorage::_multimesh_instance_set_transform_2d(RID p_multimesh, int p_in
 	ERR_FAIL_NULL(multimesh);
 	ERR_FAIL_INDEX(p_index, multimesh->instances);
 	ERR_FAIL_COND(multimesh->xform_format != RSE::MULTIMESH_TRANSFORM_2D);
+	multimesh->buffer_revision++;
 
 	_multimesh_make_local(multimesh);
 	_multimesh_update_motion_vectors_data_cache(multimesh);
@@ -2026,6 +2029,7 @@ void MeshStorage::_multimesh_instance_set_color(RID p_multimesh, int p_index, co
 	ERR_FAIL_NULL(multimesh);
 	ERR_FAIL_INDEX(p_index, multimesh->instances);
 	ERR_FAIL_COND(!multimesh->uses_colors);
+	multimesh->buffer_revision++;
 
 	_multimesh_make_local(multimesh);
 	_multimesh_update_motion_vectors_data_cache(multimesh);
@@ -2049,6 +2053,7 @@ void MeshStorage::_multimesh_instance_set_custom_data(RID p_multimesh, int p_ind
 	ERR_FAIL_NULL(multimesh);
 	ERR_FAIL_INDEX(p_index, multimesh->instances);
 	ERR_FAIL_COND(!multimesh->uses_custom_data);
+	multimesh->buffer_revision++;
 
 	_multimesh_make_local(multimesh);
 	_multimesh_update_motion_vectors_data_cache(multimesh);
@@ -2192,6 +2197,9 @@ void MeshStorage::_multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_
 	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
 	ERR_FAIL_NULL(multimesh);
 	ERR_FAIL_COND(p_buffer.size() != (multimesh->instances * (int)multimesh->stride_cache));
+	// Interpolation also reaches this backend entry point. Do not tie this to
+	// AABB notifications: a custom AABB can suppress them for a bulk upload.
+	multimesh->buffer_revision++;
 
 	bool used_motion_vectors = multimesh->motion_vectors_enabled;
 	bool uses_motion_vectors = (RSG::viewport->get_num_viewports_with_motion_vectors() > 0) || (RendererCompositorStorage::get_singleton()->get_num_compositor_effects_with_motion_vectors() > 0);
@@ -2233,6 +2241,12 @@ void MeshStorage::_multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_
 			multimesh->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_AABB);
 		}
 	}
+}
+
+uint64_t MeshStorage::multimesh_get_buffer_revision(RID p_multimesh) const {
+	const MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	ERR_FAIL_NULL_V(multimesh, 0);
+	return multimesh->indirect ? 0 : multimesh->buffer_revision;
 }
 
 RID MeshStorage::_multimesh_get_command_buffer_rd_rid(RID p_multimesh) const {

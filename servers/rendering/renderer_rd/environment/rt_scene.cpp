@@ -217,6 +217,9 @@ RaytracingScene::~RaytracingScene() {
 
 void RaytracingScene::free_all() {
 	geometry.clear();
+	prepared_surfaces.clear();
+	prepared_instances.clear();
+	instance_scratch.clear();
 
 	if (tlas.is_valid()) {
 		RD::get_singleton()->free_rid(tlas);
@@ -257,20 +260,9 @@ void RaytracingScene::_ensure_tlas(uint32_t p_instance_count) {
 	tlas_capacity = tlas.is_valid() ? new_capacity : 0;
 }
 
-void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
-	const bool rtdbg = debug_enabled();
-	tlas_valid = false;
-
-	if (!is_available()) {
-		if (rtdbg) {
-			print_line(vformat("RT_DEBUG update: NOT AVAILABLE (supported=%d enabled=%d)", int(supported), int(is_enabled())));
-		}
-		return;
-	}
-
+void RaytracingScene::_reconstruct_instances(const LocalVector<InstanceData> &p_instances, LocalVector<RD::AccelerationStructureInstance> &r_instances) {
 	MeshStorage *mesh_storage = MeshStorage::get_singleton();
-
-	instance_scratch.clear();
+	r_instances.clear();
 
 	for (const InstanceData &instance : p_instances) {
 		if (instance.mesh.is_null()) {
@@ -290,7 +282,7 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 				continue;
 			}
 
-			if (instance_scratch.size() >= 65536) {
+			if (r_instances.size() >= 65536) {
 				// Hard ceiling so a pathological scene cannot exhaust memory in a
 				// single frame. Anything past this simply does not cast this frame.
 				break;
@@ -298,7 +290,7 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 
 			RD::AccelerationStructureInstance rd_instance;
 			rd_instance.transform = instance.transform;
-			rd_instance.id = instance_scratch.size();
+			rd_instance.id = r_instances.size();
 			// Must fold exactly as the light side does, or a caster stops answering
 			// a light with no diagnostic. RTShadows::fold_layer_mask owns the rule.
 			rd_instance.mask = RTShadows::fold_layer_mask(instance.layer_mask);
@@ -311,7 +303,156 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 			rd_instance.hit_sbt_range = RD::HitShaderBindingTableRange(int64_t(1) << 32);
 			rd_instance.blas = entry->blas;
 
-			instance_scratch.push_back(rd_instance);
+			r_instances.push_back(rd_instance);
+		}
+	}
+}
+
+static uint32_t _rt_instance_hash(RID p_blas, uint32_t p_mask, const Transform3D &p_transform) {
+	uint32_t hash = hash_murmur3_one_64(p_blas.get_id());
+	hash = hash_murmur3_one_32(p_mask, hash);
+	for (int row = 0; row < 3; row++) {
+		for (int column = 0; column < 3; column++) {
+			hash = hash_murmur3_one_real(p_transform.basis.rows[row][column], hash);
+		}
+	}
+	hash = hash_murmur3_one_real(p_transform.origin.x, hash);
+	hash = hash_murmur3_one_real(p_transform.origin.y, hash);
+	hash = hash_murmur3_one_real(p_transform.origin.z, hash);
+	return hash_fmix32(hash);
+}
+
+void RaytracingScene::_pack_prepared_instances() {
+	instance_scratch.clear();
+	for (const PreparedInstance &instance : prepared_instances) {
+		for (const PreparedInstanceSurface &surface : instance.surfaces) {
+			RD::AccelerationStructureInstance record;
+			record.transform = instance.transform;
+			record.id = instance_scratch.size();
+			record.mask = instance.mask;
+			record.flags = RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT;
+			record.hit_sbt_range = RD::HitShaderBindingTableRange(int64_t(1) << 32);
+			record.blas = surface.blas;
+			instance_scratch.push_back(record);
+		}
+	}
+}
+
+void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
+	const bool rtdbg = debug_enabled();
+	static const bool disable_reuse = OS::get_singleton()->get_environment("GODOT_RT_DISABLE_SHADOW_REUSE") == "1";
+	static const bool validate_reuse = OS::get_singleton()->get_environment("GODOT_RT_VALIDATE_SHADOW_REUSE") == "1";
+	static const bool profile = OS::get_singleton()->get_environment("GODOT_RT_CPU_PROFILE") == "1";
+	tlas_valid = false;
+
+	if (!is_available()) {
+		prepared_instances.clear();
+		prepared_surfaces.clear();
+		if (rtdbg) {
+			print_line(vformat("RT_DEBUG update: NOT AVAILABLE (supported=%d enabled=%d)", int(supported), int(is_enabled())));
+		}
+		return;
+	}
+
+	const uint64_t started = profile ? OS::get_singleton()->get_ticks_usec() : 0;
+	uint64_t surface_usec = 0;
+	uint32_t surface_requests = 0, surface_reused = 0, hashes_reused = 0;
+	uint32_t instance_count = 0, contents_hash = 0;
+	if (disable_reuse) {
+		_reconstruct_instances(p_instances, instance_scratch);
+		instance_count = instance_scratch.size();
+		for (const RD::AccelerationStructureInstance &instance : instance_scratch) {
+			contents_hash += _rt_instance_hash(instance.blas, instance.mask, instance.transform);
+		}
+	} else {
+		MeshStorage *mesh_storage = MeshStorage::get_singleton();
+		preparation_update++;
+		prepared_instances.resize(p_instances.size());
+		for (uint32_t i = 0; i < p_instances.size(); i++) {
+			const InstanceData &instance = p_instances[i];
+			PreparedInstance &prepared = prepared_instances[i];
+			const uint32_t mask = RTShadows::fold_layer_mask(instance.layer_mask);
+			const bool same_transform = prepared.transform == instance.transform && prepared.mask == mask;
+			uint32_t admitted = 0;
+			const int surface_count = instance.mesh.is_valid() ? mesh_storage->mesh_get_surface_count(instance.mesh) : 0;
+			for (int surface = 0; surface < surface_count; surface++) {
+				if (surface < 32 && (instance.surface_mask & (uint32_t(1) << surface)) == 0) {
+					continue;
+				}
+				PreparedSurfaceKey key{ instance.mesh, instance.mesh_instance, uint32_t(surface) };
+				PreparedSurface *resolved = prepared_surfaces.getptr(key);
+				RID blas;
+				if (resolved && resolved->update == preparation_update) {
+					blas = resolved->blas;
+					surface_reused++;
+				} else {
+					const uint64_t before = profile ? OS::get_singleton()->get_ticks_usec() : 0;
+					const RaytracingGeometry::Surface *entry = geometry.get_surface(instance.mesh, instance.mesh_instance, surface);
+					if (profile) {
+						surface_usec += OS::get_singleton()->get_ticks_usec() - before;
+					}
+					surface_requests++;
+					if (!entry) {
+						continue;
+					}
+					blas = entry->blas;
+					// Copy before any subsequent geometry lookup can move its storage.
+					prepared_surfaces.insert(key, PreparedSurface{ blas, preparation_update });
+				}
+				// Preserve the original first-excess surface request and build budget.
+				if (instance_count >= 65536) {
+					break;
+				}
+				if (admitted == prepared.surfaces.size()) {
+					prepared.surfaces.push_back(PreparedInstanceSurface());
+				}
+				PreparedInstanceSurface &record = prepared.surfaces[admitted++];
+				if (same_transform && record.blas == blas) {
+					hashes_reused++;
+				} else {
+					record.blas = blas;
+					record.hash = _rt_instance_hash(blas, mask, instance.transform);
+				}
+				contents_hash += record.hash;
+				instance_count++;
+			}
+			prepared.transform = instance.transform;
+			prepared.mask = mask;
+			prepared.surfaces.resize(admitted);
+		}
+		// Bound retained source metadata when scenes or mesh resources change.
+		if ((preparation_update & 63) == 0) {
+			LocalVector<PreparedSurfaceKey> stale;
+			for (const KeyValue<PreparedSurfaceKey, PreparedSurface> &entry : prepared_surfaces) {
+				if (preparation_update - entry.value.update > 64) {
+					stale.push_back(entry.key);
+				}
+			}
+			for (const PreparedSurfaceKey &key : stale) {
+				prepared_surfaces.erase(key);
+			}
+		}
+	}
+	contents_hash += hash_murmur3_one_64(instance_count);
+	const uint64_t prepared_at = profile ? OS::get_singleton()->get_ticks_usec() : 0;
+
+	if (validate_reuse && !disable_reuse) {
+		_pack_prepared_instances();
+		LocalVector<RD::AccelerationStructureInstance> reference;
+		_reconstruct_instances(p_instances, reference);
+		bool matches = reference.size() == instance_scratch.size();
+		uint32_t reference_hash = hash_murmur3_one_64(reference.size());
+		for (uint32_t i = 0; matches && i < reference.size(); i++) {
+			const RD::AccelerationStructureInstance &a = instance_scratch[i];
+			const RD::AccelerationStructureInstance &b = reference[i];
+			matches = a.transform == b.transform && a.id == b.id && a.mask == b.mask && a.flags == b.flags && a.hit_sbt_range == b.hit_sbt_range && a.blas == b.blas;
+			reference_hash += _rt_instance_hash(b.blas, b.mask, b.transform);
+		}
+		ERR_FAIL_COND_MSG(!matches || contents_hash != reference_hash, "RT shadow preparation cache differs from full reconstruction.");
+		static bool reported = false;
+		if (!reported && (surface_reused > 0 || hashes_reused > 0)) {
+			print_line("RT shadow reuse oracle: checked=true");
+			reported = true;
 		}
 	}
 
@@ -320,11 +461,13 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 		WARN_PRINT(vformat("Raytraced shadows: %d mesh surface(s) cannot be raytraced and will not cast shadows (non-triangle geometry, 2D vertices, or empty vertex arrays). %d surface(s) built successfully.", geometry.get_skipped_count(), geometry.get_built_count()));
 	}
 
-	if (instance_scratch.is_empty()) {
+	if (instance_count == 0) {
+		prepared_instances.clear();
+		prepared_surfaces.clear();
 		return;
 	}
 
-	_ensure_tlas(instance_scratch.size());
+	_ensure_tlas(instance_count);
 	if (tlas.is_null()) {
 		return;
 	}
@@ -338,27 +481,19 @@ void RaytracingScene::update(const LocalVector<InstanceData> &p_instances) {
 	// scene's spatial index in does not count as a change. Only the set matters:
 	// a ray query reads nothing that depends on an instance's position in the
 	// array, so two orderings of the same instances describe the same scene.
-	uint32_t contents_hash = hash_murmur3_one_64(instance_scratch.size());
-	for (const RD::AccelerationStructureInstance &rd_instance : instance_scratch) {
-		uint32_t entry_hash = hash_murmur3_one_64(rd_instance.blas.get_id());
-		entry_hash = hash_murmur3_one_32(rd_instance.mask, entry_hash);
-		for (int row = 0; row < 3; row++) {
-			for (int column = 0; column < 3; column++) {
-				entry_hash = hash_murmur3_one_real(rd_instance.transform.basis.rows[row][column], entry_hash);
-			}
-		}
-		entry_hash = hash_murmur3_one_real(rd_instance.transform.origin.x, entry_hash);
-		entry_hash = hash_murmur3_one_real(rd_instance.transform.origin.y, entry_hash);
-		entry_hash = hash_murmur3_one_real(rd_instance.transform.origin.z, entry_hash);
-		contents_hash += hash_fmix32(entry_hash);
-	}
-
 	const bool rebuild = !tlas_built || geometry.has_changed() || contents_hash != tlas_contents_hash;
+	const uint64_t packing_started = profile ? OS::get_singleton()->get_ticks_usec() : 0;
+	if (rebuild && !disable_reuse && !validate_reuse) {
+		_pack_prepared_instances();
+	}
+	if (profile) {
+		print_line(vformat("RT_CPU shadow_prepare: records=%d prepare_usec=%d surface_usec=%d pack_usec=%d source_requests=%d source_reused=%d hashes_reused=%d rebuild=%d", instance_count, prepared_at - started, surface_usec, OS::get_singleton()->get_ticks_usec() - packing_started, surface_requests, surface_reused, hashes_reused, int(rebuild)));
+	}
 
 	if (rtdbg) {
 		static String last;
 		String cur = vformat("RT_DEBUG update: in_instances=%d tlas_instances=%d blas_cache=%d skipped_surfaces=%d deferred_surfaces=%d rebuilt=%d",
-				(int)p_instances.size(), (int)instance_scratch.size(), (int)geometry.get_cached_count(), (int)geometry.get_skipped_count(),
+				(int)p_instances.size(), (int)instance_count, (int)geometry.get_cached_count(), (int)geometry.get_skipped_count(),
 				(int)geometry.get_deferred_count(), int(rebuild));
 		if (cur != last) {
 			last = cur;

@@ -369,6 +369,8 @@ vec4 reflection_raw(ivec2 pixel) {
 
 // gi1.comp:MarkFireflies. Thresholds are the upstream defaults unless explicitly
 // changed through settings; no custom luminance multiple or geometry rank test.
+// At exact 0/1 thresholds, finite nonnegative rank counts cannot mark a sample.
+// Skip only that rank work; negative-distance cleanup and raw recording remain.
 void mark_reflection_fireflies(ivec2 pixel, uint id) {
 #ifdef AMD_GI_REFLECTION_RECORDING
 	reflection_diagnostic_raw(pixel, id);
@@ -378,7 +380,7 @@ void mark_reflection_fireflies(ivec2 pixel, uint id) {
 	if (center.position_roughness.w >= 0.0 && center.position_roughness.w <= frame.reflections.y) {
 		if (center.normal_distance.w < 0.0) {
 			marked = 1.0;
-		} else {
+		} else if (frame.glossy.y != 0.0 || frame.glossy.z != 1.0) {
 			float center_luma = luma(center.color_count.rgb), lower = 0.0, higher = 0.0;
 			int full_radius = int(frame.reflection_options.z);
 			int half_radius = frame.reflections.x > 1.0 ? (full_radius + 1) / 2 : full_radius;

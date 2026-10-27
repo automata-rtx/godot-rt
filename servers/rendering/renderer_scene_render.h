@@ -348,6 +348,10 @@ public:
 	struct RaytracingGIInstance {
 		RID multimesh;
 		uint32_t element = 0;
+		// A complete, contiguous collector expansion. Only its first element
+		// carries a count greater than one; zero generation forbids group reuse.
+		uint64_t group_generation = 0;
+		uint32_t group_count = 1;
 		AABB world_bounds;
 		RID instance;
 		RID mesh;

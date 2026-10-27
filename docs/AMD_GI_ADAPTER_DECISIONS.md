@@ -1,55 +1,52 @@
-# AMD GI approval boundaries
+# AMD GI integration decisions
 
-Current as of 2026-10-25. AMD's pinned algorithm is the baseline. Further deviations
-require explicit owner approval with a high-confidence justification. A compatibility
-limitation is not permission to invent an alternative estimator or history policy.
-Read [current status](AMD_GI_IMPLEMENTATION.md) first. Exact prior proposals, proofs,
-responses and withdrawn recommendations are preserved in the
-[decision archive](history/AMD_GI_ARCHIVE.md#snapshot-amd-gi-adapter-decisions).
+This is the durable engineering boundary, verified against commit `66bd97e00d`.
+Use [implementation contracts](internals/amd-gi.md) for rebuilding and the portable
+AMD GI feature guide for use. Historical proposals and approval conversations live
+in [the archive](history/AMD_GI_ARCHIVE.md); they are not the current feature list.
 
-## Approved, narrowly scoped
+## Baseline and scope
 
-- Negative/subtractive lights are explicitly unsupported by AMD GI for this game. Retain native direct lighting, exclude them from GI light sampling and outgoing-light feedback, and warn rather than invent signed cache transport.
-- Orthographic cameras are explicitly unsupported by AMD GI. Clear only the affected view's GI output and retain native lighting; do not evict shared perspective-view resources.
-- Fix TLAS input-buffer accounting, muzzle-flash integration overhead and material-pipeline preparation recovery without changing AMD estimators. Ordinary game-used MultiMesh remains required. Full shader-driven grass deformation depends on its performance cost and is not enabled by this approval.
-- Investigate shutdown crashes only; do not modify their suspected code paths or system configuration in this pass. Broader lifecycle work, prewarming/loading overlays and unrelated Godot compatibility remain deferred.
-- Preserve Godot's authored light attenuation, energy, masks and final material response at the integration boundary. This does not authorize coarse captures or estimator changes.
-- Transform hit geometry and shading normals to world space exactly once. The owner's conditional approval applied after source tracing proved localized AMD missing/double transforms, not an intentional screen/world split. Preserve their separate roles.
-- Read the multibounce bypass flag for its actual hit rather than the uncompacted index.
-- Map secondary bypass results to their correct parent ray and apply AMD's existing BRDF/PDF weight before injection; do not inject the raw unweighted light.
-- Classify a native shader writing EMISSION as emissive independently of current emitted RGB; preserve authored RGB. Black texels/dark phases retain the classification.
-- For flat light-grid bounds, select the single cell along a zero-width direction; do not expand bounds by an arbitrary minimum thickness.
-- Keep actual tracing/hit positions at the reference 1e9 range; cap only stored probe reprojection distance at 65504 and widen only its integer accumulator. RGB and sampling weights unchanged.
-- Reject historical light samples whose index is outside the current logical light list. Do not reset unrelated history or invent stable-ID remapping.
-- Use actual supported affine emitter texture coordinates (alternate UVs, scaling/translation/rotation, supported aliases/varyings) in AMD's unchanged filtering formula. Arbitrary warped/texture-driven mappings were excluded from the recommendation; unsupported cases retain a diagnosed fallback.
+- Follow AMD Capsaicin GI 1.2 at `914b91596cd119eda85fbc1d3c7ee6ac391b1452` as closely
+  as practical. Necessary Godot/Vulkan adapters do not justify new estimators,
+  arbitrary invalidation, or altered artistic intent. Further algorithm deviations
+  require strong evidence and owner approval.
+- Preserve Godot light attenuation, energy, masks, authored materials, and final
+  material response. Native shader execution replaces the validator's coarse
+  captures; materials may change independently of meshes.
+- Ordinary CPU-managed 3D MultiMesh is required and implemented. GPU-indirect
+  MultiMesh and shader-driven displacement remain outside supported ray transport.
+  Grass displacement needs a separate performance/accuracy decision.
+- Orthographic views and negative/subtractive GI lights are deliberately unsupported.
+  Retain their native lighting rather than inventing signed cache transport.
+- Diagnostic tools, uniform/cosine/luminance sky choices, debug displays, and AMD's
+  split-ratio reflection alternative are implemented options. Cosine sky and a-trous
+  reflections are recommended defaults, not hardware-measured winners.
 
-## Withdrawn or not approved
+## Corrections and adapters to preserve
 
-- Immutable firefly-cleanup input: withdrawn at the owner's request because no worthwhile lighting improvement was established. Keep AMD's in-place cleanup; exceptional nonfinite behavior is not fixed by claiming consistency.
-- Do not add generic RGB clamps, substitute finite tracing limits, arbitrary history resets, higher preview ray counts or silent coarse material fallback.
-- Remaining optional AMD modes and Godot compatibility work are recorded, not newly implemented or blanket-approved by this document. Full refraction/nested specular transport is beyond the current baseline.
+| Contract | Reason |
+| --- | --- |
+| Transform hit shading and geometry normals to world space exactly once. | Source review found missing/double transforms; their distinct roles still matter. |
+| Index multibounce bypass by the actual compacted hit; map secondary results to the correct parent and apply the existing BRDF/PDF weight. | Preserve AMD's intended contribution, not raw unweighted injection. |
+| Treat a shader that writes EMISSION as an emitter independently of its current RGB. | Black texels or a dark animation phase must not repeatedly change material/scene classification. |
+| Keep a flat light-grid axis as one cell. | Avoid inventing arbitrary thickness for degenerate bounds. |
+| Retain the reference 1e9 tracing range; cap only stored probe reprojection distance at 65504 and widen its integer accumulator. | Half-float storage limits must not change actual hit locations or RGB/weights. |
+| Reject historical samples whose light index is outside the current logical list. | Avoid stale reads without invented stable IDs or unrelated history resets. |
+| Use supported affine emitter UV mappings in the existing filtering formula; diagnose unsupported nonlinear mappings. | Respect authored coordinates without silently claiming arbitrary shader-map support. |
+| Convert Vulkan cube orientation and preserve sampled world direction in the existing half2 octahedral payload. | Re-evaluating a stored seed through upstream's missing importance branch would reconstruct a different direction. Black-face/CDF endpoint handling is integration correctness, not an extra-ray estimator. |
+| Keep source-material pipelines compatible with the current scene signature and publish only a complete prepared set. | Failed preparation must not bind a partial set or stale material ABI. |
+| Track same-frame acceleration-structure build inputs and shared geometry through both shadow and GI consumers. | Native RD ordering and ownership must cover all consumers. |
 
-Only read the archived decision subsection/source proof relevant to a proposed change.
-Do not request approval again for the exact scope already approved above.
+## Do not revive without new justification
 
+- Immutable-input firefly cleanup was withdrawn; preserve AMD's in-place cleanup.
+- Do not hide failures with generic RGB clamps, shorter tracing limits, arbitrary
+  history resets, more preview rays, or silent coarse-material fallback.
+- Full refraction/nested specular transport and universal Godot compatibility are
+  not goals of this integration.
 
-## Runtime options authorization, 2026-10-25
-
-Owner requested all diagnostic tools, both sky samplers, debug visualizers and
-alternate AMD reflection denoising as live options. Implemented against Capsaicin
-`914b91596cd119eda85fbc1d3c7ee6ac391b1452` (GI 1.2). Cosine is the recommended sky
-default; existing AMD a-trous remains the reflection default. These recommendations
-are source-reviewed, not hardware-measured presets.
-
-Necessary sky integration corrections: Vulkan cube-face orientation, black-face
-and floating-point CDF endpoint handling, and storing importance sample world
-direction in the existing signed-half2 octahedral payload. Upstream stored-sample
-evaluation lacks its importance branch; retaining seeds would reconstruct the
-wrong direction or remap it when sky contents change. Direction storage preserves
-sample identity without another buffer/readback; half precision remains a measured
-CPU quantization limitation. No extra rays or replacement estimator was added.
-
-Diagnostics preserve complete direct-light feedback before display isolation.
-Paged visualizers expose actual directional cache tiles and retained probe slots.
-Readback is opt-in and sampled, with frame IDs. Source-only permission still applies.
-No prewarming, shutdown changes, game edits or new grass transport were included.
+The shutdown cleanup fix is implemented; older investigation-only restrictions are
+historical. Program-run permissions are governed by the current conversation, not
+an old dated approval diary. Prepared fixtures and CPU/source proofs are not proof
+of GPU acceptance; retain that distinction in future completion claims.

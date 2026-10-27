@@ -65,15 +65,41 @@ public:
 	static_assert(sizeof(Context) == 144);
 	void begin_frame();
 	void clear();
-	Error add_surface(RID p_material, const RendererSceneRender::RaytracingGIInstance &p_instance, uint32_t p_surface, const Color &p_color, const Color &p_custom);
+	Error prepare_surface(RID p_material, RID p_mesh, uint32_t p_surface, Context &r_context);
+	Error add_surface(RID p_material, const RendererSceneRender::RaytracingGIInstance &p_instance, uint32_t p_surface, const Color &p_color, const Color &p_custom, Context *r_base_context = nullptr, bool p_validate_retained = false);
+	bool retain_contexts(uint32_t p_count);
 	bool end_frame();
 	String get_shader_source() const;
 	uint64_t get_shader_revision() const { return shader_revision; }
 	void append_uniforms(LocalVector<RD::Uniform> &r_uniforms) const;
 	void add_buffer_reads(RD::ComputeListID p_list) const;
+	void append_buffer_reads(LocalVector<RID> &r_buffers) const;
 	~RaytracingMaterialSource();
 
 private:
+	struct PreparedSurfaceKey {
+		RID material, mesh;
+		uint32_t surface = 0;
+		bool operator==(const PreparedSurfaceKey &p_other) const {
+			return material == p_other.material && mesh == p_other.mesh && surface == p_other.surface;
+		}
+	};
+	struct PreparedSurfaceHasher {
+		static uint32_t hash(const PreparedSurfaceKey &p_key) {
+			return hash_murmur3_one_32(p_key.surface, hash_murmur3_one_64(p_key.mesh.get_id(), hash_murmur3_one_64(p_key.material.get_id())));
+		}
+	};
+	struct PreparedSurface {
+		Context context;
+		uint64_t frame = 0;
+	};
+	// Successful base contexts only: instance color/custom/uniform offsets are
+	// applied later. A new source update must refresh every used source again.
+	HashMap<PreparedSurfaceKey, PreparedSurface, PreparedSurfaceHasher> prepared_surfaces;
+	uint32_t prepared_calls = 0;
+	uint32_t prepared_hits = 0;
+	uint32_t prepared_unique = 0;
+	Error prepare_surface_uncached(RID p_material, RID p_mesh, uint32_t p_surface, Context &r_context);
 	struct Material {
 		RID uniforms, indices;
 		Vector<uint8_t> uniform_bytes;
@@ -115,6 +141,11 @@ private:
 	Vector<TextureArray> texture_arrays;
 	LocalVector<Context> contexts;
 	LocalVector<Context> uploaded_contexts;
+	uint32_t context_cursor = 0;
+	// Pending CPU writes survive failed preparations/uploads. Reset only after
+	// the matching GPU upload and CPU snapshot have both been published.
+	uint32_t context_dirty_begin = UINT32_MAX;
+	uint32_t context_dirty_end = 0;
 	RID context_buffer;
 	uint32_t context_capacity = 0;
 	uint64_t frame = 0;

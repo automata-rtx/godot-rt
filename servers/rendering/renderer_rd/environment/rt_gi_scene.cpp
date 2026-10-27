@@ -225,6 +225,12 @@ void RaytracingGIScene::add_geometry_reads(RD::ComputeListID p_list) const {
 	}
 }
 
+void RaytracingGIScene::append_geometry_buffer_reads(LocalVector<RID> &r_buffers) const {
+	for (RID buffer : geometry_buffers) {
+		r_buffers.push_back(buffer);
+	}
+}
+
 void RaytracingGIScene::append_uniforms(LocalVector<RD::Uniform> &r_uniforms, RID p_sampler) const {
 	r_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE, 0, tlas));
 	r_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, hit_buffer));
@@ -500,12 +506,58 @@ RaytracingGIScene::HitData RaytracingGIScene::build_hit_geometry(const Raytracin
 	return hit;
 }
 
+bool RaytracingGIScene::prepare_geometry(RaytracingGeometry &p_geometry, const GeometryPreparationKey &p_key, GeometryPreparation &r_prepared) {
+	const RaytracingGeometry::Surface *geometry = p_geometry.get_surface(p_key.mesh, p_key.mesh_instance, p_key.surface, true);
+	if (!geometry) {
+		return false;
+	}
+	// The shared geometry map can reallocate on another lookup. Never retain
+	// its borrowed Surface pointer in an instance record or preparation cache.
+	r_prepared.geometry = *geometry;
+	MeshStorage *meshes = MeshStorage::get_singleton();
+	void *surface = meshes->mesh_get_surface(p_key.mesh, p_key.surface);
+	ERR_FAIL_NULL_V(surface, false);
+	r_prepared.source_vertices = meshes->mesh_surface_get_vertex_buffer(surface);
+	r_prepared.source_format = meshes->mesh_surface_get_format(surface);
+	r_prepared.data_revision = meshes->mesh_surface_get_data_revision(surface);
+	r_prepared.pose_revision = p_key.mesh_instance.is_valid() ? meshes->mesh_instance_get_last_change(p_key.mesh_instance, p_key.surface) : 0;
+	r_prepared.normal_buffer = p_key.mesh_instance.is_valid() ? meshes->mesh_instance_get_vertex_buffer(p_key.mesh_instance, p_key.surface) : RID();
+	if (r_prepared.normal_buffer.is_null()) {
+		r_prepared.normal_buffer = r_prepared.source_vertices;
+	}
+	r_prepared.update = material_frame;
+	return true;
+}
+
+bool RaytracingGIScene::same_group_input(const RendererSceneRender::RaytracingGIInstance &p_a, const RendererSceneRender::RaytracingGIInstance &p_b) {
+	return p_a.instance == p_b.instance && p_a.mesh == p_b.mesh && p_a.mesh_instance == p_b.mesh_instance && p_a.multimesh == p_b.multimesh && p_a.element == p_b.element && p_a.group_generation == p_b.group_generation && p_a.group_count == p_b.group_count && p_a.transform == p_b.transform && p_a.material_override == p_b.material_override && p_a.materials == p_b.materials && p_a.uniforms_offset == p_b.uniforms_offset && p_a.layer_mask == p_b.layer_mask && p_a.shadow_surface_mask == p_b.shadow_surface_mask;
+}
+
 void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights) {
 	static const bool trace_motion = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_HISTORY").is_empty();
 	static const bool validate_records = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_SCENE_CACHE") == "1";
 	ready = false;
+	// Any early return after a partial write invalidates retained metadata.
+	// Only a completely prepared, successfully built scene publishes it again.
+	const bool previous_groups_valid = retained_groups_valid;
+	retained_groups_valid = false;
+	retained_group_scratch.clear();
 	feedback_compatible = true;
 	material_frame++;
+	static const bool disable_scene_reuse = OS::get_singleton()->get_environment("GODOT_AMD_GI_DISABLE_SCENE_REUSE") == "1";
+	static const bool trace_scene_reuse = OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_SCENE_REUSE") == "1";
+	uint32_t reused_geometry = 0, prepared_geometry = 0;
+	// Retain allocation for sources used on the preceding update, but never
+	// consume their metadata before refreshing it for this update's inputs.
+	LocalVector<GeometryPreparationKey> expired_geometry;
+	for (const auto &entry : geometry_preparations) {
+		if (disable_scene_reuse || entry.value.update != material_frame - 1) {
+			expired_geometry.push_back(entry.key);
+		}
+	}
+	for (const GeometryPreparationKey &key : expired_geometry) {
+		geometry_preparations.erase(key);
+	}
 	motion_bounds.clear();
 	LocalVector<InstanceState> current_instances;
 	HashSet<RID> reference_geometry_buffers;
@@ -575,14 +627,11 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	LocalVector<RD::AccelerationStructureInstance> &instances = instance_scratch;
 	LocalVector<uint64_t> &geometry_revisions = geometry_revision_scratch;
 	LocalVector<HitData> &hits = hit_scratch;
-	instances.clear();
-	geometry_revisions.clear();
-	hits.clear();
+	uint32_t surface_cursor = 0;
 	const bool emissive_sampling = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/enabled")) && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/emissive_sampling"));
 	LocalVector<EmitterBatch> &emitter_batches = emitter_batch_scratch;
-	emitter_batches.clear();
+	uint32_t emitter_batch_cursor = 0;
 	emitter_count = 0;
-	emissive_ranges.clear();
 	uint32_t resident_pages = 0;
 	uint32_t tile_cursor = 0;
 	uint32_t prepared_pages = 0;
@@ -598,7 +647,149 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	packed_instance_transforms.resize(p_instances.size());
 	uint32_t instance_index = 0;
 	uint32_t repacked_transforms = 0;
-	for (const RendererSceneRender::RaytracingGIInstance &instance : p_instances) {
+	static const bool disable_retained_groups = OS::get_singleton()->get_environment("GODOT_AMD_GI_DISABLE_RETAINED_GROUPS") == "1";
+	static const bool trace_retained_groups = OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_RETAINED_GROUPS") == "1";
+	const bool retain_groups = use_source_materials && !disable_retained_groups && !disable_scene_reuse && !trace_motion && !diagnostic_exclusions_enabled;
+	uint32_t reused_groups = 0, reused_surfaces = 0, oracle_groups = 0, oracle_surfaces = 0, emissive_fallback_surfaces = 0;
+	uint32_t reused_emitter_batches = 0, reused_emitter_triangles = 0, oracle_emitter_batches = 0, oracle_emitter_triangles = 0;
+	uint32_t group_begin = 0, group_end = 0, group_first_instance = 0;
+	RetainedGroup current_group;
+	bool group_active = false, group_oracle = false, group_reused = false;
+	uint32_t oracle_surface_count = 0, oracle_batch_count = 0, oracle_triangle_count = 0, oracle_accepted_instances = 0;
+	LocalVector<RecordRange> changed_surface_ranges, changed_emitter_ranges;
+	auto append_range = [](LocalVector<RecordRange> &r_ranges, uint32_t p_begin, uint32_t p_end) {
+		if (p_begin == p_end) {
+			return;
+		}
+		if (!r_ranges.is_empty() && r_ranges[r_ranges.size() - 1].end == p_begin) {
+			r_ranges[r_ranges.size() - 1].end = p_end;
+		} else {
+			r_ranges.push_back({ p_begin, p_end });
+		}
+	};
+	auto finish_group = [&]() -> bool {
+		if (!group_active) {
+			return true;
+		}
+		current_group.surface_count = surface_cursor - current_group.first_surface;
+		current_group.accepted_instances = instance_index - group_first_instance;
+		current_group.emitter_batches = emitter_batch_cursor - current_group.first_emitter_batch;
+		current_group.emitter_triangles = emitter_count - current_group.first_emitter;
+		if (group_oracle) {
+			ERR_FAIL_COND_V_MSG(current_group.surface_count != oracle_surface_count, false, "AMD GI retained group surface count differs from full reconstruction.");
+			ERR_FAIL_COND_V_MSG(current_group.emitter_batches != oracle_batch_count || current_group.emitter_triangles != oracle_triangle_count || current_group.accepted_instances != oracle_accepted_instances, false, "AMD GI retained group emitter/instance counts differ from full reconstruction.");
+			print_line(vformat("AMD GI retained group oracle: instance=%s multimesh=%s inputs=%d surfaces=%d matches=true batches=%d triangles=%d", current_group.input.instance, current_group.input.multimesh, current_group.input_count, current_group.surface_count, current_group.emitter_batches, current_group.emitter_triangles));
+		}
+		// Groups with exclusions or zero-triangle failures are never silently
+		// reused. Their eligibility continues through the complete current path.
+		current_group.reusable = current_group.reusable && current_group.surface_count == current_group.input_count * uint32_t(current_group.surfaces.size());
+		if (current_group.has_emission && !group_reused && !group_oracle) {
+			emissive_fallback_surfaces += current_group.surface_count;
+		}
+		if (!group_reused && !group_oracle) {
+			append_range(changed_surface_ranges, current_group.first_surface, surface_cursor);
+			append_range(changed_emitter_ranges, current_group.first_emitter_batch, emitter_batch_cursor);
+		}
+		retained_group_scratch.push_back(current_group);
+		return true;
+	};
+	for (uint32_t input_index = 0; input_index < p_instances.size(); input_index++) {
+		const RendererSceneRender::RaytracingGIInstance &instance = p_instances[input_index];
+		if (retain_groups && input_index == group_end) {
+			if (!finish_group()) {
+				return;
+			}
+			group_active = true;
+			group_oracle = false;
+			group_reused = false;
+			group_begin = input_index;
+			group_first_instance = instance_index;
+			current_group = RetainedGroup();
+			current_group.input = instance;
+			current_group.first_surface = surface_cursor;
+			current_group.first_emitter_batch = emitter_batch_cursor;
+			current_group.first_emitter = emitter_count;
+			current_group.emissive_sampling = emissive_sampling;
+			const bool complete_multimesh = instance.multimesh.is_valid() && instance.group_generation != 0 && instance.element == 0 && instance.group_count > 0 && instance.group_count <= p_instances.size() - input_index && p_instances[input_index + instance.group_count - 1].instance == instance.instance && p_instances[input_index + instance.group_count - 1].group_generation == instance.group_generation && p_instances[input_index + instance.group_count - 1].element == instance.group_count - 1;
+			current_group.input_count = complete_multimesh ? instance.group_count : 1;
+			group_end = input_index + current_group.input_count;
+			current_group.reusable = retain_groups && instance.mesh.is_valid() && (instance.multimesh.is_null() || complete_multimesh);
+			const uint32_t group_index = retained_group_scratch.size();
+			const RetainedGroup *previous = previous_groups_valid && group_index < retained_groups.size() ? &retained_groups[group_index] : nullptr;
+			bool reuse = current_group.reusable && previous && previous->reusable && same_group_input(instance, previous->input) && current_group.input_count == previous->input_count && surface_cursor == previous->first_surface && previous->surface_count <= hits.size() - MIN(surface_cursor, hits.size()) && uint32_t(previous->surfaces.size()) == uint32_t(meshes->mesh_get_surface_count(instance.mesh));
+			// Source emitters contain geometry and IDs, not evaluated emission.
+			// Retain them only at the same dense batch/triangle prefixes, including
+			// the sampling mode; earlier membership changes must rebuild offsets.
+			reuse = reuse && previous->emissive_sampling == emissive_sampling && previous->first_emitter_batch == emitter_batch_cursor && previous->first_emitter == emitter_count && emitter_batches.size() == emissive_ranges.size() && emitter_batch_cursor <= emitter_batches.size() && previous->emitter_batches <= emitter_batches.size() - emitter_batch_cursor;
+			// Refresh shared resources in original first-use order. Geometry region
+			// writes need polling; material next_pass can change without a content
+			// revision. Shader code/next_pass and native base contexts cover both.
+			for (uint32_t surface = 0; reuse && surface < uint32_t(previous->surfaces.size()); surface++) {
+				const RetainedSurface &old = previous->surfaces[surface];
+				const RID material = RaytracingGIScene::surface_material(instance, surface);
+				auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(materials->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
+				const bool has_shader = data && data->shader_data;
+				// The owning String keeps shared COW storage alive. Identity avoids
+				// scanning unchanged shader text once per parent; edits still fall
+				// back to complete content equality when the allocation changes.
+				reuse = old.material == material && old.has_shader == has_shader && (!has_shader || ((old.shader_code.ptr() == data->shader_data->code.ptr() || old.shader_code == data->shader_data->code) && old.next_pass == data->next_pass));
+				if (!reuse) {
+					break;
+				}
+				const GeometryPreparationKey key{ instance.mesh, instance.mesh_instance, surface };
+				GeometryPreparation *prepared = geometry_preparations.getptr(key);
+				if (!prepared || prepared->update != material_frame) {
+					GeometryPreparation current;
+					if (!prepare_geometry(p_geometry, key, current)) {
+						return;
+					}
+					prepared = &geometry_preparations.insert(key, current)->value;
+					prepared_geometry++;
+				}
+				reuse = old.geometry == *prepared;
+				if (reuse) {
+					RaytracingMaterialSource::Context context;
+					Error error = source_materials.prepare_surface(material, instance.mesh, surface, context);
+					if (error != OK && error != ERR_UNAVAILABLE) {
+						return;
+					}
+					reuse = error == OK && memcmp(&old.context, &context, sizeof(context)) == 0;
+				}
+			}
+			if (reuse) {
+				current_group = *previous;
+				if (validate_records) {
+					group_oracle = true;
+					oracle_surface_count = previous->surface_count;
+					oracle_batch_count = previous->emitter_batches;
+					oracle_triangle_count = previous->emitter_triangles;
+					oracle_accepted_instances = previous->accepted_instances;
+					oracle_groups++;
+					oracle_surfaces += previous->surface_count;
+					oracle_emitter_batches += previous->emitter_batches;
+					oracle_emitter_triangles += previous->emitter_triangles;
+				} else {
+					if (!source_materials.retain_contexts(previous->surface_count)) {
+						return;
+					}
+					surface_cursor += previous->surface_count;
+					instance_index += previous->accepted_instances;
+					emitter_batch_cursor += previous->emitter_batches;
+					emitter_count += previous->emitter_triangles;
+					diagnostic_accepted_surfaces += previous->surface_count;
+					group_reused = true;
+					reused_groups++;
+					reused_surfaces += previous->surface_count;
+					reused_emitter_batches += previous->emitter_batches;
+					reused_emitter_triangles += previous->emitter_triangles;
+					input_index = group_end - 1;
+					continue;
+				}
+			}
+			if (!group_oracle) {
+				current_group.surfaces.clear();
+			}
+		}
 		// Rejected effects (such as an additive muzzle flare) must not shift the
 		// transform cache for every supported object following them in RID order.
 		PackedInstanceTransform &packed_transform = packed_instance_transforms[instance_index];
@@ -634,7 +825,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			}
 			return;
 		}
-		const uint32_t first_surface = instances.size();
+		const uint32_t first_surface = surface_cursor;
 		for (int surface = 0; surface < meshes->mesh_get_surface_count(instance.mesh); surface++) {
 			RID material = RaytracingGIScene::surface_material(instance, surface);
 			auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(materials->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
@@ -723,20 +914,39 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 					}
 				}
 			}
-			const RaytracingGeometry::Surface *geometry = p_geometry.get_surface(instance.mesh, instance.mesh_instance, surface, true);
-			if (!geometry) {
-				return; // Budget may defer geometry; never trace a partial scene.
+			const GeometryPreparationKey preparation_key{ instance.mesh, instance.mesh_instance, uint32_t(surface) };
+			GeometryPreparation uncached_preparation;
+			GeometryPreparation *preparation = use_source_materials && !disable_scene_reuse ? geometry_preparations.getptr(preparation_key) : nullptr;
+			if (!preparation || preparation->update != material_frame) {
+				if (!prepare_geometry(p_geometry, preparation_key, uncached_preparation)) {
+					if (validate_records) {
+						print_line(vformat("AMD GI retained preparation deferred: instance=%s surface=%d", instance.instance, surface));
+					}
+					return; // Budget may defer geometry; never trace a partial scene.
+				}
+				prepared_geometry++;
+				if (use_source_materials && !disable_scene_reuse) {
+					preparation = &geometry_preparations.insert(preparation_key, uncached_preparation)->value;
+				} else {
+					preparation = &uncached_preparation;
+				}
+			} else {
+				reused_geometry++;
+				if (validate_records) {
+					ERR_FAIL_COND_MSG(!prepare_geometry(p_geometry, preparation_key, uncached_preparation) || !(*preparation == uncached_preparation), "AMD GI shared geometry preparation differs from current uncached source.");
+				}
 			}
+			const RaytracingGeometry::Surface *geometry = &preparation->geometry;
 			const uint32_t triangles = (geometry->index_count ? geometry->index_count : geometry->vertex_count) / 3;
 			// Pack surfaces by 32-triangle rows instead of wasting a full 1024-tile
 			// array layer on every small mesh. Surface IDs still index one hit record.
 			const uint32_t surface_tiles = ((triangles + 31) / 32) * 32;
-			if (triangles == 0 || (capture_surface && tile_cursor + surface_tiles > max_pages * PAGE_TRIANGLES) || (!use_source_materials && instances.size() == MAX_INSTANCES)) {
+			if (triangles == 0 || (capture_surface && tile_cursor + surface_tiles > max_pages * PAGE_TRIANGLES) || (!use_source_materials && surface_cursor == MAX_INSTANCES)) {
 				static const bool trace_failure = !OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_MATERIALS").is_empty();
 				if (trace_failure) {
 					print_line(vformat("GI failed preparation: frame=%d prepared=%d drawn=%d copied=%d tiles=%d limit=%d", material_frame, prepared_pages, drawn_pages, copied_pages, tile_cursor, max_pages * PAGE_TRIANGLES));
 				}
-				WARN_PRINT_ONCE(vformat("RT GI capacity exceeded: requested atlas tiles=%d, available=%d, surface triangles=%d, instances=%d/%d. GI is suppressed, not partially rendered.", tile_cursor + surface_tiles, max_pages * PAGE_TRIANGLES, triangles, instances.size(), MAX_INSTANCES));
+				WARN_PRINT_ONCE(vformat("RT GI capacity exceeded: requested atlas tiles=%d, available=%d, surface triangles=%d, instances=%d/%d. GI is suppressed, not partially rendered.", tile_cursor + surface_tiles, max_pages * PAGE_TRIANGLES, triangles, surface_cursor, MAX_INSTANCES));
 				return;
 			}
 			if (capture_surface) {
@@ -748,15 +958,14 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 			// Copy before another cache request can invalidate the descriptor pointer.
 			RD::AccelerationStructureInstance rd_instance;
 			rd_instance.blas = geometry->blas;
-			void *source_surface = meshes->mesh_get_surface(instance.mesh, uint32_t(surface));
-			const uint64_t data_revision = (!use_source_materials || trace_motion) ? meshes->mesh_surface_get_data_revision(source_surface) : 0;
-			const RID source_vertices = meshes->mesh_surface_get_vertex_buffer(source_surface);
-			const uint64_t pose_revision = (!use_source_materials || trace_motion) && instance.mesh_instance.is_valid() ? meshes->mesh_instance_get_last_change(instance.mesh_instance, surface) : 0;
+			const uint64_t data_revision = (!use_source_materials || trace_motion) ? preparation->data_revision : 0;
+			const RID source_vertices = preparation->source_vertices;
+			const uint64_t pose_revision = (!use_source_materials || trace_motion) ? preparation->pose_revision : 0;
 			if (trace_motion) {
 				state.pose_signature = hash_murmur3_one_64(pose_revision, state.pose_signature);
 			}
 			rd_instance.transform = instance.transform;
-			rd_instance.id = instances.size();
+			rd_instance.id = surface_cursor;
 			rd_instance.mask = 0xFF;
 			// Godot's native clockwise winding requires the Vulkan facing flip.
 			// BLAS front-face classification is independent of instance mirroring.
@@ -881,8 +1090,12 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 					state.content_signature = hash_murmur3_one_float(instance_custom[component], state.content_signature);
 				}
 			}
+			const bool first_retained_input = retain_groups && input_index == group_begin && !group_oracle;
+			const bool writes_emission = data && data->shader_data && data->shader_data->uses_emission;
+			const bool capture_retained_surface = first_retained_input && current_group.reusable;
+			RaytracingMaterialSource::Context base_context;
 			if (use_source_materials) {
-				Error source_error = source_materials.add_surface(material, instance, surface, instance_color, instance_custom);
+				Error source_error = source_materials.add_surface(material, instance, surface, instance_color, instance_custom, capture_retained_surface ? &base_context : nullptr, group_oracle);
 				if (source_error == ERR_UNAVAILABLE) {
 					record_exclusion("unsupported_shader_operation", instance.instance, material, surface, instance.element);
 					continue; // Unsupported shader operations affect only this surface.
@@ -891,28 +1104,63 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 					return;
 				}
 			}
-			instances.push_back(rd_instance);
+			if (group_oracle) {
+				ERR_FAIL_COND_MSG(surface_cursor >= instances.size(), "AMD GI retained AS record count differs from full reconstruction.");
+				const RD::AccelerationStructureInstance &old = instances[surface_cursor];
+				ERR_FAIL_COND_MSG(old.blas != rd_instance.blas || old.transform != rd_instance.transform || old.id != rd_instance.id || old.mask != rd_instance.mask || old.hit_sbt_range != rd_instance.hit_sbt_range || old.flags != rd_instance.flags || geometry_revisions[surface_cursor] != geometry->revision, "AMD GI retained AS record differs from full reconstruction.");
+			}
+			if (surface_cursor == instances.size()) {
+				instances.push_back(rd_instance);
+				geometry_revisions.push_back(geometry->revision);
+			} else {
+				instances[surface_cursor] = rd_instance;
+				geometry_revisions[surface_cursor] = geometry->revision;
+			}
 			diagnostic_accepted_surfaces++;
-			geometry_revisions.push_back(geometry->revision);
+			if (first_retained_input && writes_emission) {
+				current_group.has_emission = true;
+			}
+			if (capture_retained_surface) {
+				RetainedSurface retained;
+				retained.material = material;
+				retained.has_shader = data && data->shader_data;
+				if (retained.has_shader) {
+					retained.shader_code = data->shader_data->code;
+					retained.next_pass = data->next_pass;
+				}
+				retained.geometry = *preparation;
+				retained.context = base_context;
+				current_group.surfaces.push_back(retained);
+			}
 			const bool casts_shadow = surface < 32 ? (instance.shadow_surface_mask & (1u << surface)) != 0 : instance.shadow_surface_mask != 0;
 			uint32_t emitter_base = 0;
 			// Bound the optional light hierarchy independently of geometry. Overflow
 			// remains visible to ordinary hit-emission sampling.
 			if (emissive_sampling && data && data->shader_data && data->shader_data->uses_emission && (use_source_materials || triangles <= 262144u - emitter_count)) {
 				emitter_base = emitter_count + 1u;
-				emissive_ranges.push_back({ instance.instance, instance.mesh, instance.element, uint32_t(surface), emitter_count, triangles });
-				emitter_batches.push_back({ geometry->vertex_buffer, geometry->index_buffer, instance.transform, geometry->vertex_count, geometry->index_stride, triangles, use_source_materials ? rd_instance.id : surface_material.first_tile, emitter_count, geometry->revision, surface_material.pixels_revision });
+				const EmissiveRange range{ instance.instance, instance.mesh, instance.element, uint32_t(surface), emitter_count, triangles };
+				const EmitterBatch batch{ geometry->vertex_buffer, geometry->index_buffer, instance.transform, geometry->vertex_count, geometry->index_stride, triangles, use_source_materials ? rd_instance.id : surface_material.first_tile, emitter_count, geometry->revision, surface_material.pixels_revision };
+				if (group_oracle) {
+					ERR_FAIL_COND_MSG(emitter_batch_cursor >= emitter_batches.size() || emitter_batch_cursor >= emissive_ranges.size(), "AMD GI retained emitter record count differs from full reconstruction.");
+					const EmissiveRange &old_range = emissive_ranges[emitter_batch_cursor];
+					ERR_FAIL_COND_MSG(!(emitter_batches[emitter_batch_cursor] == batch) || !(old_range == range) || old_range.first != range.first || old_range.count != range.count, "AMD GI retained emitter batch/range differs from full reconstruction.");
+				}
+				if (emitter_batch_cursor == emitter_batches.size()) {
+					emitter_batches.push_back(batch);
+					emissive_ranges.push_back(range);
+				} else {
+					emitter_batches[emitter_batch_cursor] = batch;
+					emissive_ranges[emitter_batch_cursor] = range;
+				}
+				emitter_batch_cursor++;
 				emitter_count += triangles;
 			}
 			// Pose buffers can alternate without replacing the mesh. Validate the
 			// current normal source independently of the retained BLAS metadata.
-			const uint64_t source_format = meshes->mesh_surface_get_format(source_surface);
-			RID normal_buffer = instance.mesh_instance.is_valid() ? meshes->mesh_instance_get_vertex_buffer(instance.mesh_instance, surface) : RID();
-			if (normal_buffer.is_null()) {
-				normal_buffer = source_vertices;
-			}
+			const uint64_t source_format = preparation->source_format;
+			const RID normal_buffer = preparation->normal_buffer;
 			const SurfaceGeometryKey geometry_key{ instance.instance, instance.mesh, instance.mesh_instance, geometry->vertex_buffer, geometry->index_buffer, normal_buffer, instance.element, uint32_t(surface), geometry->vertex_count, geometry->index_stride, geometry->revision, source_format };
-			const uint32_t record_index = hits.size();
+			const uint32_t record_index = surface_cursor;
 			if (record_index == surface_geometry_records.size()) {
 				surface_geometry_records.push_back({ geometry_key, build_hit_geometry(*geometry, source_format, normal_buffer) });
 				geometry_buffers_dirty = true;
@@ -978,16 +1226,45 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 				}
 				ERR_FAIL_COND_MSG(!matches, vformat("AMD GI cached hit record differs from uncached preparation at surface %d.", record_index));
 			}
-			hits.push_back(hit);
+			if (group_oracle) {
+				ERR_FAIL_COND_MSG(surface_cursor >= hits.size() || memcmp(&hits[surface_cursor], &hit, sizeof(hit)) != 0, "AMD GI retained hit record differs from full reconstruction.");
+			}
+			if (surface_cursor == hits.size()) {
+				hits.push_back(hit);
+			} else {
+				hits[surface_cursor] = hit;
+			}
+			surface_cursor++;
 		}
 		if (transform_prepared) {
 			instance_index++;
 		}
-		if (trace_motion && instances.size() != first_surface) {
+		if (trace_motion && surface_cursor != first_surface) {
 			current_instances.push_back(state);
 		}
 	}
+	if (!finish_group()) {
+		return;
+	}
+	// Only a completely successful previous scene proves that untouched CPU
+	// ranges match every consumer's published snapshot. A failed partial update
+	// or disabled retention must recover through the original complete checks.
+	static const bool disable_changed_ranges = OS::get_singleton()->get_environment("GODOT_AMD_GI_DISABLE_CHANGED_RANGES") == "1";
+	if (!retain_groups || !previous_groups_valid || disable_changed_ranges) {
+		changed_surface_ranges.clear();
+		changed_emitter_ranges.clear();
+		append_range(changed_surface_ranges, 0, surface_cursor);
+		append_range(changed_emitter_ranges, 0, emitter_batch_cursor);
+	}
+	instances.resize(surface_cursor);
+	geometry_revisions.resize(surface_cursor);
+	hits.resize(surface_cursor);
+	emitter_batches.resize(emitter_batch_cursor);
+	emissive_ranges.resize(emitter_batch_cursor);
 	packed_instance_transforms.resize(instance_index);
+	if (trace_scene_reuse) {
+		print_line(vformat("AMD GI geometry reuse: reused=%d prepared=%d", reused_geometry, prepared_geometry));
+	}
 	static const bool validate_light_storage = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_LIGHT_STORAGE") == "1";
 	if (validate_light_storage) {
 		print_line(vformat("AMD GI transform cache: repacked=%d", repacked_transforms));
@@ -1143,11 +1420,25 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	// static-scene upload and thousands of small updates when objects move.
 	uint32_t first_changed_hit = hits.size();
 	uint32_t last_changed_hit = 0;
-	for (uint32_t i = 0; i < hits.size(); i++) {
-		if (i >= uploaded_hits.size() || memcmp(&hits[i], &uploaded_hits[i], sizeof(HitData)) != 0) {
-			first_changed_hit = MIN(first_changed_hit, i);
-			last_changed_hit = i;
+	const bool full_hit_scan = uploaded_hits.size() != hits.size();
+	for (uint32_t range_index = 0; range_index < (full_hit_scan ? 1u : changed_surface_ranges.size()); range_index++) {
+		const RecordRange range = full_hit_scan ? RecordRange{ 0, hits.size() } : changed_surface_ranges[range_index];
+		for (uint32_t i = range.begin; i < range.end; i++) {
+			if (i >= uploaded_hits.size() || memcmp(&hits[i], &uploaded_hits[i], sizeof(HitData)) != 0) {
+				first_changed_hit = MIN(first_changed_hit, i);
+				last_changed_hit = i;
+			}
 		}
+	}
+	if (validate_records) {
+		uint32_t reference_first = hits.size(), reference_last = 0;
+		for (uint32_t i = 0; i < hits.size(); i++) {
+			if (i >= uploaded_hits.size() || memcmp(&hits[i], &uploaded_hits[i], sizeof(HitData)) != 0) {
+				reference_first = MIN(reference_first, i);
+				reference_last = i;
+			}
+		}
+		ERR_FAIL_COND_MSG(first_changed_hit != reference_first || last_changed_hit != reference_last, "AMD GI changed hit ranges differ from a complete scan.");
 	}
 	if (first_changed_hit < hits.size()) {
 		const uint32_t changed_bytes = (last_changed_hit - first_changed_hit + 1) * sizeof(HitData);
@@ -1163,27 +1454,40 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	// Ordered TLAS IDs index the current hit and material records, and a BLAS
 	// rebuilt at the same RID has new bounds even when its handle is unchanged.
 	bool rebuild_tlas = !tlas_built || built_tlas_instances.size() != instances.size();
-	for (uint32_t i = 0; !rebuild_tlas && i < instances.size(); i++) {
-		const RD::AccelerationStructureInstance &current = instances[i];
-		const RD::AccelerationStructureInstance &built = built_tlas_instances[i];
-		rebuild_tlas = current.blas != built.blas || current.transform != built.transform || current.id != built.id || current.mask != built.mask || current.hit_sbt_range != built.hit_sbt_range || current.flags != built.flags || geometry_revisions[i] != built_tlas_geometry_revisions[i];
+	bool refit_tlas = !rebuild_tlas;
+	if (!rebuild_tlas) {
+		for (const RecordRange &range : changed_surface_ranges) {
+			for (uint32_t i = range.begin; i < range.end; i++) {
+				const RD::AccelerationStructureInstance &current = instances[i];
+				const RD::AccelerationStructureInstance &built = built_tlas_instances[i];
+				const bool same_structure = current.blas == built.blas && current.id == built.id && current.mask == built.mask && current.hit_sbt_range == built.hit_sbt_range && current.flags == built.flags && geometry_revisions[i] == built_tlas_geometry_revisions[i];
+				rebuild_tlas |= !same_structure || current.transform != built.transform;
+				refit_tlas &= same_structure;
+			}
+		}
 	}
-	if (rebuild_tlas) {
-		// Match the reference's transform-only update path. A changed BLAS,
-		// geometry revision, count or instance metadata still takes a full build.
-		bool refit_tlas = tlas_built && built_tlas_instances.size() == instances.size();
-		for (uint32_t i = 0; refit_tlas && i < instances.size(); i++) {
+	if (validate_records) {
+		bool reference_rebuild = !tlas_built || built_tlas_instances.size() != instances.size();
+		bool reference_refit = !reference_rebuild;
+		for (uint32_t i = 0; tlas_built && built_tlas_instances.size() == instances.size() && i < instances.size(); i++) {
 			const RD::AccelerationStructureInstance &current = instances[i];
 			const RD::AccelerationStructureInstance &built = built_tlas_instances[i];
-			refit_tlas = current.blas == built.blas && current.id == built.id && current.mask == built.mask && current.hit_sbt_range == built.hit_sbt_range && current.flags == built.flags && geometry_revisions[i] == built_tlas_geometry_revisions[i];
+			const bool same_structure = current.blas == built.blas && current.id == built.id && current.mask == built.mask && current.hit_sbt_range == built.hit_sbt_range && current.flags == built.flags && geometry_revisions[i] == built_tlas_geometry_revisions[i];
+			reference_rebuild |= !same_structure || current.transform != built.transform;
+			reference_refit &= same_structure;
 		}
+		ERR_FAIL_COND_MSG(rebuild_tlas != reference_rebuild || refit_tlas != reference_refit, "AMD GI changed TLAS ranges differ from a complete scan.");
+	}
+	if (rebuild_tlas) {
+		// Only CPU comparisons are narrowed. Preserve the whole build input and
+		// the device's distinct upload allocation for each queued build/refit.
 		tlas_built = rd->tlas_build(tlas, instances, refit_tlas) == OK;
 		if (tlas_built) {
 			built_tlas_instances = instances;
 			built_tlas_geometry_revisions = geometry_revisions;
 		}
 	}
-	ready = tlas_built && update_emitters(emitter_batches, use_source_materials);
+	ready = tlas_built && update_emitters(emitter_batches, use_source_materials, false, &changed_emitter_ranges);
 	if (ready && validate_records) {
 		const Vector<uint8_t> uploaded = rd->buffer_get_data(hit_buffer, 0, hits.size() * sizeof(HitData));
 		const bool matches = uploaded.size() == int64_t(hits.size() * sizeof(HitData)) && memcmp(uploaded.ptr(), hits.ptr(), uploaded.size()) == 0;
@@ -1206,22 +1510,46 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 		print_line(vformat("AMD GI emitter validation: triangles=%d matches=%s", emitter_count, matches));
 		ERR_FAIL_COND_MSG(!matches, "Incremental emitter records differ from a full rebuild.");
 	}
+	if (ready && retain_groups) {
+		SWAP(retained_groups, retained_group_scratch);
+		retained_groups_valid = true;
+	}
+	if (ready && trace_retained_groups) {
+		print_line(vformat("AMD GI retained groups: groups=%d reused_groups=%d reused_surfaces=%d oracle_groups=%d oracle_surfaces=%d emissive_fallback_surfaces=%d total_surfaces=%d reused_emitter_batches=%d reused_emitter_triangles=%d oracle_emitter_batches=%d oracle_emitter_triangles=%d", retain_groups ? retained_groups.size() : retained_group_scratch.size(), reused_groups, reused_surfaces, oracle_groups, oracle_surfaces, emissive_fallback_surfaces, hits.size(), reused_emitter_batches, reused_emitter_triangles, oracle_emitter_batches, oracle_emitter_triangles));
+	}
 }
 
 // Extract emissive triangle geometry and build a power hierarchy entirely on GPU.
 // Analytic lights occupy a fixed prefix of the same storage binding, keeping the
 // GI shader within the existing 32-storage-buffer device requirement.
-bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batches, bool p_source_materials, bool p_reference) {
+bool RaytracingGIScene::update_emitters(const LocalVector<EmitterBatch> &p_batches, bool p_source_materials, bool p_reference, const LocalVector<RecordRange> *p_changed_ranges) {
 	RD *rd = RD::get_singleton();
 	const bool full_update = !p_source_materials || !emitter_buffer_valid || emitter_uses_source_materials != p_source_materials || previous_emitters.size() != p_batches.size();
 	LocalVector<uint32_t> dirty_batches;
 	bool changed = emitter_uses_source_materials != p_source_materials || previous_emitters.size() != p_batches.size();
-	for (uint32_t i = 0; i < p_batches.size(); i++) {
-		const bool batch_changed = i >= previous_emitters.size() || !(previous_emitters[i] == p_batches[i]);
-		changed |= batch_changed;
-		if (full_update || batch_changed) {
-			dirty_batches.push_back(i);
+	const bool scan_all = full_update || p_changed_ranges == nullptr;
+	for (uint32_t range_index = 0; range_index < (scan_all ? 1u : p_changed_ranges->size()); range_index++) {
+		const RecordRange range = scan_all ? RecordRange{ 0, p_batches.size() } : (*p_changed_ranges)[range_index];
+		for (uint32_t i = range.begin; i < range.end; i++) {
+			const bool batch_changed = i >= previous_emitters.size() || !(previous_emitters[i] == p_batches[i]);
+			changed |= batch_changed;
+			if (full_update || batch_changed) {
+				dirty_batches.push_back(i);
+			}
 		}
+	}
+	static const bool validate_ranges = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_SCENE_CACHE") == "1";
+	if (validate_ranges) {
+		bool reference_changed = emitter_uses_source_materials != p_source_materials || previous_emitters.size() != p_batches.size();
+		uint32_t dirty_index = 0;
+		for (uint32_t i = 0; i < p_batches.size(); i++) {
+			const bool batch_changed = i >= previous_emitters.size() || !(previous_emitters[i] == p_batches[i]);
+			reference_changed |= batch_changed;
+			if (full_update || batch_changed) {
+				ERR_FAIL_COND_V_MSG(dirty_index >= dirty_batches.size() || dirty_batches[dirty_index++] != i, false, "AMD GI changed emitter ranges missed a batch.");
+			}
+		}
+		ERR_FAIL_COND_V_MSG(reference_changed != changed || dirty_index != dirty_batches.size(), false, "AMD GI changed emitter ranges differ from a complete scan.");
 	}
 	static const bool validate_storage = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_LIGHT_STORAGE") == "1";
 	if (validate_storage) {

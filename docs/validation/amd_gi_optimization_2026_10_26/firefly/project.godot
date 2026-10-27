@@ -1,0 +1,13 @@
+config_version=5
+
+[application]
+config/name="AMD GI firefly equivalence"
+config/features=PackedStringArray("4.8", "Forward Plus")
+
+[display]
+window/size/viewport_width=320
+window/size/viewport_height=180
+
+[rendering]
+renderer/rendering_method="forward_plus"
+streamline/enabled=false

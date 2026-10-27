@@ -1,0 +1,104 @@
+> Historical snapshot from `66bd97e00d` before the 2026-10-26 documentation audit. Claims and line numbers may be superseded. Do not use as current configuration guidance.
+
+# Godot Engine — godot-rt fork
+
+> **This is a fork of Godot 4.8-dev.** It adds four things to the Forward+ renderer, independent of
+> each other: hardware ray-traced shadows for `OmniLight3D`, `SpotLight3D` and `DirectionalLight3D`;
+> a second ambient occlusion estimator (ground truth ambient occlusion with a visibility bitmask)
+> alongside the one Godot already ships; a screen space contact shadow for the sun; and NVIDIA
+> Streamline, for DLSS super resolution and frame generation. All four ship off. It is not stock
+> Godot: some `Light3D` node defaults differ, and several renderer behaviors around lights, shadows
+> and volumetric fog differ with them.
+>
+> The documentation is split by kind, so you load only the part a question needs.
+>
+> - **[`CLAUDE.md`](CLAUDE.md)** — start here. What differs from vanilla Godot, and a table saying
+>   which file answers which question. Loaded automatically by AI coding assistants in this repo.
+> - **[`docs/features/`](docs/features/)** — using each feature: settings, defaults, coverage, limits.
+> - **[`docs/internals/`](docs/internals/)** — changing each feature: passes, buffers, invariants.
+> - **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** — indexed by what you can see going wrong.
+> - **[`docs/HISTORY.md`](docs/HISTORY.md)** — what was measured, and which plausible ideas the
+>   numbers refused. Read before re-trying one of them.
+> - **[`docs/PORTING.md`](docs/PORTING.md)** — re-applying the fork to a newer Godot.
+> - **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — how to measure a change, and what the harnesses
+>   cannot tell you.
+>
+> **AMD GI integration is in progress:** [scope and implementation status](docs/AMD_GI_IMPLEMENTATION.md).
+> The first [cached diffuse pipeline](docs/features/amd-gi.md) now runs with sparse probes, multibounce feedback, and denoising. Sky lighting and initial glossy reflections are implemented; full AMD sampling/cache scheduling and shipping performance validation remain unfinished.
+>
+> Everything below is the upstream Godot README.
+
+<p align="center">
+  <a href="https://godotengine.org">
+    <img src="misc/logo/logo_outlined.svg" width="400" alt="Godot Engine logo">
+  </a>
+</p>
+
+## 2D and 3D cross-platform game engine
+
+**[Godot Engine](https://godotengine.org) is a feature-packed, cross-platform
+game engine to create 2D and 3D games from a unified interface.** It provides a
+comprehensive set of [common tools](https://godotengine.org/features), so that
+users can focus on making games without having to reinvent the wheel. Games can
+be exported with one click to a number of platforms, including the major desktop
+platforms (Linux, macOS, Windows), mobile platforms (Android, iOS), as well as
+Web-based platforms and [consoles](https://godotengine.org/consoles).
+
+## Free, open source and community-driven
+
+Godot is completely free and open source under the very permissive [MIT license](https://godotengine.org/license).
+No strings attached, no royalties, nothing. The users' games are theirs, down
+to the last line of engine code. Godot's development is fully independent and
+community-driven, empowering users to help shape their engine to match their
+expectations. It is supported by the [Godot Foundation](https://godot.foundation/)
+not-for-profit.
+
+Before being open sourced in [February 2014](https://github.com/godotengine/godot/commit/0b806ee0fc9097fa7bda7ac0109191c9c5e0a1ac),
+Godot had been developed by [Juan Linietsky](https://github.com/reduz) and
+[Ariel Manzur](https://github.com/punto-) for several years as an in-house
+engine, used to publish several work-for-hire titles.
+
+![Screenshot of a 3D scene in the Godot Engine editor](https://raw.githubusercontent.com/godotengine/godot-design/master/screenshots/editor_tps_demo_1920x1080.jpg)
+
+## Getting the engine
+
+### Binary downloads
+
+Official binaries for the Godot editor and the export templates can be found
+[on the Godot website](https://godotengine.org/download).
+
+### Compiling from source
+
+[See the official docs](https://docs.godotengine.org/en/latest/engine_details/development/compiling)
+for compilation instructions for every supported platform.
+
+## Community and contributing
+
+Godot is not only an engine but an ever-growing community of users and engine
+developers. The main community channels are listed [on the homepage](https://godotengine.org/community).
+
+The best way to get in touch with the core engine developers is to join the
+[Godot Contributors Chat](https://chat.godotengine.org).
+
+To get started contributing to the project, see the [contributing guide](CONTRIBUTING.md).
+This document also includes guidelines for reporting bugs.
+
+## Documentation and demos
+
+The official documentation is hosted on [Read the Docs](https://docs.godotengine.org).
+It is maintained by the Godot community in its own [GitHub repository](https://github.com/godotengine/godot-docs).
+
+The [class reference](https://docs.godotengine.org/en/latest/classes/)
+is also accessible from the Godot editor.
+
+We also maintain official demos in their own [GitHub repository](https://github.com/godotengine/godot-demo-projects)
+as well as a list of [awesome Godot community resources](https://github.com/godotengine/awesome-godot).
+
+There are also a number of other
+[learning resources](https://docs.godotengine.org/en/latest/community/tutorials.html)
+provided by the community, such as text and video tutorials, demos, etc.
+Consult the [community channels](https://godotengine.org/community)
+for more information.
+
+[![Code Triagers Badge](https://www.codetriage.com/godotengine/godot/badges/users.svg)](https://www.codetriage.com/godotengine/godot)
+[![Translate on Weblate](https://hosted.weblate.org/widgets/godot-engine/-/godot/svg-badge.svg)](https://hosted.weblate.org/engage/godot-engine/?utm_source=widget)

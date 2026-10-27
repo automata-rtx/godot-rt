@@ -1,30 +1,20 @@
 # Godot Engine — godot-rt fork
 
-> **This is a fork of Godot 4.8-dev.** It adds four things to the Forward+ renderer, independent of
-> each other: hardware ray-traced shadows for `OmniLight3D`, `SpotLight3D` and `DirectionalLight3D`;
-> a second ambient occlusion estimator (ground truth ambient occlusion with a visibility bitmask)
-> alongside the one Godot already ships; a screen space contact shadow for the sun; and NVIDIA
-> Streamline, for DLSS super resolution and frame generation. All four ship off. It is not stock
-> Godot: some `Light3D` node defaults differ, and several renderer behaviors around lights, shadows
-> and volumetric fog differ with them.
->
-> The documentation is split by kind, so you load only the part a question needs.
->
-> - **[`CLAUDE.md`](CLAUDE.md)** — start here. What differs from vanilla Godot, and a table saying
->   which file answers which question. Loaded automatically by AI coding assistants in this repo.
-> - **[`docs/features/`](docs/features/)** — using each feature: settings, defaults, coverage, limits.
-> - **[`docs/internals/`](docs/internals/)** — changing each feature: passes, buffers, invariants.
-> - **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** — indexed by what you can see going wrong.
-> - **[`docs/HISTORY.md`](docs/HISTORY.md)** — what was measured, and which plausible ideas the
->   numbers refused. Read before re-trying one of them.
-> - **[`docs/PORTING.md`](docs/PORTING.md)** — re-applying the fork to a newer Godot.
-> - **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — how to measure a change, and what the harnesses
->   cannot tell you.
->
-> **AMD GI integration is in progress:** [scope and implementation status](docs/AMD_GI_IMPLEMENTATION.md).
-> The first [cached diffuse pipeline](docs/features/amd-gi.md) now runs with sparse probes, multibounce feedback, and denoising. Sky lighting and initial glossy reflections are implemented; full AMD sampling/cache scheduling and shipping performance validation remain unfinished.
->
-> Everything below is the upstream Godot README.
+Godot 4.8-dev with hardware RT shadows, visibility-bitmask ambient occlusion,
+directional screen-space contact shadows, AMD GI 1.2 integration, and NVIDIA
+Streamline/DLSS. Light defaults and feature compatibility differ from stock Godot.
+
+- **Game authors and testers:** [portable fork notes](GodotForkDocs/FORK_GUIDE.md).
+  Copy the complete `GodotForkDocs` folder into a project; read only relevant guides.
+- **Engine development/rebuilding:** [documentation map](docs/README.md),
+  [porting](docs/PORTING.md), and focused [implementation notes](docs/internals/).
+- **Validation limits and open issues:** [current status](docs/STATUS.md).
+- **AI agents working in this repository:** [workspace instructions](CLAUDE.md).
+
+AMD GI remains experimental. Its source implementation, runtime controls and
+tested scope are documented separately; a build success is not universal quality
+or performance validation. The upstream README below describes Godot generally,
+not the fork's packaged binaries or supported rendering combinations.
 
 <p align="center">
   <a href="https://godotengine.org">

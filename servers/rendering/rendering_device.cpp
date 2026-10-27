@@ -281,6 +281,9 @@ void RenderingDevice::_blas_remove_tlas_dependencies(AccelerationStructure *p_bl
 		ERR_FAIL_COND(tlas->type != ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL);
 
 		tlas->invalidated = true;
+		// A rebuild can change BLAS bounds; a free destroys the driver address
+		// and tracker. Neither may leave the retained CPU preparation usable.
+		tlas->instance_cache_valid = false;
 		tlas->acceleration_structure_dependencies.erase(p_blas_id);
 	}
 
@@ -464,6 +467,23 @@ Error RenderingDevice::blas_build(RID p_blas) {
 	return OK;
 }
 
+static void _rt_report_tlas_cpu(uint64_t p_prepare_usec, uint64_t p_upload_usec, uint64_t p_submit_usec, uint32_t p_instances, uint32_t p_packed, bool p_reused) {
+	static thread_local uint32_t calls = 0;
+	static thread_local uint64_t prepare = 0, upload = 0, submit = 0, instances = 0, packed = 0, reused = 0;
+	prepare += p_prepare_usec;
+	upload += p_upload_usec;
+	submit += p_submit_usec;
+	instances += p_instances;
+	packed += p_packed;
+	reused += p_reused;
+	if (++calls == 120) {
+		print_line(vformat("RT_CPU TLAS over %d calls: prepare=%.3f ms upload=%.3f ms submit=%.3f ms instances=%d packed=%d retained_topology=%d",
+				calls, double(prepare) / calls / 1000.0, double(upload) / calls / 1000.0, double(submit) / calls / 1000.0, instances, packed, reused));
+		calls = 0;
+		prepare = upload = submit = instances = packed = reused = 0;
+	}
+}
+
 Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance> p_instances, bool p_update) {
 	ERR_RENDER_THREAD_GUARD_V(ERR_UNAVAILABLE);
 
@@ -474,6 +494,10 @@ Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance
 	AccelerationStructure *tlas = acceleration_structure_owner.get_or_null(p_tlas);
 	ERR_FAIL_NULL_V_MSG(tlas, ERR_INVALID_PARAMETER, "TLAS argument is not valid.");
 	ERR_FAIL_COND_V_MSG(p_instances.size() > tlas->max_instance_count, ERR_INVALID_PARAMETER, "Exceeded the maximum amount of instances allowed in the TLAS.");
+	static const bool disable_reuse = OS::get_singleton()->get_environment("GODOT_RT_DISABLE_TLAS_REUSE") == "1";
+	static const bool validate_reuse = OS::get_singleton()->get_environment("GODOT_RT_VALIDATE_TLAS_REUSE") == "1";
+	static const bool profile_cpu = OS::get_singleton()->get_environment("GODOT_RT_CPU_PROFILE") == "1";
+	const uint64_t prepare_begin = profile_cpu ? OS::get_singleton()->get_ticks_usec() : 0;
 
 	Error err = _acceleration_structure_scratch_buffer_create(tlas);
 	ERR_FAIL_COND_V(err != OK, err);
@@ -527,52 +551,191 @@ Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance
 
 	AccelerationStructure::InstanceBuffer &instance_buffer = tlas->instance_buffers[instance_buffer_index];
 
-	_tlas_remove_blas_dependencies(tlas, p_tlas);
-
-	thread_local LocalVector<RDG::ResourceTracker *> draw_trackers;
-	draw_trackers.clear();
-
+	thread_local LocalVector<RDG::ResourceTracker *> uncached_draw_trackers;
+	const LocalVector<RDG::ResourceTracker *> *draw_trackers = &tlas->cached_blas_trackers;
+	uint32_t packed_count = 0;
+	bool reused_topology = !disable_reuse && tlas->instance_cache_valid && tlas->cached_instances.size() == p_instances.size();
 	bool all_active = true;
-	for (uint32_t i = 0; i < p_instances.size(); i++) {
-		const AccelerationStructureInstance &rd_instance = p_instances[i];
-		all_active = all_active && rd_instance.blas.is_valid();
-
-		RDD::AccelerationStructureInstance rdd_instance;
-		rdd_instance.transform = rd_instance.transform;
-		rdd_instance.id = rd_instance.id;
-		rdd_instance.mask = rd_instance.mask;
-		rdd_instance.hit_sbt_offset = _decode_hit_sbt_range_offset(rd_instance.hit_sbt_range);
-		rdd_instance.flags = rd_instance.flags;
-
-		if (rd_instance.blas.is_valid()) {
-			ERR_FAIL_COND_V_MSG(!rd_instance.hit_sbt_range, ERR_INVALID_PARAMETER, "Instance " + itos(i) + " has an invalid hit shader binding table range.");
-
-			AccelerationStructure *blas = acceleration_structure_owner.get_or_null(rd_instance.blas);
-			ERR_FAIL_NULL_V(blas, ERR_INVALID_PARAMETER);
-			ERR_FAIL_COND_V(blas->type != RDD::ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL, ERR_INVALID_PARAMETER);
-			ERR_FAIL_COND_V_MSG(blas->invalidated, ERR_INVALID_PARAMETER, "BLAS either has not been built yet, or has been invalidated by an operation and needs to be rebuilt.");
-			rdd_instance.blas = blas->driver_id;
-
-			if (!tlas->acceleration_structure_dependencies.has(rd_instance.blas)) {
-				tlas->acceleration_structure_dependencies.insert(rd_instance.blas);
-				blas->acceleration_structure_dependencies.insert(p_tlas);
-
-				if (blas->draw_tracker != nullptr) {
-					draw_trackers.push_back(blas->draw_tracker);
-				}
+	if (reused_topology) {
+		for (uint32_t i = 0; i < p_instances.size(); i++) {
+			if (tlas->cached_instances[i].blas != p_instances[i].blas) {
+				reused_topology = false;
+				break;
 			}
 		}
-
-		driver->acceleration_structure_instance_write(instance_buffer.data_ptr + instance_buffer_offset + (instance_size * i), rdd_instance);
 	}
+
+	if (disable_reuse) {
+		// Keep the original path available for controlled comparisons.
+		tlas->instance_cache_valid = false;
+		_tlas_remove_blas_dependencies(tlas, p_tlas);
+		uncached_draw_trackers.clear();
+		draw_trackers = &uncached_draw_trackers;
+		for (uint32_t i = 0; i < p_instances.size(); i++) {
+			const AccelerationStructureInstance &rd_instance = p_instances[i];
+			all_active = all_active && rd_instance.blas.is_valid();
+			RDD::AccelerationStructureInstance rdd_instance;
+			rdd_instance.transform = rd_instance.transform;
+			rdd_instance.id = rd_instance.id;
+			rdd_instance.mask = rd_instance.mask;
+			rdd_instance.hit_sbt_offset = _decode_hit_sbt_range_offset(rd_instance.hit_sbt_range);
+			rdd_instance.flags = rd_instance.flags;
+			if (rd_instance.blas.is_valid()) {
+				ERR_FAIL_COND_V_MSG(!rd_instance.hit_sbt_range, ERR_INVALID_PARAMETER, "Instance " + itos(i) + " has an invalid hit shader binding table range.");
+				AccelerationStructure *blas = acceleration_structure_owner.get_or_null(rd_instance.blas);
+				ERR_FAIL_NULL_V(blas, ERR_INVALID_PARAMETER);
+				ERR_FAIL_COND_V(blas->type != RDD::ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL, ERR_INVALID_PARAMETER);
+				ERR_FAIL_COND_V_MSG(blas->invalidated, ERR_INVALID_PARAMETER, "BLAS either has not been built yet, or has been invalidated by an operation and needs to be rebuilt.");
+				rdd_instance.blas = blas->driver_id;
+				if (!tlas->acceleration_structure_dependencies.has(rd_instance.blas)) {
+					tlas->acceleration_structure_dependencies.insert(rd_instance.blas);
+					blas->acceleration_structure_dependencies.insert(p_tlas);
+					if (blas->draw_tracker != nullptr) {
+						uncached_draw_trackers.push_back(blas->draw_tracker);
+					}
+				}
+			}
+			driver->acceleration_structure_instance_write(instance_buffer.data_ptr + instance_buffer_offset + (instance_size * i), rdd_instance);
+		}
+		packed_count = p_instances.size();
+	} else if (reused_topology) {
+		all_active = tlas->cached_instances_all_active;
+		for (uint32_t i = 0; i < p_instances.size(); i++) {
+			const AccelerationStructureInstance &rd_instance = p_instances[i];
+			if (unlikely(rd_instance.blas.is_valid() && !rd_instance.hit_sbt_range)) {
+				tlas->instance_cache_valid = false;
+				ERR_FAIL_V_MSG(ERR_INVALID_PARAMETER, "Instance " + itos(i) + " has an invalid hit shader binding table range.");
+			}
+			RDD::AccelerationStructureInstance &cached = tlas->cached_instances[i].driver_instance;
+			const uint32_t hit_sbt_offset = _decode_hit_sbt_range_offset(rd_instance.hit_sbt_range);
+			// Compare the input representation exactly (including signed zero).
+			// Padding differences can only cause an unnecessary repack.
+			if (memcmp(&cached.transform, &rd_instance.transform, sizeof(Transform3D)) != 0 || cached.id != rd_instance.id || cached.mask != rd_instance.mask || cached.hit_sbt_offset != hit_sbt_offset || cached.flags != rd_instance.flags) {
+				cached.transform = rd_instance.transform;
+				cached.id = rd_instance.id;
+				cached.mask = rd_instance.mask;
+				cached.hit_sbt_offset = hit_sbt_offset;
+				cached.flags = rd_instance.flags;
+				driver->acceleration_structure_instance_write(tlas->cached_instance_bytes.ptr() + instance_size * i, cached);
+				packed_count++;
+			}
+		}
+	} else {
+		// Mark invalid before staging: a validation failure must not expose a
+		// partly replaced cache if a later call returns to the old topology.
+		tlas->instance_cache_valid = false;
+		tlas->cached_instances.resize(p_instances.size());
+		tlas->cached_instance_bytes.resize_uninitialized(instance_buffer_used_size);
+		tlas->cached_blas_trackers.clear();
+		thread_local HashMap<RID, RDD::AccelerationStructureID> validated_blas;
+		validated_blas.clear();
+		for (uint32_t i = 0; i < p_instances.size(); i++) {
+			const AccelerationStructureInstance &rd_instance = p_instances[i];
+			all_active = all_active && rd_instance.blas.is_valid();
+			AccelerationStructure::CachedInstance &cached = tlas->cached_instances[i];
+			cached.blas = rd_instance.blas;
+			RDD::AccelerationStructureInstance &rdd_instance = cached.driver_instance;
+			rdd_instance.transform = rd_instance.transform;
+			rdd_instance.id = rd_instance.id;
+			rdd_instance.mask = rd_instance.mask;
+			rdd_instance.hit_sbt_offset = _decode_hit_sbt_range_offset(rd_instance.hit_sbt_range);
+			rdd_instance.flags = rd_instance.flags;
+			rdd_instance.blas = RDD::AccelerationStructureID();
+			if (rd_instance.blas.is_valid()) {
+				ERR_FAIL_COND_V_MSG(!rd_instance.hit_sbt_range, ERR_INVALID_PARAMETER, "Instance " + itos(i) + " has an invalid hit shader binding table range.");
+				const RDD::AccelerationStructureID *driver_blas = validated_blas.getptr(rd_instance.blas);
+				if (driver_blas != nullptr) {
+					rdd_instance.blas = *driver_blas;
+				} else {
+					AccelerationStructure *blas = acceleration_structure_owner.get_or_null(rd_instance.blas);
+					ERR_FAIL_NULL_V(blas, ERR_INVALID_PARAMETER);
+					ERR_FAIL_COND_V(blas->type != RDD::ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL, ERR_INVALID_PARAMETER);
+					ERR_FAIL_COND_V_MSG(blas->invalidated, ERR_INVALID_PARAMETER, "BLAS either has not been built yet, or has been invalidated by an operation and needs to be rebuilt.");
+					rdd_instance.blas = blas->driver_id;
+					validated_blas.insert(rd_instance.blas, blas->driver_id);
+					if (blas->draw_tracker != nullptr) {
+						tlas->cached_blas_trackers.push_back(blas->draw_tracker);
+					}
+				}
+			}
+			driver->acceleration_structure_instance_write(tlas->cached_instance_bytes.ptr() + instance_size * i, rdd_instance);
+		}
+		// Publish links only after all source references passed validation.
+		_tlas_remove_blas_dependencies(tlas, p_tlas);
+		for (const KeyValue<RID, RDD::AccelerationStructureID> &E : validated_blas) {
+			AccelerationStructure *blas = acceleration_structure_owner.get_or_null(E.key);
+			blas->acceleration_structure_dependencies.insert(p_tlas);
+			tlas->acceleration_structure_dependencies.insert(E.key);
+		}
+		tlas->cached_instances_all_active = all_active;
+		tlas->instance_cache_valid = true;
+		packed_count = p_instances.size();
+	}
+
+	if (validate_reuse && !disable_reuse) {
+		// Reconstruct from current owners, independently of retained handles.
+		thread_local LocalVector<uint8_t> reference_bytes;
+		thread_local HashSet<RID> reference_blas;
+		thread_local LocalVector<RDG::ResourceTracker *> reference_trackers;
+		reference_bytes.resize_uninitialized(instance_buffer_used_size);
+		reference_blas.clear();
+		reference_trackers.clear();
+		for (uint32_t i = 0; i < p_instances.size(); i++) {
+			const AccelerationStructureInstance &rd_instance = p_instances[i];
+			RDD::AccelerationStructureInstance rdd_instance;
+			rdd_instance.transform = rd_instance.transform;
+			rdd_instance.id = rd_instance.id;
+			rdd_instance.mask = rd_instance.mask;
+			rdd_instance.hit_sbt_offset = _decode_hit_sbt_range_offset(rd_instance.hit_sbt_range);
+			rdd_instance.flags = rd_instance.flags;
+			if (rd_instance.blas.is_valid()) {
+				AccelerationStructure *blas = acceleration_structure_owner.get_or_null(rd_instance.blas);
+				ERR_FAIL_NULL_V(blas, ERR_INVALID_PARAMETER);
+				ERR_FAIL_COND_V(blas->type != RDD::ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL || blas->invalidated, ERR_INVALID_PARAMETER);
+				rdd_instance.blas = blas->driver_id;
+				ERR_FAIL_COND_V_MSG(!blas->acceleration_structure_dependencies.has(p_tlas), ERR_BUG, "TLAS reuse oracle: missing reverse dependency.");
+				if (!reference_blas.has(rd_instance.blas)) {
+					reference_blas.insert(rd_instance.blas);
+					if (blas->draw_tracker != nullptr) {
+						reference_trackers.push_back(blas->draw_tracker);
+					}
+				}
+			}
+			driver->acceleration_structure_instance_write(reference_bytes.ptr() + instance_size * i, rdd_instance);
+		}
+		ERR_FAIL_COND_V_MSG(instance_buffer_used_size && memcmp(reference_bytes.ptr(), tlas->cached_instance_bytes.ptr(), instance_buffer_used_size) != 0, ERR_BUG, "TLAS reuse oracle: packed instance mismatch.");
+		ERR_FAIL_COND_V_MSG(reference_blas.size() != tlas->acceleration_structure_dependencies.size(), ERR_BUG, "TLAS reuse oracle: dependency count mismatch.");
+		for (RID blas : reference_blas) {
+			ERR_FAIL_COND_V_MSG(!tlas->acceleration_structure_dependencies.has(blas), ERR_BUG, "TLAS reuse oracle: missing dependency.");
+		}
+		ERR_FAIL_COND_V_MSG(reference_trackers.size() != draw_trackers->size(), ERR_BUG, "TLAS reuse oracle: tracker count mismatch.");
+		for (uint32_t i = 0; i < reference_trackers.size(); i++) {
+			ERR_FAIL_COND_V_MSG(reference_trackers[i] != (*draw_trackers)[i], ERR_BUG, "TLAS reuse oracle: tracker mismatch.");
+		}
+		static thread_local bool reported = false;
+		if (reused_topology && !reported) {
+			print_line("RT TLAS reuse oracle: checked=true");
+			reported = true;
+		}
+	}
+	const uint64_t upload_begin = profile_cpu ? OS::get_singleton()->get_ticks_usec() : 0;
+	if (!disable_reuse && instance_buffer_used_size > 0) {
+		// Always copy the complete data into this call's reserved upload range.
+		// Older mapped ranges can still be read by queued or in-flight builds.
+		memcpy(instance_buffer.data_ptr + instance_buffer_offset, tlas->cached_instance_bytes.ptr(), instance_buffer_used_size);
+	}
+	const uint64_t submit_begin = profile_cpu ? OS::get_singleton()->get_ticks_usec() : 0;
 
 	// Updating requires the original build flags/count and unchanged active
 	// membership. Conservatively rebuild lists containing inactive instances.
 	const bool update = tlas->update_state.can_update(p_update, tlas->allow_update, p_instances.size(), all_active);
-	draw_graph.add_tlas_build(tlas->driver_id, tlas->scratch_buffer, instance_buffer.driver_id, instance_buffer_offset, p_instances.size(), tlas->draw_tracker, draw_trackers, update);
+	draw_graph.add_tlas_build(tlas->driver_id, tlas->scratch_buffer, instance_buffer.driver_id, instance_buffer_offset, p_instances.size(), tlas->draw_tracker, *draw_trackers, update);
 
 	tlas->update_state.record_build(p_instances.size(), all_active);
 	tlas->invalidated = false;
+	if (profile_cpu) {
+		_rt_report_tlas_cpu(upload_begin - prepare_begin, submit_begin - upload_begin, OS::get_singleton()->get_ticks_usec() - submit_begin, p_instances.size(), packed_count, reused_topology);
+	}
 
 	return OK;
 }
@@ -7165,6 +7328,75 @@ void RenderingDevice::compute_list_add_buffer_read(ComputeListID p_list, RID p_b
 	}
 }
 
+Error RenderingDevice::buffer_read_group_prepare(BufferReadGroup &r_group, Span<RID> p_buffers) {
+	// An incomplete group must not retain a previously valid publication.
+	r_group.device = ObjectID();
+	r_group.entries.clear();
+	ERR_RENDER_THREAD_GUARD_V(ERR_UNAUTHORIZED);
+	LocalVector<BufferReadGroup::Entry> entries;
+	entries.reserve(p_buffers.size());
+	for (RID rid : p_buffers) {
+		Buffer *buffer = nullptr;
+		BufferReadGroup::OwnerType owner = BufferReadGroup::STORAGE;
+		if (vertex_buffer_owner.owns(rid)) {
+			buffer = vertex_buffer_owner.get_or_null(rid);
+			owner = BufferReadGroup::VERTEX;
+		} else if (index_buffer_owner.owns(rid)) {
+			buffer = index_buffer_owner.get_or_null(rid);
+			owner = BufferReadGroup::INDEX;
+		} else if (uniform_buffer_owner.owns(rid)) {
+			buffer = uniform_buffer_owner.get_or_null(rid);
+			owner = BufferReadGroup::UNIFORM;
+		} else if (storage_buffer_owner.owns(rid)) {
+			buffer = storage_buffer_owner.get_or_null(rid);
+		}
+		// Texture-buffer handles are views, not supported BDA buffers.
+		ERR_FAIL_NULL_V(buffer, ERR_INVALID_PARAMETER);
+		ERR_FAIL_COND_V(!buffer->usage.has_flag(RDD::BUFFER_USAGE_DEVICE_ADDRESS_BIT), ERR_INVALID_PARAMETER);
+		entries.push_back({ rid, owner });
+	}
+	r_group.entries = std::move(entries);
+	r_group.device = get_instance_id();
+	return OK;
+}
+
+Error RenderingDevice::compute_list_add_buffer_read_group(ComputeListID p_list, const BufferReadGroup &p_group, bool p_validate) {
+	ERR_RENDER_THREAD_GUARD_V(ERR_UNAUTHORIZED);
+	ERR_FAIL_COND_V(p_list != ID_TYPE_COMPUTE_LIST || !compute_list.active, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V(p_group.device != get_instance_id(), ERR_INVALID_PARAMETER);
+	for (const BufferReadGroup::Entry &entry : p_group.entries) {
+		Buffer *buffer = nullptr;
+		switch (entry.owner) {
+			case BufferReadGroup::VERTEX:
+				buffer = vertex_buffer_owner.get_or_null(entry.buffer);
+				break;
+			case BufferReadGroup::INDEX:
+				buffer = index_buffer_owner.get_or_null(entry.buffer);
+				break;
+			case BufferReadGroup::UNIFORM:
+				buffer = uniform_buffer_owner.get_or_null(entry.buffer);
+				break;
+			case BufferReadGroup::STORAGE:
+				buffer = storage_buffer_owner.get_or_null(entry.buffer);
+				break;
+		}
+		ERR_FAIL_NULL_V(buffer, ERR_INVALID_PARAMETER);
+		ERR_FAIL_COND_V(!buffer->usage.has_flag(RDD::BUFFER_USAGE_DEVICE_ADDRESS_BIT), ERR_INVALID_PARAMETER);
+		if (p_validate) {
+			// Independent original lookup exercises full owner resolution without
+			// replacing the batch path or duplicating its graph registrations.
+			ERR_FAIL_COND_V(_get_buffer_from_owner(entry.buffer) != buffer, ERR_BUG);
+		}
+		_check_transfer_worker_buffer(buffer);
+		// Never retain a tracker across replays: an initially immutable buffer
+		// may have become mutable since preparation or the previous segment.
+		if (buffer->draw_tracker != nullptr) {
+			draw_graph.add_compute_list_usage(buffer->draw_tracker, RDG::RESOURCE_USAGE_STORAGE_BUFFER_READ);
+		}
+	}
+	return OK;
+}
+
 void RenderingDevice::compute_list_add_barrier(ComputeListID p_list) {
 	ERR_RENDER_THREAD_GUARD();
 
@@ -7824,6 +8056,11 @@ void RenderingDevice::_free_internal(RID p_id) {
 			_blas_remove_tlas_dependencies(acceleration_structure, p_id);
 		} else if (acceleration_structure->type == ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL) {
 			_tlas_remove_blas_dependencies(acceleration_structure, p_id);
+			// Deferred GPU destruction only needs the native resources, not a
+			// copy of the potentially large CPU preparation cache.
+			acceleration_structure->cached_instances.clear();
+			acceleration_structure->cached_instance_bytes.clear();
+			acceleration_structure->cached_blas_trackers.clear();
 		}
 		RDG::resource_tracker_free(acceleration_structure->draw_tracker);
 		frames[frame].acceleration_structures_to_dispose_of.push_back(*acceleration_structure);

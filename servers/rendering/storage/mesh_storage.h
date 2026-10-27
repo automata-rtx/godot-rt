@@ -159,6 +159,9 @@ public:
 	virtual RID multimesh_get_command_buffer_rd_rid(RID p_multimesh) const;
 	virtual RID multimesh_get_buffer_rd_rid(RID p_multimesh) const;
 	virtual Vector<float> multimesh_get_buffer(RID p_multimesh) const;
+	// Revision of CPU-managed rendered element data, including interpolation
+	// output. Zero means the backend cannot guarantee change tracking.
+	virtual uint64_t multimesh_get_buffer_revision(RID p_multimesh) const { return 0; }
 
 	virtual void multimesh_set_buffer_interpolated(RID p_multimesh, const Vector<float> &p_buffer, const Vector<float> &p_buffer_prev);
 	virtual void multimesh_set_physics_interpolated(RID p_multimesh, bool p_interpolated);

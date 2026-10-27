@@ -80,6 +80,40 @@ private:
 
 	// Per-frame scratch, kept as members to avoid reallocating every frame.
 	LocalVector<RD::AccelerationStructureInstance> instance_scratch;
+	struct PreparedSurfaceKey {
+		RID mesh, mesh_instance;
+		uint32_t surface = 0;
+		bool operator==(const PreparedSurfaceKey &p_other) const {
+			return mesh == p_other.mesh && mesh_instance == p_other.mesh_instance && surface == p_other.surface;
+		}
+	};
+	struct PreparedSurfaceHasher {
+		static uint32_t hash(const PreparedSurfaceKey &p_key) {
+			return hash_murmur3_one_32(p_key.surface, hash_murmur3_one_64(p_key.mesh_instance.get_id(), hash_murmur3_one_64(p_key.mesh.get_id())));
+		}
+	};
+	struct PreparedSurface {
+		RID blas;
+		uint64_t update = 0;
+	};
+	// Copied handles are valid only after resolving their source in this update.
+	// Failed requests are never cached: they retain the original retry behavior.
+	HashMap<PreparedSurfaceKey, PreparedSurface, PreparedSurfaceHasher> prepared_surfaces;
+	uint64_t preparation_update = 0;
+	struct PreparedInstanceSurface {
+		RID blas;
+		uint32_t hash = 0;
+	};
+	struct PreparedInstance {
+		Transform3D transform;
+		uint32_t mask = 0;
+		LocalVector<PreparedInstanceSurface> surfaces;
+	};
+	// Indexed by the current gather order. Reordering only invalidates changed
+	// slots; the aggregate remains order-independent, like the original path.
+	LocalVector<PreparedInstance> prepared_instances;
+	void _reconstruct_instances(const LocalVector<InstanceData> &p_instances, LocalVector<RD::AccelerationStructureInstance> &r_instances);
+	void _pack_prepared_instances();
 
 	// The top level structure only has to be rebuilt when what it describes
 	// changes. A frame where nothing moved and nothing was built rebuilds it for
