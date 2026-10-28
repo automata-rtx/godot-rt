@@ -33,3 +33,18 @@ Remaining hardware acceptance for the game-project agent:
   budget and resolution fixed, including an odd internal size. Check cache overflow.
 - Measure GPU timings and VRAM before choosing a combined preset. Preserve AMD
   defaults until the owner accepts a tuned result.
+
+## Scene-space debug views (2026-10-28)
+
+Added capture/reset/range assertions to check.py. The same nine-pass SPIR-V test
+covers pre-denoiser capture (INTERPOLATE), final display (DEBUG_VIEW), and the
+intervening temporal/spatial passes. These checks passed with the changes based on
+b3ee94d. AMDGI, Forward+ and ProjectSettings C++ objects compiled successfully.
+No target-GPU editor/game visual acceptance has been performed. XML was maintained
+manually, not generated from a newly linked binary.
+
+Hardware acceptance: test views 32–37 and return to 0; check that view switches do
+not reset history or feed visualization colors into GI. Compare 34/35 under repeatable
+light toggles; test sky, odd viewport sizes, denoiser off, GI off, and reflections off.
+At default detail, view 32 must be gray; lowering detail may turn only some regions
+green due to cell quantization. Check editor perspective and orthographic separately.

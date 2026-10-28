@@ -26,7 +26,6 @@ THE SOFTWARE.
 // Cache views are paged atlases of actual occupied tiles: no guessed lookup from
 // a primary surface normal into the directional world cache is performed.
 #if AMD_GI_PASS == PASS_DEBUG_VIEW
-layout(rgba16f, set = 0, binding = 64) uniform restrict writeonly image2D debug_output;
 layout(set = 0, binding = 67) uniform sampler2D debug_reflection;
 
 vec3 debug_heat(float value) {
@@ -62,7 +61,35 @@ void debug_view(ivec2 pixel) {
 		return;
 	}
 	uint mode = frame.debug_options.x;
+	// INTERPOLATE captured this view before temporal/spatial overwrites.
+	if (mode == 34u) {
+		return;
+	}
 	vec3 color = vec3(0);
+	if (mode >= 32u && mode <= 37u) {
+		Pixel value = unpack_pixel(pixels.data[uint(pixel.x) + uint(pixel.y) * params.size.x]);
+		if (value.position.w > 0.0) {
+			if (mode == 32u) {
+				// Geometric footprint, NOT a claim that this directional cache cell is occupied.
+				float size = cache_cell_size(value.position.xyz);
+				float reference_desired = max(distance(params.camera_position.xyz, value.position.xyz) * tan(frame.settings.y * 32.0), frame.settings.x);
+				float reference_size = 0.001 * exp2(floor(log2(1000.0 * reference_desired)));
+				ivec3 cell = ivec3(floor(value.position.xyz / size));
+				float checker = ((cell.x ^ cell.y ^ cell.z) & 1) == 0 ? 0.35 : 0.85;
+				color = checker * (size < reference_size ? vec3(0.1, 1, 0.2) : vec3(1));
+			} else if (mode == 33u) {
+				color = frame.flags.x != 0u ? debug_heat(value.color.w / 64.0) : vec3(0);
+			} else if (mode == 35u) {
+				color = debug_radiance(debug_normalized(value.color) / PI);
+			} else if (mode == 36u) {
+				color = debug_radiance(imageLoad(near_field_lighting, pixel).rgb / PI);
+			} else if (mode == 37u) {
+				color = vec3(clamp(imageLoad(near_field_occlusion, pixel).w, 0.0, 1.0));
+			}
+		}
+		imageStore(debug_output, pixel, vec4(color, 1));
+		return;
+	}
 	if ((mode == 2u || mode == 23u) && frame.options.y == 0u) {
 		// Disabled reflections bind harmless tiny placeholders, never index them
 		// using viewport dimensions or interpret stale buffers from an older run.

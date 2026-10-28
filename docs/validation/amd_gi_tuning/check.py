@@ -88,3 +88,20 @@ for count in (0, 1, 4, 8, 64):
             assert max(base * 1, 1) == max(base, 1)
             assert 1 <= max(base * 0.75, 1) <= max(base, 1)
 print("PASS: production bounds, history wiring, cache coupling, and CPU response/quantization checks")
+
+# Display capture must not overwrite transport/history or require a new image.
+debug_shader = (ROOT / "servers/rendering/renderer_rd/shaders/effects/amd_gi_debug_inc.glsl").read_text()
+assert "if (mode == 34u) {\n\t\treturn;" in debug_shader
+assert "#if AMD_GI_PASS == PASS_INTERPOLATE\n\tif (frame.debug_options.x == 34u)" in GLSL
+assert "size < reference_size" in debug_shader
+assert "value.color.w / 64.0" in debug_shader
+assert "debug_view" not in reset_line
+for filename in (
+    "servers/rendering/renderer_rd/environment/amd_gi.cpp",
+    "servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp",
+):
+    source = (ROOT / filename).read_text()
+    for line in source.splitlines():
+        if 'amd_gi/debug/view"' in line:
+            assert "0, 37" in line
+print("PASS: debug capture stage, view bounds, fixed history scale, and display-only reset contract")

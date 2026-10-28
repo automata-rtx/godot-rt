@@ -10,7 +10,7 @@ Diagnostics are opt-in and do not automatically write capture files.
 const GI := "rendering/global_illumination/amd_gi/"
 
 func choose_debug_view(mode: int) -> void:
-    ProjectSettings.set_setting(GI + "debug/view", clampi(mode, 0, 31))
+    ProjectSettings.set_setting(GI + "debug/view", clampi(mode, 0, 37))
 
 func enable_reports(enabled: bool) -> void:
     ProjectSettings.set_setting(GI + "debug/statistics", enabled)
@@ -72,6 +72,47 @@ GPU readback or exclusion reporting.
 | 24 / 25 / 26 | Shading normals / geometry normals / roughness | Native receiver inputs. |
 | 27 | Previous feedback | Previous outgoing direct, emission, and indirect lighting; black on reset. |
 | 28 / 29 / 30 / 31 | Retained probe radiance / seed age / occupancy / LRU activity | Incoming LRU order. Seed age may predate a radiance update. Gray: unclaimed; blue: reused; green: new/evicted; red: invalid. |
+
+## Scene-space tuning views
+
+Set `debug/view` to these values in the existing overlay; 0 restores normal rendering.
+Switching views does not reset GI or disable its denoiser. These are display-only,
+without synchronous GPU readback. Do not use debug-view frames for performance A/B.
+
+| Value | Display | What to look for |
+| --- | --- | --- |
+| 32 | World cell footprint | Checkerboard on visible surfaces shows the base world-cell size. Green means your distance tuning selected a smaller cell than default; gray means unchanged. This is the geometric footprint, not actual directional cache occupancy or its selected filtering mip. |
+| 33 | Diffuse history | Fixed scale: red = little history, blue = intermediate, green = near 64 retained samples. Black on sky or with diffuse denoising disabled. Shows the retained count after temporal processing, not elapsed frames or the world-cache history setting. |
+| 34 | Diffuse before denoising | This frame's reconstructed diffuse input before the final temporal/spatial denoiser. Already includes cached lighting and probe processing; NOT uncached ground truth. |
+| 35 | Diffuse after denoising | Final diffuse estimate, using the same display exposure as 34. Neither includes material response, direct lighting, ambient addition, or glossy reflections. |
+| 36 | Near-field lighting | Screen-space lighting contribution before final denoising. Inspect changing nearby surfaces and flashlight bounce. |
+| 37 | Near-field occlusion | Raw near-field occlusion amount: white = more occlusion, black = less. This is AMD's input, not VBAO or a literal final brightness multiplier. |
+
+For flashlight lag, switch between 34 and 35 while repeating the same on/off test.
+If both lag, delay already exists before the final denoiser. If only 35 lags,
+that denoiser adds delay. View 33 shows retained history; existing cache views 8/11
+show cache sample counts. These views narrow down the cause; they do not measure
+response time or automatically identify a fault. Keep debug exposure fixed.
+
+For distant patches, use 32 to check whether tuning actually changes cell size at
+the problem surface, then 34/35 to locate when the patch appears, and 37 to inspect
+near-field occlusion. Existing atlas views 9/12 show actual cache filtering/mips.
+
+## Editor viewport
+
+AMD GI is not restricted to running games: the editor's perspective 3D viewport
+uses the same renderer. Enable the RT-shadow startup master before launching the
+editor, then AMD GI; use Vulkan Forward+, MSAA off, and a suitable scene Environment
+without SDFGI/SSIL or visible VoxelGI conflicts. Orthographic views do not run AMD GI.
+Use the scene's actual Environment instead of a different editor preview setup.
+The code path is verified; editor output on target hardware still needs acceptance.
+
+In Project Settings, enable Advanced Settings and search for `amd_gi/debug/view`.
+Select a view there for the editor. Runtime panel changes in a separately running
+game do not change the editor process. Game-only scripts/spawned lights are absent
+unless they execute in the editor; use an authored light to inspect editor response.
+If the editor is idle and not redrawing continuously, history advances only when
+frames render. Editor timings and lighting are not a substitute for gameplay tests.
 
 Cache displays are paged atlases of actual directional 8x8 tiles, not estimated
 lookups over visible surfaces. Coarser mip cells cover larger blocks. Tile expiry

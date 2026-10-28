@@ -345,3 +345,17 @@ full history-reset path, invalidating cache, retained probes, screen and reflect
 history together; they do not change buffer sizes or force pipeline compilation.
 Equal effective settings (including clamped values) do not trigger another reset.
 Shader defaults keep the original equations; no probe/ray budget is increased.
+
+## Tuning visualization capture
+
+Modes 32–37 are documented in the portable debug guide. Mode 34 writes the existing
+binding-64 debug output in INTERPOLATE, before pixels is overwritten by temporal
+and spatial filtering. The final DEBUG_VIEW pass leaves that capture intact.
+Other modes read completed buffers in DEBUG_VIEW. Existing inter-pass barriers
+order these accesses; no added buffer, readback, reset or transport changes.
+The debug image remains full-size only while a compute view is selected. A disabled
+view binds the existing tiny placeholder, which the capture branch must never index.
+Raw/final displays use the same irradiance/PI and debug exposure transfer, excluding
+native material/ambient/glossy terms. The history heatmap uses a fixed 64-sample scale.
+The cell checker is deliberately a geometric visualization, not a guessed directional
+cache lookup. Green compares the current footprint against the default 32-pixel angle.

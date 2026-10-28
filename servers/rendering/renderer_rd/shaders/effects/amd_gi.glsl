@@ -182,6 +182,9 @@ layout(set = 0, binding = 10, std140) uniform Frame {
 	vec4 tuning;
 }
 frame;
+#if AMD_GI_PASS == PASS_INTERPOLATE || AMD_GI_PASS == PASS_DEBUG_VIEW
+layout(rgba16f, set = 0, binding = 64) uniform restrict writeonly image2D debug_output;
+#endif
 #include "amd_gi_debug_counters_inc.glsl"
 uint gi_emitter_storage_offset() {
 	return frame.emitters.y;
@@ -1885,6 +1888,13 @@ void interpolate_pixel(ivec2 pixel, uint id) {
 	}
 	result.color = gi_cache_unpack(gi_cache_pack(result.color));
 	pixels.data[id] = pack_pixel(result);
+#if AMD_GI_PASS == PASS_INTERPOLATE
+	if (frame.debug_options.x == 34u) {
+		// Display only: preserve the pre-temporal value before pixels is overwritten.
+		vec3 value = result.color.rgb / max(result.color.w, 1.0) / PI;
+		imageStore(debug_output, pixel, vec4(pow(max(value * exp2(frame.debug_settings.x), vec3(0)), vec3(1.0 / 2.2)), 1));
+	}
+#endif
 }
 void reproject_pixel(ivec2 pixel, uint id) {
 	Pixel current = unpack_pixel(pixels.data[id]);

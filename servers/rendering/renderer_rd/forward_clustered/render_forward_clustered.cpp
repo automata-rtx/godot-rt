@@ -848,7 +848,7 @@ uint32_t RenderForwardClustered::_setup_environment(const RenderDataRD *p_render
 			ss_flags |= (environment_get_ssr_enabled(p_render_data->environment) || cached_reflections) ? (1 << 2) : 0;
 			ss_flags |= cached_reflections ? (1 << 4) : 0;
 			if (cached_gi) {
-				ss_flags |= uint32_t(CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/view")), 0, 31)) << 8;
+				ss_flags |= uint32_t(CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/view")), 0, 37)) << 8;
 			}
 
 			if (rd.is_valid()) {
@@ -3423,7 +3423,7 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 	RendererSceneRenderRD::_render_buffers_debug_draw(p_render_data);
 
 	RID render_target = rb->get_render_target();
-	const int amd_debug_view = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/view")), 0, 31);
+	const int amd_debug_view = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/view")), 0, 37);
 	const bool native_debug_view = amd_debug_view == 1 || (amd_debug_view >= 18 && amd_debug_view <= 21);
 	if (amd_gi && amd_debug_view != 0 && !native_debug_view && rb->has_texture(SNAME("amd_gi_debug"), SNAME("debug_output"))) {
 		const Size2i rtsize = texture_storage->render_target_get_size(render_target);

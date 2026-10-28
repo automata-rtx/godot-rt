@@ -857,7 +857,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	const uint32_t mark_radius = CLAMP(int(GLOBAL_GET(String("rendering/global_illumination/amd_gi/reflections/firefly_mark_radius_") + radius_suffix)), 0, 16);
 	const uint32_t cleanup_radius = CLAMP(int(GLOBAL_GET(String("rendering/global_illumination/amd_gi/reflections/firefly_cleanup_radius_") + radius_suffix)), 0, 16);
 	const uint32_t reflection_radii = split_radius | (mark_radius << 8) | (cleanup_radius << 16);
-	const uint32_t debug_view = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/view")), 0, 31);
+	const uint32_t debug_view = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/view")), 0, 37);
 	const bool debug_statistics = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/statistics"));
 	const uint32_t reflection_filter_passes = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/filter_passes")), 2, 8);
 	const Size2i reflection_size = reflections ? Size2i((size.x + reflection_stride - 1) / reflection_stride, (size.y + reflection_stride - 1) / reflection_stride) : Size2i(1, 1);
