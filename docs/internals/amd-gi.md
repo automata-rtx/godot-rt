@@ -169,7 +169,7 @@ Disabled resources retain valid tiny bindings where required; inactive shaders
 must not access those placeholders.
 
 `Pass` values must match shader defines and descriptor layouts. The current C++
-ABI asserts a 128-byte push constant and 528-byte frame uniform. Preserve packing,
+ABI asserts a 128-byte push constant and 544-byte frame uniform. Preserve packing,
 integer widths, texture formats, and compile-time pass selection when translating.
 
 `BindingReuse` compares the complete current uniform list once per render: type,
@@ -307,3 +307,41 @@ and logs per-group RID matches for Context/Hit/AS/emitter/count checks;
 `GODOT_AMD_GI_TRACE_RETAINED_GROUPS=1` reports group/surface and emitter reuse counts.
 `GODOT_AMD_GI_DISABLE_RETAINED_GROUPS=1` provides the full-preparation comparison.
 Use those records to establish coverage before measuring with diagnostics off.
+
+## Bounded live tuning
+
+See [the panel integration contract](../../GodotForkDocs/features/amd-gi-tuning.md).
+The owner authorized exposing narrow experimental controls on 2026-10-27;
+reference defaults remain unchanged. `FrameUniform::tuning` (matching GLSL vec4)
+contains cache count, diffuse history scale, distance angular scale, reserved.
+Runtime reads occur inside the existing enabled GI render path. Nonfinite values
+use defaults; finite values are clamped, and cache count is rounded.
+
+Reference evidence at pinned Capsaicin 914b9159:
+- `gi1.h`: `gi1_hash_grid_cache_max_sample_count=16` and
+  `gi1_hash_grid_cache_cell_size=32` are already upstream options.
+- `gi1.comp` cache accumulation and `hash_grid_cache.hlsl` filtered lookup use
+  the SAME max sample count. Our accumulation, lookup, and debug lookup remain linked.
+- `gi1.cpp` converts the cache pixel footprint to an angle using FOV and internal
+  resolution. Scale that 32-pixel footprint inside tan; do not change the separate
+  screen-probe footprint or minimum world-cell size. All cache keys and thin-wall
+  bypass consumers use the shared `cache_cell_size` function.
+- `gi1.comp::ReprojectGI` blends the history allowance from 4 to as much as 64,
+  depending on detected brightness change and screen position. The new scale
+  multiplies that allowance before its minimum-one clamp. It does not alter the
+  brightness-change detector, spatial rejection, or reflection denoiser.
+
+The limits 12–16 and 0.75–1 are conservative engineering bounds (at most a quarter
+reduction), NOT an AMD-documented optimal range. Lower cache count also permits
+fine mip use earlier; lower denoiser allowance can increase spatial filtering while
+history is short. Lower angular footprint can cross a quantization boundary and
+halve actual cell size locally, despite a small slider movement. It also changes
+cache bypass distances. These coupled effects require scene testing.
+
+Response changes are deliberately absent from `configuration_changed`: counts
+adapt through normal accumulation, with no blanket reset. Distance scale joins
+that comparison and is stored per ViewData. Effective changes use the existing
+full history-reset path, invalidating cache, retained probes, screen and reflection
+history together; they do not change buffer sizes or force pipeline compilation.
+Equal effective settings (including clamped values) do not trigger another reset.
+Shader defaults keep the original equations; no probe/ray budget is increased.

@@ -179,6 +179,7 @@ layout(set = 0, binding = 10, std140) uniform Frame {
 	uvec4 reflection_options;
 	uvec4 debug_options;
 	vec4 debug_settings;
+	vec4 tuning;
 }
 frame;
 #include "amd_gi_debug_counters_inc.glsl"
@@ -437,7 +438,7 @@ uint angular_index(vec3 direction, vec3 normal) {
 // GI-1's distance-quantized world tiles and direction-dependent 2D cell layout.
 // Reference bucket/checksum collision search; keys are retained for diagnostics.
 float cache_cell_size(vec3 position) {
-	float desired = max(distance(params.camera_position.xyz, position) * tan(frame.settings.y * 32.0), frame.settings.x);
+	float desired = max(distance(params.camera_position.xyz, position) * tan(frame.settings.y * (32.0 * frame.tuning.z)), frame.settings.x);
 	return 0.001 * exp2(floor(log2(1000.0 * desired)));
 }
 ivec4 cache_key(vec3 position, vec3 direction, float hit_distance, out uvec2 cell) {
@@ -498,7 +499,7 @@ vec4 read_component(uint cell, bool previous, bool indirect) {
 		vec4 value = gi_cache_unpack(indirect ? indirect_cache.data[index] : (previous ? previous_cache.data[index] : cache.data[index]));
 		// GI-1 chooses the finest mip with enough accumulated samples.
 		// A merely nonempty fine cell still contains a noisy single estimate.
-		if (value.w >= 16.0 || mip == 3u) {
+		if (value.w >= frame.tuning.x || mip == 3u) {
 			return vec4(value.rgb / max(value.w, 1.0), value.w);
 		}
 	}
@@ -1469,7 +1470,7 @@ void shade_indirect_hit(uint id) {
 	atomicAdd(pending_indirect_cache.data[index].w, 1u);
 }
 uvec2 blend_hit_samples(uvec2 old, uvec3 sum, uint count) {
-	return gi_cache_pack(gi_cache_accumulate(gi_cache_unpack(old), vec4(vec3(sum) / 1000.0, float(count)), 16.0));
+	return gi_cache_pack(gi_cache_accumulate(gi_cache_unpack(old), vec4(vec3(sum) / 1000.0, float(count)), frame.tuning.x));
 }
 
 void update_indirect(uint cell) {

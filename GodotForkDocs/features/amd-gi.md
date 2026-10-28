@@ -101,3 +101,6 @@ Use [diagnostics and advanced controls](amd-gi-debug.md) for overlay integration
 exclusion reports, cache views, sky comparisons, and reflection tuning. Engine
 maintainers should read `docs/internals/amd-gi.md` and
 `docs/AMD_GI_ADAPTER_DECISIONS.md` in the fork repository before changing transport.
+
+For bounded cache/denoiser responsiveness and distant-detail experiments, see
+[live tuning and game-panel integration](amd-gi-tuning.md). Defaults remain unchanged.

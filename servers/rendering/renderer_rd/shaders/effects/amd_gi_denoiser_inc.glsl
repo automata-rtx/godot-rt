@@ -44,7 +44,7 @@ vec4 gi_denoiser_accumulate(vec4 color, vec4 lighting, vec2 uv, bool sky, bool p
 	}
 	vec2 vignette_uv = uv * (vec2(1.0) - uv.yx);
 	float vignette = pow(15.0 * vignette_uv.x * vignette_uv.y, 0.25);
-	float max_samples = max(mix(4.0, 8.0 * min(abs(lighting.w), 8.0), alpha_blend) * vignette, 1.0);
+	float max_samples = max(mix(4.0, 8.0 * min(abs(lighting.w), 8.0), alpha_blend) * vignette * frame.tuning.y, 1.0);
 	if (lighting.w > max_samples) {
 		lighting *= max_samples / lighting.w;
 	}

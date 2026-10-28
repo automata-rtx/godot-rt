@@ -155,9 +155,10 @@ private:
 		uint32_t reflection_options[4]; // denoiser, split radius, mark radius, cleanup radius
 		uint32_t debug_options[4]; // view, mip, counter flags, age scale
 		float debug_settings[4]; // exposure, sample scale, atlas page, reserved
+		float tuning[4]; // cache history limit, diffuse history scale, distant cell scale, reserved
 	};
 	static_assert(sizeof(PushConstant) == 128);
-	static_assert(sizeof(FrameUniform) == 528);
+	static_assert(sizeof(FrameUniform) == 544);
 	struct BindingReuse {
 		LocalVector<RD::Uniform> uniforms;
 		// Borrowed from UniformSetCacheRD; never free these handles ourselves.
@@ -211,6 +212,7 @@ private:
 		uint32_t configuration = 0;
 		uint32_t cache_buckets = 0;
 		float cell_size = 0;
+		float distant_cell_scale = 1.0f;
 		float continuation = 0;
 		float max_distance = 0;
 		bool valid = false;

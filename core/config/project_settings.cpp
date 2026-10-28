@@ -1881,6 +1881,9 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/reflections/ray_compaction", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/emissive_sampling", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/brdf_sampling", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/tuning/cache_history_updates", PROPERTY_HINT_RANGE, "12,16,1"), 16);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/tuning/denoiser_history_scale", PROPERTY_HINT_RANGE, "0.75,1,0.05"), 1.0);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/tuning/distant_cell_scale", PROPERTY_HINT_RANGE, "0.75,1,0.05"), 1.0);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/minimum_cell_size", PROPERTY_HINT_RANGE, "0.01,1,0.01,or_greater"), 0.1);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/continuation_probability", PROPERTY_HINT_RANGE, "0.05,1,0.05"), 0.3);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/max_distance", PROPERTY_HINT_RANGE, "1,1000000000,0.1,or_greater"), 1000000000.0);

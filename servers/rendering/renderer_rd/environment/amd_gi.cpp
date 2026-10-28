@@ -827,6 +827,15 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	const bool adaptive_sampling = GLOBAL_GET("rendering/global_illumination/amd_gi/adaptive_sampling");
 	const bool probe_cache = GLOBAL_GET("rendering/global_illumination/amd_gi/probe_cache");
 	const bool light_resampling = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/light_resampling"));
+	// Range hints only constrain the editor. Enforce bounds for scripts too;
+	// nonfinite input restores the reference value rather than reaching shaders.
+	const auto bounded_tuning = [](const char *p_name, float p_min, float p_max) {
+		const float value = GLOBAL_GET(p_name);
+		return Math::is_finite(value) ? CLAMP(value, p_min, p_max) : p_max;
+	};
+	const float cache_history_updates = Math::round(bounded_tuning("rendering/global_illumination/amd_gi/tuning/cache_history_updates", 12.0f, 16.0f));
+	const float denoiser_history_scale = bounded_tuning("rendering/global_illumination/amd_gi/tuning/denoiser_history_scale", 0.75f, 1.0f);
+	const float distant_cell_scale = bounded_tuning("rendering/global_illumination/amd_gi/tuning/distant_cell_scale", 0.75f, 1.0f);
 	const float cell_size = MAX(float(GLOBAL_GET("rendering/global_illumination/amd_gi/minimum_cell_size")), 0.01f);
 	const float probability = CLAMP(float(GLOBAL_GET("rendering/global_illumination/amd_gi/continuation_probability")), 0.05f, 1.0f);
 	const float max_distance = MAX(float(GLOBAL_GET("rendering/global_illumination/amd_gi/max_distance")), 1.0f);
@@ -923,13 +932,16 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	}
 	const uint32_t environment_count = p_environment.radiance.is_valid() ? 1u : 0u;
 	const bool light_settings_changed = data->update_light_order(p_scene, environment_count);
-	const bool configuration_changed = data->configuration != configuration || data->cell_size != cell_size || data->continuation != probability || data->max_distance != max_distance || data->reflection_roughness != reflection_roughness || data->reflection_filter_passes != reflection_filter_passes || data->reflection_trace_roughness != reflection_trace_roughness || data->firefly_low != firefly_low || data->firefly_high != firefly_high || data->reflection_radii != reflection_radii;
+	const bool configuration_changed = data->configuration != configuration || data->cell_size != cell_size || data->distant_cell_scale != distant_cell_scale || data->continuation != probability || data->max_distance != max_distance || data->reflection_roughness != reflection_roughness || data->reflection_filter_passes != reflection_filter_passes || data->reflection_trace_roughness != reflection_trace_roughness || data->firefly_low != firefly_low || data->firefly_high != firefly_high || data->reflection_radii != reflection_radii;
 	const bool reset = !data->valid || configuration_changed || light_settings_changed;
 	static const bool trace_history = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_HISTORY").is_empty();
 	if (trace_history && reset) {
 		print_line(vformat("AMD GI reset reasons: frame=%d invalid=%s configuration=%s light_settings=%s", data->frame, !data->valid, configuration_changed, light_settings_changed));
 	}
 	FrameUniform frame = {};
+	frame.tuning[0] = cache_history_updates;
+	frame.tuning[1] = denoiser_history_scale;
+	frame.tuning[2] = distant_cell_scale;
 	frame.options[0] = sky_sampling;
 	frame.options[1] = reflections;
 	frame.reflection_options[0] = reflection_mode;
@@ -1583,6 +1595,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	data->previous_exposure = p_exposure;
 	data->configuration = configuration;
 	data->cell_size = cell_size;
+	data->distant_cell_scale = distant_cell_scale;
 	data->continuation = probability;
 	data->max_distance = max_distance;
 	data->reflection_roughness = reflection_roughness;

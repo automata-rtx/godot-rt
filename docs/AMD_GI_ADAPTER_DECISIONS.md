@@ -50,3 +50,12 @@ The shutdown cleanup fix is implemented; older investigation-only restrictions a
 historical. Program-run permissions are governed by the current conversation, not
 an old dated approval diary. Prepared fixtures and CPU/source proofs are not proof
 of GPU acceptance; retain that distinction in future completion claims.
+
+## Owner-authorized bounded tuning (2026-10-27)
+
+Expose cache response, diffuse denoiser history allowance, and distant cache detail
+for live experiments, keeping AMD defaults. Engine and future GUI must constrain
+ranges. No new default preset, intermediate probe scheduler, larger cache, or panel
+scene is authorized by this implementation. See the rationale in
+[internals](internals/amd-gi.md#bounded-live-tuning) and
+[game integration](../GodotForkDocs/features/amd-gi-tuning.md).

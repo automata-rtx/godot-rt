@@ -109,3 +109,6 @@ The engine fixture `docs/validation/shadow_validation/amd_gi_options.tscn` cover
 live changes, all 32 display values, and 36 sampler/filter combinations. A prepared
 fixture is not a recorded passing GPU result. Separate shader compilation/layout
 checks from visual acceptance when evaluating a build.
+
+For bounded cache/denoiser responsiveness and distant-detail experiments, see
+[live tuning and game-panel integration](amd-gi-tuning.md). Defaults remain unchanged.

@@ -48,7 +48,7 @@ vec4 debug_filtered_cell(uint tile, uvec2 coord, bool indirect, out uint selecte
 	for (uint mip = 0u; mip < 4u; mip++) {
 		value = debug_cell(tile, coord, mip, indirect);
 		selected_mip = mip;
-		if (value.w >= 16.0 || mip == 3u) {
+		if (value.w >= frame.tuning.x || mip == 3u) {
 			break;
 		}
 	}
