@@ -12,6 +12,7 @@ relevant route below; do not load all feature notes, history or proof logs.
 | Implemented versus runtime-validated | [Status](docs/STATUS.md) |
 | Renderer regression checks | [Validation](docs/VALIDATION.md) |
 | AMD algorithm changes | [Adapter decisions](docs/AMD_GI_ADAPTER_DECISIONS.md) |
+| Frozen AMD GI baseline / proposed improvements | [Snapshot and candidates](docs/AMD_GI_IMPROVEMENT_CANDIDATES.md); planning only |
 | Owner-specific game scope or testing rules | [Project scope](docs/PROJECT_SCOPE.md) |
 | Prior measured/refuted approaches | [Historical index](docs/history/README.md); search a specific topic only |
 
