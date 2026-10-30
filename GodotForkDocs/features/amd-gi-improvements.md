@@ -28,6 +28,12 @@ the GI denoiser **on**. Compare the same frame after a light change, not just
 settled images. FSR2 Native AA is reserved for final presentation comparisons.
 Disable VBAO while diagnosing. Do not infer GPU timings from cloud CPU rendering.
 
+The [FPS refinement](../../docs/validation/amd_gi_improvements/FPS_REFINEMENT.md)
+keeps the same controls. Response detects smaller changes in dark bounce and
+shortens history more effectively when change is confirmed. Flashlight bounce
+responds sooner, with some additional noise. Tested scheduler and cache-transition
+alternatives did not justify changing their current values.
+
 See [validation](../../docs/validation/amd_gi_improvements/README.md) for what was
 actually exercised and remaining acceptance. These are not yet recommended
 shipping defaults or a claim that flashlight/reflection artifacts are resolved.

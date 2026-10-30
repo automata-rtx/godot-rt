@@ -7,6 +7,11 @@ See [controls](../GodotForkDocs/features/amd-gi-improvements.md) and
 [validation](validation/amd_gi_improvements/README.md); implementation is not
 shipping-quality acceptance or target-hardware performance evidence.
 
+The [sequential FPS refinement](validation/amd_gi_improvements/FPS_REFINEMENT.md)
+compares multiple configurations of each candidate. It selects stronger confirmed
+response, retaining the current scheduling and transition policies after testing
+alternatives. No shipping defaults change.
+
 ## Frozen baseline
 
 - Commit: `1c069bd46ab7aaf8fef76591d5c788d913babad2`.

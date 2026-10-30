@@ -23,9 +23,11 @@ paths are certified. Controls: [portable guide](../GodotForkDocs/FORK_GUIDE.md).
 
 The owner-authorized three [GI improvement experiments](validation/amd_gi_improvements/README.md)
 are implemented behind independent, default-off switches. Linux builds, shader
-checks, and software-Vulkan response/coverage/lifecycle captures exist. Response
-improves in the controlled fixture with some additional temporal variation; the
-combined scheduler was refined after an adverse interaction. This is not target-GPU
+checks, and software-Vulkan response/coverage/lifecycle captures exist. The
+[sequential FPS refinement](validation/amd_gi_improvements/FPS_REFINEMENT.md)
+selects more responsive history after comparing five variants; scheduling and
+cache-transition alternatives did not justify changes. Synthetic mixed-lighting,
+flashlight, motion and polished-weapon tests expose the remaining noise tradeoff. This is not target-GPU
 performance acceptance or a claim that the reported game artifacts are resolved.
 
 - Reflections became more stable, but the owner still reports excessive blur and

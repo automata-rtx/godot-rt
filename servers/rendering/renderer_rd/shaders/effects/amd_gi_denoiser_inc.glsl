@@ -34,7 +34,7 @@ vec4 gi_denoiser_accumulate(vec4 color, vec4 lighting, vec2 uv, bool sky, bool p
 	if ((frame.options.z & 1u) != 0u && !sky && color.w > 0.0 && lighting.w > 1.0) {
 		// Consume the upstream confidence before adding this frame. Merely
 		// clamping the count after accumulation would retain the same old mean.
-		float limit = mix(64.0, 3.0, clamp(response, 0.0, 1.0));
+		float limit = gi_response_history_limit(response);
 		lighting *= min(1.0, limit / lighting.w);
 	}
 	float alpha_blend = 1.0;

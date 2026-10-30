@@ -24,6 +24,10 @@ fi
 display_pid=$!
 trap 'kill "$display_pid" 2>/dev/null || true' EXIT
 sleep 1
+if ! kill -0 "$display_pid" 2>/dev/null; then
+    cat "$output/display.log"
+    exit 1
+fi
 "$binary" --path "$repo/docs/validation/shadow_validation" --rendering-driver vulkan --audio-driver Dummy --windowed --resolution "$resolution" --fixed-fps 60 "res://$rig.tscn" > "$output/render.log" 2>&1
 rg 'IMPROVEMENTS(_LIFECYCLE)? complete' "$output/render.log"
 if rg -q 'ERROR:|SCRIPT ERROR|Shader compilation failed' "$output/render.log"; then

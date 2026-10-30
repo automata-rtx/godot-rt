@@ -6,7 +6,7 @@ uint gi_response_update(uint state, float old_luma, float new_luma) {
 	uint confidence = state >> 4u;
 	confidence -= min(confidence, 1u);
 	float delta = new_luma - old_luma;
-	float threshold = max(0.35 * max(old_luma, new_luma), 0.02);
+	float threshold = max(0.35 * max(old_luma, new_luma), 0.002);
 	uint streak = 0u;
 	if (abs(delta) > threshold) {
 		uint direction = delta < 0.0 ? 8u : 0u;
@@ -24,6 +24,13 @@ float gi_response_confidence(uint state) {
 uint gi_response_decay(uint state) {
 	uint confidence = state >> 4u;
 	return ((confidence - min(confidence, 1u)) << 4u) | (state & 15u);
+}
+float gi_response_history_limit(float confidence) {
+	// Confidence blends the influence of the fresh observation, rather than
+	// sample counts. A small but coherent response must survive interpolation
+	// across many probes; linearly blending counts leaves almost all history.
+	float confirmed = clamp(confidence, 0.0, 1.0);
+	return 1.0 / mix(1.0 / 65.0, 1.0 / 4.0, confirmed * confirmed) - 1.0;
 }
 float gi_cache_detail_blend(float count, float threshold) {
 	return smoothstep(0.75 * threshold, threshold, count);

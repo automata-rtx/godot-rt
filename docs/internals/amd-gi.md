@@ -30,7 +30,10 @@ cache storage. No ABI size or new descriptor is required. Response state uses
 `normal.w`, and the unused upper half of `StoredPixel.delta`. Clear new/reused tile
 metadata, preserve response during reprojection, and keep confidence separate from
 sample counts. The exact original accumulation/scheduling paths remain under zero
-flags. [Validation](../validation/amd_gi_improvements/README.md) owns evidence and
+flags. The selected response refinement uses a 0.002 absolute detection floor
+and squared-confidence interpolation of fresh-sample weight (history endpoints
+64 and 3); see [FPS evidence](../validation/amd_gi_improvements/FPS_REFINEMENT.md).
+[Validation](../validation/amd_gi_improvements/README.md) owns evidence and
 limits; do not infer target-GPU speed or quality from these source contracts.
 
 Paths are relative to the engine root. Abbreviated `shaders/`, `storage_rd/`

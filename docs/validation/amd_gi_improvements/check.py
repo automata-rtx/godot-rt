@@ -23,6 +23,8 @@ test = r"""
 using uint = unsigned;
 using std::min;
 using std::max;
+using std::clamp;
+float mix(float a, float b, float t) { return a + (b-a)*t; }
 float smoothstep(float a, float b, float x) {
     x = std::clamp((x-a)/(b-a), 0.0f, 1.0f);
     return x*x*(3-2*x);
@@ -87,6 +89,21 @@ int main() {
         }
         for (int i=0; i<15; ++i) state=gi_response_update(state, 2, 2);
         assert(gi_response_confidence(state)==0);
+    }
+    // Dim real changes still need persistent evidence; sub-floor noise does not.
+    state=0;
+    for (int i=0; i<3; ++i) state=gi_response_update(state, 0.003f, 0.012f);
+    assert(gi_response_confidence(state)==1);
+    state=0;
+    for (int i=0; i<30; ++i) state=gi_response_update(state, 0.0001f, 0.0008f);
+    assert(gi_response_confidence(state)==0);
+    // The response cap preserves both original endpoints and interpolates the
+    // fresh observation's weight. It never creates negative history evidence.
+    for (int i=0; i<=100; ++i) {
+        float c=float(i)/100;
+        float count=gi_response_history_limit(c);
+        assert(count>=2.999f && count<=64.001f);
+        assert(std::abs(1/(count+1)-mix(1.0f/65,1.0f/4,c*c))<1e-6f);
     }
     // The entry/exit of the transition has zero slope and no brightness jump.
     for (float threshold : {12.0f, 16.0f}) {

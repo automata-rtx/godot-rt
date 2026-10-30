@@ -5,6 +5,12 @@ The frozen tag/branch still point to `1c069bd46ab7aaf8fef76591d5c788d913babad2`.
 All three [public switches](../../../GodotForkDocs/features/amd-gi-improvements.md)
 default off. This is an experimental checkpoint, not shipping or hardware acceptance.
 
+The subsequent [FPS refinement suite](FPS_REFINEMENT.md) is the latest evidence:
+actual flashlight visibility, mixed lighting, camera/NPC motion, muzzle flashes,
+emissive hazards and polished weapon stress. Results below describe the initial
+controlled-room checkpoint; that fixture changes indirect light energy, not the
+visible flashlight beam. Do not label its light-off captures as actual beam-off.
+
 ## Implementation
 
 - **Response:** three consecutive significant luminance observations confirm brightening/darkening;
