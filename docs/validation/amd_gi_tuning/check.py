@@ -44,8 +44,12 @@ with tempfile.TemporaryDirectory() as folder:
     subprocess.run(["c++", "-std=c++17", str(path / "check.cpp"), "-o", str(path / "check")], check=True)
     subprocess.run([str(path / "check")], check=True)
 
-# Prevent accidentally unlinking mip confidence from the accumulation limit.
-assert "float(count)), frame.tuning.x)" in GLSL
+# The original path keeps mip confidence coupled to the configured limit.
+# The separately opt-in response experiment can lower its current evidence.
+blend_body = GLSL.split("uvec2 blend_hit_samples(", 1)[1].split("void update_indirect(", 1)[0]
+assert "float maximum_count = frame.tuning.x;" in blend_body
+assert "if ((frame.options.z & 1u) != 0u && count > 0u)" in blend_body
+assert "gi_cache_accumulate(history, update, maximum_count)" in blend_body
 assert "value.w >= frame.tuning.x || mip" in GLSL
 assert (
     "value.w >= frame.tuning.x || mip"

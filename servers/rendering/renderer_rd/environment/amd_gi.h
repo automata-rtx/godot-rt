@@ -151,7 +151,7 @@ private:
 		float glossy[4]; // low roughness threshold, firefly low/high thresholds, exposure scale
 		uint32_t motion[4]; // swept bound count, all-hit updates, diffuse feedback, reserved
 		uint32_t emitters[4]; // emitter count, physical uvec4 offset, appended glossy queue offset, compact glossy dispatch
-		uint32_t options[4]; // sky sampling, reserved
+		uint32_t options[4]; // sky sampling, reflections enabled, improvement flags, reserved
 		uint32_t reflection_options[4]; // denoiser, split radius, mark radius, cleanup radius
 		uint32_t debug_options[4]; // view, mip, counter flags, age scale
 		float debug_settings[4]; // exposure, sample scale, atlas page, reserved
@@ -210,6 +210,7 @@ private:
 		uint32_t frame = 0;
 		uint32_t index = 0;
 		uint32_t configuration = 0;
+		uint32_t improvements = 0;
 		uint32_t cache_buckets = 0;
 		float cell_size = 0;
 		float distant_cell_scale = 1.0f;

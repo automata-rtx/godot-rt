@@ -1,8 +1,11 @@
 # Frozen AMD GI baseline and improvement candidates
 
-Recorded 2026-10-30. Planning only: no algorithm changes are implemented or
-approved by this document. The owner requested a snapshot and documentation;
-further brainstorming and implementation are separate tasks.
+Recorded 2026-10-30. The owner subsequently authorized implementation of the three
+main candidates. Experimental implementations live on `feature/amdgi-improvements`,
+behind independent switches defaulting off. The frozen refs below are unchanged.
+See [controls](../GodotForkDocs/features/amd-gi-improvements.md) and
+[validation](validation/amd_gi_improvements/README.md); implementation is not
+shipping-quality acceptance or target-hardware performance evidence.
 
 ## Frozen baseline
 
@@ -125,14 +128,16 @@ pipeline, not a published or benchmarked AMD/Split RC improvement.
 
 Implement and measure candidates separately before combining them. Preserve the
 frozen baseline, AMD defaults, feature-off resource behavior, and a selectable
-original algorithm. These proposals still require explicit owner approval before
-implementation under the existing deviation policy.
+original algorithm. The owner authorized this first package; deferred proposals
+still require separate approval under the existing deviation policy.
 
 - Compare flashlight on/off and movement; require improvement in both directions.
 - Check unchanged dim areas, flickering hazards, disocclusion, moving objects,
   camera cuts, and sustained movement for noise, trails, or update starvation.
 - Exercise multibounce, reflections, retained probes, adaptive sampling, odd
   viewport sizes, feature toggles, multiple views, and DLSS/FSR integration.
+- Use native resolution without FSR2/TAA for diagnosis; reserve FSR2 Native AA
+  for final result presentations, per the owner's later instruction.
 - Use the default quarter-sample budget with denoising enabled. Match scenes,
   resolution, exposure, and other rendering settings; isolate VBAO when diagnosing.
 - Measure GPU time and VRAM as well as visual quality on the 5090 and 780M.

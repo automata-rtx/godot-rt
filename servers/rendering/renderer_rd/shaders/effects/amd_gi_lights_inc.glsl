@@ -390,6 +390,25 @@ vec3 reservoir_material_albedo(vec3 value) {
 	vec3 scale = vec3(31, 63, 31);
 	return pow(vec3(uvec3(pow(clamp(value, 0.0, 1.0), vec3(1.0 / 2.2)) * scale)) / scale, vec3(2.2));
 }
+bool gi_confirm_unlit_analytic_hit(RayHit ray) {
+	// Response-only zero certification, not an alternative light estimator.
+	// No proposal can mean either missing information or genuine darkness.
+	// With only a small analytic-light set, prove the latter at the ACTUAL hit
+	// using every unshadowed contribution. No rays, stochastic lights, sky, or
+	// zero-valued random emissive texels can be mistaken for this certificate.
+	if ((frame.options.z & 1u) == 0u || gi_environment_count() != 0u || frame.emitters.x != 0u || params.light_count > 8u) {
+		return false;
+	}
+	for (uint light = 0u; light < params.light_count; light++) {
+		vec3 direction;
+		float distance;
+		vec3 value = gi_light_target_normal(ray, ray.geometry_normal.xyz, light, vec2(0), 4.0 * PI / (8.0 * 12000.0), direction, distance);
+		if (dot(abs(value), vec3(1)) != 0.0) {
+			return false;
+		}
+	}
+	return true;
+}
 vec3 resampled_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_cell) {
 	update_cell = false;
 	vec3 shading_normal = ray.normal_mask.xyz;
@@ -441,6 +460,12 @@ vec3 resampled_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_c
 		gi_reservoir_merge(candidates[i], sample_params, target, 1.0 / max(pdf, 1.1754943508222875e-38), 1.0, selected, selected_params, selected_target, weight, confidence, rng);
 	}
 	if (confidence <= 0.0 || !(weight < 3.402823466e38)) {
+		if (valid == 0u && gi_confirm_unlit_analytic_hit(ray)) {
+			update_cell = true;
+			if (frame.motion.y != 0u && hit_id != INVALID && hit_id >= primary_ray_count()) {
+				hit_samples.data[hit_id].links.w = uint(ray.position.w < cache_cell_size(ray.position.xyz));
+			}
+		}
 		return vec3(0);
 	}
 	update_cell = true;
@@ -527,7 +552,11 @@ vec3 shade_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_cell)
 	if ((hit_id == INVALID || hit_id < primary_ray_count()) && dot(ray.emission.rgb, ray.emission.rgb) > 0.0) {
 		return vec3(0);
 	}
-	return gi_light_count() > 0u ? resampled_direct(ray, rng, hit_id, update_cell) : vec3(0);
+	if (gi_light_count() > 0u) {
+		return resampled_direct(ray, rng, hit_id, update_cell);
+	}
+	update_cell = gi_confirm_unlit_analytic_hit(ray);
+	return vec3(0);
 }
 
 vec3 shade_direct(RayHit ray, inout uint rng, uint hit_id) {

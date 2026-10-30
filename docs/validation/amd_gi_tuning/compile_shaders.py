@@ -8,6 +8,7 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--compiler", default="glslangValidator")
+parser.add_argument("--all-passes", action="store_true")
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[3] / "servers/rendering/renderer_rd/shaders/effects"
 
@@ -24,7 +25,8 @@ GISourceMaterial gi_source_material_filtered(uint instance, uint primitive, vec2
 s = s.replace("#GLOBALS", stub)
 temporary = tempfile.TemporaryDirectory()
 folder = Path(temporary.name)
-for stage in [1, 19, 27, 32, 40, 41, 42, 43, 57]:
+stages = list(range(59)) if args.all_passes else [1, 19, 27, 32, 40, 41, 42, 43, 57]
+for stage in stages:
     path = folder / "gi_tuning.comp"
     path.write_text(s.replace("#VERSION_DEFINES", f"#define AMD_GI_PASS {stage}"))
     r = subprocess.run(
@@ -45,6 +47,6 @@ for stage in [1, 19, 27, 32, 40, 41, 42, 43, 57]:
     if r.returncode:
         print(r.stdout, r.stderr)
         raise SystemExit(r.returncode)
-print("PASS: nine affected GLSL passes compile to SPIR-V (constant material stub, no GPU execution)")
+print(f"PASS: {len(stages)} GLSL passes compile to SPIR-V (constant material stub, no GPU execution)")
 
 temporary.cleanup()

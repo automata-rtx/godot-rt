@@ -862,6 +862,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	const uint32_t reflection_filter_passes = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/filter_passes")), 2, 8);
 	const Size2i reflection_size = reflections ? Size2i((size.x + reflection_stride - 1) / reflection_stride, (size.y + reflection_stride - 1) / reflection_stride) : Size2i(1, 1);
 	const uint32_t configuration = uint32_t(multibounce) | (uint32_t(denoiser) << 1) | (uint32_t(importance_sampling) << 2) | (uint32_t(adaptive_sampling) << 3) | (uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/emissive_sampling"))) << 4) | (uint32_t(reflection_fireflies) << 5) | (uint32_t(brdf_sampling) << 6) | (sky_sampling << 7);
+	const uint32_t improvements = uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/improvements/responsive_history"))) | (uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/improvements/demand_scheduling"))) << 1) | (uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/improvements/cache_transitions"))) << 2);
 	Ref<ViewData> data;
 	if (p_buffers->has_custom_data(RB_SCOPE_AMD_GI)) {
 		data = p_buffers->get_custom_data(RB_SCOPE_AMD_GI);
@@ -870,7 +871,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		data.instantiate();
 		p_buffers->set_custom_data(RB_SCOPE_AMD_GI, data);
 	}
-	if (data->size != size || data->stride != stride || data->probe_cache != probe_cache || data->light_resampling != light_resampling || data->multibounce != multibounce || data->reflection_stride != reflection_stride || data->screen_feedback != screen_feedback || data->cache_all_hits != cache_all_hits || data->cache_buckets != cache_buckets || data->reflection_mode != reflection_mode) {
+	if (data->size != size || data->stride != stride || data->probe_cache != probe_cache || data->light_resampling != light_resampling || data->multibounce != multibounce || data->reflection_stride != reflection_stride || data->screen_feedback != screen_feedback || data->cache_all_hits != cache_all_hits || data->cache_buckets != cache_buckets || data->reflection_mode != reflection_mode || ((data->improvements ^ improvements) & 1u) != 0u) {
 		data->free_data();
 		p_buffers->clear_context(RB_SCOPE_AMD_GI);
 		data->size = size;
@@ -897,8 +898,10 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 			data->radiance[i] = rd->storage_buffer_create(probe_count * 64 * 8);
 			data->pixels[i] = rd->storage_buffer_create(size.x * size.y * 32); // position, R10 normal, half delta and half4 color/count
 			if (i == 0) {
-				data->cache[i] = rd->storage_buffer_create(cells * 8);
-				data->indirect_cache[i] = rd->storage_buffer_create(multibounce ? cells * 8 : 16);
+				// Packed response metadata is absent on the original AMD path.
+				const uint32_t cache_bytes = cells * 8 + ((improvements & 1u) != 0u ? cache_tiles * 88 : 0);
+				data->cache[i] = rd->storage_buffer_create(cache_bytes);
+				data->indirect_cache[i] = rd->storage_buffer_create(multibounce ? cache_bytes : 16);
 			} else {
 				data->indirect_cache[i] = rd->storage_buffer_create(multibounce ? cache_tiles * 64 * 16 : 16);
 			}
@@ -933,7 +936,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	const uint32_t environment_count = p_environment.radiance.is_valid() ? 1u : 0u;
 	const bool light_settings_changed = data->update_light_order(p_scene, environment_count);
 	const bool configuration_changed = data->configuration != configuration || data->cell_size != cell_size || data->distant_cell_scale != distant_cell_scale || data->continuation != probability || data->max_distance != max_distance || data->reflection_roughness != reflection_roughness || data->reflection_filter_passes != reflection_filter_passes || data->reflection_trace_roughness != reflection_trace_roughness || data->firefly_low != firefly_low || data->firefly_high != firefly_high || data->reflection_radii != reflection_radii;
-	const bool reset = !data->valid || configuration_changed || light_settings_changed;
+	const bool reset = !data->valid || configuration_changed || light_settings_changed || data->improvements != improvements;
 	static const bool trace_history = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_HISTORY").is_empty();
 	if (trace_history && reset) {
 		print_line(vformat("AMD GI reset reasons: frame=%d invalid=%s configuration=%s light_settings=%s", data->frame, !data->valid, configuration_changed, light_settings_changed));
@@ -942,6 +945,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	frame.tuning[0] = cache_history_updates;
 	frame.tuning[1] = denoiser_history_scale;
 	frame.tuning[2] = distant_cell_scale;
+	frame.options[2] = improvements;
 	frame.options[0] = sky_sampling;
 	frame.options[1] = reflections;
 	frame.reflection_options[0] = reflection_mode;
@@ -1594,6 +1598,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	data->previous_camera = p_camera;
 	data->previous_exposure = p_exposure;
 	data->configuration = configuration;
+	data->improvements = improvements;
 	data->cell_size = cell_size;
 	data->distant_cell_scale = distant_cell_scale;
 	data->continuation = probability;

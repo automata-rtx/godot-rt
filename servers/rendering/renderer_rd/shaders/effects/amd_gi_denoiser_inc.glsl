@@ -30,7 +30,13 @@ vec4 gi_denoiser_remove_nans(vec4 color) {
 	return color;
 }
 
-vec4 gi_denoiser_accumulate(vec4 color, vec4 lighting, vec2 uv, bool sky, bool previous_uv_valid, inout float color_delta, out float blur_mask) {
+vec4 gi_denoiser_accumulate(vec4 color, vec4 lighting, vec2 uv, bool sky, bool previous_uv_valid, float response, inout float color_delta, out float blur_mask) {
+	if ((frame.options.z & 1u) != 0u && !sky && color.w > 0.0 && lighting.w > 1.0) {
+		// Consume the upstream confidence before adding this frame. Merely
+		// clamping the count after accumulation would retain the same old mean.
+		float limit = mix(64.0, 3.0, clamp(response, 0.0, 1.0));
+		lighting *= min(1.0, limit / lighting.w);
+	}
 	float alpha_blend = 1.0;
 	if (!sky && previous_uv_valid && color.w > 0.0) {
 		float luma_a = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));

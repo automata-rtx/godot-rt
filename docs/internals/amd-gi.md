@@ -22,6 +22,17 @@ are necessary adapters; this is not a claim of bit-identical output to Capsaicin
 
 ## Source map
 
+The owner-authorized [improvement experiments](../../GodotForkDocs/features/amd-gi-improvements.md)
+use `FrameUniform.options[2]` bits 0/1/2; `options[1]` remains the reflection-enable
+flag. All bits default zero. Toggling a bit resets history; bit 0 also reallocates
+cache storage. No ABI size or new descriptor is required. Response state uses
+88 trailing bytes per cache tile (packed atomic byte updates), unused probe
+`normal.w`, and the unused upper half of `StoredPixel.delta`. Clear new/reused tile
+metadata, preserve response during reprojection, and keep confidence separate from
+sample counts. The exact original accumulation/scheduling paths remain under zero
+flags. [Validation](../validation/amd_gi_improvements/README.md) owns evidence and
+limits; do not infer target-GPU speed or quality from these source contracts.
+
 Paths are relative to the engine root. Abbreviated `shaders/`, `storage_rd/`
 and environment filenames in the table are under `servers/rendering/renderer_rd/`.
 Use symbols rather than historical line numbers.

@@ -51,6 +51,9 @@ vec4 debug_filtered_cell(uint tile, uvec2 coord, bool indirect, out uint selecte
 			break;
 		}
 	}
+	if ((frame.options.z & 4u) != 0u) {
+		value.rgb = read_component(tile * TILE_CELLS + coord.x + 8u * coord.y, false, indirect).rgb * max(value.w, 1.0);
+	}
 	return value;
 }
 vec3 debug_normalized(vec4 value) {

@@ -3160,6 +3160,15 @@
 		<member name="rendering/global_illumination/amd_gi/importance_sampling" type="bool" setter="" getter="" default="true">
 			Guides diffuse screen-probe rays using reprojected radiance and the surface cosine. The number of primary rays is unchanged; sampling and reconstruction add work, so this is not a measured performance preset. If [code]false[/code], uses stratified angular samples. Cells without reusable history and black distributions fall back to stratified samples. Changes apply at run time and reset cache/history state. GI denoising is controlled separately by [member rendering/global_illumination/amd_gi/denoiser].
 		</member>
+		<member name="rendering/global_illumination/amd_gi/improvements/cache_transitions" type="bool" setter="" getter="" default="false">
+			Experimental smooth admission of fine world-cache lighting near AMD's sample threshold. Blends only an eligible fine cell and its immediate parent. May soften detail or admit noise earlier; adds cache reconstruction arithmetic without extra rays or persistent storage. Changes apply at run time and reset GI history for controlled comparisons. Disable all [code]improvements[/code] switches to select the original AMD algorithms.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/improvements/demand_scheduling" type="bool" setter="" getter="" default="false">
+			Experimental local screen-probe selection favoring missing history, confirmed lighting changes, and overdue probes. Keeps the configured maximum primary-ray budget and within-probe jitter. Adds bounded local selection work; equal ray counts do not guarantee equal GPU time. Lighting-change priority uses [member rendering/global_illumination/amd_gi/improvements/responsive_history] when enabled. Changes apply at run time and reset GI history.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/improvements/responsive_history" type="bool" setter="" getter="" default="false">
+			Experimental coordinated response to repeated lighting changes in the world cache, screen probes, and diffuse denoiser. Reduces old evidence locally, then gradually restores stability. Can increase noise if stochastic lighting is mistaken for a real change. Adds packed metadata and cache bandwidth, with no additional rays. At the default cache capacity, metadata uses 22 MiB for direct lighting and another 22 MiB with multibounce. Changes apply at run time, reallocate cache resources, and reset GI history. Disabled by default pending quality and target-GPU validation.
+		</member>
 		<member name="rendering/global_illumination/amd_gi/light_resampling" type="bool" setter="" getter="" default="false">
 			Enables reuse of up to four compatible previous hit reservoirs from AMD's separate spatial hash. Fresh GridStream resampled importance sampling remains active when this is disabled. Analytic lights, emissive triangles and the environment share the proposal distribution. Disabling releases temporal reservoir records and hash storage. Changes apply at run time and reset history.
 		</member>

@@ -21,6 +21,13 @@ paths are certified. Controls: [portable guide](../GodotForkDocs/FORK_GUIDE.md).
 
 ## Open project observations
 
+The owner-authorized three [GI improvement experiments](validation/amd_gi_improvements/README.md)
+are implemented behind independent, default-off switches. Linux builds, shader
+checks, and software-Vulkan response/coverage/lifecycle captures exist. Response
+improves in the controlled fixture with some additional temporal variation; the
+combined scheduler was refined after an adverse interaction. This is not target-GPU
+performance acceptance or a claim that the reported game artifacts are resolved.
+
 - Reflections became more stable, but the owner still reports excessive blur and
   face-specific artifacts during forward/backward movement; strafing shows much
   less of the problem. Thin faces and the player-facing magazine were earlier

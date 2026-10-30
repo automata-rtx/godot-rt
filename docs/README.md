@@ -10,7 +10,7 @@ Audited against `66bd97e00d`, 2026-10-26. Load one route, not this entire tree.
 | Rebuild the fork on a later Godot version | [Porting](PORTING.md) |
 | Change shared RT/GI geometry or native source-material evaluation | [RT implementation](internals/rt-shadows.md), [material integration](internals/rt-materials.md) |
 | Change AMD GI algorithms, scheduling or diagnostics | [GI implementation](internals/amd-gi.md), [approved adapter decisions](AMD_GI_ADAPTER_DECISIONS.md) |
-| Restore the frozen AMD GI baseline or review proposed improvements | [Snapshot and candidates](AMD_GI_IMPROVEMENT_CANDIDATES.md); not implemented |
+| Restore frozen AMD GI or work on optional improvements | [Snapshot and candidates](AMD_GI_IMPROVEMENT_CANDIDATES.md), [controls](../GodotForkDocs/features/amd-gi-improvements.md) |
 | Change VBAO, contact shadows or DLSS | `internals/ambient-occlusion.md`, `internals/screen-space-shadows.md`, `internals/dlss.md` |
 | Validate an engine modification | [Validation](VALIDATION.md) |
 | Work on this owner's personal project | [Project scope](PROJECT_SCOPE.md); not part of the portable pack |

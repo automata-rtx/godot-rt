@@ -25,6 +25,19 @@ in [the archive](history/AMD_GI_ARCHIVE.md); they are not the current feature li
 
 ## Corrections and adapters to preserve
 
+The owner authorized the three [improvement candidates](AMD_GI_IMPROVEMENT_CANDIDATES.md)
+on 2026-10-30. They are opt-in experiments, not changes to the pinned AMD default.
+The original path remains selectable with all improvement switches false. This
+authorization does not extend to the deferred algorithms in that document.
+
+The response experiment distinguishes absent samples from certified zero lighting.
+Only when no proposal exists, with no sampled sky/emitter lights and at most eight
+analytic lights, it may evaluate every unshadowed contribution at the actual hit.
+If every contribution is exactly zero, a zero observation is valid. No visibility
+rays or positive-light estimator weights are changed. Unknown/nonfinite results
+are not certified. This is part of confirming darkness before reducing history;
+it is not permission to turn arbitrary failed sampling into black lighting.
+
 | Contract | Reason |
 | --- | --- |
 | Transform hit shading and geometry normals to world space exactly once. | Source review found missing/double transforms; their distinct roles still matter. |

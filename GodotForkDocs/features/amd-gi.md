@@ -6,6 +6,10 @@ Godot materials, lights, scene changes, and Vulkan. It is not a general replacem
 for every Godot GI feature. Start with the defaults below; there is no validated
 universal performance preset.
 
+The [optional improvement experiments](amd-gi-improvements.md) add live, independent
+response/scheduling/cache-transition switches. They default off and preserve the
+original algorithm as the comparison baseline.
+
 ## Enable it
 
 1. Use **Vulkan Forward+**, a perspective camera, a single view, an Environment

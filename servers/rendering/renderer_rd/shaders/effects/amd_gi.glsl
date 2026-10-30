@@ -218,6 +218,7 @@ struct Pixel {
 	vec4 position;
 	vec4 normal_delta;
 	vec4 color;
+	float response;
 };
 struct StoredPixel {
 	vec4 position;
@@ -227,11 +228,11 @@ struct StoredPixel {
 };
 StoredPixel pack_pixel(Pixel value) {
 	uvec3 n = uvec3(round(clamp(value.normal_delta.xyz * 0.5 + 0.5, 0.0, 1.0) * 1023.0));
-	return StoredPixel(value.position, n.x | (n.y << 10u) | (n.z << 20u), packHalf2x16(vec2(value.normal_delta.w, 0)), gi_cache_pack(value.color));
+	return StoredPixel(value.position, n.x | (n.y << 10u) | (n.z << 20u), packHalf2x16(vec2(value.normal_delta.w, value.response)), gi_cache_pack(value.color));
 }
 Pixel unpack_pixel(StoredPixel value) {
 	vec3 normal = value.position.w > 0.0 ? vec3(uvec3(value.normal, value.normal >> 10u, value.normal >> 20u) & 1023u) / 1023.0 * 2.0 - 1.0 : vec3(0);
-	return Pixel(value.position, vec4(normal, unpackHalf2x16(value.delta).x), gi_cache_unpack(value.color));
+	return Pixel(value.position, vec4(normal, unpackHalf2x16(value.delta).x), gi_cache_unpack(value.color), unpackHalf2x16(value.delta).y);
 }
 
 layout(set = 0, binding = 11, std430) restrict buffer Probes {
@@ -341,6 +342,7 @@ const uint INVALID = 0xffffffffu;
 #define TILE_COUNT (frame.cache_config.x * frame.cache_config.y)
 const uint TILE_CELLS = 85u;
 const uint MIP_OFFSET[4] = uint[](0u, 64u, 80u, 84u);
+#include "amd_gi_response_inc.glsl"
 
 uint pcg(uint v) {
 	v = v * 747796405u + 2891336453u;
@@ -496,6 +498,7 @@ vec4 read_component(uint cell, bool previous, bool indirect) {
 	uint tile = cell / TILE_CELLS;
 	uint local = cell % TILE_CELLS;
 	uvec2 coord = uvec2(local % 8u, local / 8u);
+	vec4 finer = vec4(0);
 	for (uint mip = 0u; mip < 4u; mip++) {
 		uvec2 p = coord >> mip;
 		uint index = tile * TILE_CELLS + MIP_OFFSET[mip] + p.x + p.y * (8u >> mip);
@@ -503,8 +506,16 @@ vec4 read_component(uint cell, bool previous, bool indirect) {
 		// GI-1 chooses the finest mip with enough accumulated samples.
 		// A merely nonempty fine cell still contains a noisy single estimate.
 		if (value.w >= frame.tuning.x || mip == 3u) {
-			return vec4(value.rgb / max(value.w, 1.0), value.w);
+			vec3 result = value.rgb / max(value.w, 1.0);
+			if ((frame.options.z & 4u) != 0u && finer.w > 0.0 && value.w > 0.0) {
+				// Only the immediate child near AMD's sufficiency threshold is
+				// admitted. Empty cells never become black lighting estimates.
+				float blend = gi_cache_detail_blend(finer.w, frame.tuning.x);
+				result = mix(result, finer.rgb / max(finer.w, 1.0), blend);
+			}
+			return vec4(result, value.w);
 		}
+		finer = value.w > 0.75 * frame.tuning.x ? value : vec4(0);
 	}
 	return vec4(0);
 }
@@ -731,6 +742,8 @@ shared uint prefix_scan[4096];
 shared float sampling_cdf[64];
 shared float sampling_total;
 shared vec4 radiance_backup;
+shared vec4 response_sum[64];
+shared float probe_response;
 uvec2 pack_probe_radiance(vec4 value) {
 	// Only screen-probe reprojection distance is bounded. World hit positions,
 	// ray extents, RGB, sample counts and estimator weights stay unchanged.
@@ -838,6 +851,9 @@ void reproject_probe(uint probe, uint lane) {
 		probes.data[probe].position = vec4(p.xyz, reused_probe != INVALID ? 1.0 : 0.0);
 		probe_mask.data[probe] = reused_probe != INVALID ? probe : INVALID;
 		probes.data[probe].normal = n;
+		if ((frame.options.z & 1u) != 0u && reused_probe != INVALID) {
+			probes.data[probe].normal.w = float(gi_response_decay(uint(previous_probes.data[reused_probe].normal.w)));
+		}
 		queues.data[cached_heads_offset() + probe] = INVALID;
 		queues.data[eviction_owners_offset() + probe] = 0u;
 		probes.data[probe].state = uvec4(tile * 8u + (candidate_lane == INVALID ? uvec2(0) : uvec2(candidate_lane % 8u, candidate_lane / 8u)), reused_probe == INVALID ? 0u : previous_probes.data[reused_probe].state.z, reused_probe);
@@ -931,15 +947,55 @@ void select_probe(uint slot) {
 	uvec2 seed = min(region * frame.grid.z + jitter, params.size - 1u);
 	uint selected = probe_index(ivec2(seed / 8u));
 	vec3 p, n;
-	bool found = surface(ivec2(seed), p, n);
 	uint span = frame.grid.z / 8u;
+	bool protected_slot = false;
+	if ((frame.options.z & 2u) != 0u && span > 1u) {
+		// Bounded local search, with an age deadline ahead of all demand.
+		// Preserve the original low-discrepancy offset inside each 8x8 tile.
+		float best = -1.0;
+		for (uint y = 0u; y < span; y++) {
+			for (uint x = 0u; x < span; x++) {
+				uvec2 tile = region * span + uvec2(x, y);
+				uint candidate = probe_index(ivec2(tile));
+				if (candidate == INVALID) {
+					continue;
+				}
+				Probe other = probes.data[candidate];
+				uvec2 sample_pixel = min(tile * 8u + (jitter & 7u), params.size - 1u);
+				vec3 sample_p, sample_n;
+				if (!surface(ivec2(sample_pixel), sample_p, sample_n)) {
+					// Sky jitter should not starve a thin, previously valid tile.
+					sample_pixel = other.state.xy;
+					if (other.position.w == 0.0 || !surface(ivec2(sample_pixel), sample_p, sample_n)) {
+						continue;
+					}
+				}
+				uint age = params.padding - other.state.z;
+				bool overdue = other.position.w > 0.0 && age >= span * span;
+				float change = gi_response_confidence(uint(other.normal.w));
+				float score = gi_probe_priority(age, span, other.position.w == 0.0, change);
+				// Keep AMD's jitter choice as the tie breaker, avoiding a fixed
+				// top-left bias on newly visible surfaces.
+				if (candidate == selected) {
+					score += 0.25;
+				}
+				if (score > best) {
+					best = score;
+					seed = sample_pixel;
+					protected_slot = overdue || (change > 0.5 && age > 1u);
+				}
+			}
+		}
+		selected = probe_index(ivec2(seed / 8u));
+	}
+	bool found = surface(ivec2(seed), p, n);
 	spawn.data[slot] = uvec4(found ? selected : INVALID, seed, INVALID);
 	bool reusable = found && probes.data[selected].position.w > 0.0;
 	if (frame.tracing.z == 0u) {
 		return;
 	}
 	uint count = frame.grid.x * frame.grid.y;
-	if (reusable) {
+	if (reusable && !protected_slot) {
 		uint index = atomicAdd(queues.counts.y, 1u);
 		queues.data[count + index] = slot;
 	}
@@ -1157,7 +1213,7 @@ void trace_probe(uint slot, uint lane) {
 		spawn_normal = vec4(n, 0);
 		probes.data[probe].position = spawn_position;
 		probe_mask.data[probe] = spawn_position.w > 0.0 ? probe : INVALID;
-		probes.data[probe].normal = spawn_normal;
+		probes.data[probe].normal.xyz = spawn_normal.xyz;
 		probes.data[probe].state = uvec4(spawn.data[slot].yz, params.padding, slot);
 	}
 	barrier();
@@ -1218,6 +1274,14 @@ void allocate_tile(uint id) {
 		uint old = atomicCompSwap(keys.data[t].state.x, 0u, hash);
 		if (old == 0u) {
 			keys.data[t].key = key;
+			if ((frame.options.z & 1u) != 0u) {
+				for (uint word = 0u; word < 11u; word++) {
+					cache.data[TILE_COUNT * TILE_CELLS + t * 11u + word] = uvec2(0);
+					if (params.bounces != 0u) {
+						indirect_cache.data[TILE_COUNT * TILE_CELLS + t * 11u + word] = uvec2(0);
+					}
+				}
+			}
 			uint packed_index = atomicAdd(keys.occupied[params.padding & 1u], 1u);
 			keys.data[TILE_COUNT + packed_index].key[params.padding & 1u] = int(t);
 			// New tiles initialize mip zero; the subsequent mip passes rebuild
@@ -1472,8 +1536,20 @@ void shade_indirect_hit(uint id) {
 	atomicAdd(pending_indirect_cache.data[index].z, quantized.z);
 	atomicAdd(pending_indirect_cache.data[index].w, 1u);
 }
-uvec2 blend_hit_samples(uvec2 old, uvec3 sum, uint count) {
-	return gi_cache_pack(gi_cache_accumulate(gi_cache_unpack(old), vec4(vec3(sum) / 1000.0, float(count)), frame.tuning.x));
+uvec2 blend_hit_samples(uint cell, bool indirect, uvec2 old, uvec3 sum, uint count) {
+	vec4 history = gi_cache_unpack(old);
+	vec4 update = vec4(vec3(sum) / 1000.0, float(count));
+	float maximum_count = frame.tuning.x;
+	if ((frame.options.z & 1u) != 0u && count > 0u) {
+		uint state = history.w > 0.0 ? gi_response_update(gi_cache_response(cell, indirect), luma(history.rgb / max(history.w, 1.0)), luma(update.rgb / update.w)) : 0u;
+		gi_store_cache_response(cell, indirect, state);
+		// Reduce actual evidence before accumulation. Do not preserve a large
+		// count while replacing its mean with an insufficiently sampled value.
+		float limit = mix(frame.tuning.x, 3.0, gi_response_confidence(state));
+		history *= min(1.0, limit / max(history.w, 1.0));
+		maximum_count = min(maximum_count, limit + 1.0);
+	}
+	return gi_cache_pack(gi_cache_accumulate(history, update, maximum_count));
 }
 
 void update_indirect(uint cell) {
@@ -1483,7 +1559,7 @@ void update_indirect(uint cell) {
 	}
 	uint index = (cell / TILE_CELLS) * 64u + local;
 	uvec4 pending = pending_indirect_cache.data[index];
-	indirect_cache.data[cell] = blend_hit_samples(indirect_cache.data[cell], pending.xyz, pending.w);
+	indirect_cache.data[cell] = blend_hit_samples(cell, true, indirect_cache.data[cell], pending.xyz, pending.w);
 	pending_indirect_cache.data[index] = uvec4(0);
 }
 void update_cell(uint cell) {
@@ -1494,21 +1570,21 @@ void update_cell(uint cell) {
 		uint index = (cell / TILE_CELLS) * 64u + cell % TILE_CELLS;
 		uvec4 pending = pending_direct_cache.data[index];
 		if (keys.data[cell / TILE_CELLS].state.y == params.padding) {
-			cache.data[cell] = blend_hit_samples(previous_cache.data[cell], pending.xyz, pending.w);
+			cache.data[cell] = blend_hit_samples(cell, false, previous_cache.data[cell], pending.xyz, pending.w);
 		}
 		return;
 	}
 	uint owner = owners.data[cell];
 	if (owner == INVALID) {
 		if (keys.data[cell / TILE_CELLS].state.y == params.padding) {
-			cache.data[cell] = blend_hit_samples(previous_cache.data[cell], uvec3(0), 0u);
+			cache.data[cell] = blend_hit_samples(cell, false, previous_cache.data[cell], uvec3(0), 0u);
 		}
 		return;
 	}
 	uint state = gi_random(owner);
 	bool valid_update;
 	vec3 value = shade_direct(owned_hit(owner), state, owner, valid_update);
-	cache.data[cell] = blend_hit_samples(previous_cache.data[cell], gi_cache_quantize(value), valid_update ? 1u : 0u);
+	cache.data[cell] = blend_hit_samples(cell, false, previous_cache.data[cell], gi_cache_quantize(value), valid_update ? 1u : 0u);
 }
 void build_mip(uint tile, uint lane, uint mip) {
 	bool indirect = pass_id >= PASS_INDIRECT_MIP1 && pass_id <= PASS_INDIRECT_MIP3;
@@ -1519,16 +1595,23 @@ void build_mip(uint tile, uint lane, uint mip) {
 	uvec2 pos = uvec2(lane % width, lane / width) * 2u;
 	uint source = tile * TILE_CELLS + MIP_OFFSET[mip - 1u];
 	vec4 sum = vec4(0);
+	float change = 0.0;
 	for (uint y = 0u; y < 2u; y++) {
 		for (uint x = 0u; x < 2u; x++) {
 			uint index = source + pos.x + x + (pos.y + y) * (width * 2u);
 			vec4 value = gi_cache_unpack(indirect ? indirect_cache.data[index] : cache.data[index]);
 			sum += value;
+			if ((frame.options.z & 1u) != 0u) {
+				change += value.w * gi_response_confidence(gi_cache_response(index, indirect));
+			}
 		}
 	}
 	// Mips carry the sum of their children's evidence, not a second capped
 	// temporal history. Preserve it for both mip selection and parent weights.
 	uvec2 value = gi_cache_pack(sum);
+	if ((frame.options.z & 1u) != 0u) {
+		gi_store_cache_response(tile * TILE_CELLS + MIP_OFFSET[mip] + lane, indirect, uint(round(clamp(change / max(sum.w, 1.0), 0.0, 1.0) * 15.0)) << 4u);
+	}
 	if (indirect) {
 		indirect_cache.data[tile * TILE_CELLS + MIP_OFFSET[mip] + lane] = value;
 	} else {
@@ -1548,6 +1631,7 @@ void resolve_probe(uint slot, uint lane) {
 	RayHit ray = primary_hit(slot * 64u + lane);
 	RayRecord traced = rays.data[slot * 64u + lane];
 	vec3 value = environment_radiance(traced.direction_cache.xyz, false);
+	float cache_change = 0.0;
 	float hit_distance = traced.position.w < 0.0 ? params.max_distance : traced.position.w;
 	if (ray.position.w >= 0.0) {
 		uint ray_id = slot * 64u + lane;
@@ -1577,6 +1661,13 @@ void resolve_probe(uint slot, uint lane) {
 			if (!primary_bypass) {
 				vec4 cached = read_cache(floatBitsToUint(ray.direction_cache.w), false);
 				value = accumulate_probe_radiance(value, cached.w > 0.0 ? cached.rgb : vec3(0));
+				if ((frame.options.z & 1u) != 0u) {
+					uint cell = floatBitsToUint(ray.direction_cache.w);
+					cache_change = gi_cache_change(cell, false);
+					if (params.bounces != 0u) {
+						cache_change = max(cache_change, gi_cache_change(cell, true));
+					}
+				}
 			}
 		}
 	}
@@ -1607,12 +1698,41 @@ void resolve_probe(uint slot, uint lane) {
 	barrier();
 	vec4 result = sample_count > 0u ? sum / float(sample_count) : radiance_backup;
 	vec4 history = gi_cache_unpack(scratch.data[id]);
+	if ((frame.options.z & 1u) != 0u) {
+		// Compare aggregate angular energy, not individual stochastic rays.
+		// Matched bins alone provide evidence; holes are not dark observations.
+		bool matched = sample_count > 0u && history.w > 0.0;
+		response_sum[lane] = vec4(matched ? luma(result.rgb) : 0.0, matched ? luma(history.rgb) : 0.0, cache_change, matched ? 1.0 : 0.0);
+		barrier();
+		for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+			if (lane < stride) {
+				response_sum[lane] += response_sum[lane + stride];
+			}
+			barrier();
+		}
+		if (lane == 0u) {
+			vec4 evidence = response_sum[0];
+			uint state = uint(probes.data[probe].normal.w);
+			if (evidence.w >= 8.0) {
+				state = gi_response_update(state, evidence.y / evidence.w, evidence.x / evidence.w);
+			}
+			uint propagated = uint(round(evidence.z / 64.0 * 15.0));
+			state = (max(state >> 4u, propagated) << 4u) | (state & 15u);
+			probes.data[probe].normal.w = float(state);
+			probe_response = gi_response_confidence(state);
+		}
+		barrier();
+	}
 	if (history.w > 0.0) {
 		// AMD's shadow-preserving temporal hysteresis suppresses abrupt bright
 		// outliers without dragging old bright values into newly dark cells.
 		float a = luma(result.rgb), b = luma(history.rgb);
 		float blend = clamp(max(a - b - min(a, b), 0.0) / max(max(a, b), 0.0001), 0.0, 0.95);
-		result = mix(result, history, blend * blend);
+		float history_weight = blend * blend;
+		if ((frame.options.z & 1u) != 0u) {
+			history_weight *= 1.0 - probe_response;
+		}
+		result = mix(result, history, history_weight);
 	}
 	radiance.data[id] = pack_probe_radiance(result);
 }
@@ -1826,6 +1946,7 @@ uint closest_probe(ivec2 pixel, ivec2 offset) {
 #include "amd_gi_near_field_inc.glsl"
 void interpolate_pixel(ivec2 pixel, uint id) {
 	Pixel result;
+	result.response = 0.0;
 	vec3 p, n;
 	bool valid = surface(pixel, p, n);
 	imageStore(history_geometry_normal, pixel, texelFetch(geometry_normal_buffer, pixel, 0));
@@ -1881,6 +2002,9 @@ void interpolate_pixel(ivec2 pixel, uint id) {
 			for (uint i = 0u; i < 4u; i++) {
 				if (indices[i] != INVALID) {
 					sum += weights[i] * probe_bent_irradiance(indices[i], bent_normal, visibility_cone.w);
+					if ((frame.options.z & 1u) != 0u) {
+						result.response += weights[i] * gi_response_confidence(uint(probes.data[indices[i]].normal.w));
+					}
 				}
 			}
 			result.color = vec4(sum, result.position.w == 2.0 ? 0.0 : 1.0);
@@ -1944,7 +2068,7 @@ void reproject_pixel(ivec2 pixel, uint id) {
 	}
 	float blur_mask;
 	vec2 current_uv = (vec2(pixel) + 0.5) / vec2(params.size);
-	current.color = gi_denoiser_accumulate(current.color, lighting, current_uv, sky, previous_uv_valid, delta, blur_mask);
+	current.color = gi_denoiser_accumulate(current.color, lighting, current_uv, sky, previous_uv_valid, current.response, delta, blur_mask);
 	current.color = gi_cache_unpack(gi_cache_pack(current.color));
 	current.normal_delta.w = unpackHalf2x16(packHalf2x16(vec2(delta, 0))).x;
 	pixels.data[id] = pack_pixel(current);
