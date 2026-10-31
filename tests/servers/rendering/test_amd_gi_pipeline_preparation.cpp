@@ -97,7 +97,8 @@ TEST_CASE("[AMDGI] Pipeline failures retain compatible state and recover with bo
 
 	// The SAME revision can recover after long-lived transient pressure.
 	int complete[pass_count] = {};
-	CHECK(amd_gi_prepare_pipeline_candidate(complete, [](uint32_t) { return true; }, [](uint32_t p_pass) { return int(p_pass + 1); }, [](int) { CHECK(false); }) == pass_count);
+	const uint32_t recovered_pass = amd_gi_prepare_pipeline_candidate(complete, [](uint32_t) { return true; }, [](uint32_t p_pass) { return int(p_pass + 1); }, [](int) { CHECK(false); });
+	CHECK(recovered_pass == pass_count);
 	state.publish(&scene, 2);
 	CHECK(state.is_ready(&scene, 2));
 	CHECK_FALSE(state.is_ready(&scene, 1));

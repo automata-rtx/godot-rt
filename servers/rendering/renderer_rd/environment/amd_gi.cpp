@@ -1244,8 +1244,8 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 				}
 				rd->compute_list_set_push_constant(list, &push, sizeof(push));
 				uint32_t groups = preparation == PREPARE_LIGHTS ? (proposal_lights + 63) / 64 : proposal_leaves;
-				uint32_t columns = MIN(MAX(groups, 1u), 1024u);
-				rd->compute_list_dispatch(list, columns, (MAX(groups, 1u) + columns - 1) / columns, 1);
+				uint32_t dispatch_columns = MIN(MAX(groups, 1u), 1024u);
+				rd->compute_list_dispatch(list, dispatch_columns, (MAX(groups, 1u) + dispatch_columns - 1) / dispatch_columns, 1);
 				rd->compute_list_add_barrier(list);
 			}
 		}
