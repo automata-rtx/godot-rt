@@ -31,6 +31,7 @@ jobs:
               vsproj_gen_only=no
             bin: ./bin/godot.windows.editor.x86_64.exe
             compiler: msvc
+            object-suffix: .obj
 
           - name: Editor w/ clang-cl (target=editor, use_llvm=yes)
             cache-name: windows-editor-clang
@@ -40,12 +41,14 @@ jobs:
               use_llvm=yes
             bin: ./bin/godot.windows.editor.x86_64.llvm.exe
             compiler: clang
+            object-suffix: .llvm.obj
 
           - name: Template (target=template_release)
             cache-name: windows-template
             target: template_release
             bin: ./bin/godot.windows.template_release.x86_64.console.exe
             compiler: msvc
+            object-suffix: .obj
 
           - name: Template w/ GCC (target=template_release, use_mingw=yes)
             cache-name: windows-template-gcc
@@ -54,6 +57,7 @@ jobs:
             scons-flags: use_mingw=yes
             bin: ./bin/godot.windows.template_release.x86_64.console.exe
             compiler: gcc
+            object-suffix: .o
 
     steps:
       - name: Checkout
@@ -105,13 +109,19 @@ jobs:
           fi
 
       - name: Compilation
+        id: compilation
         uses: ./.github/actions/godot-build
         with:
           scons-flags: ${{ env.SCONS_FLAGS }} ${{ matrix.scons-flags }} d3d12=${{ steps.d3d12-sdk.outputs.D3D12_ENABLED }} accesskit=${{ steps.accesskit-sdk.outputs.ACCESSKIT_ENABLED }} angle=${{ steps.angle-sdk.outputs.ANGLE_ENABLED }}
           platform: windows
           target: ${{ matrix.target }}
+          # Surface compiler-specific GI diagnostics before a full cold build.
+          early-targets: >-
+            servers/rendering/renderer_rd/environment/amd_gi.windows.${{ matrix.target }}.x86_64${{ matrix.object-suffix }}
+            tests/servers/rendering/test_amd_gi_pipeline_preparation.windows.${{ matrix.target }}.x86_64${{ matrix.object-suffix }}
 
       - name: Save Godot build cache
+        if: success() || (failure() && steps.compilation.outcome == 'failure')
         uses: ./.github/actions/godot-cache-save
         with:
           cache-name: ${{ matrix.cache-name }}

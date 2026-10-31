@@ -17,6 +17,10 @@ inputs:
     description: The SCons cache path.
     default: ${{ github.workspace }}/.scons_cache/
     type: string
+  early-targets:
+    description: Optional SCons object targets to compile before the full build, using the same flags and cache.
+    default: ""
+    type: string
 
 runs:
   using: composite
@@ -36,6 +40,10 @@ runs:
           export BUILD_NAME="gh-${{ github.event.number }}"
         else
           export BUILD_NAME="gh"
+        fi
+
+        if [ -n "${{ inputs.early-targets }}" ]; then
+          scons platform=${{ inputs.platform }} target=${{ inputs.target }} ${{ inputs.scons-flags }} "cache_path=${{ inputs.scons-cache }}" redirect_build_objects=no ${{ inputs.early-targets }}
         fi
 
         scons platform=${{ inputs.platform }} target=${{ inputs.target }} ${{ inputs.scons-flags }} "cache_path=${{ inputs.scons-cache }}" redirect_build_objects=no

@@ -717,11 +717,11 @@ bool AMDGI::ViewData::update_light_order(const RaytracingGIScene &p_scene, uint3
 
 bool AMDGI::ViewData::ensure_light_grid(uint32_t p_emitters, uint32_t p_lights) {
 	const uint32_t strata = MIN(64u, MAX(p_lights, 1u));
-	const uint32_t leaves = (p_lights + strata * 64 - 1) / (strata * 64);
-	const uint32_t tops = (leaves + 63) / 64;
+	const uint64_t leaves = (uint64_t(p_lights) + strata * 64 - 1) / (strata * 64);
+	const uint64_t tops = (leaves + 63) / 64;
 	// Reuse binding 44: reservoirs, current-frame native proposal colors, and
 	// two levels of per-stratum masks. Original light IDs never change.
-	const uint64_t bytes = 32ull + (16ull * 16 * 16 * 64 + p_emitters + uint64_t(leaves + tops) * 64) * 16;
+	const uint64_t bytes = 32ull + (16ull * 16 * 16 * 64 + p_emitters + (leaves + tops) * 64) * 16;
 	ERR_FAIL_COND_V(bytes > UINT32_MAX, false);
 	if (light_grid.is_null() || light_grid_bytes < bytes) {
 		if (light_grid.is_valid()) {
