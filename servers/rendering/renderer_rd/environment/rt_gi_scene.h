@@ -311,6 +311,7 @@ public:
 	const RaytracingMaterialSource &get_source_materials() const { return source_materials; }
 	static constexpr uint32_t MAX_MOTION_BOUNDS = 8;
 	const LocalVector<AABB> &get_motion_bounds() const { return motion_bounds; }
+	void suspend() { ready = false; }
 	bool is_ready() const { return ready; }
 	bool is_feedback_compatible() const { return feedback_compatible; }
 	uint32_t get_light_count() const { return light_count; }

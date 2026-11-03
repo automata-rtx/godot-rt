@@ -62,9 +62,13 @@ validate it; do not document enable independence that the implementation lacks.
 Environment, SDFGI/SSIL conflicts, and AMD's device limits. `AMDGI::is_supported`
 requires half floats, 38 storage buffers per stage/aggregate pipeline layout, 12 storage images per
 stage/aggregate pipeline layout, eight color attachments, and 32768 bytes compute shared memory. Its
-older 32-buffer warning is inaccurate. Orthographic views clear only their GI
-outputs; they must not evict other views' shared resources. Reflection-probe
-rendering does not execute this GI path.
+older 32-buffer warning is inaccurate. The scene culler passes view eligibility
+alongside the collected instances. An orthographic inventory preview with MSAA
+can submit an empty GI list between two perspective draws. Mark the shared GI
+scene unavailable to the preview while keeping its resources alive. The next
+eligible draw prepares its own scene before using it. Shadow processing still
+runs for the preview. A genuinely empty eligible scene or a disabled GI feature
+still takes the cleanup path. Reflection-probe rendering skips this GI path.
 
 Collection scans participating scenario geometry independently of camera position;
 `max_distance` limits rays, not CPU collection. Stable RID order is rebuilt only
