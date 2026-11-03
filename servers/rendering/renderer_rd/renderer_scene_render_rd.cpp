@@ -1982,7 +1982,7 @@ bool RendererSceneRenderRD::is_rtgi_enabled(RID p_environment, const Ref<RenderS
 	return true;
 }
 
-void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances, const LocalVector<RaytracingGIInstance> &p_gi_instances, const LocalVector<RID> &p_gi_lights) {
+void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances, const LocalVector<RaytracingGIInstance> &p_gi_instances, const LocalVector<RID> &p_gi_lights, bool p_skip_gi_view) {
 	if (raytracing_scene == nullptr) {
 		return;
 	}
@@ -2014,6 +2014,10 @@ void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<Raytracing
 				amd_gi = nullptr;
 			}
 		}
+	} else if (p_skip_gi_view && rtgi_scene && RendererRD::AMDGI::is_enabled()) {
+		// Auxiliary views still update their own shadows. They cannot consume or
+		// retire the shared GI scene prepared for a compatible view.
+		rtgi_scene->suspend();
 	} else {
 		if (rtgi_scene) {
 			memdelete(rtgi_scene);

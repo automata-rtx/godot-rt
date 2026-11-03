@@ -3934,7 +3934,8 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		LocalVector<RendererSceneRender::RaytracingGIInstance> &gi_instances = gi_instance_scratch;
 		LocalVector<RID> &gi_lights = gi_light_scratch;
 		gi_lights.clear();
-		const bool rtgi_requested = scene_render->is_rtgi_enabled(p_environment, p_render_buffers);
+		const bool skip_ortho_gi = p_camera_data->is_orthogonal && bool(GLOBAL_GET("rendering/global_illumination/amd_gi/enabled"));
+		const bool rtgi_requested = !skip_ortho_gi && scene_render->is_rtgi_enabled(p_environment, p_render_buffers);
 		if (!rtgi_requested || scene_cull_result.voxel_gi_instances.size() > 0) {
 			gi_instances.clear();
 		}
@@ -4195,7 +4196,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				RSG::mesh_storage->update_mesh_instances();
 			}
 		}
-		scene_render->update_raytracing_scene(rt_instance_scratch, gi_instances, gi_lights);
+		scene_render->update_raytracing_scene(rt_instance_scratch, gi_instances, gi_lights, !rtgi_requested);
 		if (rt_time) {
 			_rt_report_cpu_cost(rt_gathered - rt_started, OS::get_singleton()->get_ticks_usec() - rt_gathered);
 		}
