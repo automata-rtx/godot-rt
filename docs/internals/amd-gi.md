@@ -204,6 +204,16 @@ The render loop's dependency phases are:
 7. Run requested debug display/statistics passes. Disabled diagnostics must not
    add regular readbacks or scans.
 
+Capsaicin starts screen-probe and glossy rays on the rasterized triangle using
+its visibility buffer and barycentrics. Forward+ reconstructs a point from depth,
+which can place it just behind the triangle as the camera moves. The GI prepass
+stores the current camera-relative plane distance in the previous-position
+attachment's W channel, using the interpolated vertex and the same RGB10 geometric
+normal the tracing shader reads. XYZ still holds the previous world position.
+Geometry-normal alpha marks coverage. Project the primary ray start onto that
+plane before applying AMD's normal offset. A regression shows up as moving black
+patches in raw diffuse lighting even with valid probes on an unlit wall.
+
 `mark_reflection_fireflies` skips neighbor ranking only when the low/high
 thresholds are exactly 0/1: nonnegative integer counts make both upstream rank
 tests false. The supported radius bounds keep those counts finite and exact.

@@ -133,7 +133,7 @@ work;
 
 vec3 previous_surface(ivec2 pixel, vec3 current) {
 	vec4 previous = texelFetch(previous_surface_position, pixel, 0);
-	return previous.w > 0.0 ? previous.xyz : current;
+	return texelFetch(geometry_normal_buffer, pixel, 0).a > 0.0 ? previous.xyz : current;
 }
 layout(set = 0, binding = 44, std430) restrict buffer LightGrid {
 	uvec4 minimum;
@@ -415,6 +415,12 @@ bool surface(ivec2 pixel, out vec3 position, out vec3 normal) {
 	}
 	normal = normalize(texelFetch(geometry_normal_buffer, pixel, 0).xyz * 2.0 - 1.0);
 	return true;
+}
+// Capsaicin launches primary rays from a point interpolated on the hit
+// triangle. Depth unprojection alone can put Godot's point inside it.
+vec3 primary_ray_surface(ivec2 pixel, vec3 position, vec3 normal) {
+	float plane_distance = texelFetch(previous_surface_position, pixel, 0).w;
+	return position + normal * (plane_distance - dot(position - params.camera_position.xyz, normal));
 }
 vec3 shading_normal(ivec2 pixel) {
 	vec3 position, normal;
@@ -1030,7 +1036,7 @@ void prepare_probe(uint slot, uint lane) {
 	if (lane == 0u) {
 		vec3 p, n;
 		bool found = surface(ivec2(spawn.data[slot].yz), p, n);
-		spawn_position = vec4(p, found ? 1.0 : 0.0);
+		spawn_position = vec4(found ? primary_ray_surface(ivec2(spawn.data[slot].yz), p, n) : p, found ? 1.0 : 0.0);
 		spawn_normal = vec4(n, 0);
 		cached_match = INVALID;
 		spawn.data[slot].w = INVALID;
@@ -1150,7 +1156,7 @@ void trace_probe(uint slot, uint lane) {
 	if (lane == 0u) {
 		vec3 p, n;
 		bool found = surface(ivec2(spawn.data[slot].yz), p, n);
-		spawn_position = vec4(p, found ? 1.0 : 0.0);
+		spawn_position = vec4(found ? primary_ray_surface(ivec2(spawn.data[slot].yz), p, n) : p, found ? 1.0 : 0.0);
 		spawn_normal = vec4(n, 0);
 		probes.data[probe].position = spawn_position;
 		probe_mask.data[probe] = spawn_position.w > 0.0 ? probe : INVALID;

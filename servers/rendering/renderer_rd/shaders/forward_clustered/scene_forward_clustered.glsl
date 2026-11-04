@@ -3545,12 +3545,16 @@ void fragment_shader(in SceneData scene_data) {
 	// Preserve the actual previous surface position, including native skinning,
 	// blend shapes and instance motion. This is produced before GI tracing.
 	vec4 previous_view = scene_data_block.prev_data.inv_projection_matrix * prev_screen_position;
-	// Positive alpha also carries native metallic for probe BRDF guiding.
-	gi_geometry_normal = vec4(normalize(mat3(inv_view_matrix) * gi_geometry_normal_view) * 0.5 + 0.5, 1.0);
+	// Use the same RGB10 normal on both sides of the prepass. Store the
+	// current surface plane alongside the previous position for primary RT rays.
+	vec3 encoded_normal = roundEven((normalize(mat3(inv_view_matrix) * gi_geometry_normal_view) * 0.5 + 0.5) * 1023.0) / 1023.0;
+	gi_geometry_normal = vec4(encoded_normal, 1.0);
+	vec3 plane_normal = normalize(encoded_normal * 2.0 - 1.0);
+	float plane_distance = dot(mat3(inv_view_matrix) * vertex_interp, plane_normal);
 	gi_shading_normal = vec4(normalize(mat3(inv_view_matrix) * normal) * 0.5 + 0.5, 1.0);
 	gi_roughness = roughness;
 	gi_primary_material = vec4(albedo, metallic);
-	gi_previous_position = vec4((previous_view / previous_view.w) * scene_data_block.prev_data.inv_view_matrix, 1.0 + clamp(metallic, 0.0, 1.0));
+	gi_previous_position = vec4((previous_view / previous_view.w) * scene_data_block.prev_data.inv_view_matrix, plane_distance);
 #endif
 #endif
 }

@@ -292,7 +292,7 @@ void trace_reflection(ivec2 pixel, uint id) {
 	float nh = clamp(normalize(local_view + local_light).z, -1.0, 1.0);
 	float pdf = gi_ggx_bounded_pdf(alpha, max(alpha * alpha, 1e-6), nh, local_view);
 	result.direction_pdf = vec4(l, pdf);
-	RayHit hit = trace_hit(gi_offset_position(p, n), l);
+	RayHit hit = trace_hit(gi_offset_position(primary_ray_surface(full_pixel, p, n), n), l);
 	vec3 value = environment_radiance(l, true);
 #ifdef AMD_GI_REFLECTION_TRACE_RECORDING
 	// Exact raw words in StoredReflection.virtual_variance; samples do not
