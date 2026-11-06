@@ -34,11 +34,13 @@ layout(set = 0, binding = 0) uniform sampler2D source_visibility;
 layout(set = 0, binding = 1) uniform sampler2D source_depth;
 // Previous frame's accumulated visibility, before any spatial filtering.
 layout(set = 0, binding = 3) uniform sampler2D history_visibility;
-// Previous frame's (view depth, history length).
-layout(set = 0, binding = 4) uniform sampler2D history_meta;
+layout(set = 0, binding = 2) uniform sampler2D source_penumbra;
+// Previous receiver depth, view normal and four independent light ages.
+layout(set = 0, binding = 4) uniform usampler2D history_meta;
+layout(set = 0, binding = 9) uniform sampler2D source_normal_roughness;
 
 layout(rgba8, set = 0, binding = 5) uniform restrict writeonly image2D dest_visibility;
-layout(r8, set = 0, binding = 6) uniform restrict writeonly image2D dest_history_length;
+layout(rgba8, set = 0, binding = 6) uniform restrict writeonly image2D dest_history_length;
 
 // Which light each channel of the mask carries, this frame and last. Every
 // pixel picks its own set of lights, so a history sample is only usable if it
@@ -62,21 +64,10 @@ layout(push_constant, std430) uniform Params {
 	// result can be compared against a stored distance; see below.
 	vec4 depth_unproject;
 
+	vec4 previous_view_rotation;
 	ivec2 screen_size;
-	float depth_tolerance;
 	float max_history;
-
-	// How far outside the current frame's local spread the history is allowed to
-	// sit, in standard deviations. Zero disables the test.
 	float clamp_sigma;
-	// How much of the clamp's own correction is allowed to set the blend weight
-	// directly. One spends all of it; zero leaves only the window shortening,
-	// which is what shipped before.
-	float lag_response;
-	// Rays per light this frame. The clamp reads it twice: to subtract the
-	// binomial noise a tap of that many rays carries, and to decide whether the
-	// moment gather widens to 5x5, which only pays at a low sample count.
-	float sample_count;
 	uint frame_index;
 }
 params;
@@ -96,283 +87,123 @@ float linear_view_depth(float depth) {
 			(params.depth_unproject.z * depth + params.depth_unproject.w);
 }
 
+// Adaptive temporal mode. Ages belong to individual lights and count rendered
+// samples (in units of eight frames in the UNORM history), independent of dt.
+#include "../oct_inc.glsl"
+
 void main() {
 	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
 	if (any(greaterThanEqual(pos, params.screen_size))) {
 		return;
 	}
-
-	vec4 current = VIS_DECODE(texelFetch(source_visibility, pos, 0));
+	vec4 raw = texelFetch(source_visibility, pos, 0);
+	vec4 current = VIS_DECODE(raw);
 	float depth = texelFetch(source_depth, pos, 0).r;
+	uvec4 lights = texelFetch(source_index, pos, 0);
+	vec4 center_width = texelFetch(source_penumbra, pos, 0) * 32.0;
+	// Preserve a directly measured contact through subsequent spatial passes.
+	vec4 ages = (1.0 - vec4(lessThan(current, vec4(0.999))) * vec4(lessThanEqual(center_width, vec4(1.0)))) / 8.0;
+	imageStore(dest_visibility, pos, raw);
+	imageStore(dest_history_length, pos, ages);
+	if (depth <= 0.0 || lights == uvec4(SLOT_NONE) || params.max_history <= 1.0 || all(equal(ages * vec4(notEqual(lights, uvec4(SLOT_NONE))), vec4(0.0)))) {
+		return;
+	}
 
-	uvec4 current_index = texelFetch(source_index, pos, 0);
-
-	// Sky, or a pixel no raytraced light reaches. Neither has anything to
-	// accumulate, and leaving a history behind would bleed into whatever moves
-	// in front of it later.
-	if (depth <= 0.0 || current_index == uvec4(SLOT_NONE)) {
-		imageStore(dest_visibility, pos, VIS_ENCODE(current));
-		imageStore(dest_history_length, pos, vec4(0.0));
+	vec3 normal = normalize(texelFetch(source_normal_roughness, pos, 0).xyz * 2.0 - 1.0);
+	vec4 sum = vec4(0.0), count = vec4(0.0), hit_count = vec4(0.0);
+	vec4 width_sum = vec4(0.0), nearest_width = vec4(32.0);
+	vec4 lo = vec4(1.0), hi = vec4(0.0);
+	for (int radius = 1; radius <= 2; radius++) {
+		// Only pixels with soft blocker evidence need the outer moment taps.
+		if (radius == 2 && all(lessThanEqual(width_sum * vec4(greaterThan(nearest_width, vec4(1.0))), hit_count))) {
+			return;
+		}
+		for (int y = -radius; y <= radius; y++) {
+			for (int x = -radius; x <= radius; x++) {
+				if (radius == 2 && abs(x) < 2 && abs(y) < 2) {
+					continue;
+				}
+				ivec2 tap = pos + ivec2(x, y);
+				if (any(lessThan(tap, ivec2(0))) || any(greaterThanEqual(tap, params.screen_size))) {
+					continue;
+				}
+				float tap_depth = texelFetch(source_depth, tap, 0).r;
+				vec3 tap_normal = normalize(texelFetch(source_normal_roughness, tap, 0).xyz * 2.0 - 1.0);
+				if (abs(tap_depth - depth) > 0.004 * depth || dot(tap_normal, normal) < 0.94) {
+					continue;
+				}
+				bvec4 same = equal(texelFetch(source_index, tap, 0), lights);
+				vec4 v = VIS_DECODE(texelFetch(source_visibility, tap, 0));
+				if (radius == 1) {
+					vec4 width = texelFetch(source_penumbra, tap, 0) * 32.0;
+					vec4 hits = vec4(same) * vec4(lessThan(v, vec4(0.999)));
+					width_sum += hits * width;
+					hit_count += hits;
+					nearest_width = min(nearest_width, mix(vec4(32.0), width, greaterThan(hits, vec4(0))));
+				}
+				count += vec4(same);
+				sum += vec4(same) * v;
+				lo = min(lo, mix(vec4(1.0), v, same));
+				hi = max(hi, mix(vec4(0.0), v, same));
+			}
+		}
+	}
+	// A miss carries no blocker distance. Estimate softness from hits on this
+	// receiver for both lit and blocked samples. A measured contact vetoes reuse.
+	vec4 width = width_sum / max(hit_count, vec4(1.0));
+	vec4 softness = smoothstep(vec4(1.0), vec4(5.0), width) * vec4(greaterThan(nearest_width, vec4(1.0)));
+	softness *= vec4(notEqual(lights, uvec4(SLOT_NONE))) * vec4(greaterThan(hi, lo));
+	if (all(equal(softness, vec4(0.0)))) {
 		return;
 	}
 
 	vec2 uv = (vec2(pos) + 0.5) / vec2(params.screen_size);
-	vec4 previous_clip = params.reprojection * vec4(uv * 2.0 - 1.0, depth, 1.0);
-
-	float history_length = 0.0;
-	vec4 history = current;
-
-	// Behind the previous camera: there is no history to find.
-	if (previous_clip.w > 0.0) {
-		vec2 previous_uv = (previous_clip.xy / previous_clip.w) * 0.5 + 0.5;
-
-		// The reprojection maps a point given in this frame's normalized device
-		// coordinates, so what comes out is the previous frame's clip position
-		// scaled by the reciprocal of this pixel's view depth. The scale cancels
-		// in the division above, which is why the reprojected position is right,
-		// but it does not cancel in w: that leaves the RATIO of the previous view
-		// depth to this one. Multiplying by this pixel's own view depth turns it
-		// back into the distance the history stores.
-		float expected_depth = previous_clip.w * linear_view_depth(depth);
-
-		// The history is filtered by hand rather than by the sampler: the channel
-		// assignment cannot be interpolated, so each of the four bilinear taps has
-		// to be accepted or rejected on its own before it is weighted in.
-		if (all(greaterThanEqual(previous_uv, vec2(0.0))) && all(lessThan(previous_uv, vec2(1.0)))) {
-			vec2 previous_texel = previous_uv * vec2(params.screen_size) - 0.5;
-			ivec2 base = ivec2(floor(previous_texel));
-			vec2 subpixel = previous_texel - vec2(base);
-
-			vec4 tap_weights = vec4(
-					(1.0 - subpixel.x) * (1.0 - subpixel.y),
-					subpixel.x * (1.0 - subpixel.y),
-					(1.0 - subpixel.x) * subpixel.y,
-					subpixel.x * subpixel.y);
-			ivec2 tap_offsets[4] = ivec2[4](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(1, 1));
-
-			vec4 visibility_sum = vec4(0.0);
-			float length_sum = 0.0;
-			float weight_sum = 0.0;
-
-			for (int i = 0; i < 4; i++) {
-				ivec2 tap = base + tap_offsets[i];
-				if (any(lessThan(tap, ivec2(0))) || any(greaterThanEqual(tap, params.screen_size))) {
-					continue;
-				}
-				if (texelFetch(history_index, tap, 0) != current_index) {
-					continue;
-				}
-
-				vec2 previous_meta = texelFetch(history_meta, tap, 0).rg;
-
-				// Reject the history when the surface that was there is not the
-				// surface that should have been there. The tolerance is relative so
-				// that distant geometry, where depth precision and reprojection error
-				// are both worse, is not rejected purely for being far away.
-				float depth_error = abs(previous_meta.r - expected_depth) / max(expected_depth, 0.001);
-				if (depth_error >= params.depth_tolerance) {
-					continue;
-				}
-
-				float weight = tap_weights[i];
-				visibility_sum += VIS_DECODE(texelFetch(history_visibility, tap, 0)) * weight;
-				length_sum += previous_meta.g * weight;
-				weight_sum += weight;
-			}
-
-			if (weight_sum > 0.0) {
-				history = visibility_sum / weight_sum;
-				// The meta buffer stores the history length normalized against the
-				// same window, so that it survives being written through an 8 bit
-				// target elsewhere in the chain.
-				history_length = (length_sum / weight_sum) * params.max_history;
-			}
-		}
+	vec4 clip = params.reprojection * vec4(uv * 2.0 - 1.0, depth, 1);
+	if (clip.w <= 0.0) {
+		return;
 	}
-
-	// Reject history that this frame could not plausibly have produced.
-	//
-	// The surface test above only asks whether the same surface is still here.
-	// It cannot see a shadow move ACROSS a surface: the floor under a moving
-	// blocker reprojects perfectly, passes every test, and hands back a shadow
-	// that is no longer there. With a thirty-two frame window that trails for
-	// half a second.
-	//
-	// So measure what this frame actually sees nearby, and clamp the history
-	// into that range. Where the neighborhood agrees -- open floor, deep umbra --
-	// the window is only as wide as the binomial floor below allows, and the
-	// history is pulled back to what this frame sees within a frame or two.
-	// Inside a penumbra the taps disagree too, but at one ray per pixel most of
-	// that is the sampling and not the shadow: the estimator below subtracts the
-	// binomial term first, so the window widens only where the taps disagree by
-	// more than sampling alone accounts for. The test costs nothing where it is
-	// not needed and everything where it is.
-
-	// How far the clamp had to move the history, kept for the accumulator below.
-	// Zero in the steady state and on every frame the clamp does not fire, so
-	// everything downstream of it is inert there.
-	float lag = 0.0;
-
-	if (params.clamp_sigma > 0.0 && history_length > 0.0) {
-		// The clamp is CENTERED on the mean gathered here, so once the window is
-		// tight the accumulated value essentially IS that mean, and both the mean's
-		// noise and the mean's bias reach the screen. Widening the gather to 5x5
-		// trades one for the other: twenty-five binary taps make a quieter mean than
-		// nine, and they also straddle a narrow penumbra's shoulder and average across
-		// it, which the clamp then pins the pixel to. The quieter mean only buys
-		// anything while a tap is still binary, which is the sample count half of the
-		// gate below. Both effects are tabulated, along with weighted 5x5 kernels that
-		// sit on the same tradeoff line rather than beating it, in
-		// docs/validation/shadow_validation/denoiser_sim.py -- which simulates this
-		// pass, because no capture in this repository can score a temporal filter.
-		//
-		// The other half of the gate is the window. At the shipped clamp_sigma of 2.0
-		// the 3x3 mean is nearly unbiased and the pixel is not pinned hard to it
-		// anyway, so widening would buy quieter output at a shoulder cost nothing asked
-		// for. At 1.0 and below the pixel IS pinned to whatever the mean is, so the 3x3
-		// is already paying most of that shoulder cost -- penumbra accuracy has been
-		// traded for ghosting control there -- and the quieter mean is what makes that
-		// trade affordable.
-		//
-		// The choice cannot be made per pixel instead: at one ray per light a shoulder
-		// and a flat penumbra are the same measurement. Half the taps deterministically
-		// 0 and half deterministically 1 has exactly the variance of every tap being an
-		// independent p = 0.5 draw, so the decomposition below subtracts the whole of
-		// it and reports no structure to gate on.
-		//
-		// None of this was worth doing before that decomposition. While the radius came
-		// from the raw spread of these same taps, a wider gather inflated the window as
-		// much as it improved the center and the two canceled; now it improves the
-		// center alone.
-		int moment_radius = (params.sample_count < 4.0 && params.clamp_sigma <= 1.0) ? 2 : 1;
-		vec4 moment1 = vec4(0.0);
-		vec4 moment2 = vec4(0.0);
-		float taps = 0.0;
-		for (int cy = -moment_radius; cy <= moment_radius; cy++) {
-			for (int cx = -moment_radius; cx <= moment_radius; cx++) {
-				ivec2 tap = clamp(pos + ivec2(cx, cy), ivec2(0), params.screen_size - ivec2(1));
-				// A neighbor carrying different lights describes something else.
-				if (texelFetch(source_index, tap, 0) != current_index) {
-					continue;
-				}
-				vec4 v = VIS_DECODE(texelFetch(source_visibility, tap, 0));
-				moment1 += v;
-				moment2 += v * v;
-				taps += 1.0;
-			}
-		}
-		if (taps > 0.0) {
-			moment1 /= taps;
-			moment2 /= taps;
-			// The neighborhood's spread has two sources and they want opposite
-			// treatment, so separate them rather than taking the larger.
-			//
-			//   SIGNAL   the penumbra really does vary across these taps, and the
-			//            clamp must be wide enough not to flatten it.
-			//   NOISE    each tap is a count of blocked rays out of `sample_count`,
-			//            so it carries binomial scatter that says nothing about the
-			//            shadow.
-			//
-			// Taking the raw spread as the radius charges the whole of the noise to
-			// the signal, and at one ray per light that is nearly all of it: two sigma
-			// of it is a window wider than the valid range, so nothing is ever outside
-			// it and the clamp cannot fire at all. Binomial noise is predictable, so
-			// subtract it instead of out-sampling it -- what is left is the spatial
-			// variation, and the radius is that plus the uncertainty in the mean the
-			// taps are centered on. Why that scatter does not fall off however many
-			// taps are averaged, and what raising `samples_per_light` did about it
-			// before this, is in docs/HISTORY.md.
-			float trials = max(taps * params.sample_count, 1.0);
-			vec4 corrected = (moment1 * trials + 2.0) / (trials + 4.0);
-
-			// Uncertainty in the MEAN of the taps. This was the old floor and the
-			// reasoning behind it still holds: without it, taps that happen to agree
-			// give a window of no width and pin the accumulated value to a binary
-			// answer, erasing the tails of every penumbra. The two pseudo counts are
-			// the usual continuity correction.
-			vec4 var_mean = corrected * (1.0 - corrected) / (trials + 4.0);
-
-			// Per-tap sampling variance -- the noise term, which falls as 1/samples.
-			vec4 var_sampling = corrected * (1.0 - corrected) / max(params.sample_count, 1.0);
-
-			vec4 var_measured = max(moment2 - moment1 * moment1, vec4(0.0));
-			vec4 var_spatial = max(var_measured - var_sampling, vec4(0.0));
-			vec4 sigma = sqrt(var_spatial + var_mean);
-
-			// What that is worth, from `denoiser_sim.py --radius`: over a flat penumbra
-			// at p = 0.5 the raw spread asked for a two sigma window half-width of 0.93
-			// at one sample per light and 0.32 at eight, this estimator for 0.27 at one
-			// -- tighter at a single ray than the raw spread was at eight.
-			//
-			// At one sample per light a single frame genuinely cannot tell a
-			// gradient from noise, so the decomposition treats the neighborhood as
-			// flat there. Two samples is enough to separate them.
-
-			vec4 clamped = clamp(history,
-					moment1 - sigma * params.clamp_sigma,
-					moment1 + sigma * params.clamp_sigma);
-
-			// How far the clamp had to move the history is a measure of how wrong
-			// it was, and a history that wrong has no business keeping the weight
-			// of a long one. Shortening the window in proportion lets the pixel
-			// re-converge over the next few frames instead of over the whole
-			// window: without it a blocker that moves leaves no stale shadow
-			// behind -- the clamp saw to that -- but its new one fades in over
-			// half a second rather than arriving with it.
-			//
-			// A history sitting inside the window is not moved at all, which is
-			// every pixel in the steady state, so this costs nothing where nothing
-			// is wrong. Taking the worst of the four channels is deliberate: they
-			// share one window, and being late is worse than being brief.
-			vec4 moved = abs(clamped - history);
-			lag = clamp(max(max(moved.x, moved.y), max(moved.z, moved.w)), 0.0, 1.0);
-			history_length *= 1.0 - lag;
-
-			history = clamped;
-		}
+	vec2 old_uv = clip.xy / clip.w * 0.5 + 0.5;
+	if (any(lessThan(old_uv, vec2(0))) || any(greaterThanEqual(old_uv, vec2(1)))) {
+		return;
 	}
-
-	// Exponential moving average with a bounded window. The first frames after a
-	// disocclusion weight the new sample heavily so the shadow appears
-	// immediately; once the window fills, alpha settles at 1 / max_history and
-	// the estimate is stable.
-	history_length = history_length > 0.0 ? min(history_length + 1.0, params.max_history) : 1.0;
-	float alpha = 1.0 / history_length;
-
-	// Shortening the window is not the same as discounting the value in it, and
-	// on its own it is far too gentle. At one ray per light the neighborhood in a
-	// covered umbra is unanimous, so the clamp window is the binomial floor alone
-	// and a history of fully lit is pulled only to the near edge of it -- a lag
-	// around 0.8, which leaves a window of about six frames and an alpha of
-	// 0.135. The pixel then keeps six sevenths of a value the clamp has just
-	// established is wrong by four fifths, and because the history now sits
-	// inside the window the clamp never fires again: what is left decays as
-	// 6/(6+n), hyperbolically, still visibly moving a third of a second later.
-	//
-	// The clamp already measured how wrong the history was. Letting that measure
-	// set the blend directly spends it, instead of spending a fifth of it. The
-	// floor is the clamp's own window edge, so this can never weight the new
-	// sample more heavily than this frame's own neighborhood supports.
-	//
-	// Inert wherever the clamp did not fire, which is every pixel in the steady
-	// state. Set lag_response to zero to restore the previous behavior exactly.
-	alpha = max(alpha, lag * params.lag_response);
-
-	vec4 accumulated = mix(history, current, alpha);
-
-	// Rounding to eight bits is not a detail here, because this accumulator
-	// re-reads its own rounded output every frame. Once the step it wants to take
-	// is smaller than half a quantization level the value stops moving, and that
-	// is not symmetric: in the lit end of a penumbra at one ray per light, the
-	// occasional blocked ray is a step down large enough to land while the many
-	// lit rays each ask for a step up too small to, so the value ratchets darker
-	// and the shadow's soft edge creeps outward, which is exactly the softening
-	// the traced answer exists to avoid.
-	//
-	// Offsetting by a per pixel, per frame fraction of a step before the store
-	// makes the rounding error zero mean, so the accumulation converges on the
-	// value it actually computed. It costs one hash and no memory.
-	float dither = dither_offset(pos, params.frame_index) - 0.5;
-	imageStore(dest_visibility, pos, VIS_ENCODE(accumulated) + vec4(dither / 255.0));
-	imageStore(dest_history_length, pos, vec4(history_length / max(params.max_history, 1.0)));
+	vec2 old_pixel = old_uv * vec2(params.screen_size) - 0.5;
+	ivec2 base = ivec2(floor(old_pixel));
+	vec2 frac = fract(old_pixel);
+	float expected_depth = clip.w * linear_view_depth(depth);
+	vec4 q = params.previous_view_rotation;
+	vec3 old_normal = normal + 2.0 * cross(q.xyz, cross(q.xyz, normal) + q.w * normal);
+	vec4 coverage = vec4(0.0), age_sum = vec4(0.0), history_sum = vec4(0.0);
+	for (int i = 0; i < 4; i++) {
+		ivec2 offset = ivec2(i & 1, i >> 1);
+		ivec2 tap = base + offset;
+		if (any(lessThan(tap, ivec2(0))) || any(greaterThanEqual(tap, params.screen_size))) {
+			continue;
+		}
+		uvec4 meta = texelFetch(history_meta, tap, 0);
+		float old_depth = unpackHalf2x16(meta.x).x;
+		vec3 tap_normal = oct_to_vec3(unpackUnorm4x8(meta.y).xy * 2.0 - 1.0);
+		if (old_depth <= 0.0 || abs(old_depth - expected_depth) > 0.004 * expected_depth || dot(tap_normal, old_normal) < 0.94) {
+			continue;
+		}
+		vec2 weights = mix(vec2(1.0) - frac, frac, vec2(offset));
+		vec4 tap_age = unpackUnorm4x8(meta.z | (meta.w << 16u)) * 8.0;
+		vec4 w = weights.x * weights.y * vec4(equal(texelFetch(history_index, tap, 0), lights)) * vec4(greaterThan(tap_age, vec4(0.0)));
+		coverage += w;
+		age_sum += w * tap_age;
+		history_sum += w * VIS_DECODE(texelFetch(history_visibility, tap, 0));
+	}
+	vec4 mean = sum / max(count, vec4(1.0));
+	// A moving blocker changes the shadow on a stationary receiver. Limit
+	// that history against fresh observations even when reprojection is exact.
+	vec4 history = history_sum / max(coverage, vec4(1e-6));
+	if (params.clamp_sigma > 0.0) {
+		vec4 margin = max(vec4(0.015), params.clamp_sigma * sqrt(mean * (1.0 - mean) / max(count, vec4(1.0))));
+		history = clamp(history, max(lo, mean - margin), min(hi, mean + margin));
+	}
+	vec4 prior = min(age_sum, vec4(params.max_history - 1.0) * softness) * coverage;
+	vec4 length_now = 1.0 + prior;
+	vec4 filtered = mix(current, history, prior / length_now);
+	vec4 encoded = VIS_ENCODE(filtered) + (dither_offset(pos, params.frame_index) - 0.5) / 255.0;
+	imageStore(dest_visibility, pos, mix(raw, encoded, greaterThan(prior, vec4(0))));
+	imageStore(dest_history_length, pos, mix(ages, length_now / 8.0, greaterThan(prior, vec4(0))));
 }

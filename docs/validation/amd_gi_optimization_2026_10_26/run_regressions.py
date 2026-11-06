@@ -151,6 +151,9 @@ def run_rig(args, rig, output, extra_env, completion_overrides, result):
             if extra_env.get("GODOT_AMD_GI_" + flag) == "1":
                 raise ValueError(f"--retained-scene cannot enable {flag}, which bypasses actual record retention")
     required = {"GODOT_AMD_GI_" + flag: "1" for flag in flags}
+    if rig not in ("bindings", "amd_gi_source_material"):
+        # Image oracles advance phases after a fixed number of frames.
+        required["GODOT_AMD_GI_FIXTURE_WAIT_FOR_PIPELINES"] = "1"
     for key, value in required.items():
         if key in extra_env and extra_env[key] != value:
             raise ValueError(f"{rig} requires {key}={value}; custom overrides cannot disable its oracle")

@@ -76,16 +76,14 @@ RTShadows::RTShadows() {
 
 	temporal_shader.initialize(modes);
 	temporal_shader_version = temporal_shader.version_create();
-	RID temporal_compiled = temporal_shader.version_get_shader(temporal_shader_version, 0);
-	if (temporal_compiled.is_valid()) {
-		temporal_pipeline = RD::get_singleton()->compute_pipeline_create(temporal_compiled);
-	}
 
 	atrous_shader.initialize(modes);
 	atrous_shader_version = atrous_shader.version_create();
-	RID atrous_compiled = atrous_shader.version_get_shader(atrous_shader_version, 0);
-	if (atrous_compiled.is_valid()) {
-		atrous_pipeline = RD::get_singleton()->compute_pipeline_create(atrous_compiled);
+	RID temporal = temporal_shader.version_get_shader(temporal_shader_version, 0);
+	RID spatial = atrous_shader.version_get_shader(atrous_shader_version, 0);
+	if (temporal.is_valid() && spatial.is_valid()) {
+		temporal_pipeline = RD::get_singleton()->compute_pipeline_create(temporal);
+		atrous_pipeline = RD::get_singleton()->compute_pipeline_create(spatial);
 	}
 
 	if (temporal_pipeline.is_null() || atrous_pipeline.is_null()) {
@@ -226,7 +224,7 @@ void RTShadows::_trace(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, 
 	RD::get_singleton()->compute_list_end();
 }
 
-void RTShadows::_temporal(RID p_depth_texture, const Buffers &p_buffers, const Size2i &p_size,
+void RTShadows::_temporal(RID p_depth_texture, RID p_normal_roughness, const Quaternion &p_previous_view_rotation, const Buffers &p_buffers, const Size2i &p_size,
 		const Projection &p_reprojection, const Projection &p_inv_projection,
 		const Settings &p_settings) {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
@@ -260,6 +258,8 @@ void RTShadows::_temporal(RID p_depth_texture, const Buffers &p_buffers, const S
 	add_texture(7, sampler, p_buffers.output_index);
 	add_texture(8, sampler, p_buffers.history_index);
 
+	add_texture(2, sampler, p_buffers.raw_hit_distance);
+	add_texture(9, sampler, p_normal_roughness);
 	RID compiled = temporal_shader.version_get_shader(temporal_shader_version, 0);
 	RID uniform_set = UniformSetCacheRD::get_singleton()->get_cache_vec(compiled, 0, uniforms);
 
@@ -271,14 +271,13 @@ void RTShadows::_temporal(RID p_depth_texture, const Buffers &p_buffers, const S
 	push_constant.depth_unproject[3] = p_inv_projection.columns[3][3];
 	push_constant.screen_size[0] = p_size.x;
 	push_constant.screen_size[1] = p_size.y;
-	// Relative tolerance on view distance when deciding whether the reprojected
-	// sample is the same surface.
-	push_constant.depth_tolerance = 0.02f;
 	push_constant.max_history = MAX(1.0f, p_settings.max_history);
 	push_constant.clamp_sigma = MAX(0.0f, p_settings.history_clamp_sigma);
-	push_constant.lag_response = CLAMP(p_settings.lag_response, 0.0f, 1.0f);
-	push_constant.sample_count = float(CLAMP(p_settings.sample_count, 1u, 255u));
 	push_constant.frame_index = frame_index;
+	push_constant.previous_view_rotation[0] = p_previous_view_rotation.x;
+	push_constant.previous_view_rotation[1] = p_previous_view_rotation.y;
+	push_constant.previous_view_rotation[2] = p_previous_view_rotation.z;
+	push_constant.previous_view_rotation[3] = p_previous_view_rotation.w;
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, temporal_pipeline);
@@ -292,10 +291,7 @@ void RTShadows::_atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_nor
 		const Buffers &p_buffers, const Size2i &p_size, const Projection &p_inv_projection,
 		int p_step_size, bool p_write_history, float p_min_filter_pixels) {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
-	TextureStorage *texture_storage = TextureStorage::get_singleton();
 	RID sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
-
-	RID normal_texture = p_normal_roughness.is_valid() ? p_normal_roughness : texture_storage->texture_rd_get_default(TextureStorage::DEFAULT_RD_TEXTURE_NORMAL);
 
 	LocalVector<RD::Uniform> uniforms;
 	auto add_texture = [&](uint32_t p_binding, RID p_texture) {
@@ -317,7 +313,7 @@ void RTShadows::_atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_nor
 	add_texture(0, p_source);
 	add_texture(1, p_buffers.raw_hit_distance);
 	add_texture(2, p_depth_texture);
-	add_texture(3, normal_texture);
+	add_texture(3, p_normal_roughness);
 	add_texture(4, p_buffers.history_length);
 	add_image(5, p_dest);
 	// Bound unconditionally so the uniform set layout does not change between
@@ -345,11 +341,6 @@ void RTShadows::_atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_nor
 	push_constant.write_history = p_write_history ? 1u : 0u;
 	push_constant.depth_sigma = 0.02f;
 	push_constant.normal_sigma = 64.0f;
-	// The narrowest the filter may reach wherever a penumbra WAS measured; where
-	// none was, the filter is off regardless of this value. At the shipped default
-	// of one a contact shadow is filtered in no pass at all -- the early-out guard
-	// in `rt_shadow_atrous.glsl` says why -- so raising it filters those pixels and
-	// fringes every contact edge in the same move.
 	push_constant.min_filter_pixels = p_min_filter_pixels;
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
@@ -398,7 +389,7 @@ bool RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 	_trace(p_tlas, p_depth_texture, p_normal_roughness, p_buffers, p_screen_size, inv_view_projection,
 			p_camera_transform, Math::abs(focal_pixels), light_count, p_settings);
 
-	const bool denoise = p_settings.denoise &&
+	const bool denoise = p_settings.denoise && p_normal_roughness.is_valid() &&
 			temporal_pipeline.is_valid() && atrous_pipeline.is_valid() &&
 			p_buffers.denoise_a.is_valid() && p_buffers.denoise_b.is_valid() &&
 			p_buffers.history_visibility.is_valid() && p_buffers.history_index.is_valid() &&
@@ -421,7 +412,8 @@ bool RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 	// last a-trous pass writes it back.
 	const Projection inv_projection = p_camera_projection.inverse();
 
-	_temporal(p_depth_texture, p_buffers, p_screen_size, reprojection, inv_projection, p_settings);
+	const Quaternion previous_view_rotation = (p_prev_camera_transform.basis.inverse() * p_camera_transform.basis).get_rotation_quaternion();
+	_temporal(p_depth_texture, p_normal_roughness, previous_view_rotation, p_buffers, p_screen_size, reprojection, inv_projection, p_settings);
 
 	// A-trous iterations with a doubling step. The first iteration is the one
 	// that writes the history, and what it stores is its own INPUT -- the

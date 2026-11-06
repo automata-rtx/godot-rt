@@ -1,5 +1,8 @@
 # Raytraced shadows
 
+Editor location: see the [General / Advanced Fork Options map](../SETTINGS.md).
+Setting keys and runtime access are unchanged.
+
 Raytraced shadows replace eligible lights' opaque-surface shadow maps with hardware ray queries. This is a Forward+ Vulkan feature requiring ray-query and buffer-device-address support. It is also the shared geometry prerequisite for AMD GI; enabling AMD GI does not make every light use raytraced shadows.
 
 ## Enable and control
@@ -17,12 +20,11 @@ All paths below are relative to `rendering/lights_and_shadows/raytraced_shadows/
 | `max_ray_distance` | `0` | Optional ray-distance cap; zero leaves the light-derived range. |
 | `softness_scale` | `1.0` | Scales light-size softness, from zero to one. |
 | `accurate_occluder_distance` | `true` | Nearest blocker for more consistent soft-shadow filtering; disabling permits early termination. |
-| `denoiser/enabled` | `true` | Temporal and spatial filtering. Disable to inspect raw sampling. |
-| `denoiser/spatial_passes` | `3` | A-trous iterations, 1–5. |
-| `denoiser/temporal_frames` | `32` | Accumulation window, 1–64; longer history can increase lag. |
+| `denoiser/enabled` | `true` | Adaptive per-light temporal and spatial filtering. Measured contacts use current-frame visibility. Disable to inspect raw sampling. |
+| `denoiser/spatial_passes` | `1` | A-trous iterations, 1–5. |
+| `denoiser/temporal_frames` | `5` | Accumulation window, 1–64. This is a target at 60 FPS, adjusted for the render interval and capped at eight frames. One disables history blending. |
 | `denoiser/min_filter_pixels` | `1.0` | Minimum spatial reach where a nonzero penumbra exists. |
-| `denoiser/history_clamp_sigma` | `2.0` | History-clamping strength; zero disables clamping. |
-| `denoiser/lag_response` | `1.0` | Response to rejected/clamped history, 0–1. |
+| `denoiser/history_clamp_sigma` | `0.3` | History-clamping strength; zero disables clamping. |
 | `directional/enabled` | `false` | Opt the sun into raytracing. |
 | `directional/caster_distance_scale` | `2.0` | Extra caster-search extent toward the sun, relative to its shadow distance. |
 | `directional/scatter_casters` | `1` | MultiMesh directional coverage: 0 disabled, 1 near camera, 2 full distance. |
@@ -33,6 +35,11 @@ All paths below are relative to `rendering/lights_and_shadows/raytraced_shadows/
 For OmniLight3D and SpotLight3D, `light_size` controls emitter size in meters; new nodes default to shadows enabled and size `0.05`. DirectionalLight3D instead exposes `light_angular_distance` in degrees, defaulting to `0.25`. Authored properties remain authoritative.
 
 `Light3D.shadow_map_enabled` explicitly retains a supplementary map for consumers that cannot use the opaque screen-space RT result, such as transparent shading and local-light volumetric fog. It does not replace opaque RT shading with a map. Without that supplement, transparent receivers can be unshadowed by an RT light. Directional volumetric fog has a separate ray-query path.
+
+The conservative temporal filter replaces the old temporal implementation.
+Former `denoiser/adaptive_temporal` and `denoiser/lag_response` keys are ignored.
+Use `temporal_frames=1` for spatial-only comparisons; use `denoiser/enabled=false`
+for raw samples. Spatial-only can retain moving noise in broad penumbras.
 
 ## Coverage and limits
 

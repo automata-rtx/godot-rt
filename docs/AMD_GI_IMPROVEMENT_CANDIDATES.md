@@ -1,8 +1,10 @@
 # Frozen AMD GI baseline and improvement candidates
 
 Recorded 2026-10-30. The owner subsequently authorized implementation of the three
-main candidates. Experimental implementations live on `feature/amdgi-improvements`,
-behind independent switches defaulting off. The frozen refs below are unchanged.
+main candidates. Their implementations are present in current source behind
+independent switches defaulting off. `feature/amdgi-improvements` records their
+origin, not a required current branch. The later emitter-history retention option
+is separate and defaults on. The frozen refs below are unchanged.
 See [controls](../GodotForkDocs/features/amd-gi-improvements.md) and
 [validation](validation/amd_gi_improvements/README.md); implementation is not
 shipping-quality acceptance or target-hardware performance evidence.
@@ -108,6 +110,10 @@ from premature fine-detail admission, including consumers in reflections.
 
 ## Deferred proposals and corrected expectations
 
+- **Flashlight-prioritized update allocation:** redistribute a bounded share of
+  existing probe updates toward changing flashlight bounce. See the
+  [2026-11-06 proposal](#deferred-flashlight-prioritized-updates-2026-11-06).
+  Documentation only; implementation and new tests are not authorized by this proposal.
 - **Priority-light sampling within the same budget:** AMD already evaluates
   multiple candidates before visibility selection. A different allocation can
   shift noise to other lights rather than improve overall quality. Benefit and
@@ -128,6 +134,72 @@ from premature fine-detail admission, including consumers in reflections.
 No Split Radiance Cascades component is being ported by this plan. Its research
 motivated discussion, but the package above is a proposed modification of our AMD
 pipeline, not a published or benchmarked AMD/Split RC improvement.
+
+## Deferred flashlight-prioritized updates (2026-11-06)
+
+**Status:** owner requested documentation for possible future implementation.
+No code, settings, defaults, or renderer tests are part of this decision. The
+owner is satisfied with overall visual quality and wants the next work to focus
+on robustness and reducing unwanted interactions; await that separate prompt.
+
+**Problem and prior outcome.** Player-flashlight bounce appears slowly and
+lingers after the beam moves away. The owner recalls testing `responsive_history`
+and finding it unsatisfactory. Do not treat its disabled state as an untried fix.
+The [FPS refinement report](validation/amd_gi_improvements/FPS_REFINEMENT.md#complete-beforeafter)
+documents residual lag, mixed/subtle flashlight-sweep results, and increased
+temporal variation. Those are synthetic software-Vulkan results, not a record of
+the owner's exact desktop complaint. The faster history variants traded more
+stability for response. Current project inspection found `responsive_history`
+off, with `demand_scheduling` and `cache_transitions` on; recheck before future work.
+
+**Proposal.** An opt-in tag on the player spotlight could identify changing
+lighting and redirect a capped share of the existing probe-update allowance from
+stable regions. Prioritize both the previous and current beam footprint, including
+a brief decay after movement or switch-off. Return the allowance as the affected
+lighting settles. No allocation percentage, timing target, API name, or default
+has been selected. A stationary light should not monopolize updates merely
+because it is enabled.
+
+**Integration and unresolved design.** In
+`servers/rendering/renderer_rd/shaders/effects/amd_gi.glsl`, `select_probe` normally
+selects within a local region; `patch_probe` can redirect slots to uncovered
+probes, and `compact_probes`/`gather_probe` carry the selected locations into
+tracing. This provides an integration point, not a ready-made global priority
+scheduler. Cache updates are driven by ray hits: prioritizing an arbitrary cache
+cell requires valid fresh shading information, not just changing its stored value.
+
+The directly illuminated wall and the floor receiving its bounce are different
+targets. More probes on the wall alone may not refresh the floor's incoming light.
+A viable design must connect affected hit/cache locations to receiving probes,
+account for occlusion, and handle old footprints leaving the screen. A cone or
+screen mask is only a candidate-region hint, not proof of lighting or visibility.
+The caches combine lights, so a tag cannot independently remove only the
+flashlight contribution. How to make this mapping efficient remains open.
+
+**Boundaries and risks for a future design:**
+
+- Preserve the primary-ray ceiling, reserve ordinary coverage and overdue updates,
+  and bound work with multiple tagged lights. Avoid duplicate probe ownership and
+  races when reallocating slots; preserve adaptive hole patching and reprojection.
+- Start with update-location scheduling. Keep AMD's light selection, ray-direction
+  sampling, and transport weights intact. Separately evaluating the flashlight or
+  redirecting ray directions needs its own estimator design and approval.
+- Test scheduling independently of stronger history reduction. Cache accumulation,
+  probe hysteresis, and final denoising can still delay fresh information. Any later
+  local history change needs separate evidence; do not reset the whole cache.
+- Borrowing too much can delay other lighting or increase noise elsewhere. Equal
+  primary-ray allowance does not guarantee equal actual ray count or GPU time;
+  account for scheduler overhead, secondary/visibility rays, CPU cost, and memory.
+- Maintain a clean feature-off path and bounded lifetime of priority state across
+  light deletion, weapon replacement, scene changes, and viewport changes.
+
+**Future acceptance:** matched light-on, off, sweep, and steady holds; measure
+bounce receivers separately from the direct beam. Check old-footprint clearing,
+unaffected dark regions, other lights/emissive flashes, newly revealed surfaces,
+reflections, and starvation under sustained movement. Compare fixed budgets and
+record latency, temporal noise, CPU/GPU time, and memory. Follow current run
+permissions and grass-off testing preferences. No visual or performance gain is
+yet measured for this proposal.
 
 ## Acceptance and boundaries
 

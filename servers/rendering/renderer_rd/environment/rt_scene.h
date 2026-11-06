@@ -166,7 +166,6 @@ public:
 	static float get_denoiser_max_history();
 	static float get_denoiser_min_filter_pixels();
 	static float get_denoiser_history_clamp_sigma();
-	static float get_denoiser_lag_response();
 	// Multiplies every raytraced light's emitter size on the way into the trace,
 	// and nothing else that reads that size. Zero makes every raytraced shadow
 	// hard without touching what any light was authored with.

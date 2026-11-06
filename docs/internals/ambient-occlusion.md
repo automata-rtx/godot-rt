@@ -1,6 +1,6 @@
 # VBAO implementation and rebuild contract
 
-Source-checked against `66bd97e00d`. This is a map for rebuilding the feature on another Godot version, not a claim that source files can be copied without adaptation. User controls live in `GodotForkDocs/features/ambient-occlusion.md`; historical measurements are not acceptance criteria for new hardware.
+Source contract reviewed in the [2026-11-06 audit](../DOCUMENTATION_AUDIT.md). This is a map for rebuilding the feature on another Godot version, not a claim that source files can be copied without adaptation. User controls live in `GodotForkDocs/features/ambient-occlusion.md`; historical measurements are not acceptance criteria for new hardware.
 
 ## Ownership and integration seams
 

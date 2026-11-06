@@ -153,6 +153,7 @@ void RenderSceneBuffersRD::update_samplers() {
 }
 
 void RenderSceneBuffersRD::cleanup() {
+	amd_gi_preparation_status.clear();
 	// Free our data buffers (but don't destroy them)
 	for (KeyValue<StringName, Ref<RenderBufferCustomDataRD>> &E : data_buffers) {
 		E.value->free_data();

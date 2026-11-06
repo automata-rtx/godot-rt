@@ -337,6 +337,8 @@ public:
 
 		List<Instance *> directional_lights;
 		RID environment;
+		Vector<RID> amd_gi_preparation_materials;
+		bool amd_gi_preparation_hold = false;
 		RID fallback_environment;
 		RID camera_attributes;
 		RID compositor;
@@ -377,6 +379,7 @@ public:
 	virtual void scenario_initialize(RID p_rid);
 
 	virtual void scenario_set_environment(RID p_scenario, RID p_environment);
+	virtual void scenario_set_amd_gi_preparation(RID p_scenario, const Vector<RID> &p_materials, bool p_hold);
 	virtual void scenario_set_camera_attributes(RID p_scenario, RID p_attributes);
 	virtual void scenario_set_fallback_environment(RID p_scenario, RID p_environment);
 	virtual void scenario_set_compositor(RID p_scenario, RID p_compositor);
@@ -1434,6 +1437,7 @@ public:
 	PASS1(set_debug_draw_mode, RSE::ViewportDebugDraw)
 	PASS1RC(String, debug_get_upscaler_status, const Ref<RenderSceneBuffers> &)
 	PASS1RC(Dictionary, debug_get_amd_gi_diagnostics, const Ref<RenderSceneBuffers> &)
+	PASS1RC(Dictionary, get_amd_gi_preparation_status, const Ref<RenderSceneBuffers> &)
 
 	PASS1(decals_set_filter, RSE::DecalFilter)
 	PASS1(light_projectors_set_filter, RSE::LightProjectorFilter)

@@ -1,5 +1,8 @@
 # Screen-space shadows
 
+Editor location: see the [General / Advanced Fork Options map](../SETTINGS.md).
+Setting keys and runtime access are unchanged.
+
 This Forward+ effect adds short directional contact shadows by marching visible depth toward the sun, using Bend Studio's algorithm. It can complement [RT shadows](rt-shadows.md), including visible foliage omitted from RT shadow casting, but cannot replace off-screen or long-range scene shadows.
 
 Only one shadow-casting `DirectionalLight3D` is selected per render pass. Omni and spot lights do not use it. Orthographic cameras, multiview and reflection-probe renders are excluded.

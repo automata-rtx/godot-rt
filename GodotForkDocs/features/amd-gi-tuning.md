@@ -1,7 +1,10 @@
 # Live AMD GI tuning
 
+Editor location: see the [General / Advanced Fork Options map](../SETTINGS.md).
+Setting keys and runtime access are unchanged.
+
 Requires Vulkan Forward+, enabled AMD GI, and a build containing these controls.
-Defaults remain AMD's baseline. These are experimental adjustments, not a proven preset.
+The three tuning defaults retain AMD's corresponding baseline values. These are experimental adjustments, not a proven preset.
 
 ## What the controls do
 
@@ -64,5 +67,6 @@ ProjectSettings.set_setting(GI_TUNING + "denoiser_history_scale", 0.90)
 - Reuse the explanations above as help text. Leave probe spacing at its current
   value; only 8/16/32 are supported. No intermediate budget or panel scene is supplied.
 
-Engine rationale and validation: [implementation notes](../../docs/internals/amd-gi.md#bounded-live-tuning),
-[checks and remaining hardware tests](../../docs/validation/amd_gi_tuning/README.md).
+Engine rationale: `docs/internals/amd-gi.md`, section Bounded live tuning.
+Evidence and remaining hardware tests: `docs/validation/amd_gi_tuning/README.md`
+in the engine repository. These files are not required to use this portable pack.

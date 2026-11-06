@@ -3608,6 +3608,16 @@
 				The scenario is the 3D world that all the visual instances exist in.
 			</description>
 		</method>
+		<method name="scenario_set_amd_gi_preparation">
+			<return type="void" />
+			<param index="0" name="scenario" type="RID" />
+			<param index="1" name="materials" type="RID[]" />
+			<param index="2" name="hold" type="bool" />
+			<description>
+				Stages the given material RIDs for AMD GI, including materials on hidden or not-yet-instantiated meshes. Retain the owning [Material] resources until replacing or clearing the list. Unsupported materials are omitted using the normal GI transport rules; this does not add geometry or emitters.
+				Set [param hold] to [code]true[/code] while assembling a level to defer compilation of intermediate material sets. Set it to [code]false[/code] after collecting materials, keep rendering the world behind a loading overlay, and poll [method viewport_get_amd_gi_preparation_status]. Release the hold on cancellation as well. An empty list clears the staged materials. This controls the scenario, so all viewports using that scenario share it.
+			</description>
+		</method>
 		<method name="scenario_set_camera_attributes">
 			<return type="void" />
 			<param index="0" name="scenario" type="RID" />
@@ -4166,6 +4176,22 @@
 				[b]Note:[/b] The equivalent node is [Viewport].
 			</description>
 		</method>
+		<method name="viewport_get_amd_gi_diagnostics" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="viewport" type="RID" />
+			<description>
+				Returns a detached AMD GI diagnostic snapshot for [param viewport]. Enable [member ProjectSettings.rendering/global_illumination/amd_gi/debug/statistics] for periodically sampled GPU counters or [member ProjectSettings.rendering/global_illumination/amd_gi/debug/exclusion_reports] for object exclusion reports. Returns an empty dictionary when both are disabled or AMD GI is unavailable. The dictionary includes [code]frame[/code], [code]scene[/code], [code]collection[/code], and, after a sample, [code]gpu[/code]. The GPU snapshot has its own frame number; it is not necessarily from the current frame. Querying never initiates GPU readback, but synchronizes with the rendering thread. Poll at a modest rate for debug overlays.
+			</description>
+		</method>
+		<method name="viewport_get_amd_gi_preparation_status" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="viewport" type="RID" />
+			<description>
+				Returns the latest rendered AMD GI preparation snapshot, without GPU readback. [code]ready[/code] is true only when this viewport rendered GI using its current material revision. [code]state[/code] is [code]gathering[/code], [code]compiling[/code], [code]ready[/code], [code]failed[/code], [code]disabled[/code], or [code]unavailable[/code]. A ready pipeline set can have [code]ready=false[/code] if drawing GI failed.
+				The dictionary includes [code]revision[/code], [code]completed_passes[/code], [code]total_passes[/code], [code]material_errors[/code] (omitted or invalid staged materials), [code]bytecode_or_resident_cache_hit[/code], and [code]rendered_frame[/code]. Disabled/unavailable snapshots contain only state, ready, and frame. An empty dictionary means no supported render-buffer snapshot is available. A bytecode cache hit does not guarantee a driver pipeline cache hit.
+				Poll on subsequent rendered frames after changing the scenario or preparation request. The snapshot remains unchanged when the viewport does not draw. Loading screens must keep 3D rendering active, handle unsupported views and use a timeout; this is not a readiness test for asset loading, grass, or all raster shaders.
+			</description>
+		</method>
 		<method name="viewport_get_effective_scaling_3d_mode" qualifiers="const">
 			<return type="int" enum="RenderingServer.ViewportScaling3DMode" />
 			<param index="0" name="viewport" type="RID" />
@@ -4195,13 +4221,6 @@
 				Returns the GPU time taken to render the last frame in milliseconds. To get a complete readout of GPU time spent to render the scene, sum the render times of all viewports that are drawn every frame. Unlike [method Engine.get_frames_per_second], this method accurately reflects GPU utilization even if framerate is capped via V-Sync or [member Engine.max_fps]. See also [method viewport_get_measured_render_time_cpu].
 				[b]Note:[/b] Requires measurements to be enabled on the specified [param viewport] using [method viewport_set_measure_render_time]. Otherwise, this method returns [code]0.0[/code].
 				[b]Note:[/b] When GPU utilization is low enough during a certain period of time, GPUs will decrease their power state (which in turn decreases core and memory clock speeds). This can cause the reported GPU time to increase if GPU utilization is kept low enough by a framerate cap (compared to what it would be at the GPU's highest power state). Keep this in mind when benchmarking using [method viewport_get_measured_render_time_gpu]. This behavior can be overridden in the graphics driver settings at the cost of higher power usage.
-			</description>
-		</method>
-		<method name="viewport_get_amd_gi_diagnostics" qualifiers="const">
-			<return type="Dictionary" />
-			<param index="0" name="viewport" type="RID" />
-			<description>
-				Returns a detached AMD GI diagnostic snapshot for [param viewport]. Enable [member ProjectSettings.rendering/global_illumination/amd_gi/debug/statistics] for periodically sampled GPU counters or [member ProjectSettings.rendering/global_illumination/amd_gi/debug/exclusion_reports] for object exclusion reports. Returns an empty dictionary when both are disabled or AMD GI is unavailable. The dictionary includes [code]frame[/code], [code]scene[/code], [code]collection[/code], and, after a sample, [code]gpu[/code]. The GPU snapshot has its own frame number; it is not necessarily from the current frame. Querying never initiates GPU readback, but synchronizes with the rendering thread. Poll at a modest rate for debug overlays.
 			</description>
 		</method>
 		<method name="viewport_get_render_info">

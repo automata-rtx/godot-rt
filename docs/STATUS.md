@@ -1,12 +1,13 @@
 # Current implementation and validation status
 
-Source baseline: `66bd97e00d`, audited 2026-10-26, with the optimization working
-changes and runtime evidence below added that day. This file distinguishes source
+Source audit: [2026-11-06](DOCUMENTATION_AUDIT.md), `b3c0262131` plus local
+working changes. Dated measurements below belong to their individual builds. This file distinguishes source
 support from runtime evidence; it is not a benchmark or a claim that all optional
 paths are certified. Controls: [portable guide](../GodotForkDocs/FORK_GUIDE.md).
 
 | Area | Current source | Evidence / remaining limit |
 | --- | --- | --- |
+| Fork settings presentation | 20 setup/quality controls in General; 78 specialized controls in Advanced Fork Options; original keys/defaults retained | Windows editor built; isolated blank-project editor passed 26 UI/serialization/undo/override checks. [Audit](validation/FORK_PROJECT_SETTINGS_AUDIT.md#implemented-presentation-split-2026-11-06). Desktop copies not replaced by this change. |
 | RT shadows | Local/directional tracing, denoising and shared RT geometry | Existing fixture history covers many cases; current shared-cache changes must be exercised alongside GI when porting |
 | VBAO | Selectable visibility-bitmask ambient occlusion | Reference/scoring rigs exist; scene-dependent screen-space limitations remain |
 | Screen-space shadows | Directional depth-based contact shadow with caster filtering | Existing analytic/RT comparisons; screen boundaries and depth-layer omissions are method limits |
@@ -16,10 +17,64 @@ paths are certified. Controls: [portable guide](../GodotForkDocs/FORK_GUIDE.md).
 | GI preparation/reflection optimizations | MultiMesh placement reuse, per-update shared geometry preparation, validated descriptor reuse, exact-default firefly rank shortcut | Independent reviews, targeted GPU regressions and Live World benchmarks passed; approximately 4–5% less CPU renderer time in the measured view. [Evidence and limits](validation/amd_gi_optimization_2026_10_26/RESULTS.md) |
 | RT shadow/shared submission CPU reuse | Shared MultiMesh expansion, current-update geometry preparation, retained instance hashes/native bytes and BLAS dependencies | Exact shadow captures, native queued-ray fixtures and GI lifecycle/deformation passed. Live World CPU render span improved about 5.7% beyond the preceding build; forced-rebuild stress has a small CPU tradeoff. [Evidence and limits](validation/rt_cpu_optimization_2026_10_26/RESULTS.md) |
 | GI retained scene/command preparation | Stable surface/emitter groups, current resource refresh, per-render buffer-read groups with every original dependency | Targeted material/lifecycle/deformation/emitter and native GPU tests passed. Live World rendering CPU improved another 24–28%, with unchanged GPU time. Fully changing scenes can pay extra reconstruction cost; one legacy material-response scorer still fails on baseline and candidate. [Evidence and limits](validation/gi_cpu_retention_2026_10_26/RESULTS.md) |
-| GI CPU follow-up | Current-update combined source Context reuse, changed-record ranges, retained collected MultiMesh blocks | All three plans and patches independently reviewed; Windows build, source hooks and offline Context failure model passed. Owner tested the delivered build and reported it works. No new agent-run regression suite or benchmark; savings remain unmeasured. [Implementation and limits](validation/gi_cpu_retention_2026_10_26/CPU_FOLLOWUP_IMPLEMENTATION.md) |
+| GI CPU follow-up | Current-update combined source Context reuse, changed-record ranges, retained collected MultiMesh blocks | Independently reviewed, built and owner-tested. Four coordinated Live World benchmark runs show another 16–17% lower rendering CPU versus the faster baseline; GPU time unchanged. New exhaustive regression suite remains pending. [Measurements and limits](validation/gi_cpu_retention_2026_10_26/FOLLOWUP_BENCHMARKS.md) |
 | Streamline shutdown | SDK cleanup before Vulkan destruction, guarded repeats/partial init, local-device ownership | Three complete RTX 5090 runtime cases passed: enabled-unused, disabled, Live World with AMD GI+DLSS and local-device create/readback/destroy. Exit 0; no new Windows/SDK dumps |
 
 ## Open project observations
+
+**Local build delivery (2026-11-06).** The standard desktop shortcut points to the
+latest local settings-editor build in the engine checkout, SHA-256
+`F752866DA77677EE337F4449503B425AEF85F00DAEF5AA2D7815C47146485E56`.
+Future successful local editor builds must update/verify this shortcut.
+`Desktop/GodotRTGI` is now reserved for Actions downloads; its existing executable
+was not replaced by this policy change. See [delivery rules](PROJECT_SCOPE.md#local-build-delivery).
+
+**Flashlight bounce response (2026-11-06).** The owner remains dissatisfied with
+bounce appearing/fading slowly and recalls an unsatisfactory `responsive_history`
+trial. Preserve that feedback rather than recommending the disabled toggle as
+untested. A [bounded flashlight-priority update proposal](AMD_GI_IMPROVEMENT_CANDIDATES.md#deferred-flashlight-prioritized-updates-2026-11-06)
+is documented for later consideration, including prior test drawbacks and the
+unresolved connection between the lit surface and bounce receivers. It is not
+implemented or authorized for implementation/testing. The settings presentation cleanup does not implement this proposal.
+
+**Combat Lab material stall (2026-11-05).** The captured draw took 12.038 s.
+Replaying the saved third material combination synchronously spent 11.561 s in
+driver pipeline creation. Nine of 58 enabled shaders changed and accounted for
+11.557 s. An offline RTX 5090 replay with the fork's asynchronous preparation
+methods and the same shader binaries took 11.305 s in the background. The
+calling loop polled 2,556 times with a longest call of 12.78 ms. It also passed
+superseded-revision, resident reuse, cleanup and injected-retry checks. This
+test used reconstructed Vulkan layouts and an adapter for Godot's shader and
+device objects. Subsequent local RTX 5090 rendered checks verified loading-screen
+preparation in Combat Lab, with grass off at 1280×720. A first tested load spent
+6.638 s preparing GI pipelines and 8.374 s under the loading cover; a separate
+cached launch took 77.5 ms and 621 ms respectively. The paused encounter remained
+at 0.0167 s/two events during preparation; gunfire did not request another GI set.
+Both runs then exercised an unexpected new shader during combat and recovered GI.
+Cold raster variant changes still produced up to 1.31 s draw gaps under the cover
+and 1.24 s in the deliberate late-shader test; this is not universal hitch removal.
+The cached late-shader test's maximum gap was 71.0 ms.
+
+The same captured shader binaries, with distinct entry-point names to avoid
+driver-cache contamination, took 13.498/7.516/5.080 s with 1/2/4 compilation
+workers. Peak process memory was 581/811/1197 MiB in this isolated Vulkan test.
+This supports the bounded four-worker default on this desktop, not a universal
+speedup claim. Separate-process saved-cache runs took 10.6/7.1/3.6 ms.
+
+Preparation fixtures passed hidden-material staging, reversed discovery order
+(identical source hash), uniform changes without recompilation, scene supersession,
+injected failure/retry, and shutdown with workers active. Backup-cache recovery
+loaded 8.6 MiB and reached ready GI in 155 ms. Numerical source-material validation
+passed 256 samples (maximum error 1.3e-7); the CPU preparation helper passed 141
+checks. Class-reference API signatures were regenerated with the matching engine.
+Logs: `.artifacts/gi-material-stall/`; MSVC editor SHA-256:
+`63161B3F2FA7DC27021228C88766B1C7302AC8642A5C31362F95229EA041F030`.
+At the owner's request on 2026-11-05, both desktop copies (`GodotRT` and `GodotRTGI`)
+were replaced with that tested executable and their SHA-256 hashes verified.
+Each previous executable has an adjacent `.before-gi-loading-20261105-221217.bak`
+backup. The `GodotRTGI` filename retains `.llvm.exe` for path compatibility, but
+this installed build uses MSVC. See [material preparation](internals/amd-gi.md)
+and the [loading API](../GodotForkDocs/features/amd-gi-loading.md).
 
 The owner-authorized three [GI improvement experiments](validation/amd_gi_improvements/README.md)
 are implemented behind independent, default-off switches. Linux builds, shader
@@ -34,8 +89,24 @@ performance acceptance or a claim that the reported game artifacts are resolved.
   face-specific artifacts during forward/backward movement; strafing shows much
   less of the problem. Thin faces and the player-facing magazine were earlier
   trouble areas. Preserve detail as well as stability when investigating.
-- The game's full-resolution reflection override and trace cutoff `0.3` are
-  project-specific experiments. They are not new engine defaults or universal fixes.
+- AKMN handguard boiling: on the matched Building Sandbox yard route, raising
+  `reflections/trace_roughness_threshold` from `0.30` to `0.45` reduced
+  motion-tracked brightness fluctuation by 92% on the upper wood, 83% on the
+  metal behind it and 44% on the receiver cover. The measure compares 3×3-pixel
+  patch brightness against the same surface four frames earlier and later,
+  excluding silhouettes and occlusions. Both wood and metal also
+  improved against the dark scenario board, where the cover showed little
+  difference. Both runs used full internal-resolution reflections and DLSS
+  Performance (640×360 internal). The fraction of yard pixels eligible for
+  reflection rays rose from 0.24% to 8.39% across five sampled frames.
+  At 0.45 the measured median viewport GPU time rose by about 0.01 ms in
+  Building Sandbox and Live World on the RTX 5090. [Profile and probe evidence](validation/AKMN_REFLECTION_PROFILE.md)
+- Deferred texture-import fix: the RenderingDevice editor's roughness-hint range
+  check in `MaterialStorage::MaterialData::update_textures` accepts unrelated
+  hints. All six AKMN packed maps recorded import mode 8 instead of green (3).
+  Correcting only the roughness mipmaps did not consistently reduce front-sight
+  or muzzle shimmer in matched RTX 5090 captures. Track importer repair and
+  reimport of stale settings separately from glossy reflection sampling.
 - Firing/muzzle-flash overhead received source changes, but a clean shutdown test
   did not exercise or establish acceptance of that gameplay issue.
 - General material/resource lifecycle coverage, shader-driven displacement,
@@ -46,7 +117,11 @@ See the feature guides for current exclusions. Do not carry every old local
 handoff symptom forward as a verified current bug; the full historical list is
 preserved in the snapshot below for targeted reproduction.
 
-## Evidence and build identity
+## Historical build identities
+
+These are dated delivery records, not the current contents of `bin/` or Desktop.
+The latest settings-editor build is identified in the settings audit linked above.
+Verify installed file hashes before assuming source and binary match.
 
 The shutdown-tested Windows executable has SHA256
 `4EDE8767341A9FD6A243BD76FB16E88D73C6D1C27BA05C3A50C5F043D4E1BF21`.
@@ -71,13 +146,15 @@ The preceding local GI CPU retention-tested editor has SHA256
 It is preserved in `.artifacts/rt-cpu-investigation-20261026/revised-binary/`; final/bypass comparisons,
 independent contribution estimates and validation limits are in the
 [GI CPU report](validation/gi_cpu_retention_2026_10_26/RESULTS.md).
-The desktop installation remains unchanged.
+That retention task did not replace the desktop installation; later deliveries above supersede it.
 
-The latest local CPU follow-up editor at `bin/godot.windows.editor.x86_64.exe`
+The earlier CPU follow-up editor, then at `bin/godot.windows.editor.x86_64.exe`,
 has SHA256 `2497553BF8097CE6E71E76D9651782B7BD4A6601D39D03B2E3228D2C28918340`.
 It compiled successfully and the owner subsequently tested it and reported that
-it works, authorizing publication. No new agent-run regression suite or performance
-claim is attached to this executable; the desktop installation remains unchanged.
+it works, authorizing publication. The same executable was then installed in
+`Desktop/GodotRT`, with the previous editor backed up. Four separately authorized
+benchmark runs establish the CPU benefit above; see the
+[delivery and benchmark record](validation/gi_cpu_retention_2026_10_26/FOLLOWUP_BENCHMARKS.md).
 
 Detailed logs, prior figures, proof limitations and deployment paths remain in
 the [pre-audit implementation record](history/pre-streamline-2026-10-26/docs/AMD_GI_IMPLEMENTATION.md).

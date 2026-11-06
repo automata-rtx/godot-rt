@@ -172,8 +172,8 @@ shadow is not deterministic frame to frame and cannot be differenced against a f
 no rig here measures the denoiser, and none can while that holds -- ghosting, steady state noise,
 disocclusion and every history clamp setting are outside what a number from here can mean.
 
-`denoiser_sim.py`, in this directory, covers that gap by simulation rather than by render: it
-reimplements `rt_shadow_temporal.glsl` in numpy and drives it with synthetic visibility whose true
+Historical comparison only: `denoiser_sim.py` models the retired temporal shader.
+It reimplements that version of `rt_shadow_temporal.glsl` in numpy and drives it with synthetic visibility whose true
 value is known exactly, which a render never gives you. **It is a model of the shader rather than a
 measurement of it**, so label anything published from it simulated; its docstring states what the
 model leaves out, and `../../HISTORY.md` carries the tables it prints. Four modes, and `--quick`

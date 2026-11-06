@@ -1776,6 +1776,10 @@ bool RenderForwardClustered::_ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD>
 	const uint32_t usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT |
 			RD::TEXTURE_USAGE_CAN_COPY_TO_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 
+	if (!p_denoise && p_render_buffers->has_texture(RB_SCOPE_RT_SHADOWS, RB_TEX_RT_HISTORY_META)) {
+		p_render_buffers->clear_context(RB_SCOPE_RT_SHADOWS);
+	}
+
 	// All single layer: raytraced shadows are not used under multiview, so
 	// nothing here is ever per-view. These live in their own scope so a resize
 	// can tear them down without disturbing anything else the renderer keeps on
@@ -1810,12 +1814,10 @@ bool RenderForwardClustered::_ensure_rt_shadow_buffers(Ref<RenderSceneBuffersRD>
 		// Which light each history channel belongs to. A history sample is only
 		// usable where this still matches, so it has to be kept alongside.
 		r_buffers.history_index = ensure(RB_TEX_RT_HISTORY_INDEX, RD::DATA_FORMAT_R8G8B8A8_UINT);
-		// Linear view depth and the history length, the latter normalized against
-		// the accumulation window. Half float is enough for the relative surface
-		// comparison the reprojection makes and halves the cost of a full float
-		// target.
-		r_buffers.history_meta = ensure(RB_TEX_RT_HISTORY_META, RD::DATA_FORMAT_R16G16_SFLOAT);
-		r_buffers.history_length = ensure(RB_TEX_RT_HISTORY_LENGTH, RD::DATA_FORMAT_R8_UNORM);
+		// Store half depth,
+		// an octahedral view normal and four byte ages, one per light channel.
+		r_buffers.history_meta = ensure(RB_TEX_RT_HISTORY_META, RD::DATA_FORMAT_R16G16B16A16_UINT);
+		r_buffers.history_length = ensure(RB_TEX_RT_HISTORY_LENGTH, RD::DATA_FORMAT_R8G8B8A8_UNORM);
 	}
 
 	// All three the TRACE needs, not the two the forward pass samples. A device
@@ -2228,12 +2230,17 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 			RendererRD::RTShadows::Settings settings;
 			settings.sample_count = RendererRD::RaytracingScene::get_sample_count();
 			settings.max_ray_distance = RendererRD::RaytracingScene::get_max_distance();
-			settings.denoise = RendererRD::RaytracingScene::is_denoiser_enabled();
+			settings.denoise = RendererRD::RaytracingScene::is_denoiser_enabled() && rb_data->has_normal_roughness();
 			settings.atrous_iterations = RendererRD::RaytracingScene::get_denoiser_iterations();
 			settings.max_history = RendererRD::RaytracingScene::get_denoiser_max_history();
+
+			if (settings.max_history > 1.0f) {
+				const float frame_scale = time_step > 0.0 ? float(60.0 * time_step) : 1.0f;
+				settings.max_history = CLAMP(settings.max_history / frame_scale, 1.0f, 8.0f);
+			}
 			settings.min_filter_pixels = RendererRD::RaytracingScene::get_denoiser_min_filter_pixels();
 			settings.history_clamp_sigma = RendererRD::RaytracingScene::get_denoiser_history_clamp_sigma();
-			settings.lag_response = RendererRD::RaytracingScene::get_denoiser_lag_response();
+
 			settings.accurate_occluder_distance = RendererRD::RaytracingScene::is_accurate_occluder_distance();
 
 			RendererRD::RTShadows::Buffers rt_buffers;
@@ -2327,11 +2334,23 @@ void RenderForwardClustered::_pre_opaque_render(RenderDataRD *p_render_data, boo
 				}
 			}
 		}
-		if (!amd_gi->render(*rtgi_scene, rb, rb_data->get_normal_roughness(), p_render_data->scene_data->get_cam_projection(), p_render_data->scene_data->get_cam_transform(), exposure, gi_environment)) {
+		const bool rendered = amd_gi->render(*rtgi_scene, rb, rb_data->get_normal_roughness(), p_render_data->scene_data->get_cam_projection(), p_render_data->scene_data->get_cam_transform(), exposure, gi_environment);
+		Dictionary preparation = amd_gi->get_preparation_status(*rtgi_scene);
+		preparation["ready"] = bool(preparation["ready"]) && rendered;
+		preparation["rendered_frame"] = RSG::rasterizer->get_frame_number();
+		rb->set_amd_gi_preparation_status(preparation);
+		if (!rendered) {
 			RendererRD::AMDGI::clear(rb);
 		}
-	} else if (rb.is_valid() && (rb->has_custom_data(RB_SCOPE_AMD_GI) || rb->has_texture(RB_SCOPE_AMD_GI, SNAME("diffuse")))) {
-		RendererRD::AMDGI::clear(rb);
+	} else if (rb.is_valid()) {
+		Dictionary preparation;
+		preparation["state"] = RendererRD::AMDGI::is_enabled() ? "unavailable" : "disabled";
+		preparation["ready"] = false;
+		preparation["rendered_frame"] = RSG::rasterizer->get_frame_number();
+		rb->set_amd_gi_preparation_status(preparation);
+		if (rb->has_custom_data(RB_SCOPE_AMD_GI) || rb->has_texture(RB_SCOPE_AMD_GI, SNAME("diffuse"))) {
+			RendererRD::AMDGI::clear(rb);
+		}
 	}
 
 	// Screen space shadows. Separate from the block above on purpose: this runs
@@ -2499,7 +2518,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	// check if we need motion vectors
 	bool motion_vectors_required;
-	const bool using_gi_motion = !is_reflection_probe && !p_render_data->scene_data->cam_orthogonal && amd_gi && rtgi_scene && rtgi_scene->is_ready() && rb_data.is_valid() && rb->get_msaa_3d() == RSE::VIEWPORT_MSAA_DISABLED;
+	const bool using_gi_motion = !is_reflection_probe && !p_render_data->scene_data->cam_orthogonal && amd_gi && rtgi_scene && rtgi_scene->is_ready() && amd_gi->has_material_pipelines(*rtgi_scene) && rb_data.is_valid() && rb->get_msaa_3d() == RSE::VIEWPORT_MSAA_DISABLED;
 	if (using_debug_mvs) {
 		motion_vectors_required = true;
 	} else if (ce_needs_motion_vectors) {

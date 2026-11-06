@@ -811,6 +811,7 @@ public:
 	FUNC1RC(RSE::ViewportScaling3DMode, viewport_get_effective_scaling_3d_mode, RID)
 	FUNC1RC(String, viewport_get_upscaler_status, RID)
 	FUNC1RC(Dictionary, viewport_get_amd_gi_diagnostics, RID)
+	FUNC1RC(Dictionary, viewport_get_amd_gi_preparation_status, RID)
 	FUNC1RC(double, viewport_get_measured_render_time_cpu, RID)
 	FUNC1RC(double, viewport_get_measured_render_time_gpu, RID)
 	FUNC1RC(RID, viewport_find_from_screen_attachment, DisplayServerEnums::WindowID)
@@ -940,6 +941,7 @@ public:
 	FUNCRIDSPLIT(scenario)
 
 	FUNC2(scenario_set_environment, RID, RID)
+	FUNC3(scenario_set_amd_gi_preparation, RID, const Vector<RID> &, bool)
 	FUNC2(scenario_set_camera_attributes, RID, RID)
 	FUNC2(scenario_set_fallback_environment, RID, RID)
 	FUNC2(scenario_set_compositor, RID, RID)

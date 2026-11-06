@@ -115,6 +115,12 @@ export DISPLAY="$DISP"
 export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.json}"
 export GODOT_SILENCE_ROOT_WARNING=1
 export SHADOW_OUT_DIR="$OUT"
+# Image oracles use fixed frame counts. Source-material validation explicitly
+# exercises fallback and waits for completed GI frames on its own.
+case "$RIG" in
+	amd_gi_source_material) ;;
+	amd_gi*) export GODOT_AMD_GI_FIXTURE_WAIT_FOR_PIPELINES=1 ;;
+esac
 if [ "$RIG" = "amd_gi_collection" ]; then
 	export GODOT_AMD_GI_VALIDATE_CACHE=1 GODOT_AMD_GI_VALIDATE_MATERIALS=1 GODOT_AMD_GI_TRACE_HISTORY=1
 fi

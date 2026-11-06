@@ -151,7 +151,7 @@ private:
 		float glossy[4]; // low roughness threshold, firefly low/high thresholds, exposure scale
 		uint32_t motion[4]; // swept bound count, all-hit updates, diffuse feedback, reserved
 		uint32_t emitters[4]; // emitter count, physical uvec4 offset, appended glossy queue offset, compact glossy dispatch
-		uint32_t options[4]; // sky sampling, reflections enabled, improvement flags, reserved
+		uint32_t options[4]; // sky sampling, reflections enabled, improvement flags, reset previous light reservoirs
 		uint32_t reflection_options[4]; // denoiser, split radius, mark radius, cleanup radius
 		uint32_t debug_options[4]; // view, mip, counter flags, age scale
 		float debug_settings[4]; // exposure, sample scale, atlas page, reserved
@@ -194,7 +194,16 @@ private:
 		uint32_t previous_analytic_count = 0;
 		uint32_t previous_emitter_count = 0;
 		uint32_t previous_environment_count = 0;
-		bool update_light_order(const RaytracingGIScene &p_scene, uint32_t p_environment_count);
+		struct AnalyticLightKey {
+			uint64_t id;
+			uint32_t type;
+		};
+		LocalVector<AnalyticLightKey> previous_analytic_order;
+		bool previously_lit_by_analytic_light = false;
+		enum class LightHistoryAction { KEEP,
+			RESET_RESERVOIRS,
+			RESET_VIEW };
+		LightHistoryAction update_light_order(const RaytracingGIScene &p_scene, uint32_t p_environment_count, bool p_retain_on_emitter_transitions);
 		bool ensure_light_grid(uint32_t p_emitters, uint32_t p_lights);
 		RID indirect_cache[2], secondary_rays;
 		RID hit_samples, direct_updates, source_validation;
@@ -240,9 +249,42 @@ private:
 	RID environment_pipelines[2];
 	RID prepare_environment(ViewData &p_data, const Environment &p_environment);
 	RID version;
+	String published_source;
+	// Render thread owns the version, its shader RIDs and all cleanup. The
+	// worker only creates pipelines from pinned shaders. It never reads a scene.
+	struct MaterialBuild {
+		RID version;
+		String source;
+		const RaytracingGIScene *scene = nullptr; // Render-thread identity only.
+		uint64_t revision = 0;
+		uint64_t start_usec = 0;
+		RID shaders[PASS_COUNT];
+		RID pipelines[PASS_COUNT];
+		Thread worker;
+		SafeFlag cancel;
+		SafeFlag finished;
+		bool inject_failure = false;
+		bool bytecode_cache_hit = false;
+		uint32_t failed_pass = PASS_COUNT;
+		SafeNumeric<uint32_t> completed_passes;
+		SafeNumeric<uint32_t> next_pass;
+		SafeFlag failed;
+		uint32_t pass_order[PASS_COUNT] = {};
+		uint32_t pass_count = 0;
+		uint32_t worker_count = 1;
+	};
+	MaterialBuild *pending = nullptr;
+	static void build_material_pipelines(void *p_data);
+	static void build_material_passes(void *p_data);
+	bool poll_material_build();
+	void start_material_build(const RaytracingGIScene *p_scene, uint64_t p_revision, const String &p_source);
+	void free_material_build();
 	AMDGIPipelinePreparationState material_preparation;
 	bool material_failure_injected = false;
-	bool prepare_material_pipelines(const RaytracingGIScene &p_scene);
+	bool preparation_hold = false;
+	bool preparation_failed = false;
+	bool preparation_cache_hit = false;
+	void update_material_pipelines(const RaytracingGIScene *p_scene);
 	RID blue_noise;
 	uint32_t random_seed_count = 0;
 	void ensure_sampling_data(const Size2i &p_size);
@@ -254,6 +296,9 @@ public:
 	static bool is_supported();
 	static void clear(const Ref<RenderSceneBuffersRD> &p_buffers);
 	bool has_material_pipelines(const RaytracingGIScene &p_scene) const;
+	void prepare_scene_material_pipelines(const RaytracingGIScene &p_scene, bool p_hold);
+	Dictionary get_preparation_status(const RaytracingGIScene &p_scene) const;
+	bool suspend_material_pipelines();
 	void prepare_feedback_lights(const Ref<RenderSceneBuffersRD> &p_buffers, const PagedArray<RID> &p_lights);
 	RID get_feedback_lights(const Ref<RenderSceneBuffersRD> &p_buffers) const;
 	bool render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffersRD> &p_buffers, RID p_normals, const Projection &p_projection, const Transform3D &p_camera, float p_exposure, const Environment &p_environment);

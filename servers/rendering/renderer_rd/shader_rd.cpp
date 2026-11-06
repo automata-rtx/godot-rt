@@ -863,6 +863,16 @@ void ShaderRD::version_set_raytracing_code(RID p_version, const HashMap<String, 
 	_version_set(version, p_code, p_custom_defines);
 }
 
+bool ShaderRD::version_group_is_compiling(RID p_version, int p_group, bool &r_bytecode_cache_hit) {
+	Version *version = version_owner.get_or_null(p_version);
+	ERR_FAIL_NULL_V(version, false);
+	MutexLock lock(*version->mutex);
+	ERR_FAIL_INDEX_V(p_group, version->group_compilation_tasks.size(), false);
+	r_bytecode_cache_hit = version->group_loaded_from_cache[p_group];
+	const WorkerThreadPool::GroupID task = version->group_compilation_tasks[p_group];
+	return task != 0 && !WorkerThreadPool::get_singleton()->is_group_task_completed(task);
+}
+
 bool ShaderRD::version_is_valid(RID p_version) {
 	Version *version = version_owner.get_or_null(p_version);
 	ERR_FAIL_NULL_V(version, false);
@@ -898,11 +908,12 @@ bool ShaderRD::version_free(RID p_version) {
 			shader_versions_embedded_set.erase({ this, p_version });
 		}
 
-		version->mutex->lock();
+		Mutex *version_mutex = version->mutex;
+		version_mutex->lock();
 		_clear_version(version);
 		version_owner.free(p_version);
-		version->mutex->unlock();
-		memdelete(version->mutex);
+		version_mutex->unlock();
+		memdelete(version_mutex);
 	} else {
 		return false;
 	}

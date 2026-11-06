@@ -32,6 +32,7 @@ func _run() -> void:
 	ProjectSettings.set_setting(GI + "probe_spacing", 16)
 	ProjectSettings.set_setting(GI + "denoiser", true)
 	ProjectSettings.set_setting(GI + "reflections/enabled", false)
+	ProjectSettings.set_setting(GI + "debug/exclusion_reports", true)
 	RenderingServer.global_shader_parameter_add("gi_source_bias", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.03125)
 	var shader := Shader.new()
 	shader.code = """shader_type spatial;
@@ -97,8 +98,21 @@ void fragment() {
 		if phase >= 4:
 			_material.set_shader_parameter("coverage_mode", phase - 3)
 		print("SOURCE phase %d" % phase)
-		for frame in 4:
+		# A replacement shader may take seconds on a cold driver. Only advance
+		# authored phases once this material has actually been evaluated.
+		var completed := 0
+		var deadline := Time.get_ticks_msec() + 120_000
+		while completed < 4:
 			await get_tree().process_frame
 			await RenderingServer.frame_post_draw
+			if Time.get_ticks_msec() > deadline:
+				push_error("Timed out waiting for GI material phase %d" % phase)
+				get_tree().quit(1)
+				return
+			var diagnostics := RenderingServer.viewport_get_amd_gi_diagnostics(get_viewport().get_viewport_rid())
+			if diagnostics.has("frame"):
+				completed += 1
+			else:
+				completed = 0
 	print("SOURCE FINISHED")
 	get_tree().quit()

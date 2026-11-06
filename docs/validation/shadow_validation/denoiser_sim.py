@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simulate the raytraced shadow denoiser's temporal pass and score it.
+"""Historical simulation of the retired RT-shadow temporal filter.
 
     python3 denoiser_sim.py              # the 3x3 against 5x5 table docs/HISTORY.md quotes
     python3 denoiser_sim.py --kernels    # weighted 5x5 gathers against the box
@@ -16,7 +16,7 @@ the trace is not a measurement of a filter. That leaves the temporal pass with
 no rig at all -- and the temporal pass is where ghosting, steady state noise and
 every history clamp question live.
 
-So this reimplements `rt_shadow_temporal.glsl` in numpy and drives it with
+This reimplements the former `rt_shadow_temporal.glsl` in numpy and drives it with
 synthetic visibility whose true value is known exactly, which a render never
 gives you. It is a MODEL, not a measurement: a number from here is worth what
 the model's fidelity is worth, and the model is stated below so a reader can

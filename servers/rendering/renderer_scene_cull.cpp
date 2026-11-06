@@ -545,6 +545,13 @@ void RendererSceneCull::scenario_initialize(RID p_rid) {
 	RendererSceneOcclusionCull::get_singleton()->add_scenario(p_rid);
 }
 
+void RendererSceneCull::scenario_set_amd_gi_preparation(RID p_scenario, const Vector<RID> &p_materials, bool p_hold) {
+	Scenario *scenario = scenario_owner.get_or_null(p_scenario);
+	ERR_FAIL_NULL(scenario);
+	scenario->amd_gi_preparation_materials = p_materials;
+	scenario->amd_gi_preparation_hold = p_hold;
+}
+
 void RendererSceneCull::scenario_set_environment(RID p_scenario, RID p_environment) {
 	Scenario *scenario = scenario_owner.get_or_null(p_scenario);
 	ERR_FAIL_NULL(scenario);
@@ -4196,7 +4203,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				RSG::mesh_storage->update_mesh_instances();
 			}
 		}
-		scene_render->update_raytracing_scene(rt_instance_scratch, gi_instances, gi_lights, !rtgi_requested);
+		scene_render->update_raytracing_scene(rt_instance_scratch, gi_instances, gi_lights, !rtgi_requested, scenario->amd_gi_preparation_materials, scenario->amd_gi_preparation_hold);
 		if (rt_time) {
 			_rt_report_cpu_cost(rt_gathered - rt_started, OS::get_singleton()->get_ticks_usec() - rt_gathered);
 		}

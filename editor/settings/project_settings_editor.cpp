@@ -42,6 +42,7 @@
 #include "editor/inspector/editor_inspector.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/settings/editor_settings_dialog.h"
+#include "editor/settings/fork_project_settings.h"
 #include "editor/settings/gdextension/project_settings_gdextension.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/check_button.h"
@@ -69,6 +70,7 @@ void ProjectSettingsEditor::popup_project_settings(bool p_clear_filter) {
 
 	_add_feature_overrides();
 	general_settings_inspector->update_category_list();
+	fork_settings_inspector->update_category_list();
 	set_process_shortcut_input(true);
 
 	localization_editor->update_translations();
@@ -79,6 +81,7 @@ void ProjectSettingsEditor::popup_project_settings(bool p_clear_filter) {
 
 	if (p_clear_filter) {
 		search_box->clear();
+		fork_search_box->clear();
 	}
 
 	_focus_current_search_box();
@@ -91,7 +94,12 @@ void ProjectSettingsEditor::popup_for_override(const String &p_override) {
 }
 
 void ProjectSettingsEditor::set_filter(const String &p_filter) {
-	search_box->set_text(p_filter);
+	if (ForkProjectSettings::is_advanced(p_filter)) {
+		tab_container->set_current_tab(tab_container->get_tab_idx_from_control(fork_editor));
+		fork_search_box->set_text(p_filter);
+	} else {
+		search_box->set_text(p_filter);
+	}
 }
 
 void ProjectSettingsEditor::queue_save() {
@@ -128,8 +136,8 @@ void ProjectSettingsEditor::init_autoloads() {
 	autoload_settings->init_autoloads();
 }
 
-void ProjectSettingsEditor::_setting_edited(const String &p_name) {
-	const String full_name = general_settings_inspector->get_full_item_path(p_name);
+void ProjectSettingsEditor::_setting_edited(const String &p_name, SectionedInspector *p_inspector) {
+	const String full_name = p_inspector->get_full_item_path(p_name);
 	if (full_name.begins_with(ProjectSettings::EDITOR_SETTING_OVERRIDE_PREFIX)) {
 		EditorSettings::get_singleton()->mark_setting_changed(full_name.trim_prefix(ProjectSettings::EDITOR_SETTING_OVERRIDE_PREFIX));
 		pending_override_notify = true;
@@ -138,7 +146,7 @@ void ProjectSettingsEditor::_setting_edited(const String &p_name) {
 }
 
 void ProjectSettingsEditor::_update_advanced(bool p_is_advanced) {
-	custom_properties->set_visible(p_is_advanced);
+	custom_properties->set_visible(p_is_advanced || tab_container->get_current_tab_control() == fork_editor);
 }
 
 void ProjectSettingsEditor::_on_category_changed(const String &p_new_category) {
@@ -164,12 +172,12 @@ void ProjectSettingsEditor::_advanced_toggled(bool p_button_pressed) {
 	_update_advanced(p_button_pressed);
 }
 
-void ProjectSettingsEditor::_setting_selected(const String &p_path) {
+void ProjectSettingsEditor::_setting_selected(const String &p_path, SectionedInspector *p_inspector) {
 	if (p_path.is_empty()) {
 		return;
 	}
 
-	property_box->set_text(general_settings_inspector->get_current_section() + "/" + p_path);
+	property_box->set_text(p_inspector->get_full_item_path(p_path));
 
 	_update_property_box(); // set_text doesn't trigger text_changed
 }
@@ -189,11 +197,18 @@ void ProjectSettingsEditor::_add_setting() {
 
 	undo_redo->add_do_method(general_settings_inspector, "update_category_list");
 	undo_redo->add_undo_method(general_settings_inspector, "update_category_list");
+	undo_redo->add_do_method(fork_settings_inspector, "update_category_list");
+	undo_redo->add_undo_method(fork_settings_inspector, "update_category_list");
 	undo_redo->add_do_method(this, "queue_save");
 	undo_redo->add_undo_method(this, "queue_save");
 	undo_redo->commit_action();
 
-	general_settings_inspector->set_current_section(setting.get_slicec('/', 1));
+	if (ForkProjectSettings::is_advanced(setting)) {
+		tab_container->set_current_tab(tab_container->get_tab_idx_from_control(fork_editor));
+		fork_settings_inspector->set_current_section(setting.get_slicec('/', 0) + "/" + setting.get_slicec('/', 1));
+	} else {
+		general_settings_inspector->set_current_section(setting.get_slicec('/', 1));
+	}
 	add_button->release_focus();
 }
 
@@ -211,6 +226,8 @@ void ProjectSettingsEditor::_delete_setting() {
 
 	undo_redo->add_do_method(general_settings_inspector, "update_category_list");
 	undo_redo->add_undo_method(general_settings_inspector, "update_category_list");
+	undo_redo->add_do_method(fork_settings_inspector, "update_category_list");
+	undo_redo->add_undo_method(fork_settings_inspector, "update_category_list");
 	undo_redo->add_do_method(this, "queue_save");
 	undo_redo->add_undo_method(this, "queue_save");
 
@@ -399,6 +416,18 @@ void ProjectSettingsEditor::_add_feature_overrides() {
 }
 
 void ProjectSettingsEditor::_tabs_tab_changed(int p_tab) {
+	// Keep the existing feature-override/add/delete tools available in both views.
+	Control *tab = tab_container->get_current_tab_control();
+	if (custom_properties && (tab == general_editor || tab == fork_editor)) {
+		if (custom_properties->get_parent() != tab) {
+			custom_properties->reparent(tab);
+			tab->move_child(custom_properties, 1);
+		}
+		if (restart_container && restart_container->get_parent() != tab) {
+			restart_container->reparent(tab);
+		}
+		_update_advanced(advanced->is_pressed());
+	}
 	_focus_current_search_box();
 }
 
@@ -407,6 +436,8 @@ void ProjectSettingsEditor::_focus_current_search_box() {
 	LineEdit *current_search_box = nullptr;
 	if (tab == general_editor) {
 		current_search_box = search_box;
+	} else if (tab == fork_editor) {
+		current_search_box = fork_search_box;
 	} else if (tab == action_map_editor) {
 		current_search_box = action_map_editor->get_search_box();
 	}
@@ -420,7 +451,7 @@ void ProjectSettingsEditor::_focus_current_search_box() {
 void ProjectSettingsEditor::_focus_current_path_box() {
 	Control *tab = tab_container->get_current_tab_control();
 	LineEdit *current_path_box = nullptr;
-	if (tab == general_editor) {
+	if (tab == general_editor || tab == fork_editor) {
 		current_path_box = property_box;
 	} else if (tab == action_map_editor) {
 		current_path_box = action_map_editor->get_path_box();
@@ -652,6 +683,7 @@ void ProjectSettingsEditor::_update_theme() {
 	add_button->set_button_icon(get_editor_theme_icon(SNAME("Add")));
 	del_button->set_button_icon(get_editor_theme_icon(SNAME("Remove")));
 	search_box->set_right_icon(get_editor_theme_icon(SNAME("Search")));
+	fork_search_box->set_right_icon(get_editor_theme_icon(SNAME("Search")));
 	restart_close_button->set_button_icon(get_editor_theme_icon(SNAME("Close")));
 	restart_container->add_theme_style_override(SceneStringName(panel), get_theme_stylebox(SceneStringName(panel), SNAME("Tree")));
 	restart_icon->set_texture(get_editor_theme_icon(SNAME("StatusWarning")));
@@ -682,6 +714,7 @@ void ProjectSettingsEditor::_notification(int p_what) {
 
 		case NOTIFICATION_ENTER_TREE: {
 			general_settings_inspector->edit(ps);
+			fork_settings_inspector->edit(ps);
 			_update_action_map_editor();
 			_update_theme();
 		} break;
@@ -693,6 +726,7 @@ void ProjectSettingsEditor::_notification(int p_what) {
 		case EditorSettings::NOTIFICATION_EDITOR_SETTINGS_CHANGED: {
 			if (EditorSettings::get_singleton()->check_changed_settings_in_group("interface/touchscreen")) {
 				general_settings_inspector->set_touch_dragger_enabled(EDITOR_GET("interface/touchscreen/enable_touch_optimizations"));
+				fork_settings_inspector->set_touch_dragger_enabled(EDITOR_GET("interface/touchscreen/enable_touch_optimizations"));
 			}
 		} break;
 	}
@@ -775,6 +809,7 @@ ProjectSettingsEditor::ProjectSettingsEditor(EditorData *p_data) {
 	custom_properties->add_child(del_button);
 
 	general_settings_inspector = memnew(SectionedInspector);
+	general_settings_inspector->set_property_filter(ForkProjectSettings::is_general);
 	general_settings_inspector->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	general_settings_inspector->register_search_box(search_box);
 	general_settings_inspector->register_advanced_toggle(advanced);
@@ -782,8 +817,8 @@ ProjectSettingsEditor::ProjectSettingsEditor(EditorData *p_data) {
 	general_settings_inspector->get_inspector()->set_use_filter(true);
 	general_settings_inspector->get_inspector()->set_mark_unsaved(false);
 	general_settings_inspector->get_inspector()->remap_doc_property_class(ProjectSettings::EDITOR_SETTING_OVERRIDE_PREFIX, "EditorSettings");
-	general_settings_inspector->get_inspector()->connect("property_selected", callable_mp(this, &ProjectSettingsEditor::_setting_selected));
-	general_settings_inspector->get_inspector()->connect("property_edited", callable_mp(this, &ProjectSettingsEditor::_setting_edited));
+	general_settings_inspector->get_inspector()->connect("property_selected", callable_mp(this, &ProjectSettingsEditor::_setting_selected).bind(general_settings_inspector));
+	general_settings_inspector->get_inspector()->connect("property_edited", callable_mp(this, &ProjectSettingsEditor::_setting_edited).bind(general_settings_inspector));
 	general_settings_inspector->get_inspector()->connect("property_deleted", callable_mp(this, &ProjectSettingsEditor::_on_editor_override_deleted));
 	general_settings_inspector->get_inspector()->connect("restart_requested", callable_mp(this, &ProjectSettingsEditor::_editor_restart_request));
 	general_editor->add_child(general_settings_inspector);
@@ -793,6 +828,7 @@ ProjectSettingsEditor::ProjectSettingsEditor(EditorData *p_data) {
 	}
 
 	restart_container = memnew(PanelContainer);
+	// Restart requests can originate in either settings view.
 	general_editor->add_child(restart_container);
 
 	HBoxContainer *restart_hb = memnew(HBoxContainer);
@@ -887,6 +923,36 @@ ProjectSettingsEditor::ProjectSettingsEditor(EditorData *p_data) {
 	import_defaults_editor = memnew(ImportDefaultsEditor);
 	import_defaults_editor->set_name(TTRC("Import Defaults"));
 	tab_container->add_child(import_defaults_editor);
+
+	// A separate view of the same settings object: no aliases or duplicate values.
+	fork_editor = memnew(VBoxContainer);
+	fork_editor->set_name(TTRC("Advanced Fork Options"));
+	tab_container->add_child(fork_editor);
+
+	fork_search_box = memnew(LineEdit);
+	fork_search_box->set_placeholder(TTRC("Filter Advanced Fork Options"));
+	fork_search_box->set_accessibility_name(TTRC("Filter Advanced Fork Options"));
+	fork_search_box->set_clear_button_enabled(true);
+	fork_search_box->set_virtual_keyboard_show_on_focus(false);
+	fork_editor->add_child(fork_search_box);
+
+	Label *fork_description = memnew(Label);
+	fork_description->set_text(TTRC("Specialized tuning, experiments and diagnostics. Normal feature and quality controls are in General."));
+	fork_description->set_clip_text(true);
+	fork_description->set_tooltip_text(fork_description->get_text());
+	fork_editor->add_child(fork_description);
+
+	fork_settings_inspector = memnew(SectionedInspector);
+	fork_settings_inspector->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	fork_settings_inspector->set_property_filter(ForkProjectSettings::is_advanced);
+	fork_settings_inspector->register_search_box(fork_search_box);
+	fork_settings_inspector->get_inspector()->set_use_filter(true);
+	fork_settings_inspector->get_inspector()->set_mark_unsaved(false);
+	fork_settings_inspector->get_inspector()->connect("property_selected", callable_mp(this, &ProjectSettingsEditor::_setting_selected).bind(fork_settings_inspector));
+	fork_settings_inspector->get_inspector()->connect("property_edited", callable_mp(this, &ProjectSettingsEditor::_setting_edited).bind(fork_settings_inspector));
+	fork_settings_inspector->get_inspector()->connect("restart_requested", callable_mp(this, &ProjectSettingsEditor::_editor_restart_request));
+	fork_settings_inspector->set_touch_dragger_enabled(EDITOR_GET("interface/touchscreen/enable_touch_optimizations"));
+	fork_editor->add_child(fork_settings_inspector);
 
 	MovieWriter::set_extensions_hint(); // ensure extensions are properly displayed.
 }

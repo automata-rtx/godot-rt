@@ -235,6 +235,8 @@ public:
 	}
 
 	bool version_is_valid(RID p_version);
+	// Poll an already requested group without joining its compiler tasks.
+	bool version_group_is_compiling(RID p_version, int p_group, bool &r_bytecode_cache_hit);
 
 	bool version_free(RID p_version);
 

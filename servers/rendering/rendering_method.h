@@ -69,6 +69,7 @@ public:
 	virtual void scenario_initialize(RID p_rid) = 0;
 
 	virtual void scenario_set_environment(RID p_scenario, RID p_environment) = 0;
+	virtual void scenario_set_amd_gi_preparation(RID p_scenario, const Vector<RID> &p_materials, bool p_hold) = 0;
 	virtual void scenario_set_camera_attributes(RID p_scenario, RID p_attributes) = 0;
 	virtual void scenario_set_fallback_environment(RID p_scenario, RID p_environment) = 0;
 	virtual void scenario_set_compositor(RID p_scenario, RID p_compositor) = 0;
@@ -346,6 +347,7 @@ public:
 	// string when there is nothing to say.
 	virtual String debug_get_upscaler_status(const Ref<RenderSceneBuffers> &p_render_buffers) const = 0;
 	virtual Dictionary debug_get_amd_gi_diagnostics(const Ref<RenderSceneBuffers> &p_render_buffers) const = 0;
+	virtual Dictionary get_amd_gi_preparation_status(const Ref<RenderSceneBuffers> &p_render_buffers) const = 0;
 
 	virtual TypedArray<Image> bake_render_uv2(RID p_base, const TypedArray<RID> &p_material_overrides, const Size2i &p_image_size) = 0;
 	virtual TypedArray<Image> bake_render_triangle_material(RID p_mesh, int p_surface, int p_first_triangle, int p_triangle_count, int p_tile_size, const Transform3D &p_transform, RID p_material_override) = 0;

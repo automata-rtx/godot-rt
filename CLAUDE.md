@@ -1,7 +1,8 @@
 # godot-rt engine workspace
 
 This is a Godot 4.8-dev rendering fork, not stock Godot. Current documentation
-was audited against source `66bd97e00d` on 2026-10-26. For a task, load only the
+was audited on 2026-11-06 against `b3c0262131` plus local working changes.
+See `docs/DOCUMENTATION_AUDIT.md` for scope and binary/evidence limits. For a task, load only the
 relevant route below; do not load all feature notes, history or proof logs.
 
 | Task | Read |
@@ -31,6 +32,15 @@ relevant route below; do not load all feature notes, history or proof logs.
   docs never grant permission to run a game or overwrite game assets.
 
 ## Repository checks
+
+- After every successful local Windows editor build, update/verify the standard
+  desktop Godot shortcut to target that newest editor executable and its working
+  directory. This is a required delivery step, authorized by the owner; do not
+  leave it on an older test build. Verify the saved shortcut target and executable
+  hash without launching Godot. Builds at the normal `bin/` path update that
+  target directly; alternate build paths require retargeting the shortcut.
+- `Desktop/GodotRTGI` is reserved for GitHub Actions artifacts. Never overwrite it
+  with local builds. See [local delivery policy](docs/PROJECT_SCOPE.md#local-build-delivery).
 
 - US English. Run repository hooks before pushing over the entire change range:
   `prek run --from-ref origin/master --to-ref HEAD`. Hooks can rewrite files;

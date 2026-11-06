@@ -1,10 +1,14 @@
 # AMD GI implementation and rebuild contracts
 
-Baseline audited against fork commit `66bd97e00d` (Godot 4.8-dev); the CPU reuse
-contracts below also cover the 2026-10-26 optimization changes. User setup and controls live
+Current source contract: [2026-11-06 audit](../DOCUMENTATION_AUDIT.md),
+including the local preparation, history and CPU reuse changes. User setup and controls live
 in `GodotForkDocs/features/amd-gi.md`; [decisions](../AMD_GI_ADAPTER_DECISIONS.md)
 define the accepted adapters and prohibited shortcuts. Read this file for a port,
 not the historical implementation diary.
+
+**Prerequisites:** [shared RT foundation](shared-raytracing.md) and
+[native material/scene integration](rt-materials.md). Reuse their geometry owner,
+revision tracking and GPU dependency infrastructure; do not build a GI-local copy.
 
 ## Baseline and responsibility split
 
@@ -23,8 +27,8 @@ are necessary adapters; this is not a claim of bit-identical output to Capsaicin
 ## Source map
 
 The owner-authorized [improvement experiments](../../GodotForkDocs/features/amd-gi-improvements.md)
-use `FrameUniform.options[2]` bits 0/1/2; `options[1]` remains the reflection-enable
-flag. All bits default zero. Toggling a bit resets history; bit 0 also reallocates
+use `FrameUniform.options[2]` bits 0–3; `options[1]` remains the reflection-enable
+flag. Bit 3 defaults on and bits 0–2 default off. Toggling a bit resets history; bit 0 also reallocates
 cache storage. No ABI size or new descriptor is required. Response state uses
 88 trailing bytes per cache tile (packed atomic byte updates), unused probe
 `normal.w`, and the unused upper half of `StoredPixel.delta`. Clear new/reused tile
@@ -35,6 +39,17 @@ and squared-confidence interpolation of fresh-sample weight (history endpoints
 64 and 3); see [FPS evidence](../validation/amd_gi_improvements/FPS_REFINEMENT.md).
 [Validation](../validation/amd_gi_improvements/README.md) owns evidence and
 limits; do not infer target-GPU speed or quality from these source contracts.
+
+Bit 3 controls emitter transitions in `ViewData::update_light_order`. The logical
+light order is sky, sorted analytic lights, then emitter triangles. At an
+emitter zero crossing, an otherwise stable light prefix permits reuse: new
+triangles append to the list and old out-of-range samples are already rejected
+before evaluation. Require an eligible powered analytic light in both frames.
+Keep full resets for sky-count and analytic zero crossings. With light
+resampling active, compare ordered light-instance IDs and types per view.
+If that prefix also changed during a retained transition, set `options[3]`
+for one frame so `reservoir_reset` clears the previous hash keys. Cached
+radiance, probes and pixel history continue through that transition.
 
 Paths are relative to the engine root. Abbreviated `shaders/`, `storage_rd/`
 and environment filenames in the table are under `servers/rendering/renderer_rd/`.
@@ -49,7 +64,7 @@ Use symbols rather than historical line numbers.
 | GI scene and binding records | `servers/rendering/renderer_rd/environment/rt_gi_scene.*`: `RaytracingGIScene`, source-material contexts, emitters/lights, GI TLAS |
 | Material compiler | `servers/rendering/renderer_rd/environment/rt_material_source.*`; `shaders/effects/rt_material_source_inc.glsl` |
 | Orchestration and ABI | `servers/rendering/renderer_rd/environment/amd_gi.{cpp,h}`: `AMDGI`, `ViewData`, `Pass`, `PushConstant`, `FrameUniform` |
-| Preparation recovery | `servers/rendering/renderer_rd/environment/amd_gi_pipeline_preparation.h`, `prepare_material_pipelines` |
+| Preparation recovery | `servers/rendering/renderer_rd/environment/amd_gi_pipeline_preparation.h`, `prepare_scene_material_pipelines`, `update_material_pipelines` |
 | Algorithm shader | `servers/rendering/renderer_rd/shaders/effects/amd_gi.glsl` and `amd_gi_*_inc.glsl` |
 | Native lighting / emitters | `shaders/effects/rt_gi_transport_inc.glsl`, `shaders/effects/rt_gi_emitters.glsl`, `shaders/effects/amd_gi_lights_inc.glsl` |
 | Sky conversion | `shaders/effects/amd_gi_environment.glsl`, `amd_gi_sky_sampling_inc.glsl` |
@@ -272,22 +287,7 @@ and first-person geometry are critical validation surfaces, not cosmetic details
 
 ## Failed preparation and teardown
 
-`prepare_material_pipelines` keys readiness by scene pointer plus source shader
-revision. Build all required shader/pipeline candidates before publishing. On
-failure free candidates, preserve the previous set but forbid using its stale ABI
-for the new request, and retry after 1/2/4/8/16/30 seconds (capped). A changed request
-can retry immediately. First failures warn; repeated failures must not flood logs.
-
-Compile with `AMD_GI_PASS` preprocessing that removes unrelated pass functions
-**before SPIR-V generation**. Specialization alone previously retained native
-material trees in every pass and caused Windows driver freezes. A successful
-C++ build is insufficient evidence for replacing this approach.
-
-`GODOT_AMD_GI_FAIL_MATERIAL_PIPELINE=once:last` or `always:last` exercises preparation
-failure/recovery in a controlled fixture. Verify no partially ready output replaces
-native lighting and that the complete compatible set resumes after recovery.
-Teardown must release GI/material users before shared geometry/device resources;
-see the shared ownership and DLSS cleanup notes for shutdown ordering.
+Read [material preparation, loading and cache reuse](amd-gi-preparation.md) for the worker, revision, fallback, persistent-cache and shutdown contracts. That component is required for a complete port of this version.
 
 ## Porting sequence and acceptance
 
@@ -312,7 +312,7 @@ see the shared ownership and DLSS cleanup notes for shutdown ordering.
 
 `docs/validation/shadow_validation/amd_gi_*.{gd,tscn}` and matching `score_*.py`
 provide focused fixtures. `amd_gi_options.tscn` prepares a 36-combination sampler/
-filter matrix and all 32 views. `docs/validation/amd_gi_source_proofs/README.md`
+filter matrix and the original views 0–31; the newer views 32–37 need separate checks. `docs/validation/amd_gi_source_proofs/README.md`
 explains CPU counterexamples; these prove specific source defects, not rendering
 parity. Some historical proof proposals (notably immutable firefly input) were
 withdrawn. Read the decision boundary before adopting a proof's proposed remedy.

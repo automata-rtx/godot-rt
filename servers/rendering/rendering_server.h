@@ -626,6 +626,7 @@ public:
 	// nothing should be parsed out of it.
 	virtual String viewport_get_upscaler_status(RID p_viewport) const = 0;
 	virtual Dictionary viewport_get_amd_gi_diagnostics(RID p_viewport) const = 0;
+	virtual Dictionary viewport_get_amd_gi_preparation_status(RID p_viewport) const = 0;
 
 	virtual void viewport_set_measure_render_time(RID p_viewport, bool p_enable) = 0;
 	virtual double viewport_get_measured_render_time_cpu(RID p_viewport) const = 0;
@@ -735,6 +736,8 @@ public:
 	virtual RID scenario_create() = 0;
 
 	virtual void scenario_set_environment(RID p_scenario, RID p_environment) = 0;
+	virtual void scenario_set_amd_gi_preparation(RID p_scenario, const Vector<RID> &p_materials, bool p_hold) = 0;
+	void _scenario_set_amd_gi_preparation(RID p_scenario, const TypedArray<RID> &p_materials, bool p_hold);
 	virtual void scenario_set_fallback_environment(RID p_scenario, RID p_environment) = 0;
 	virtual void scenario_set_camera_attributes(RID p_scenario, RID p_camera_attributes) = 0;
 	virtual void scenario_set_compositor(RID p_scenario, RID p_compositor) = 0;

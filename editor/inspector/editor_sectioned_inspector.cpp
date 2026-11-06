@@ -60,6 +60,7 @@ class SectionedInspectorFilter : public Object {
 	Object *edited = nullptr;
 	String section;
 	bool allow_sub = false;
+	bool (*property_filter)(const String &) = nullptr;
 
 	bool _set(const StringName &p_name, const Variant &p_value) {
 		if (!edited) {
@@ -99,6 +100,9 @@ class SectionedInspectorFilter : public Object {
 		List<PropertyInfo> pinfo;
 		edited->get_property_list(&pinfo);
 		for (PropertyInfo &pi : pinfo) {
+			if (property_filter && !property_filter(pi.name)) {
+				continue;
+			}
 			int sp = pi.name.find_char('/');
 
 			if (pi.name == "resource_path" || pi.name == "resource_name" || pi.name == "resource_local_to_scene" || pi.name.begins_with("script/") || pi.name.begins_with("_global_script")) { //skip resource stuff
@@ -129,6 +133,11 @@ class SectionedInspectorFilter : public Object {
 	}
 
 public:
+	void set_property_filter(bool (*p_filter)(const String &)) {
+		property_filter = p_filter;
+		notify_property_list_changed();
+	}
+
 	void set_section(const String &p_section, bool p_allow_sub) {
 		section = p_section;
 		allow_sub = p_allow_sub;
@@ -246,6 +255,9 @@ void SectionedInspector::update_category_list() {
 	const EditorPropertyNameProcessor::Style tooltip_style = EditorPropertyNameProcessor::get_tooltip_style(name_style);
 
 	for (PropertyInfo &pi : pinfo) {
+		if (property_filter && !property_filter(pi.name)) {
+			continue;
+		}
 		if (pi.usage & PROPERTY_USAGE_CATEGORY) {
 			continue;
 		} else if (!(pi.usage & PROPERTY_USAGE_EDITOR) ||
@@ -307,6 +319,12 @@ void SectionedInspector::update_category_list() {
 	}
 
 	inspector->update_tree();
+}
+
+void SectionedInspector::set_property_filter(bool (*p_filter)(const String &)) {
+	property_filter = p_filter;
+	filter->set_property_filter(p_filter);
+	update_category_list();
 }
 
 void SectionedInspector::register_search_box(LineEdit *p_box) {

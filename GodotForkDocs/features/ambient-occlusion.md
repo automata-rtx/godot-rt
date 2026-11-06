@@ -1,5 +1,8 @@
 # Ambient occlusion: VBAO
 
+Editor location: see the [General / Advanced Fork Options map](../SETTINGS.md).
+Setting keys and runtime access are unchanged.
+
 VBAO adds local contact darkening from the visible depth buffer. It is the fork's **Ground Truth** SSAO method: GTAO slice geometry with a visibility bitmask. It does not trace the scene or provide bounced light. Tune its strength with AMD GI enabled if that is your final lighting configuration.
 
 ## Enable and select
@@ -26,6 +29,16 @@ These project settings are live, under `rendering/environment/ssao/ground_truth/
 `rendering/environment/ssao/half_size` defaults to `true`: checkerboard gathers half the pixels, quarter about one quarter. Turning half size off gathers at full internal resolution. All modes produce a full internal-resolution AO result.
 
 Environment radius, intensity, power and SSAO fadeout still apply. Legacy SSAO quality, adaptive sampling, blur, detail, horizon and sharpness controls do not become VBAO sampling controls; use the settings above. Start with shipped VBAO defaults before increasing samples or radius.
+
+## With AMD GI
+
+VBAO remains an independent screen-space visibility estimate. There is no
+implemented “whichever is darker” blend between VBAO and AMD GI. The forward
+shader combines material AO and SSAO using minimum visibility, applies AO to
+native ambient/specular terms, then composites the separate indirect diffuse
+and reflection buffers. This is not a comparison of VBAO against GI occlusion.
+Enable VBAO only if its additional shading improves the intended scene; compare
+contacts and silhouettes in motion. Do not assume it repairs missing GI geometry.
 
 ## Testing and limits
 

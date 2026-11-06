@@ -89,7 +89,7 @@ void reservoir_reset(uint id) {
 	if (id < RESERVOIR_ENTRIES) {
 		light_reservoirs.data[id] = 0u;
 		light_reservoirs.data[RESERVOIR_ENTRIES + id] = 0u;
-		if (frame.grid.w != 0u) {
+		if (frame.grid.w != 0u || frame.options.w != 0u) {
 			previous_light_reservoirs.data[id] = 0u;
 		}
 	}

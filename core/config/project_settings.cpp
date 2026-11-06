@@ -1837,13 +1837,13 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/rendering_device/vsync/swapchain_image_count", PROPERTY_HINT_RANGE, "2,4,1"), 3);
 	// Raytraced shadows. Registered here so that the setting is available before
 	// the rendering device is created and before any Light3D is constructed.
-	GLOBAL_DEF("rendering/global_illumination/amd_gi/enabled", false);
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/probe_spacing", PROPERTY_HINT_ENUM, "1 ray/pixel:8,1/4 ray/pixel:16,1/16 ray/pixel:32"), 16);
+	GLOBAL_DEF_BASIC("rendering/global_illumination/amd_gi/enabled", false);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/probe_spacing", PROPERTY_HINT_ENUM, "1 ray/pixel:8,1/4 ray/pixel:16,1/16 ray/pixel:32"), 16);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/material_atlas_mb", PROPERTY_HINT_RANGE, "8,512,8,suffix:MiB"), 128);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/material_tile_size", PROPERTY_HINT_ENUM, "4:4,8:8"), 8);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/material_adaptive_resolution", true);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/material_preparation_budget", PROPERTY_HINT_RANGE, "1,4096,1"), 64);
-	GLOBAL_DEF("rendering/global_illumination/amd_gi/multibounce", true);
+	GLOBAL_DEF_BASIC("rendering/global_illumination/amd_gi/multibounce", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/screen_feedback", false);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/cache_all_hits", true);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/amd_gi/cache_bucket_exponent", PROPERTY_HINT_RANGE, "8,14,1"), 14);
@@ -1853,9 +1853,9 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/adaptive_sampling", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/probe_cache", true);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/light_resampling", false);
-	GLOBAL_DEF("rendering/global_illumination/amd_gi/reflections/enabled", true);
-	GLOBAL_DEF("rendering/global_illumination/amd_gi/reflections/half_resolution", true);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold", PROPERTY_HINT_RANGE, "0,1,0.05"), 0.2);
+	GLOBAL_DEF_BASIC("rendering/global_illumination/amd_gi/reflections/enabled", true);
+	GLOBAL_DEF_BASIC("rendering/global_illumination/amd_gi/reflections/half_resolution", true);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold", PROPERTY_HINT_RANGE, "0,1,0.05"), 0.2);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/reflections/firefly_low_threshold", PROPERTY_HINT_RANGE, "0,1,0.01"), 0.0);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/reflections/firefly_high_threshold", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold", PROPERTY_HINT_RANGE, "0.2,1,0.05"), 0.6);
@@ -1887,6 +1887,7 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/improvements/responsive_history", false);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/improvements/demand_scheduling", false);
 	GLOBAL_DEF("rendering/global_illumination/amd_gi/improvements/cache_transitions", false);
+	GLOBAL_DEF("rendering/global_illumination/amd_gi/improvements/retain_history_on_emitter_transitions", true);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/minimum_cell_size", PROPERTY_HINT_RANGE, "0.01,1,0.01,or_greater"), 0.1);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/continuation_probability", PROPERTY_HINT_RANGE, "0.05,1,0.05"), 0.3);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/amd_gi/max_distance", PROPERTY_HINT_RANGE, "1,1000000000,0.1,or_greater"), 1000000000.0);
@@ -1896,7 +1897,7 @@ ProjectSettings::ProjectSettings() {
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/global_illumination/rt_validation/bounces", PROPERTY_HINT_RANGE, "1,8,1"), 2);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/global_illumination/rt_validation/max_distance", PROPERTY_HINT_RANGE, "1,1000,0.1,or_greater"), 50.0);
 	GLOBAL_DEF_RST_BASIC("rendering/lights_and_shadows/raytraced_shadows/enabled", false);
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/samples_per_light", PROPERTY_HINT_RANGE, "1,16,1"), 1);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/samples_per_light", PROPERTY_HINT_RANGE, "1,16,1"), 1);
 	// Shortens every shadow ray, trading distant occlusion for traversal time.
 	// ZERO MEANS UNLIMITED, not "no rays": the ray still runs the full distance
 	// to its light.
@@ -1917,29 +1918,18 @@ ProjectSettings::ProjectSettings() {
 	// reads the size changes: the sun stays the same disk in the sky, a lamp that
 	// fell back to a shadow map keeps its soft filter, and a lightmap bake is
 	// unaffected.
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/softness_scale", PROPERTY_HINT_RANGE, "0,1,0.05"), 1.0);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/softness_scale", PROPERTY_HINT_RANGE, "0,1,0.05"), 1.0);
 	GLOBAL_DEF("rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled", true);
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes", PROPERTY_HINT_RANGE, "1,5,1"), 3);
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames", PROPERTY_HINT_RANGE, "1,64,1"), 32);
-	// How narrowly the spatial filter may work where a penumbra was measured. At
-	// the default of one a contact shadow is filtered in no a-trous pass at all and
-	// reaches the screen as traced; raising it filters those pixels and fringes
-	// every contact edge in the same move, two pixels wide at 2.0. Which end you
-	// want depends on whether contact shadows read noisy or read crisp;
-	// docs/features/rt-shadows.md prints the fringe at each value.
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes", PROPERTY_HINT_RANGE, "1,5,1"), 1);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames", PROPERTY_HINT_RANGE, "1,64,1"), 5);
+	// Minimum spatial reach for a measured penumbra. A directly measured
+	// hard contact bypasses this floor, independently for each light.
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels", PROPERTY_HINT_RANGE, "1,8,0.1,suffix:px"), 1.0);
 	// How far a reprojected history sample may sit outside what this frame sees
 	// around it, in standard deviations, before it is pulled back in. This is
 	// what stops a moving shadow trailing across a surface. Lower reacts faster
 	// and accumulates less; zero disables it.
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma", PROPERTY_HINT_RANGE, "0,8,0.1"), 2.0);
-	// How much of the clamp's own correction sets the blend weight directly, once
-	// it has decided the history was wrong. Shortening the accumulation window is
-	// not the same as discounting the value in it, and on its own it is far too
-	// gentle: a history the clamp has just moved four fifths of the way still
-	// keeps six sevenths of its weight, and the residue then decays hyperbolically
-	// over about fifty frames. Zero restores that behavior exactly.
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/lag_response", PROPERTY_HINT_RANGE, "0,1,0.05"), 1.0);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma", PROPERTY_HINT_RANGE, "0,8,0.1"), 0.3);
 	// Whether a shadow ray keeps looking for the CLOSEST occluder instead of
 	// stopping at the first one it reaches. Visibility is identical either way,
 	// so this changes no shadow's shape; what it changes is the distance the
@@ -1954,8 +1944,8 @@ ProjectSettings::ProjectSettings() {
 	// culler, the shadow atlas layout and the light buffer.
 	GLOBAL_DEF_BASIC("rendering/lights_and_shadows/raytraced_shadows/directional/enabled", false);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale", PROPERTY_HINT_RANGE, "0.5,8,0.1,or_greater"), 2.0);
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters", PROPERTY_HINT_ENUM, "Disabled,Near Camera,Full Distance"), 1);
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance", PROPERTY_HINT_RANGE, "0,500,1,or_greater,suffix:m"), 25.0);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_casters", PROPERTY_HINT_ENUM, "Disabled,Near Camera,Full Distance"), 1);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/raytraced_shadows/directional/scatter_distance", PROPERTY_HINT_RANGE, "0,500,1,or_greater,suffix:m"), 25.0);
 	// What the sun's shadow map is demoted to once the mask drives its opaque
 	// shading. What is left of it answers subsurface transmittance, alpha-blended
 	// surfaces and reflection probes, none of which need cascade density, so it
@@ -1976,7 +1966,7 @@ ProjectSettings::ProjectSettings() {
 	// Sample count, which sets both the cost and the maximum shadow length in
 	// PIXELS -- not in world units, so a low sun wants a longer shadow than any
 	// tier reaches.
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/screen_space_shadows/quality", PROPERTY_HINT_ENUM, "Low (32 Samples),Medium (60 Samples),High (96 Samples)"), 1);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "rendering/lights_and_shadows/screen_space_shadows/quality", PROPERTY_HINT_ENUM, "Low (32 Samples),Medium (60 Samples),High (96 Samples)"), 1);
 	// Assumed thickness of a pixel for casting, as a fraction of the non-linear
 	// depth left between it and the far plane. Scale in multiples of two, and
 	// scale bilinear_threshold along with it.
@@ -1996,11 +1986,11 @@ ProjectSettings::ProjectSettings() {
 	// This is the knob for a contact shadow that reads too dark or too faint.
 	// `contrast` is not, and is no longer a setting: sweeping it 4 to 16 moved
 	// shadow mass 11% and per-pixel darkness 5%, so it saturates.
-	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/hardness", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::FLOAT, "rendering/lights_and_shadows/screen_space_shadows/hardness", PROPERTY_HINT_RANGE, "0,1,0.01"), 1.0);
 	// Whether only geometry the raytracing acceleration structure will not hold
 	// may cast. Off for now: it changes which surfaces cast, and the surface
 	// thickness and hardness defaults were calibrated with every pixel casting.
-	GLOBAL_DEF("rendering/lights_and_shadows/screen_space_shadows/restrict_casters", false);
+	GLOBAL_DEF_BASIC("rendering/lights_and_shadows/screen_space_shadows/restrict_casters", false);
 	// Whether a detected edge is excluded from casting. Off, and for foliage it
 	// should probably stay off: it thins otherwise valid shadows exactly at
 	// foliage silhouettes. Worth trying on scenes that are mostly large flat

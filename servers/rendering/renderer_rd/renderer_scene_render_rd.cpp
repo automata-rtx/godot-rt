@@ -1654,6 +1654,11 @@ Dictionary RendererSceneRenderRD::debug_get_amd_gi_diagnostics(const Ref<RenderS
 	return RendererRD::AMDGI::get_diagnostics(p_render_buffers);
 }
 
+Dictionary RendererSceneRenderRD::get_amd_gi_preparation_status(const Ref<RenderSceneBuffers> &p_render_buffers) const {
+	const Ref<RenderSceneBuffersRD> buffers = p_render_buffers;
+	return buffers.is_valid() ? buffers->get_amd_gi_preparation_status() : Dictionary();
+}
+
 String RendererSceneRenderRD::debug_get_upscaler_status(const Ref<RenderSceneBuffers> &p_render_buffers) const {
 #ifdef STREAMLINE_ENABLED
 	const Ref<RenderSceneBuffersRD> rb = p_render_buffers;
@@ -1982,7 +1987,7 @@ bool RendererSceneRenderRD::is_rtgi_enabled(RID p_environment, const Ref<RenderS
 	return true;
 }
 
-void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances, const LocalVector<RaytracingGIInstance> &p_gi_instances, const LocalVector<RID> &p_gi_lights, bool p_skip_gi_view) {
+void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances, const LocalVector<RaytracingGIInstance> &p_gi_instances, const LocalVector<RID> &p_gi_lights, bool p_skip_gi_view, const Vector<RID> &p_preparation_materials, bool p_preparation_hold) {
 	if (raytracing_scene == nullptr) {
 		return;
 	}
@@ -1996,10 +2001,16 @@ void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<Raytracing
 		if (!rtgi_scene) {
 			rtgi_scene = memnew(RendererRD::RaytracingGIScene);
 		}
-		rtgi_scene->update_scene(geometry, p_gi_instances, p_gi_lights);
+		rtgi_scene->update_scene(geometry, p_gi_instances, p_gi_lights, p_preparation_materials);
 		if (RendererRD::AMDGI::is_enabled()) {
 			if (!amd_gi) {
-				amd_gi = memnew(RendererRD::AMDGI);
+				SWAP(amd_gi, idle_amd_gi);
+				if (!amd_gi) {
+					amd_gi = memnew(RendererRD::AMDGI);
+				}
+			}
+			if (rtgi_scene->is_ready()) {
+				amd_gi->prepare_scene_material_pipelines(*rtgi_scene, p_preparation_hold);
 			}
 			if (rtgi_validation) {
 				memdelete(rtgi_validation);
@@ -2010,8 +2021,7 @@ void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<Raytracing
 				rtgi_validation = memnew(RendererRD::RTGIValidation);
 			}
 			if (amd_gi) {
-				memdelete(amd_gi);
-				amd_gi = nullptr;
+				SWAP(amd_gi, idle_amd_gi);
 			}
 		}
 	} else if (p_skip_gi_view && rtgi_scene && RendererRD::AMDGI::is_enabled()) {
@@ -2029,9 +2039,14 @@ void RendererSceneRenderRD::update_raytracing_scene(const LocalVector<Raytracing
 			rtgi_validation = nullptr;
 		}
 		if (amd_gi) {
-			memdelete(amd_gi);
-			amd_gi = nullptr;
+			SWAP(amd_gi, idle_amd_gi);
 		}
+	}
+	// Dropping a scene or toggling GI must not join an in-flight driver call.
+	// While GI is enabled, retain one complete combination for the next scene.
+	if (idle_amd_gi && idle_amd_gi->suspend_material_pipelines() && !RendererRD::AMDGI::is_enabled()) {
+		memdelete(idle_amd_gi);
+		idle_amd_gi = nullptr;
 	}
 	const uint64_t profile_gi_end = profile_rt_cpu ? OS::get_singleton()->get_ticks_usec() : 0;
 	geometry.end_update();
@@ -2213,6 +2228,9 @@ RendererSceneRenderRD::~RendererSceneRenderRD() {
 	}
 	if (amd_gi) {
 		memdelete(amd_gi);
+	}
+	if (idle_amd_gi) {
+		memdelete(idle_amd_gi);
 	}
 	if (rtgi_scene) {
 		memdelete(rtgi_scene);

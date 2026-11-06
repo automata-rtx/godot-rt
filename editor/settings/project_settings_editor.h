@@ -65,6 +65,9 @@ class ProjectSettingsEditor : public AcceptDialog {
 	TabContainer *tab_container = nullptr;
 	VBoxContainer *general_editor = nullptr;
 	SectionedInspector *general_settings_inspector = nullptr;
+	VBoxContainer *fork_editor = nullptr;
+	SectionedInspector *fork_settings_inspector = nullptr;
+	LineEdit *fork_search_box = nullptr;
 	ActionMapEditor *action_map_editor = nullptr;
 	LocalizationEditor *localization_editor = nullptr;
 	EditorAutoloadSettings *autoload_settings = nullptr;
@@ -108,8 +111,8 @@ class ProjectSettingsEditor : public AcceptDialog {
 	virtual void shortcut_input(const Ref<InputEvent> &p_event) override;
 
 	String _get_setting_name() const;
-	void _setting_edited(const String &p_name);
-	void _setting_selected(const String &p_path);
+	void _setting_edited(const String &p_name, SectionedInspector *p_inspector);
+	void _setting_selected(const String &p_path, SectionedInspector *p_inspector);
 	void _add_setting();
 	void _delete_setting();
 

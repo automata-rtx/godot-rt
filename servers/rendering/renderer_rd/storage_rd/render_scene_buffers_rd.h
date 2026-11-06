@@ -67,6 +67,7 @@
 
 class RenderSceneBuffersRD : public RenderSceneBuffers {
 	Dictionary amd_gi_collection_diagnostics;
+	Dictionary amd_gi_preparation_status;
 	GDCLASS(RenderSceneBuffersRD, RenderSceneBuffers);
 
 private:
@@ -190,6 +191,8 @@ protected:
 public:
 	void set_amd_gi_collection_diagnostics(const Dictionary &p_diagnostics) { amd_gi_collection_diagnostics = p_diagnostics; }
 	Dictionary get_amd_gi_collection_diagnostics() const { return amd_gi_collection_diagnostics; }
+	void set_amd_gi_preparation_status(const Dictionary &p_status) { amd_gi_preparation_status = p_status; }
+	Dictionary get_amd_gi_preparation_status() const { return amd_gi_preparation_status.duplicate(); }
 	RenderSceneBuffersRD();
 	virtual ~RenderSceneBuffersRD();
 

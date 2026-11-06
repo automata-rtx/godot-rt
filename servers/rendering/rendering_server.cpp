@@ -2249,6 +2249,15 @@ void RenderingServer::get_argument_options(const StringName &p_function, int p_i
 }
 #endif
 
+void RenderingServer::_scenario_set_amd_gi_preparation(RID p_scenario, const TypedArray<RID> &p_materials, bool p_hold) {
+	Vector<RID> materials;
+	materials.resize(p_materials.size());
+	for (int i = 0; i < p_materials.size(); i++) {
+		materials.write[i] = p_materials[i];
+	}
+	scenario_set_amd_gi_preparation(p_scenario, materials, p_hold);
+}
+
 void RenderingServer::_bind_methods() {
 	BIND_CONSTANT(RSE::NO_INDEX_ARRAY);
 	BIND_CONSTANT(RSE::ARRAY_WEIGHTS_SIZE);
@@ -2919,6 +2928,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("viewport_get_effective_scaling_3d_mode", "viewport"), &RenderingServer::viewport_get_effective_scaling_3d_mode);
 	ClassDB::bind_method(D_METHOD("viewport_get_upscaler_status", "viewport"), &RenderingServer::viewport_get_upscaler_status);
 	ClassDB::bind_method(D_METHOD("viewport_get_amd_gi_diagnostics", "viewport"), &RenderingServer::viewport_get_amd_gi_diagnostics);
+	ClassDB::bind_method(D_METHOD("viewport_get_amd_gi_preparation_status", "viewport"), &RenderingServer::viewport_get_amd_gi_preparation_status);
 	ClassDB::bind_method(D_METHOD("viewport_get_measured_render_time_cpu", "viewport"), &RenderingServer::viewport_get_measured_render_time_cpu);
 
 	ClassDB::bind_method(D_METHOD("viewport_get_measured_render_time_gpu", "viewport"), &RenderingServer::viewport_get_measured_render_time_gpu);
@@ -3222,6 +3232,7 @@ void RenderingServer::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("scenario_create"), &RenderingServer::scenario_create);
 	ClassDB::bind_method(D_METHOD("scenario_set_environment", "scenario", "environment"), &RenderingServer::scenario_set_environment);
+	ClassDB::bind_method(D_METHOD("scenario_set_amd_gi_preparation", "scenario", "materials", "hold"), &RenderingServer::_scenario_set_amd_gi_preparation);
 	ClassDB::bind_method(D_METHOD("scenario_set_fallback_environment", "scenario", "environment"), &RenderingServer::scenario_set_fallback_environment);
 	ClassDB::bind_method(D_METHOD("scenario_set_camera_attributes", "scenario", "effects"), &RenderingServer::scenario_set_camera_attributes);
 	ClassDB::bind_method(D_METHOD("scenario_set_compositor", "scenario", "compositor"), &RenderingServer::scenario_set_compositor);
@@ -3801,7 +3812,7 @@ void RenderingServer::init() {
 	// checkerboard gives half of them their own answer and reconstructs the rest
 	// from four neighbors one pixel away, which is twice the gather for a
 	// reconstruction that has no further information to gather.
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/shading_rate", PROPERTY_HINT_ENUM, "Quarter Resolution,Checkerboard"), 1);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "rendering/environment/ssao/ground_truth/shading_rate", PROPERTY_HINT_ENUM, "Quarter Resolution,Checkerboard"), 1);
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/environment/ssil/quality", PROPERTY_HINT_ENUM, "Very Low (Fast),Low (Fast),Medium (Average),High (Slow),Ultra (Custom)"), 2);
 	GLOBAL_DEF("rendering/environment/ssil/half_size", true);

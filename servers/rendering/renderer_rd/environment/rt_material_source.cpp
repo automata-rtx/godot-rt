@@ -211,8 +211,14 @@ int RaytracingMaterialSource::texture_array(ShaderLanguage::DataType p_type, RID
 	array.type = p_type;
 	array.fallback = p_fallback;
 	texture_arrays.push_back(array);
+	texture_arrays.sort();
 	shader_revision++;
-	return texture_arrays.size() - 1;
+	for (int i = 0; i < texture_arrays.size(); i++) {
+		if (texture_arrays[i].type == p_type) {
+			return i;
+		}
+	}
+	ERR_FAIL_V(-1);
 }
 
 bool RaytracingMaterialSource::update_buffer(RID &r_buffer, Vector<uint8_t> &r_previous, const Vector<uint8_t> &p_bytes) {
@@ -271,12 +277,11 @@ Error RaytracingMaterialSource::prepare_surface(RID p_material, RID p_mesh, uint
 	return error;
 }
 
-Error RaytracingMaterialSource::prepare_surface_uncached(RID p_material, RID p_mesh, uint32_t p_surface, Context &r_context) {
+Error RaytracingMaterialSource::prepare_material(RID p_material, Context &r_context) {
 	RD *rd = RD::get_singleton();
 	MaterialStorage *storage = MaterialStorage::get_singleton();
 	auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(storage->material_get_data(p_material, MaterialStorage::SHADER_TYPE_3D));
-	Context context;
-	const Context *material_context = nullptr;
+	r_context = Context();
 	if (data && data->shader_data) {
 		Material &material = materials[p_material];
 		if (material.frame != frame) {
@@ -284,16 +289,34 @@ Error RaytracingMaterialSource::prepare_surface_uncached(RID p_material, RID p_m
 			const uint32_t *id = material.shader && material.code == native.code ? &material.shader : shader_ids.getptr(native.code);
 			if (!id) {
 				Shader compiled;
-				Error error = compile(RendererSceneRenderImplementation::RenderForwardClustered::get_singleton()->get_material_shader_compiler(), native, shaders.size() + 1, compiled);
+				// Stable IDs and source ordering let the same material set reuse its
+				// bytecode/driver cache regardless of discovery order. Resolve hash
+				// collisions explicitly; a collision must never alias two shaders.
+				uint32_t shader_id = native.code.hash();
+				bool occupied = true;
+				while (occupied) {
+					occupied = shader_id == 0 || shader_id == UINT32_MAX;
+					for (const Shader &existing : shaders) {
+						occupied |= existing.id == shader_id;
+					}
+					if (occupied) {
+						shader_id++;
+					}
+				}
+				Error error = compile(RendererSceneRenderImplementation::RenderForwardClustered::get_singleton()->get_material_shader_compiler(), native, shader_id, compiled);
 				if (error == ERR_UNAVAILABLE) {
 					shader_ids.insert(native.code, UINT32_MAX);
 					return error;
 				}
 				ERR_FAIL_COND_V(error != OK, error);
 				shaders.push_back(compiled);
+				shaders.sort();
 				shader_ids.insert(native.code, compiled.id);
 				id = shader_ids.getptr(native.code);
 				shader_revision++;
+				if (OS::get_singleton()->is_stdout_verbose()) {
+					print_verbose(vformat("AMD GI registered material shader id=%d revision=%d path='%s' code_sha256=%s material_rid=%d", compiled.id, shader_revision, native.path, native.code.sha256_text(), p_material.get_id()));
+				}
 			}
 			if (*id == UINT32_MAX) {
 				return ERR_UNAVAILABLE;
@@ -351,16 +374,24 @@ Error RaytracingMaterialSource::prepare_surface_uncached(RID p_material, RID p_m
 			data->set_as_used();
 			material.frame = frame;
 		}
-		material_context = &material.context;
+		r_context = material.context;
 	}
+	return OK;
+}
+
+Error RaytracingMaterialSource::prepare_surface_uncached(RID p_material, RID p_mesh, uint32_t p_surface, Context &r_context) {
+	Context material_context;
+	const Error material_error = prepare_material(p_material, material_context);
+	if (material_error != OK) {
+		return material_error;
+	}
+	Context context;
 	Error layout_error = surface_context(p_mesh, p_surface, context);
 	ERR_FAIL_COND_V(layout_error != OK, layout_error);
-	if (material_context) {
-		context.uniform_address = material_context->uniform_address;
-		context.texture_address = material_context->texture_address;
-		context.info[0] = material_context->info[0];
-		context.info[3] |= material_context->info[3];
-	}
+	context.uniform_address = material_context.uniform_address;
+	context.texture_address = material_context.texture_address;
+	context.info[0] = material_context.info[0];
+	context.info[3] |= material_context.info[3];
 	r_context = context;
 	return OK;
 }
@@ -615,7 +646,7 @@ String RaytracingMaterialSource::get_shader_source() const {
 	for (int i = 0; i < texture_arrays.size(); i++) {
 		const TextureArray &array = texture_arrays[i];
 		String type = ShaderLanguage::get_datatype_name(array.type);
-		source += "layout(set=1,binding=" + itos(14 + i) + ") uniform " + type.replace("sampler", "texture") + " gi_source_" + type + "[" + itos(array.capacity) + "];\n";
+		source += "layout(set=1,binding=" + itos(14 + int(array.type)) + ") uniform " + type.replace("sampler", "texture") + " gi_source_" + type + "[" + itos(array.capacity) + "];\n";
 	}
 	for (const Shader &compiled : shaders) {
 		source += compiled.source;
@@ -636,7 +667,7 @@ void RaytracingMaterialSource::append_uniforms(LocalVector<RD::Uniform> &r_unifo
 	r_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, MaterialStorage::get_singleton()->global_shader_uniforms_get_storage_buffer()));
 	for (int i = 0; i < texture_arrays.size(); i++) {
 		const TextureArray &array = texture_arrays[i];
-		RD::Uniform textures(RD::UNIFORM_TYPE_TEXTURE, 14 + i, Vector<RID>());
+		RD::Uniform textures(RD::UNIFORM_TYPE_TEXTURE, 14 + int(array.type), Vector<RID>());
 		for (uint32_t index = 0; index < array.capacity; index++) {
 			textures.append_id(index < uint32_t(array.textures.size()) ? array.textures[index] : array.fallback);
 		}

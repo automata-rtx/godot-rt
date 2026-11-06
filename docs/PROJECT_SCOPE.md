@@ -26,3 +26,26 @@ them into unrelated projects as Godot requirements. Source audit: 2026-10-26.
 Machine paths, executable checksums, per-run settings and publication history
 belong with the relevant evidence. Re-read the real project configuration before
 testing; archived screenshots and handoffs may describe older game content.
+
+## Local build delivery
+
+Owner instruction, 2026-11-06: after every successful local Windows editor build,
+the standard desktop shortcut must represent the newest built editor, including
+builds with uncommitted changes. Do not wait for a separate replacement request.
+Retain run-permission requirements: updating a shortcut does not authorize launch.
+
+Current shortcut: `Desktop/godot.windows.editor.x86_64.exe - Shortcut.lnk`.
+Normal target: `Documents/GodotRT-AMDGI/bin/godot.windows.editor.x86_64.exe`, with
+that `bin` directory as its working directory. If an alternate compiler/output
+path produces the newer editor, update the target accordingly. After a successful
+build, save/read back the shortcut, verify the target exists and record its hash.
+Keep any intended launch arguments and required runtime DLL configuration valid.
+Failed builds must not be published as successful editor updates; export templates
+do not replace the editor shortcut.
+
+`Desktop/GodotRTGI` is reserved for the latest downloaded GitHub Actions version.
+Do not copy local editors into that folder. This policy does not automatically
+download CI artifacts or certify the folder's current contents. At policy adoption,
+it still contains the previously installed local loading-preparation build; replace
+that only with an Actions artifact when CI delivery is requested or performed.
+The desktop shortcut is the local-build entry point; the Actions folder is separate.

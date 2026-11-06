@@ -55,6 +55,7 @@ class SectionedInspector : public HSplitContainer {
 	String selected_category;
 
 	bool restrict_to_basic = false;
+	bool (*property_filter)(const String &) = nullptr;
 
 	static void _bind_methods();
 	void _section_selected();
@@ -68,6 +69,8 @@ protected:
 public:
 	void register_search_box(LineEdit *p_box);
 	void register_advanced_toggle(CheckButton *p_toggle);
+	// Optional editor-only visibility filter, applied to both categories and properties.
+	void set_property_filter(bool (*p_filter)(const String &));
 
 	EditorInspector *get_inspector();
 	void edit(Object *p_object);

@@ -1239,6 +1239,7 @@ private:
 
 	bool pipeline_cache_enabled = false;
 	size_t pipeline_cache_size = 0;
+	bool pipeline_cache_checkpoint_requested = false;
 	String pipeline_cache_file_path;
 	WorkerThreadPool::TaskID pipeline_cache_save_task = WorkerThreadPool::INVALID_TASK_ID;
 
@@ -1299,7 +1300,7 @@ public:
 	RID raytracing_pipeline_create(Span<PipelineShader> p_raygen_shaders, Span<PipelineShader> p_miss_shaders, Span<HitGroup> p_hit_groups, uint32_t p_max_trace_recursion_depth);
 	bool raytracing_pipeline_is_valid(RID p_pipeline);
 
-	void update_pipeline_cache(bool p_closing = false);
+	void update_pipeline_cache(bool p_closing = false, bool p_checkpoint = false);
 
 private:
 	/****************/

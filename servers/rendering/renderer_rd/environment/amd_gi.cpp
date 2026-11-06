@@ -463,20 +463,246 @@ bool AMDGI::has_material_pipelines(const RaytracingGIScene &p_scene) const {
 	return material_preparation.is_ready(&p_scene, p_scene.get_source_materials().get_shader_revision());
 }
 
-bool AMDGI::prepare_material_pipelines(const RaytracingGIScene &p_scene) {
-	const auto &materials = p_scene.get_source_materials();
-	const uint64_t requested_revision = materials.get_shader_revision();
-	if (material_preparation.is_ready(&p_scene, requested_revision)) {
+Dictionary AMDGI::get_preparation_status(const RaytracingGIScene &p_scene) const {
+	const bool ready = !preparation_hold && has_material_pipelines(p_scene);
+	Dictionary status;
+	status["state"] = preparation_hold ? "gathering" : (ready ? "ready" : (preparation_failed ? "failed" : "compiling"));
+	status["ready"] = ready;
+	status["revision"] = p_scene.get_source_materials().get_shader_revision();
+	status["material_errors"] = p_scene.get_preparation_material_errors();
+	status["completed_passes"] = ready ? (diagnostic_source_enabled() ? PASS_COUNT : PASS_COUNT - 1) : (pending ? pending->completed_passes.get() : 0);
+	status["total_passes"] = diagnostic_source_enabled() ? PASS_COUNT : PASS_COUNT - 1;
+	status["bytecode_or_resident_cache_hit"] = preparation_cache_hit;
+	return status;
+}
+
+void AMDGI::prepare_scene_material_pipelines(const RaytracingGIScene &p_scene, bool p_hold) {
+	preparation_hold = p_hold;
+	if (p_hold) {
+		update_material_pipelines(nullptr);
+		return;
+	}
+	update_material_pipelines(&p_scene);
+	// Legacy image fixtures advance scripted phases after a fixed number of
+	// frames. Their launcher can hold the fixture clock during preparation.
+	static const bool wait_for_fixture = OS::get_singleton()->get_environment("GODOT_AMD_GI_FIXTURE_WAIT_FOR_PIPELINES") == "1";
+	if (wait_for_fixture) {
+		while (pending) {
+			OS::get_singleton()->delay_usec(1000);
+			update_material_pipelines(&p_scene);
+		}
+	}
+}
+
+void AMDGI::build_material_passes(void *p_data) {
+	MaterialBuild &build = *static_cast<MaterialBuild *>(p_data);
+#ifdef THREADS_ENABLED
+	Thread::set_name("AMD GI pipelines");
+#endif
+	OS *os = OS::get_singleton();
+	const bool trace = os->is_stdout_verbose();
+	while (!build.cancel.is_set() && !build.failed.is_set()) {
+		const uint32_t slot = build.next_pass.postincrement();
+		if (slot >= build.pass_count) {
+			break;
+		}
+		const uint32_t pass = build.pass_order[slot];
+		if (build.inject_failure && pass == PASS_COUNT - 1) {
+			build.failed.set();
+			break;
+		}
+		const uint64_t start = trace ? os->get_ticks_usec() : 0;
+		const RID pipeline = RD::get_singleton()->compute_pipeline_create(build.shaders[pass]);
+		build.pipelines[pass] = pipeline;
+		if (pipeline.is_valid()) {
+			build.completed_passes.increment();
+		} else {
+			build.failed.set();
+		}
+		if (trace) {
+			print_verbose(vformat("AMD GI pipeline revision=%d pass=%d driver_ms=%.3f", build.revision, pass, (os->get_ticks_usec() - start) / 1000.0));
+		}
+	}
+}
+
+void AMDGI::build_material_pipelines(void *p_data) {
+	MaterialBuild &build = *static_cast<MaterialBuild *>(p_data);
+#ifdef THREADS_ENABLED
+	Thread workers[3];
+	Thread::Settings settings;
+	settings.priority = Thread::PRIORITY_LOW;
+	for (uint32_t i = 1; i < build.worker_count; i++) {
+		workers[i - 1].start(build_material_passes, p_data, settings);
+	}
+#endif
+	build_material_passes(p_data);
+#ifdef THREADS_ENABLED
+	for (uint32_t i = 1; i < build.worker_count; i++) {
+		workers[i - 1].wait_to_finish();
+	}
+#endif
+	for (uint32_t i = 0; i < PASS_COUNT; i++) {
+		if (build.shaders[i].is_valid() && build.pipelines[i].is_null()) {
+			build.failed_pass = i;
+			break;
+		}
+	}
+	build.finished.set();
+}
+
+void AMDGI::free_material_build() {
+	amd_gi_release_pipeline_candidate(pending->pipelines, [](RID p_pipeline) { RD::get_singleton()->free_rid(p_pipeline); });
+	if (pending->version.is_valid()) {
+		shader.version_free(pending->version);
+	}
+	memdelete(pending);
+	pending = nullptr;
+}
+
+bool AMDGI::suspend_material_pipelines() {
+	// A new scene may reuse the old object's address and revision. Only exact
+	// generated source (including case IDs and descriptor capacities) can rebind it.
+	material_preparation = {};
+	preparation_hold = false;
+	preparation_failed = false;
+	if (blue_noise.is_valid()) {
+		RD::get_singleton()->free_rid(blue_noise);
+		blue_noise = RID();
+		random_seed_count = 0;
+	}
+	update_material_pipelines(nullptr);
+	return pending == nullptr;
+}
+
+// Only join finished work during scene updates. The version owns all the
+// worker's shader IDs until the render thread publishes or releases the build.
+bool AMDGI::poll_material_build() {
+	if (pending->worker.is_started()) {
+		if (!pending->finished.is_set()) {
+			return false;
+		}
+		pending->worker.wait_to_finish();
 		return true;
 	}
-	if (!material_preparation.can_attempt(&p_scene, requested_revision, OS::get_singleton()->get_ticks_usec())) {
+	if (pending->version.is_null()) {
+		return true;
+	}
+	if (shader.version_group_is_compiling(pending->version, 0, pending->bytecode_cache_hit)) {
 		return false;
 	}
-	RD *rd = RD::get_singleton();
-	const RID candidate_version = shader.version_create();
-	RID candidate_pipelines[PASS_COUNT];
+	if (pending->cancel.is_set()) {
+		return true;
+	}
+	for (uint32_t i = 0; i < PASS_COUNT; i++) {
+		if (!shader.is_variant_enabled(i)) {
+			continue;
+		}
+		pending->shaders[i] = shader.version_get_shader(pending->version, i);
+		if (pending->shaders[i].is_null()) {
+			pending->failed_pass = i;
+			return true;
+		}
+	}
+	// Schedule the material-evaluating programs first so short passes can fill
+	// the remaining worker time instead of leaving one long compiler tail.
+	const uint32_t heavy_passes[] = { RESOLVE, SHADE_HITS, UPDATE, REFLECTION_TRACE, TRACE, POPULATE, LIGHT_GRID, SHADE_INDIRECT_HITS, PREPARE_LIGHTS };
+	bool scheduled[PASS_COUNT] = {};
+	for (uint32_t pass : heavy_passes) {
+		pending->pass_order[pending->pass_count++] = pass;
+		scheduled[pass] = true;
+	}
+	for (uint32_t i = 0; i < PASS_COUNT; i++) {
+		if (!scheduled[i] && pending->shaders[i].is_valid()) {
+			pending->pass_order[pending->pass_count++] = i;
+		}
+	}
+#ifdef THREADS_ENABLED
+	Thread::Settings settings;
+	settings.priority = Thread::PRIORITY_LOW;
+	pending->worker.start(build_material_pipelines, pending, settings);
+	return false;
+#else
+	build_material_pipelines(pending);
+	return true;
+#endif
+}
+
+void AMDGI::update_material_pipelines(const RaytracingGIScene *p_scene) {
+	const uint64_t revision = p_scene ? p_scene->get_source_materials().get_shader_revision() : 0;
+	if (p_scene && material_preparation.is_ready(p_scene, revision)) {
+		return;
+	}
+	OS *os = OS::get_singleton();
+	if (pending) {
+		if (pending->scene != p_scene || pending->revision != revision) {
+			pending->cancel.set();
+		}
+		if (!poll_material_build()) {
+			return;
+		}
+		if (!pending->cancel.is_set() && pending->failed_pass == PASS_COUNT) {
+			SWAP(version, pending->version);
+			SWAP(published_source, pending->source);
+			for (uint32_t i = 0; i < PASS_COUNT; i++) {
+				SWAP(pipelines[i], pending->pipelines[i]);
+			}
+			material_preparation.publish(p_scene, revision);
+			preparation_cache_hit = pending->bytecode_cache_hit;
+			// Save even small GI additions before gameplay, rather than depending
+			// on the generic cache-size threshold or an eventual clean shutdown.
+			RD::get_singleton()->update_pipeline_cache(false, true);
+			print_verbose(vformat("AMD GI material pipelines ready revision=%d bytecode_cache_hit=%s elapsed_ms=%.3f", revision, pending->bytecode_cache_hit, (os->get_ticks_usec() - pending->start_usec) / 1000.0));
+			free_material_build();
+			return;
+		}
+		if (!pending->cancel.is_set()) {
+			preparation_failed = true;
+			if (pending->inject_failure && pending->failed_pass == PASS_COUNT - 1) {
+				material_failure_injected = true;
+			}
+			if (material_preparation.record_failure(os->get_ticks_usec())) {
+				WARN_PRINT(vformat("AMD GI material revision %d could not prepare pass %d. Using native lighting until a retry succeeds (up to 30 seconds between attempts).", revision, pending->failed_pass));
+			}
+		} else {
+			print_verbose(vformat("AMD GI discarded superseded material revision %d.", pending->revision));
+		}
+		free_material_build();
+	}
+	if (!p_scene || !material_preparation.can_attempt(p_scene, revision, os->get_ticks_usec())) {
+		return;
+	}
+	String source = p_scene->get_source_materials().get_shader_source();
+	if (version.is_valid() && published_source == source) {
+		material_preparation.publish(p_scene, revision);
+		preparation_failed = false;
+		preparation_cache_hit = true;
+		print_verbose(vformat("AMD GI material pipelines ready revision=%d resident_cache_hit=true", revision));
+		return;
+	}
+	start_material_build(p_scene, revision, source);
+}
+
+void AMDGI::start_material_build(const RaytracingGIScene *p_scene, uint64_t p_revision, const String &p_source) {
+	OS *os = OS::get_singleton();
+	preparation_failed = false;
+	preparation_cache_hit = false;
+	pending = memnew(MaterialBuild);
+	pending->scene = p_scene;
+	pending->source = p_source;
+	pending->revision = p_revision;
+	pending->start_usec = os->get_ticks_usec();
+	pending->worker_count = CLAMP(os->get_processor_count() / 2, 1, 4);
+	const String workers = os->get_environment("GODOT_AMD_GI_PIPELINE_WORKERS");
+	if (workers.is_valid_int()) {
+		pending->worker_count = CLAMP(workers.to_int(), 1, 4);
+	}
+	pending->version = shader.version_create();
+	if (pending->version.is_null()) {
+		pending->failed_pass = 0;
+		return;
+	}
 	Vector<String> defines;
-	if (OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_LIGHT_GRID") == "1") {
+	if (os->get_environment("GODOT_AMD_GI_VALIDATE_LIGHT_GRID") == "1") {
 		defines.push_back("#define AMD_GI_VALIDATE_LIGHT_GRID\n");
 	}
 	if (diagnostic_hits_enabled()) {
@@ -488,47 +714,12 @@ bool AMDGI::prepare_material_pipelines(const RaytracingGIScene &p_scene) {
 	if (reflection_diagnostic_config().enabled) {
 		defines.push_back("#define AMD_GI_DIAGNOSTIC_REFLECTION\n");
 	}
-	const uint64_t start_usec = OS::get_singleton()->get_ticks_usec();
-	print_verbose(vformat("AMD GI: compiling material shader revision %d.", requested_revision));
-	// Diagnostic-only injection: once:last tests recovery after all ordinary
-	// render passes exist; always:last tests bounded retry under persistent failure.
-	const String injection = OS::get_singleton()->get_environment("GODOT_AMD_GI_FAIL_MATERIAL_PIPELINE");
-	const bool inject_failure = injection == "always:last" || (injection == "once:last" && !material_failure_injected);
-	uint32_t failed_pass = 0;
-	if (candidate_version.is_valid()) {
-		shader.version_set_compute_code(candidate_version, {}, "", materials.get_shader_source(), defines);
-		failed_pass = amd_gi_prepare_pipeline_candidate(candidate_pipelines, [&](uint32_t p_pass) { return p_pass != VALIDATE_SOURCE || diagnostic_source_enabled(); }, [&](uint32_t p_pass) -> RID {
-					if (inject_failure && p_pass == PASS_COUNT - 1) {
-						material_failure_injected = true;
-						return RID();
-					}
-					const RID compiled = shader.version_get_shader(candidate_version, p_pass);
-					return compiled.is_valid() ? rd->compute_pipeline_create(compiled) : RID(); }, [&](RID p_pipeline) { rd->free_rid(p_pipeline); });
+	const String injection = os->get_environment("GODOT_AMD_GI_FAIL_MATERIAL_PIPELINE");
+	pending->inject_failure = injection == "always:last" || (injection == "once:last" && !material_failure_injected);
+	if (os->is_stdout_verbose()) {
+		print_verbose(vformat("AMD GI preparing material revision=%d source_sha256=%s", p_revision, p_source.sha256_text()));
 	}
-	if (failed_pass != PASS_COUNT) {
-		if (candidate_version.is_valid()) {
-			shader.version_free(candidate_version);
-		}
-		if (material_preparation.record_failure(OS::get_singleton()->get_ticks_usec())) {
-			WARN_PRINT(vformat("AMD GI material revision %d could not prepare pass %d. GI is skipped for this material set; preparation will retry with a capped backoff (up to 30 seconds). Repeated warnings stop after three failures.", requested_revision, failed_pass));
-		}
-		return false;
-	}
-	// Publish only a complete shader/pipeline set. Older resources are retained
-	// during preparation but are never used with an incompatible requested ABI.
-	for (uint32_t i = 0; i < PASS_COUNT; i++) {
-		if (pipelines[i].is_valid()) {
-			rd->free_rid(pipelines[i]);
-		}
-		pipelines[i] = candidate_pipelines[i];
-	}
-	if (version.is_valid()) {
-		shader.version_free(version);
-	}
-	version = candidate_version;
-	material_preparation.publish(&p_scene, requested_revision);
-	print_verbose(vformat("AMD GI: material pipelines ready in %.3f ms.", (OS::get_singleton()->get_ticks_usec() - start_usec) / 1000.0));
-	return true;
+	shader.version_set_compute_code(pending->version, {}, "", p_source, defines);
 }
 
 AMDGI::AMDGI() {
@@ -632,6 +823,13 @@ void AMDGI::ensure_sampling_data(const Size2i &p_size) {
 }
 
 AMDGI::~AMDGI() {
+	if (pending) {
+		pending->cancel.set();
+		if (pending->worker.is_started()) {
+			pending->worker.wait_to_finish();
+		}
+		free_material_build();
+	}
 	if (blue_noise.is_valid()) {
 		RD::get_singleton()->free_rid(blue_noise);
 	}
@@ -701,18 +899,46 @@ RID AMDGI::BindingReuse::get_uniform_set(uint32_t p_pass, RID p_shader, uint32_t
 	return set;
 }
 
-bool AMDGI::ViewData::update_light_order(const RaytracingGIScene &p_scene, uint32_t p_environment_count) {
-	// Capsaicin LightBuilder orders environment, directional, point, spot, area.
-	// Reservoirs retain indices, not persistent object identities. Light settings
-	// change only at environment/count-zero boundaries (LightBuilder::run).
+AMDGI::ViewData::LightHistoryAction AMDGI::ViewData::update_light_order(const RaytracingGIScene &p_scene, uint32_t p_environment_count, bool p_retain_on_emitter_transitions) {
 	const auto &lights = p_scene.get_lights();
-	const bool settings_changed = previous_environment_count != p_environment_count ||
-			(previous_analytic_count > 0) != !lights.is_empty() ||
-			(previous_emitter_count > 0) != (p_scene.get_emitter_count() > 0);
+	const bool prefix_boundary = previous_environment_count != p_environment_count || (previous_analytic_count > 0) != !lights.is_empty();
+	const bool emitter_boundary = (previous_emitter_count > 0) != (p_scene.get_emitter_count() > 0);
+	LightHistoryAction action = (prefix_boundary || emitter_boundary) ? LightHistoryAction::RESET_VIEW : LightHistoryAction::KEEP;
+	if (p_retain_on_emitter_transitions) {
+		// The dense list ends with emitter triangles. Adding its first or dropping its last
+		// preserves indices in the sky/analytic prefix if its ordering is identical.
+		bool same_order = true;
+		if (light_resampling) {
+			same_order = previous_analytic_order.size() == lights.size();
+			previous_analytic_order.resize(lights.size());
+		}
+		bool lit_by_analytic_light = false;
+		for (uint32_t i = 0; i < lights.size(); i++) {
+			const auto &light = lights[i];
+			lit_by_analytic_light |= light.mask != 0 && (light.type == 0 || light.range > 0.0f) && (light.color[0] > 0.0f || light.color[1] > 0.0f || light.color[2] > 0.0f);
+			if (light_resampling) {
+				const uint64_t id = (uint64_t(light.identity[1]) << 32) | light.identity[0];
+				const AnalyticLightKey &old = previous_analytic_order[i];
+				same_order = same_order && old.id == id && old.type == light.type;
+				previous_analytic_order[i] = { id, light.type };
+			} else if (lit_by_analytic_light) {
+				break;
+			}
+		}
+		// A bound sky can be black. Keep the reference clear when the emitter might
+		// be the only light. Out-of-list emitter samples are rejected by resampled_direct.
+		if (emitter_boundary && !prefix_boundary && previously_lit_by_analytic_light && lit_by_analytic_light) {
+			action = same_order ? LightHistoryAction::KEEP : LightHistoryAction::RESET_RESERVOIRS;
+		}
+		previously_lit_by_analytic_light = lit_by_analytic_light;
+	} else {
+		previous_analytic_order.clear();
+		previously_lit_by_analytic_light = false;
+	}
 	previous_analytic_count = lights.size();
 	previous_emitter_count = p_scene.get_emitter_count();
 	previous_environment_count = p_environment_count;
-	return settings_changed;
+	return action;
 }
 
 bool AMDGI::ViewData::ensure_light_grid(uint32_t p_emitters, uint32_t p_lights) {
@@ -757,6 +983,8 @@ void AMDGI::ViewData::free_data() {
 	previous_analytic_count = 0;
 	previous_emitter_count = 0;
 	previous_environment_count = 0;
+	previous_analytic_order.clear();
+	previously_lit_by_analytic_light = false;
 	size = Size2i();
 }
 
@@ -793,7 +1021,7 @@ void AMDGI::clear(const Ref<RenderSceneBuffersRD> &p_buffers) {
 }
 
 bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffersRD> &p_buffers, RID p_normals, const Projection &p_projection, const Transform3D &p_camera, float p_exposure, const Environment &p_environment) {
-	if (p_projection.is_orthogonal() || !p_scene.is_ready() || p_normals.is_null() || !prepare_material_pipelines(p_scene)) {
+	if (p_projection.is_orthogonal() || !p_scene.is_ready() || p_normals.is_null() || !has_material_pipelines(p_scene)) {
 		return false;
 	}
 	RD *rd = RD::get_singleton();
@@ -862,7 +1090,11 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	const uint32_t reflection_filter_passes = CLAMP(int(GLOBAL_GET("rendering/global_illumination/amd_gi/reflections/filter_passes")), 2, 8);
 	const Size2i reflection_size = reflections ? Size2i((size.x + reflection_stride - 1) / reflection_stride, (size.y + reflection_stride - 1) / reflection_stride) : Size2i(1, 1);
 	const uint32_t configuration = uint32_t(multibounce) | (uint32_t(denoiser) << 1) | (uint32_t(importance_sampling) << 2) | (uint32_t(adaptive_sampling) << 3) | (uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/emissive_sampling"))) << 4) | (uint32_t(reflection_fireflies) << 5) | (uint32_t(brdf_sampling) << 6) | (sky_sampling << 7);
-	const uint32_t improvements = uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/improvements/responsive_history"))) | (uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/improvements/demand_scheduling"))) << 1) | (uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/improvements/cache_transitions"))) << 2);
+	const bool retain_emitter_history = bool(GLOBAL_GET("rendering/global_illumination/amd_gi/improvements/retain_history_on_emitter_transitions"));
+	const uint32_t improvements = uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/improvements/responsive_history"))) |
+			(uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/improvements/demand_scheduling"))) << 1) |
+			(uint32_t(bool(GLOBAL_GET("rendering/global_illumination/amd_gi/improvements/cache_transitions"))) << 2) |
+			(uint32_t(retain_emitter_history) << 3);
 	Ref<ViewData> data;
 	if (p_buffers->has_custom_data(RB_SCOPE_AMD_GI)) {
 		data = p_buffers->get_custom_data(RB_SCOPE_AMD_GI);
@@ -934,7 +1166,8 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 		return false;
 	}
 	const uint32_t environment_count = p_environment.radiance.is_valid() ? 1u : 0u;
-	const bool light_settings_changed = data->update_light_order(p_scene, environment_count);
+	const ViewData::LightHistoryAction light_history = data->update_light_order(p_scene, environment_count, retain_emitter_history);
+	const bool light_settings_changed = light_history == ViewData::LightHistoryAction::RESET_VIEW;
 	const bool configuration_changed = data->configuration != configuration || data->cell_size != cell_size || data->distant_cell_scale != distant_cell_scale || data->continuation != probability || data->max_distance != max_distance || data->reflection_roughness != reflection_roughness || data->reflection_filter_passes != reflection_filter_passes || data->reflection_trace_roughness != reflection_trace_roughness || data->firefly_low != firefly_low || data->firefly_high != firefly_high || data->reflection_radii != reflection_radii;
 	const bool reset = !data->valid || configuration_changed || light_settings_changed || data->improvements != improvements;
 	static const bool trace_history = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_HISTORY").is_empty();
@@ -946,6 +1179,7 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	frame.tuning[1] = denoiser_history_scale;
 	frame.tuning[2] = distant_cell_scale;
 	frame.options[2] = improvements;
+	frame.options[3] = light_history == ViewData::LightHistoryAction::RESET_RESERVOIRS;
 	frame.options[0] = sky_sampling;
 	frame.options[1] = reflections;
 	frame.reflection_options[0] = reflection_mode;
@@ -1439,6 +1673,8 @@ bool AMDGI::render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffer
 	rd->compute_list_end();
 	if (debug_statistics || bool(GLOBAL_GET("rendering/global_illumination/amd_gi/debug/exclusion_reports"))) {
 		data->diagnostics["frame"] = push.frame;
+		data->diagnostics["history_reset"] = reset;
+		data->diagnostics["previous_light_reservoirs_reset"] = light_resampling && (reset || frame.options[3] != 0);
 		data->diagnostics["scene"] = p_scene.get_scene_diagnostics();
 		data->diagnostics["gpu_readback_enabled"] = debug_statistics;
 		data->diagnostics["size"] = size;

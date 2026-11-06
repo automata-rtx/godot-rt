@@ -1,6 +1,6 @@
 # AMD GI integration decisions
 
-This is the durable engineering boundary, verified against commit `66bd97e00d`.
+This is the durable engineering boundary, reviewed against current source; see the [audit scope](DOCUMENTATION_AUDIT.md).
 Use [implementation contracts](internals/amd-gi.md) for rebuilding and the portable
 AMD GI feature guide for use. Historical proposals and approval conversations live
 in [the archive](history/AMD_GI_ARCHIVE.md); they are not the current feature list.
@@ -29,6 +29,11 @@ The owner authorized the three [improvement candidates](AMD_GI_IMPROVEMENT_CANDI
 on 2026-10-30. They are opt-in experiments, not changes to the pinned AMD default.
 The original path remains selectable with all improvement switches false. This
 authorization does not extend to the deferred algorithms in that document.
+
+After a positive owner playtest, the fork enables emitter-transition history
+retention by default. Capsaicin specializes shaders on area-light presence.
+The fork handles the count at run time. Disabling the setting restores the
+reference zero-crossing policy. See the [history and sample-index rules](internals/amd-gi.md#source-map).
 
 The response experiment distinguishes absent samples from certified zero lighting.
 Only when no proposal exists, with no sampled sky/emitter lights and at most eight

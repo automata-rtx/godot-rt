@@ -62,9 +62,7 @@ TEST_CASE("[AMDGI] Pipeline failures retain compatible state and recover with bo
 						return 0;
 					}
 					allocations++;
-					return int(p_pass + 1); }, [&](int p_pipeline) {
-					CHECK(p_pipeline > 0);
-					releases++; });
+					return int(p_pass + 1); });
 		if (failure == optional_pass) {
 			CHECK(failed_pass == pass_count);
 			CHECK(calls == pass_count - 1);
@@ -72,6 +70,10 @@ TEST_CASE("[AMDGI] Pipeline failures retain compatible state and recover with bo
 			CHECK(candidate[optional_pass] == 0);
 		} else {
 			CHECK(failed_pass == failure);
+			amd_gi_release_pipeline_candidate(candidate, [&](int p_pipeline) {
+				CHECK(p_pipeline > 0);
+				releases++;
+			});
 			CHECK(releases == allocations);
 			for (int pipeline : candidate) {
 				CHECK(pipeline == 0);
@@ -97,7 +99,7 @@ TEST_CASE("[AMDGI] Pipeline failures retain compatible state and recover with bo
 
 	// The SAME revision can recover after long-lived transient pressure.
 	int complete[pass_count] = {};
-	const uint32_t recovered_pass = amd_gi_prepare_pipeline_candidate(complete, [](uint32_t) { return true; }, [](uint32_t p_pass) { return int(p_pass + 1); }, [](int) { CHECK(false); });
+	const uint32_t recovered_pass = amd_gi_prepare_pipeline_candidate(complete, [](uint32_t) { return true; }, [](uint32_t p_pass) { return int(p_pass + 1); });
 	CHECK(recovered_pass == pass_count);
 	state.publish(&scene, 2);
 	CHECK(state.is_ready(&scene, 2));

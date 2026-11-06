@@ -6,6 +6,7 @@
 	<description>
 		Stores variables that can be accessed from everywhere. Use [method get_setting], [method set_setting] or [method has_setting] to access them. Variables stored in [code]project.godot[/code] are also loaded into [ProjectSettings], making this object very useful for reading custom game configuration options.
 		When naming a Project Settings property, use the full path to the setting including the category. For example, [code]"application/config/name"[/code] for the project name. Category and property names can be viewed in the Project Settings dialog.
+		[b]Fork options:[/b] The General tab contains the main fork feature and quality controls. The Advanced Fork Options tab contains specialized tuning, experiments, and diagnostics, independently of General's Advanced Settings switch. Both tabs use the original property names; saved settings and runtime script access are unchanged.
 		[b]Feature tags:[/b] Project settings can be overridden for specific platforms and configurations (debug, release, ...) using [url=$DOCS_URL/tutorials/export/feature_tags.html]feature tags[/url].
 		[b]Overriding:[/b] Any project setting can be overridden by creating a file named [code]override.cfg[/code] in the project's root directory. This file is in the same format as [code]project.godot[/code], and can also be written using [ConfigFile]. This can also be used in exported projects by placing this file in the same directory as the project binary. Overriding will still take the base project settings' [url=$DOCS_URL/tutorials/export/feature_tags.html]feature tags[/url] in account. Therefore, make sure to [i]also[/i] override the setting with the desired feature tags if you want them to override base project settings on all platforms and configurations.
 	</description>
@@ -204,7 +205,7 @@
 			<param index="0" name="name" type="String" />
 			<param index="1" name="basic" type="bool" />
 			<description>
-				Defines if the specified setting is considered basic or advanced. Basic settings will always be shown in the project settings. Advanced settings will only be shown if the user enables the "Advanced Settings" option.
+				Defines if the specified setting is considered basic or advanced. Basic settings will always be shown in the project settings. Advanced settings in General will only be shown if the user enables the "Advanced Settings" option. Fork controls assigned to the Advanced Fork Options tab remain in that tab regardless of this flag.
 			</description>
 		</method>
 		<method name="set_as_internal">
@@ -3155,7 +3156,7 @@
 			Includes native emissive triangles in the GridStream distribution alongside analytic lights and the environment. Evaluates selected area-light samples at world receivers with a visibility ray. Primary emissive hits contribute emission directly to probes. Disabling removes triangle lights from next-event estimation, leaving primary hit emission. Changes apply at run time and reset history.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/enabled" type="bool" setter="" getter="" default="false">
-			Enables the experimental AMD GI diffuse pipeline in this fork. Requires Vulkan Forward+, ray-query support provisioned by RT shadows at startup, a [WorldEnvironment], and MSAA disabled. Includes sparse screen probes, directional world radiance caching, multibounce and native screen-lighting feedback, glossy reflections, and temporal/spatial denoising. This is an experimental adaptation of AMD GI, with documented sampling/material limitations and unmeasured target-hardware performance. Requires at least 38 storage-buffer bindings per compute stage and pipeline layout, 32 KiB compute shared memory, and 12 storage images per compute stage. Native SDFGI, VoxelGI, SSIL, and lightmaps must be disabled. Unsupported scenes suppress the contribution. Changes apply at run time; GI resources are allocated only while requested.
+			Enables the experimental AMD GI diffuse pipeline in this fork. Requires Vulkan Forward+, ray-query support provisioned by RT shadows at startup, a [WorldEnvironment], and MSAA disabled. Includes sparse screen probes, directional world radiance caching, multibounce and native screen-lighting feedback, glossy reflections, and temporal/spatial denoising. This is an experimental adaptation of AMD GI, with documented sampling/material limitations and scene-dependent performance. Requires at least 38 storage-buffer bindings per compute stage and pipeline layout, 32 KiB compute shared memory, and 12 storage images per compute stage. Native SDFGI, VoxelGI, SSIL, and lightmaps must be disabled. Unsupported scenes suppress the contribution. Changes apply at run time; GI resources are allocated only while requested.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/importance_sampling" type="bool" setter="" getter="" default="true">
 			Guides diffuse screen-probe rays using reprojected radiance and the surface cosine. The number of primary rays is unchanged; sampling and reconstruction add work, so this is not a measured performance preset. If [code]false[/code], uses stratified angular samples. Cells without reusable history and black distributions fall back to stratified samples. Changes apply at run time and reset cache/history state. GI denoising is controlled separately by [member rendering/global_illumination/amd_gi/denoiser].
@@ -3168,6 +3169,9 @@
 		</member>
 		<member name="rendering/global_illumination/amd_gi/improvements/responsive_history" type="bool" setter="" getter="" default="false">
 			Experimental coordinated response to repeated lighting changes in the world cache, screen probes, and diffuse denoiser. Reduces old evidence locally, then gradually restores stability. Can increase noise if stochastic lighting is mistaken for a real change. Adds packed metadata and cache bandwidth, with no additional rays. At the default cache capacity, metadata uses 22 MiB for direct lighting and another 22 MiB with multibounce. Changes apply at run time, reallocate cache resources, and reset GI history. Disabled by default pending quality and target-GPU validation.
+		</member>
+		<member name="rendering/global_illumination/amd_gi/improvements/retain_history_on_emitter_transitions" type="bool" setter="" getter="" default="true">
+			Experimental. Keeps accumulated indirect lighting when the first emissive mesh appears or the last disappears, provided a powered analytic light is present before and after the transition. A flash can contribute less indirect light or leave a brief afterglow. Sky-only scenes keep the reference reset. Switching this setting at run time resets GI history once.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/light_resampling" type="bool" setter="" getter="" default="false">
 			Enables reuse of up to four compatible previous hit reservoirs from AMD's separate spatial hash. Fresh GridStream resampled importance sampling remains active when this is disabled. Analytic lights, emissive triangles and the environment share the proposal distribution. Disabling releases temporal reservoir records and hash storage. Changes apply at run time and reset history.
@@ -3210,7 +3214,7 @@
 			Enables experimental hardware-traced glossy reflections and rough-reflection probe reuse while AMD GI is active. Shares the GI acceleration structure and radiance cache. Disabling skips all reflection dispatches and releases their full-size buffers and textures. Changes apply at run time. Clearcoat and anisotropic lobes are not separately traced.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/reflections/filter_passes" type="int" setter="" getter="" default="4">
-			Number of reference a-trous reflection reconstruction passes, from 2 through 8. Includes first and final reconstruction, with intermediate filtering between them. Requires [member rendering/global_illumination/amd_gi/denoiser]. More iterations suppress noise over larger neighborhoods, with additional compute cost and possible detail loss. Changes apply at run time and reset history.
+			Number of reference a-trous reflection reconstruction passes, from 2 through 8. Includes first and final reconstruction, with intermediate filtering between them. Used only when [member rendering/global_illumination/amd_gi/reflections/denoiser] selects a-trous; independent of diffuse denoising. More iterations suppress noise over larger neighborhoods, with additional compute cost and possible detail loss. Changes apply at run time and reset history.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/reflections/firefly_cleanup_radius_full" type="int" setter="" getter="" default="1">
 			Sample-grid radius for reflection firefly cleanup. Selected when tracing at full resolution. Changes apply at run time and reset history.
@@ -3237,7 +3241,7 @@
 			Samples glossy reflections at half the internal width and height, with rotating sample positions and geometry-aware reconstruction. At most one glossy primary ray is traced per 2 by 2 internal pixels, in addition to the diffuse probe budget; rough surfaces reuse probes where possible. Disabling traces at full internal resolution. Changes reset histories and reallocate reflection storage.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold" type="float" setter="" getter="" default="0.6">
-			Surfaces at or above this roughness use the screen-probe diffuse irradiance approximation for reflections. Between the trace and this threshold, reflections use stochastic directional probe lookup. Keep this threshold at least as high as [member rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold]. Uncovered surfaces still trace a fallback ray. Changes take effect at run time and reset history.
+			Above this roughness, reflections use the screen-probe diffuse irradiance approximation. Between the tracing threshold and this threshold, reflections use stochastic directional probe lookup. Keep this threshold at least as high as [member rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold]. Missing probe coverage does not request a fallback ray. Changes take effect at run time and reset history.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/reflections/ray_compaction" type="bool" setter="" getter="" default="true">
 			Compacts glossy samples that require tracing into a GPU queue and dispatches them indirectly, after sky rejection and rough-probe reuse. Does not change the estimator or ray count. Disable to compare scheduling costs. Changes apply at run time.
@@ -3249,10 +3253,10 @@
 			Full-resolution pixel radius of the split-ratio reflection filter. Used only with split-ratio denoising. Selected when tracing at half resolution. Changes apply at run time and reset history.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/reflections/trace_roughness_threshold" type="float" setter="" getter="" default="0.2">
-			Below this roughness, trace a glossy ray. Between this threshold and [member rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold], use a stochastic GGX lookup in four compatible screen probes. Missing probe coverage falls back to tracing. Changes apply at run time and reset history.
+			At or below this roughness, trace a dedicated glossy ray. Between this threshold and [member rendering/global_illumination/amd_gi/reflections/probe_roughness_threshold], use a stochastic GGX lookup in compatible screen probes. Missing probe coverage does not request a fallback ray. Raising this threshold can stabilize moderately rough surfaces at additional tracing cost. Changes apply at run time and reset history.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/screen_feedback" type="bool" setter="" getter="" default="false">
-			Reuses previous opaque HDR lighting for compatible on-screen secondary and reflection hits. Captures lighting before fog, tone mapping, and upscaling, then removes its previous exposure. Requires multibounce or reflections. Off-screen, disoccluded, or moving receivers fall back to the world cache. Uses one RGBA16F internal-resolution target and an extra opaque color attachment; disabling releases the target and resets history. Falls back automatically when any collected light has an indirect-energy multiplier other than 1, since combined native lighting cannot preserve those separate per-light weights. Changes apply at run time.
+			Enables optional diffuse-hit reuse of previous opaque lighting when multibounce is disabled and native indirect-light multipliers are compatible. Independent near-field screen-space GI and reflection-hit feedback remain active with this setting off. Disabling this option does not release their shared feedback target or disable all screen-lighting reuse. Changes apply at run time.
 		</member>
 		<member name="rendering/global_illumination/amd_gi/sky_sampling" type="int" setter="" getter="" default="1">
 			Environment-light sampling at cached world hits: 0 uniform hemisphere, 1 cosine hemisphere (recommended default), or 2 luminance importance using the sky cubemap hierarchy. Independent of diffuse probe direction guiding. Changes apply at run time and reset GI history. Importance sampling adds hierarchy texture reads but can better find a small bright sun disk.
@@ -3417,26 +3421,21 @@
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/enabled" type="bool" setter="" getter="" default="true">
 			If [code]true[/code], raytraced shadows are denoised before being applied. The denoiser keeps its own temporal history and does not depend on temporal antialiasing, so the result is usable with SMAA, FXAA or no antialiasing at all.
-			Disabling this shows the raw traced result, which is only usable at a high [member rendering/lights_and_shadows/raytraced_shadows/samples_per_light].
+			Disabling this shows the raw traced result. Hard contacts can remain sharp at low sample counts, while broad soft shadows generally need filtering or more [member rendering/lights_and_shadows/raytraced_shadows/samples_per_light].
 		</member>
-		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma" type="float" setter="" getter="" default="2.0">
+		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/history_clamp_sigma" type="float" setter="" getter="" default="0.3">
 			How far a reprojected history sample may sit outside what this frame sees around it, in standard deviations, before it is pulled back in.
 			This is what stops a moving shadow trailing across a surface: reprojection follows the surface, but a shadow that moves [i]across[/i] a stationary surface has no motion of its own to follow, so its old value would otherwise persist for as long as the history does. Lower values react faster and accumulate less; [code]0.0[/code] disables the clamp entirely.
 		</member>
-		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/lag_response" type="float" setter="" getter="" default="1.0">
-			How much of the history clamp's own correction is allowed to set the accumulation's blend weight directly, once that clamp has decided the stored history was wrong.
-			Shortening the accumulation window is not the same as discounting the value in it. At one ray per light the neighborhood inside a covered shadow is unanimous, so the clamp window is its statistical floor alone and a history of "fully lit" is pulled only to the near edge of it. That leaves a window about six frames long and a blend weight of roughly [code]0.135[/code] — the pixel keeps six sevenths of a value the clamp has just established is wrong by four fifths, and since the history now sits inside the window the clamp never fires again. What is left decays hyperbolically rather than exponentially, and is still visibly moving a third of a second later. That is seen as a shadow which fades in behind a quickly moving object instead of arriving with it.
-			At [code]1.0[/code] the correction the clamp measured sets the blend weight, floored by the window edge so it can never weight the new sample more heavily than the current frame's own neighborhood supports. It is inert wherever the clamp did not fire, which is every pixel in a settled image. Lower it toward [code]0.0[/code] if wide penumbrae under many overlapping lights show single frame sparkles; [code]0.0[/code] restores the previous behavior exactly.
-		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/min_filter_pixels" type="float" setter="" getter="" default="1.0">
 			How narrowly the spatial filter may work where the trace measured a penumbra, in pixels.
-			At or below one pixel the floor lets no neighbor contribute, because the nearest tap already sits a pixel away, so a shadow touching the surface that casts it stays crisp. Raising it trades that crispness for smoother wide penumbrae.
+			Raising this value lets more neighbors contribute in narrow penumbrae. Directly measured hard contacts keep the traced visibility.
 		</member>
-		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes" type="int" setter="" getter="" default="3">
+		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/spatial_passes" type="int" setter="" getter="" default="1">
 			Number of edge-stopping wavelet passes run over the shadow mask. Each pass doubles its reach, so every additional pass widens the filter considerably at a roughly constant cost. Higher values suppress more noise but can soften wide penumbrae.
 		</member>
-		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames" type="int" setter="" getter="" default="32">
-			Number of frames the denoiser blends shadows over. Higher values are smoother and more stable but take longer to react when a light or the camera moves; the history is discarded outright when a surface is disoccluded, so this does not cause shadows to trail behind geometry.
+		<member name="rendering/lights_and_shadows/raytraced_shadows/denoiser/temporal_frames" type="int" setter="" getter="" default="5">
+			Number of frames the denoiser blends shadows over. Higher values smooth noise and can leave shadows visible longer after a blocker moves. This is the target window at 60 FPS in a broad penumbra, adjusted for the render interval and capped at eight frames. Directly measured contacts use current visibility. One disables temporal blending.
 		</member>
 		<member name="rendering/lights_and_shadows/raytraced_shadows/directional/caster_distance_scale" type="float" setter="" getter="" default="2.0">
 			How far past a [DirectionalLight3D]'s [member DirectionalLight3D.directional_shadow_max_distance] geometry is still gathered as a shadow caster, as a multiple of that distance.

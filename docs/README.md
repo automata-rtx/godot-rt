@@ -1,6 +1,6 @@
 # Fork documentation map
 
-Audited against `66bd97e00d`, 2026-10-26. Load one route, not this entire tree.
+Current source audit: [2026-11-06](DOCUMENTATION_AUDIT.md), including local working changes. Load one route, not this entire tree.
 
 | Task | Entry point |
 | --- | --- |
@@ -8,7 +8,7 @@ Audited against `66bd97e00d`, 2026-10-26. Load one route, not this entire tree.
 | Diagnose or report a project rendering issue | [Troubleshooting](../GodotForkDocs/TROUBLESHOOTING.md), then [testing](../GodotForkDocs/TESTING.md) |
 | Know what is implemented versus actually validated | [Current status](STATUS.md) |
 | Rebuild the fork on a later Godot version | [Porting](PORTING.md) |
-| Change shared RT/GI geometry or native source-material evaluation | [RT implementation](internals/rt-shadows.md), [material integration](internals/rt-materials.md) |
+| Change shared RT/GI geometry or native source-material evaluation | [Shared RT foundation](internals/shared-raytracing.md), [RT implementation](internals/rt-shadows.md), [material integration](internals/rt-materials.md) |
 | Change AMD GI algorithms, scheduling or diagnostics | [GI implementation](internals/amd-gi.md), [approved adapter decisions](AMD_GI_ADAPTER_DECISIONS.md) |
 | Restore frozen AMD GI or work on optional improvements | [Snapshot and candidates](AMD_GI_IMPROVEMENT_CANDIDATES.md), [controls](../GodotForkDocs/features/amd-gi-improvements.md) |
 | Change VBAO, contact shadows or DLSS | `internals/ambient-occlusion.md`, `internals/screen-space-shadows.md`, `internals/dlss.md` |

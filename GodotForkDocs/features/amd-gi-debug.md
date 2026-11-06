@@ -1,8 +1,34 @@
 # AMD GI diagnostics and advanced controls
 
+Editor location: see the [General / Advanced Fork Options map](../SETTINGS.md).
+Setting keys and runtime access are unchanged.
+
 Read [setup and normal controls](amd-gi.md) first. All short setting names here use
 `rendering/global_illumination/amd_gi/` and are live global `ProjectSettings` values.
 Diagnostics are opt-in and do not automatically write capture files.
+
+## Sampling and filtering
+
+These controls are in **Advanced Fork Options**. Keep their defaults unless
+comparing a specific quality/performance tradeoff. Core optimizations such as
+ray compaction remain enabled; moving their switches does not disable them.
+The bounded tuning and experimental improvements have their own linked guides.
+
+| Setting | Default | Meaning / tradeoff |
+| --- | --- | --- |
+| `denoiser` | `true` | Diffuse temporal/spatial denoising. Reflection filtering has its own selector. |
+| `importance_sampling` | `true` | Guides diffuse probe directions using previous radiance and surface cosine, without adding primary rays. |
+| `brdf_sampling` | `true` | Uses native albedo/metalness/roughness for AMD's choice of specular or diffuse-guided samples. |
+| `adaptive_sampling` | `true` | Redirects the existing probe update budget toward uncovered tiles. |
+| `probe_cache` | `true` | Retains displaced probes for reuse; disabling saves the retained pool and related work. |
+| `cache_all_hits` | `true` | Accumulates every registered cell hit. Disabling selects one hit per cell; it does not reduce the primary probe-ray count. |
+| `emissive_sampling` | `true` | Samples triangle emitters for world-cache lighting. Disabling retains emission seen by primary hits. |
+| `sky_sampling` | `1` | 0: uniform hemisphere; **1: cosine hemisphere**; 2: luminance importance. Cosine is the recommended starting point. Importance can help a bright, concentrated sky but adds texture reads. Independent of probe `importance_sampling`. |
+| `light_resampling` | `false` | Optional temporal reuse of previous light samples. Fresh GridStream light sampling remains active when false. Reuse adds substantial memory/work; compare on the intended scene. |
+| `reflections/denoiser` | `1` | 0: AMD split-ratio X/Y; **1: AMD a-trous**; 2: disabled. Split is a comparison option with detail/stability/striping tradeoffs, not a proven faster or better preset. |
+| `reflections/filter_passes` | `4` | 2-8 a-trous reconstruction passes; unused by split mode. |
+| `reflections/firefly_filter` | `true` | AMD rank marking and cleanup before reflection reconstruction. Independent of denoiser selection. |
+| `reflections/ray_compaction` | `true` | GPU compaction/indirect dispatch for rays that actually need tracing; preserves the sampling algorithm. |
 
 ## Runtime overlay API
 
@@ -107,7 +133,8 @@ without SDFGI/SSIL or visible VoxelGI conflicts. Orthographic views do not run A
 Use the scene's actual Environment instead of a different editor preview setup.
 The code path is verified; editor output on target hardware still needs acceptance.
 
-In Project Settings, enable Advanced Settings and search for `amd_gi/debug/view`.
+In Project Settings, open **Advanced Fork Options** and search for `amd_gi/debug/view`.
+On older builds without that tab, use General with Advanced Settings enabled.
 Select a view there for the editor. Runtime panel changes in a separately running
 game do not change the editor process. Game-only scripts/spawned lights are absent
 unless they execute in the editor; use an authored light to inspect editor response.
@@ -147,7 +174,8 @@ better target a sun disk but is not universally preferable to cosine sampling.
 This does not change the primary diffuse probe budget.
 
 The engine fixture `docs/validation/shadow_validation/amd_gi_options.tscn` covers
-live changes, all 32 display values, and 36 sampler/filter combinations. A prepared
+live changes, the original display values 0–31, and 36 sampler/filter combinations.
+The current display range is 0–37; that fixture does not cover the six newer views. A prepared
 fixture is not a recorded passing GPU result. Separate shader compilation/layout
 checks from visual acceptance when evaluating a build.
 

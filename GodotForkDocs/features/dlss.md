@@ -1,5 +1,8 @@
 # DLSS and Streamline
 
+Editor location: see the [General / Advanced Fork Options map](../SETTINGS.md).
+Setting keys and runtime access are unchanged.
+
 The fork integrates DLSS Super Resolution, DLAA and optional frame generation through NVIDIA Streamline. Super resolution reconstructs a larger image from a smaller 3D render; frame generation inserts presented frames and does not increase game simulation speed.
 
 ## Setup
@@ -34,6 +37,11 @@ Project `rendering/scaling_3d/mode` and `/scale` seed viewport properties; chang
 Keep preset Default and reactive mask off initially. A forced preset is an SDK request, not verified readback of the model NVIDIA ultimately runs. Driver/NVIDIA App overrides can affect selection.
 
 For an overlay, query `RenderingServer.viewport_get_effective_scaling_3d_mode(viewport_rid)`, `viewport_get_internal_size(viewport_rid)` and `viewport_get_upscaler_status(viewport_rid)`. Requested DLSS can fall back to FSR2 when unavailable; one-shot/non-updating temporal viewports can fall back to bilinear. Report the effective mode rather than assuming the requested option is active.
+
+For inventory icons and discontinuous offscreen previews, explicitly use bilinear
+scaling at 1.0 and disable temporal AA on that SubViewport. Single-frame MSAA can
+be used there independently of the main camera's AMD GI configuration. Temporal
+upscaling needs useful frame history even when a viewport updates continuously.
 
 ## Frame generation and testing
 

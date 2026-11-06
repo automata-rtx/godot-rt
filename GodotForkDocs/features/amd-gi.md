@@ -6,9 +6,9 @@ Godot materials, lights, scene changes, and Vulkan. It is not a general replacem
 for every Godot GI feature. Start with the defaults below; there is no validated
 universal performance preset.
 
-The [optional improvement experiments](amd-gi-improvements.md) add live, independent
-response/scheduling/cache-transition switches. They default off and preserve the
-original algorithm as the comparison baseline.
+By default, brief emissive flashes retain GI history in scenes with a powered
+analytic light. The response, scheduling, and cache-transition experiments
+default off. See the [settings and reference comparison](amd-gi-improvements.md).
 
 ## Enable it
 
@@ -22,6 +22,13 @@ original algorithm as the comparison baseline.
    once the startup prerequisite is satisfied.
 4. Disable SDFGI and SSIL in the Environment and remove visible VoxelGI instances.
    These conflicts suppress AMD GI; the fork does not silently rewrite their settings.
+
+On Windows, a new combination of material shaders can take several seconds for
+the graphics driver to prepare. The viewport uses native lighting during that
+interval and switches to AMD GI and its reflections when the full set is ready.
+Another instance of an already supported material usually reuses the current set.
+For a loading screen, use the [preparation API](amd-gi-loading.md) to collect hidden
+materials, defer intermediate compilations, and wait for working GI before play.
 
 Hardware must support Vulkan ray queries, buffer device addresses and half floats,
 with at least 38 storage-buffer bindings per stage and aggregate pipeline layout, 12 storage-image
@@ -51,31 +58,21 @@ feedback. These are deliberate scope limits of this personal fork. AMD GI takes
 precedence over the separate `rt_validation/enabled` diagnostic backend. Native
 SSR is suppressed when AMD reflection pipelines are ready and reflections enabled.
 
-## Recommended starting controls
+## Main project controls
 
-All short names below have the prefix `rendering/global_illumination/amd_gi/`.
-These are the actual registered defaults, not project-specific overrides.
+These six controls are in Project Settings **General**, visible without its
+Advanced Settings switch. All short names use
+`rendering/global_illumination/amd_gi/`. Defaults below are engine defaults;
+existing projects keep their own overrides.
 
 | Setting | Default | Meaning / tradeoff |
 | --- | --- | --- |
 | `enabled` | `false` | Master GI switch; enable after satisfying the startup prerequisite. |
 | `probe_spacing` | `16` | Choose 8, 16, or 32. Approximately 1, 1/4, or 1/16 primary probe ray per internal pixel per frame; larger spacing reduces update density. Stored probes retain an 8-pixel grid. |
 | `multibounce` | `true` | Secondary cache transport. Disabling removes continuation/indirect work and its storage, but removes indirect bounces. |
-| `denoiser` | `true` | Diffuse temporal/spatial denoising. Reflection filtering has its own selector. |
-| `importance_sampling` | `true` | Guides diffuse probe directions using previous radiance and surface cosine, without adding primary rays. |
-| `brdf_sampling` | `true` | Uses native albedo/metalness/roughness for AMD's choice of specular or diffuse-guided samples. |
-| `adaptive_sampling` | `true` | Redirects the existing probe update budget toward uncovered tiles. |
-| `probe_cache` | `true` | Retains displaced probes for reuse; disabling saves the retained pool and related work. |
-| `cache_all_hits` | `true` | Accumulates every registered cell hit. Disabling selects one hit per cell; it does not reduce the primary probe-ray count. |
-| `emissive_sampling` | `true` | Samples triangle emitters for world-cache lighting. Disabling retains emission seen by primary hits. |
-| `sky_sampling` | `1` | 0: uniform hemisphere; **1: cosine hemisphere**; 2: luminance importance. Cosine is the recommended starting point. Importance can help a bright, concentrated sky but adds texture reads. Independent of probe `importance_sampling`. |
-| `light_resampling` | `false` | Optional temporal reuse of previous light samples. Fresh GridStream light sampling remains active when false. Reuse adds substantial memory/work; compare on the intended scene. |
 | `reflections/enabled` | `true` | Separate glossy path; disabling skips it and releases its sized resources. |
 | `reflections/half_resolution` | `true` | Rotating samples at one per 2x2 internal pixels. Full resolution costs more but can improve fine geometry. |
-| `reflections/denoiser` | `1` | 0: AMD split-ratio X/Y; **1: AMD a-trous**; 2: disabled. Split is a comparison option with detail/stability/striping tradeoffs, not a proven faster or better preset. |
-| `reflections/filter_passes` | `4` | 2-8 a-trous reconstruction passes; unused by split mode. |
-| `reflections/firefly_filter` | `true` | AMD rank marking and cleanup before reflection reconstruction. Independent of denoiser selection. |
-| `reflections/ray_compaction` | `true` | GPU compaction/indirect dispatch for rays that actually need tracing; preserves the sampling algorithm. |
+| `reflections/trace_roughness_threshold` | `0.2` | Trace dedicated reflection rays up to this roughness; higher values can stabilize moderately rough surfaces at additional cost. Clamped to the advanced probe threshold. |
 
 Primary probe rays are only part of the cost: light visibility, continuations, and
 glossy rays add work. Both GI and reflections scale with **internal rendering

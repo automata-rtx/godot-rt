@@ -6,7 +6,7 @@ Do not use high-sample validator images to represent AMD GI progress.
 
 ## Controls
 
-These project settings are live and can be changed with `ProjectSettings.set_setting()`:
+These project settings are in **Advanced Fork Options** in current editors. They are live and can be changed with `ProjectSettings.set_setting()`:
 
 | Setting under `rendering/global_illumination/rt_validation/` | Default | Meaning |
 | --- | --- | --- |

@@ -388,7 +388,7 @@ public:
 	// Whether raytraced shadow tracing should log what it is doing. Lives here
 	// so the renderer-agnostic cull layer can log without reaching into RD.
 	virtual bool is_raytracing_debug_enabled() const { return false; }
-	virtual void update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances, const LocalVector<RaytracingGIInstance> &p_gi_instances, const LocalVector<RID> &p_gi_lights, bool p_skip_gi_view) {}
+	virtual void update_raytracing_scene(const LocalVector<RaytracingInstance> &p_instances, const LocalVector<RaytracingGIInstance> &p_gi_instances, const LocalVector<RID> &p_gi_lights, bool p_skip_gi_view, const Vector<RID> &p_preparation_materials, bool p_preparation_hold) {}
 
 	virtual void render_scene(const Ref<RenderSceneBuffers> &p_render_buffers, const CameraData *p_camera_data, const CameraData *p_prev_camera_data, const PagedArray<RenderGeometryInstance *> &p_instances, const PagedArray<RID> &p_lights, const PagedArray<RID> &p_reflection_probes, const PagedArray<RID> &p_voxel_gi_instances, const PagedArray<RID> &p_decals, const PagedArray<RID> &p_lightmaps, const PagedArray<RID> &p_fog_volumes, RID p_environment, RID p_camera_attributes, RID p_compositor, RID p_shadow_atlas, RID p_occluder_debug_tex, RID p_reflection_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, const RenderShadowData *p_render_shadows, int p_render_shadow_count, const RenderSDFGIData *p_render_sdfgi_regions, int p_render_sdfgi_region_count, float p_window_output_max_value, const RenderSDFGIUpdateData *p_sdfgi_update_data = nullptr, RenderingServerTypes::RenderInfo *r_render_info = nullptr) = 0;
 
@@ -429,6 +429,7 @@ public:
 	virtual String debug_get_upscaler_status(const Ref<RenderSceneBuffers> &p_render_buffers) const { return String(); }
 	virtual void set_amd_gi_collection_diagnostics(const Ref<RenderSceneBuffers> &p_buffers, const Dictionary &p_diagnostics) {}
 	virtual Dictionary debug_get_amd_gi_diagnostics(const Ref<RenderSceneBuffers> &p_render_buffers) const { return Dictionary(); }
+	virtual Dictionary get_amd_gi_preparation_status(const Ref<RenderSceneBuffers> &p_render_buffers) const { return Dictionary(); }
 
 	virtual ~RendererSceneRender() {}
 };

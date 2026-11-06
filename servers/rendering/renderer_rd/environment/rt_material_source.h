@@ -44,6 +44,7 @@ public:
 		String source;
 		Vector<ShaderCompiler::GeneratedCode::Texture> textures;
 		uint32_t texture_count = 0;
+		bool operator<(const Shader &p_other) const { return id < p_other.id; }
 	};
 	static Error compile(const ShaderCompiler &p_native_compiler, const SpatialShader &p_shader, uint32_t p_id, Shader &r_shader);
 
@@ -66,6 +67,7 @@ public:
 	void begin_frame();
 	void clear();
 	Error prepare_surface(RID p_material, RID p_mesh, uint32_t p_surface, Context &r_context);
+	Error prepare_material(RID p_material, Context &r_context);
 	Error add_surface(RID p_material, const RendererSceneRender::RaytracingGIInstance &p_instance, uint32_t p_surface, const Color &p_color, const Color &p_custom, Context *r_base_context = nullptr, bool p_validate_retained = false);
 	bool retain_contexts(uint32_t p_count);
 	bool end_frame();
@@ -132,6 +134,7 @@ private:
 		HashMap<RID, uint32_t> indices;
 		RID fallback;
 		uint32_t capacity = 1;
+		bool operator<(const TextureArray &p_other) const { return type < p_other.type; }
 	};
 	HashMap<RID, Material> materials;
 	HashMap<RID, Attributes> attributes;

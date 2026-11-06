@@ -1,24 +1,50 @@
 # Rebuilding godot-rt on a newer Godot
 
 This is the dependency map for a clean reimplementation, not a promise that an
-old patch applies. Audited at `66bd97e00d` (2026-10-26). The feature guides below
+old patch applies. Current documentation audit: [2026-11-06](DOCUMENTATION_AUDIT.md). The feature guides below
 own shader/data contracts, algorithms, source symbols, and per-feature tests.
 Read those for the feature being rebuilt; the portable pack is for game authors.
 
 | Layer | Technical specification |
 | --- | --- |
-| Shared ray-tracing geometry and RT direct shadows | [RT shadows](internals/rt-shadows.md) |
+| Shared RT foundation — implement once, required by both shadows and GI | [Shared ray tracing](internals/shared-raytracing.md) |
+| RT direct shadows — consumer of that foundation | [RT shadows](internals/rt-shadows.md) |
 | Native source-material evaluation and GI hit metadata | [RT materials](internals/rt-materials.md) |
 | AMD GI transport, caches, samplers, filters and diagnostics | [AMD GI](internals/amd-gi.md) |
+| GI material pipelines, loading, persistent caches and worker teardown | [GI preparation](internals/amd-gi-preparation.md) |
 | Visibility-bitmask ambient occlusion | [VBAO](internals/ambient-occlusion.md) |
 | Directional screen-space contact shadows | [Screen-space shadows](internals/screen-space-shadows.md) |
 | DLSS, frame generation and device/SDK lifetime | [Streamline](internals/dlss.md) |
+
+## Assigning sequential feature work to agents
+
+Use one integration owner for the shared renderer boundary. Implement the shared
+RT foundation first, then RT shadows, then the GI material/scene adapter and AMD
+GI including preparation. Each feature task reads this map, the shared foundation
+where applicable, and its own guide. Other feature internals are read only for
+the interfaces being touched. Do not assign shadows and GI as independent,
+from-scratch rendering stacks.
+
+The foundation owner controls MeshStorage usage/revisions, shared BLAS ownership,
+the culler expansion cache, RenderingDevice/Vulkan AS/dependency APIs, update
+coordination and common depth/motion layouts. Feature agents consume those
+contracts and request coordinated changes; they must not overwrite another
+feature's layout or copy a private version. VBAO, contact shadows and DLSS can be
+ported separately, but their Forward+ attachment and shutdown edits still pass
+through the integration owner.
+
+Each handoff records the exact source/target revisions, working patch, shared
+interfaces changed, tests actually run and unresolved cases. The receiving agent
+checks that contract against the integrated tree before proceeding. A feature is
+not complete until its shared-consumer checks pass. Later GI integration must
+rerun shadows plus GI, preview transitions and cleanup; an earlier shadow-only
+pass is insufficient.
 
 ## Establish the source contract first
 
 The original fork base is `b56a91878e7c94977e4af978968e41d0670c0a8b`; it exists
 in this repository and is an ancestor of the audited revision. Inspect
-`git diff b56a91878..66bd97e00d -- <path>` for provenance. Do not assume every
+`git diff b56a91878 -- <path>` (includes current working changes) for provenance. Do not assume every
 intervening commit is a self-contained rendering feature or copy an older stage
 recipe over later fixes. Preserve upstream and third-party licenses.
 
@@ -113,6 +139,12 @@ Public property changes span `core/config/project_settings.cpp`, scene resources
 RenderingServer/RD bindings, storage/culling and `doc/classes/`. Copying only a
 shader or only the inspector property is incomplete. GPU capability warnings
 should state the actual checks, not stale limits copied from a prior handoff.
+
+Preserve the editor-only settings classification in `editor/settings/fork_project_settings.*`
+and the filtered `SectionedInspector` / `ProjectSettingsEditor` integration.
+General and Advanced Fork Options edit the same canonical keys, including feature
+overrides, undo/redo, saving and restart notices. This is presentation metadata,
+not a runtime alias or migration; changing it must not change renderer defaults.
 
 ## Verification and provenance
 

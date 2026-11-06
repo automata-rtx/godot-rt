@@ -305,10 +305,12 @@ private:
 	uint64_t lighting_revision = 1;
 	bool ready = false;
 	bool feedback_compatible = true;
+	uint32_t preparation_material_errors = 0;
 
 public:
 	Dictionary get_scene_diagnostics() const;
 	const RaytracingMaterialSource &get_source_materials() const { return source_materials; }
+	uint32_t get_preparation_material_errors() const { return preparation_material_errors; }
 	static constexpr uint32_t MAX_MOTION_BOUNDS = 8;
 	const LocalVector<AABB> &get_motion_bounds() const { return motion_bounds; }
 	void suspend() { ready = false; }
@@ -323,7 +325,7 @@ public:
 	void append_uniforms(LocalVector<RD::Uniform> &r_uniforms, RID p_sampler) const;
 	void add_geometry_reads(RD::ComputeListID p_list) const;
 	void append_geometry_buffer_reads(LocalVector<RID> &r_buffers) const;
-	void update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights);
+	void update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights, const Vector<RID> &p_preparation_materials);
 	RaytracingGIScene();
 	~RaytracingGIScene();
 };

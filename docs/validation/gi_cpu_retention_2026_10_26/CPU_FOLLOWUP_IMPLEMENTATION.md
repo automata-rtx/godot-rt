@@ -8,6 +8,10 @@ authorizing publication. This is user smoke-test acceptance, not a repeated
 regression suite or performance measurement. Prior timings remain comparison
 baselines, not results for this build.
 
+Subsequently authorized benchmark and desktop-delivery results are recorded
+separately in [the follow-up measurements](FOLLOWUP_BENCHMARKS.md). The remainder
+of this document describes the original source-only implementation acceptance.
+
 ## Decisions and implementation
 
 1. **Shared source preparation**, targeting the 1.21–1.25 ms group loop. Memoize

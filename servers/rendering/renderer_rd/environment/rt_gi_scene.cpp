@@ -44,6 +44,44 @@
 
 using namespace RendererRD;
 
+static const char *source_material_exclusion(const RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData &p_data) {
+	const auto &shader = *p_data.shader_data;
+	if (p_data.next_pass.is_valid()) {
+		return "material_next_pass";
+	}
+	if (shader.uses_alpha_pass() && !shader.uses_depth_in_alpha_pass() && shader.depth_draw != RendererSceneRenderImplementation::SceneShaderForwardClustered::ShaderData::DEPTH_DRAW_ALWAYS && !shader.casts_shadows()) {
+		return "forward_only_transparency";
+	}
+	if (shader.uses_screen_texture) {
+		return "material_screen_texture";
+	}
+	if (shader.uses_depth_texture) {
+		return "material_depth_texture";
+	}
+	if (shader.uses_normal_texture) {
+		return "material_screen_normal_texture";
+	}
+	if (shader.uses_position) {
+		return "material_position_override";
+	}
+	if (shader.uses_vertex) {
+		return "material_vertex_displacement";
+	}
+	if (shader.writes_modelview_or_projection) {
+		return "material_transform_override";
+	}
+	if (shader.uses_blend_alpha) {
+		return "material_blend_alpha";
+	}
+	if (shader.unshaded) {
+		return "material_unshaded";
+	}
+	if (shader.uses_alpha && !shader.uses_alpha_clip && shader.blend_mode != MaterialStorage::ShaderData::BLEND_MODE_MIX) {
+		return "material_unsupported_alpha";
+	}
+	return nullptr;
+}
+
 RaytracingGIScene::RaytracingGIScene() {
 }
 
@@ -533,7 +571,7 @@ bool RaytracingGIScene::same_group_input(const RendererSceneRender::RaytracingGI
 	return p_a.instance == p_b.instance && p_a.mesh == p_b.mesh && p_a.mesh_instance == p_b.mesh_instance && p_a.multimesh == p_b.multimesh && p_a.element == p_b.element && p_a.group_generation == p_b.group_generation && p_a.group_count == p_b.group_count && p_a.transform == p_b.transform && p_a.material_override == p_b.material_override && p_a.materials == p_b.materials && p_a.uniforms_offset == p_b.uniforms_offset && p_a.layer_mask == p_b.layer_mask && p_a.shadow_surface_mask == p_b.shadow_surface_mask;
 }
 
-void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights) {
+void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const LocalVector<RendererSceneRender::RaytracingGIInstance> &p_instances, const LocalVector<RID> &p_lights, const Vector<RID> &p_preparation_materials) {
 	static const bool trace_motion = !OS::get_singleton()->get_environment("GODOT_AMD_GI_TRACE_HISTORY").is_empty();
 	static const bool validate_records = OS::get_singleton()->get_environment("GODOT_AMD_GI_VALIDATE_SCENE_CACHE") == "1";
 	ready = false;
@@ -639,8 +677,18 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 	uint32_t drawn_pages = 0;
 	uint32_t copied_pages = 0;
 	uint32_t new_signature = HASH_MURMUR3_SEED;
+	preparation_material_errors = 0;
 	if (use_source_materials) {
 		source_materials.begin_frame();
+		for (RID material : p_preparation_materials) {
+			RaytracingMaterialSource::Context context;
+			auto *data = static_cast<RendererSceneRenderImplementation::SceneShaderForwardClustered::MaterialData *>(materials->material_get_data(material, MaterialStorage::SHADER_TYPE_3D));
+			// Preparation must use the same eligibility as visible transport.
+			// Screen-reading fog/overlay shaders cannot enter the GI program.
+			if (!data || !data->shader_data || source_material_exclusion(*data) || source_materials.prepare_material(material, context) != OK) {
+				preparation_material_errors++;
+			}
+		}
 	} else {
 		source_materials.clear();
 	}
@@ -847,16 +895,7 @@ void RaytracingGIScene::update_scene(RaytracingGeometry &p_geometry, const Local
 					continue;
 				}
 				stochastic_alpha = shader_data.uses_alpha && !shader_data.uses_alpha_clip && shader_data.blend_mode == MaterialStorage::ShaderData::BLEND_MODE_MIX;
-				if (data->next_pass.is_valid() || shader_data.uses_screen_texture || shader_data.uses_depth_texture || shader_data.uses_normal_texture || shader_data.uses_position || shader_data.uses_vertex || shader_data.writes_modelview_or_projection || shader_data.uses_blend_alpha || (shader_data.uses_alpha && !shader_data.uses_alpha_clip && !stochastic_alpha) || shader_data.unshaded) {
-					const char *reason = data->next_pass.is_valid() ? "material_next_pass" : shader_data.uses_screen_texture ? "material_screen_texture"
-							: shader_data.uses_depth_texture																 ? "material_depth_texture"
-							: shader_data.uses_normal_texture																 ? "material_screen_normal_texture"
-							: shader_data.uses_position																		 ? "material_position_override"
-							: shader_data.uses_vertex																		 ? "material_vertex_displacement"
-							: shader_data.writes_modelview_or_projection													 ? "material_transform_override"
-							: shader_data.uses_blend_alpha																	 ? "material_blend_alpha"
-							: shader_data.unshaded																			 ? "material_unshaded"
-																															 : "material_unsupported_alpha";
+				if (const char *reason = source_material_exclusion(*data)) {
 					record_exclusion(reason, instance.instance, material, surface, instance.element, shader_data.path);
 					WARN_PRINT_ONCE(vformat("RT GI cannot transport material %s (shader '%s'): vertex=%s position=%s transform=%s screen=%s depth=%s normal_texture=%s blend=%s alpha=%s unshaded=%s multipass=%s. This surface is omitted from AMD GI transport.", material, shader_data.path, shader_data.uses_vertex, shader_data.uses_position, shader_data.writes_modelview_or_projection, shader_data.uses_screen_texture, shader_data.uses_depth_texture, shader_data.uses_normal_texture, shader_data.uses_blend_alpha, shader_data.uses_alpha && !shader_data.uses_alpha_clip, shader_data.unshaded, data->next_pass.is_valid()));
 					if (use_source_materials) {

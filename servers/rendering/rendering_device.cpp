@@ -8204,6 +8204,14 @@ RenderingDevice::DriverWorkarounds RenderingDevice::get_driver_workarounds() con
 
 void RenderingDevice::swap_buffers(bool p_present) {
 	ERR_RENDER_THREAD_GUARD();
+	// A checkpoint may have arrived while the previous asynchronous save was
+	// still running. Retry it even when no further pipelines are created.
+	{
+		_THREAD_SAFE_METHOD_
+		if (pipeline_cache_checkpoint_requested) {
+			update_pipeline_cache();
+		}
+	}
 
 	GodotProfileZoneGroupedFirst(_profile_zone, "_end_frame");
 	_end_frame();
@@ -8936,39 +8944,53 @@ Error RenderingDevice::initialize(RenderingContextDriver *p_context, DisplayServ
 Vector<uint8_t> RenderingDevice::_load_pipeline_cache() {
 	DirAccess::make_dir_recursive_absolute(pipeline_cache_file_path.get_base_dir());
 
-	if (FileAccess::exists(pipeline_cache_file_path)) {
+	// Some platforms implement replacement as remove + move. A completed
+	// backup covers interruption in that gap without changing global file APIs.
+	const String path = FileAccess::exists(pipeline_cache_file_path) ? pipeline_cache_file_path : pipeline_cache_file_path + ".previous";
+	if (FileAccess::exists(path)) {
 		Error file_error;
-		Vector<uint8_t> file_data = FileAccess::get_file_as_bytes(pipeline_cache_file_path, &file_error);
+		Vector<uint8_t> file_data = FileAccess::get_file_as_bytes(path, &file_error);
 		return file_data;
 	} else {
 		return Vector<uint8_t>();
 	}
 }
 
-void RenderingDevice::update_pipeline_cache(bool p_closing) {
+void RenderingDevice::update_pipeline_cache(bool p_closing, bool p_checkpoint) {
 	_THREAD_SAFE_METHOD_
+	if (!pipeline_cache_enabled) {
+		return;
+	}
+	pipeline_cache_checkpoint_requested |= p_checkpoint;
 
 	{
 		bool still_saving = pipeline_cache_save_task != WorkerThreadPool::INVALID_TASK_ID && !WorkerThreadPool::get_singleton()->is_task_completed(pipeline_cache_save_task);
 		if (still_saving) {
 			if (p_closing) {
+				// The save task takes this mutex to serialize the driver cache.
+				_thread_safe_.unlock();
 				WorkerThreadPool::get_singleton()->wait_for_task_completion(pipeline_cache_save_task);
+				_thread_safe_.lock();
 				pipeline_cache_save_task = WorkerThreadPool::INVALID_TASK_ID;
 			} else {
 				// We can't save until the currently running save is done. We'll retry next time; worst case, we'll save when exiting.
 				return;
 			}
 		}
+		if (pipeline_cache_save_task != WorkerThreadPool::INVALID_TASK_ID) {
+			WorkerThreadPool::get_singleton()->wait_for_task_completion(pipeline_cache_save_task);
+			pipeline_cache_save_task = WorkerThreadPool::INVALID_TASK_ID;
+		}
 	}
 
 	{
 		size_t new_pipelines_cache_size = driver->pipeline_cache_query_size();
 		ERR_FAIL_COND(!new_pipelines_cache_size);
-		size_t difference = new_pipelines_cache_size - pipeline_cache_size;
+		size_t difference = new_pipelines_cache_size > pipeline_cache_size ? new_pipelines_cache_size - pipeline_cache_size : 0;
 
 		bool must_save = false;
 
-		if (p_closing) {
+		if (p_closing || pipeline_cache_checkpoint_requested) {
 			must_save = difference > 0;
 		} else {
 			float save_interval = GLOBAL_GET("rendering/rendering_device/pipeline_cache/save_chunk_size_mb");
@@ -8978,8 +9000,10 @@ void RenderingDevice::update_pipeline_cache(bool p_closing) {
 		if (must_save) {
 			pipeline_cache_size = new_pipelines_cache_size;
 		} else {
+			pipeline_cache_checkpoint_requested = false;
 			return;
 		}
+		pipeline_cache_checkpoint_requested = false;
 	}
 
 	if (p_closing) {
@@ -8997,14 +9021,35 @@ void RenderingDevice::_save_pipeline_cache(void *p_data) {
 	self->_thread_safe_.unlock();
 
 	if (cache_blob.is_empty()) {
+		self->_thread_safe_.lock();
+		self->pipeline_cache_size = 0;
+		self->_thread_safe_.unlock();
 		return;
 	}
 	print_verbose(vformat("Updated PSO cache (%.1f MiB)", cache_blob.size() / (1024.0f * 1024.0f)));
 
-	Ref<FileAccess> f = FileAccess::open(self->pipeline_cache_file_path, FileAccess::WRITE, nullptr);
+	// Keep the previous valid cache intact if saving is interrupted.
+	String temporary_path = self->pipeline_cache_file_path + "." + itos(OS::get_singleton()->get_process_id()) + ".tmp";
+	Ref<FileAccess> f = FileAccess::open(temporary_path, FileAccess::WRITE, nullptr);
 	if (f.is_valid()) {
 		f->store_buffer(cache_blob);
+		f->flush();
+		Error error = f->get_error();
+		f.unref();
+		if (error == OK && FileAccess::exists(self->pipeline_cache_file_path)) {
+			error = DirAccess::copy_absolute(self->pipeline_cache_file_path, self->pipeline_cache_file_path + ".previous");
+		}
+		if (error == OK) {
+			error = DirAccess::rename_absolute(temporary_path, self->pipeline_cache_file_path);
+		}
+		if (error == OK) {
+			return;
+		}
 	}
+	WARN_PRINT("Could not save the pipeline cache. The previous cache is preserved; compilation may repeat next launch.");
+	self->_thread_safe_.lock();
+	self->pipeline_cache_size = 0; // Retry on a later checkpoint or clean exit.
+	self->_thread_safe_.unlock();
 }
 
 template <typename T>

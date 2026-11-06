@@ -85,27 +85,30 @@ public:
 };
 
 // Build an isolated candidate. The caller owns its shader version and publishes
-// only when every required pass succeeds. Failure releases every partial
-// pipeline before the caller frees that version. This also makes late-pass
-// failures (after reflection output) testable without a rendering device.
-template <typename Pipeline, uint32_t N, typename Required, typename Create, typename Release>
-uint32_t amd_gi_prepare_pipeline_candidate(Pipeline (&r_candidate)[N], Required p_required, Create p_create, Release p_release) {
+// only when every required pass succeeds. Creation can run on a worker, but
+// RenderingDevice requires partial pipelines to be freed on the render thread.
+template <typename Pipeline, uint32_t N, typename Required, typename Create>
+uint32_t amd_gi_prepare_pipeline_candidate(Pipeline (&r_candidate)[N], Required p_required, Create p_create) {
 	for (uint32_t i = 0; i < N; i++) {
 		if (!p_required(i)) {
 			continue;
 		}
 		r_candidate[i] = p_create(i);
 		if (r_candidate[i] == Pipeline()) {
-			for (Pipeline &pipeline : r_candidate) {
-				if (pipeline != Pipeline()) {
-					p_release(pipeline);
-					pipeline = Pipeline();
-				}
-			}
 			return i;
 		}
 	}
 	return N;
+}
+
+template <typename Pipeline, uint32_t N, typename Release>
+void amd_gi_release_pipeline_candidate(Pipeline (&r_candidate)[N], Release p_release) {
+	for (Pipeline &pipeline : r_candidate) {
+		if (pipeline != Pipeline()) {
+			p_release(pipeline);
+			pipeline = Pipeline();
+		}
+	}
 }
 
 } // namespace RendererRD

@@ -24,6 +24,7 @@ do not discard all warnings/errors to get a green fixture.
 
 | Changed area | Existing entry points (under `docs/validation/` unless stated) |
 | --- | --- |
+| GI asynchronous preparation and cache reuse | `shadow_validation/amd_gi_preparation.gd` with `--reverse`, `GODOT_AMD_GI_FAIL_MATERIAL_PIPELINE=once:last`, and separate `--quit-pending` run; keep fixture blocking unset; then cold/cached target-game loading passes |
 | Buffer addresses, AS inputs, graph access | `shadow_validation/buffer_address_lifetime.gd`, `tlas_instance_upload_lifetime.gd`, `compute_indirect_storage.gd`; `tests/servers/rendering/test_rendering_device_tlas_update.cpp` |
 | Shared geometry / compressed/deformed meshes | `shadow_validation/geometry.gd`, `amd_gi_deformation.gd`, `amd_gi_multimesh.gd`; test both RT shadows and GI |
 | Native source-material evaluation / uniform and texture changes | `shadow_validation/material.gd`, `amd_gi_source_material.gd`, `amd_gi_material_sharing.gd`, `amd_gi_dirty_materials.gd`, `amd_gi_scene_metadata.gd` |

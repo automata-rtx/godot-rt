@@ -1,6 +1,6 @@
 # DLSS / Streamline implementation and rebuild contract
 
-Source-checked against `66bd97e00d`, including the shutdown fix. User setup and runtime controls: `GodotForkDocs/features/dlss.md`. The wrapper uses the vendored Streamline headers; external signed runtime DLLs remain a deployment requirement.
+Source contract reviewed in the [2026-11-06 audit](../DOCUMENTATION_AUDIT.md), including the shutdown fix. User setup and runtime controls: `GodotForkDocs/features/dlss.md`. The wrapper uses the vendored Streamline headers; external signed runtime DLLs remain a deployment requirement.
 
 ## Integration map
 

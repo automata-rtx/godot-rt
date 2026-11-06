@@ -1,6 +1,11 @@
-# Shared RT geometry and AMD GI material adaptation
+# AMD GI native material and scene adapter
 
 Use this document when modifying caches, material evaluation or the shared acceleration structures. It complements [RT-shadow internals](rt-shadows.md) and [AMD GI internals](amd-gi.md). Paths are relative to the engine root. The AMD baseline policy applies: retain AMD GI's estimator, light ordering and history rules unless a documented, justified Godot integration requirement demands a change.
+
+**Prerequisite:** [shared RT foundation](shared-raytracing.md). This guide owns
+GI-specific material contexts, transport records, emitter storage and GI TLAS
+policy. Shared BLAS, upload dependencies and common geometry revisions belong
+to that foundation, even when this adapter is ported by a different agent.
 
 ## Why this adapter exists
 
@@ -71,7 +76,9 @@ Pending Context write intervals survive failed preparation/uploads. Scene record
 comparisons use reconstructed group ranges only when the previous complete scene
 was successfully published; otherwise they recover through full comparison.
 See the [implementation and review](../validation/gi_cpu_retention_2026_10_26/CPU_FOLLOWUP_IMPLEMENTATION.md)
-for bypass/oracle controls and the explicit lack of new runtime evidence.
+for bypass/oracle controls. Subsequent owner testing and coordinated benchmarks
+are recorded in [follow-up evidence](../validation/gi_cpu_retention_2026_10_26/FOLLOWUP_BENCHMARKS.md);
+a new exhaustive automated regression pass remains pending.
 
 ## GI TLAS and upload reuse
 

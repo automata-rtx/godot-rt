@@ -161,8 +161,8 @@ public:
 		uint32_t sample_count = 1;
 		float max_ray_distance = 0.0f;
 		bool denoise = true;
-		uint32_t atrous_iterations = 3;
-		float max_history = 32.0f;
+		uint32_t atrous_iterations = 1;
+		float max_history = 5.0f;
 		// Narrowest the spatial filter is allowed to reach where a penumbra was
 		// measured, in pixels. At or below one pixel the floor lets no neighbor
 		// contribute, because the nearest tap already sits a pixel away, which is
@@ -171,10 +171,7 @@ public:
 		// How far outside the current frame's local spread a reprojected history
 		// sample may sit before it is pulled back in, in standard deviations.
 		// Zero disables the test and restores the old, freely trailing behavior.
-		float history_clamp_sigma = 2.0f;
-		// How much of the clamp's own correction sets the blend weight directly.
-		// Zero leaves only the window shortening, which is what shipped before.
-		float lag_response = 1.0f;
+		float history_clamp_sigma = 0.3f;
 		// Whether a shadow ray must find the CLOSEST occluder rather than stopping
 		// at the first one traversal reaches. Visibility is the same either way;
 		// the distance, which is what sizes the penumbra, is not.
@@ -213,14 +210,10 @@ private:
 		float reprojection[16];
 
 		float depth_unproject[4];
-
+		float previous_view_rotation[4];
 		int32_t screen_size[2];
-		float depth_tolerance;
 		float max_history;
-
 		float clamp_sigma;
-		float lag_response;
-		float sample_count;
 		uint32_t frame_index;
 	};
 
@@ -258,7 +251,7 @@ private:
 	// can catch it on the shader side, so when a field is added there, add it
 	// here and update the size. Every pairing in the fork:
 	//   TracePushConstant     <-> shaders/effects/rt_shadow_trace.glsl      (120)
-	//   TemporalPushConstant  <-> shaders/effects/rt_shadow_temporal.glsl   (112)
+	//   TemporalPushConstant  <-> shaders/effects/rt_shadow_temporal.glsl   (116)
 	//   AtrousPushConstant    <-> shaders/effects/rt_shadow_atrous.glsl      (48)
 	//   GTAO::PrefilterPushConstant <-> effects/gtao_prefilter.glsl          (32)
 	//   GTAO::GatherPushConstant    <-> effects/gtao_gather.glsl             (96)
@@ -275,7 +268,7 @@ private:
 	// mode-gated shader reflects the same block size with no mode defined; the
 	// modes select different bindings, not different constants.
 	static_assert(sizeof(TracePushConstant) == 120, "TracePushConstant must match rt_shadow_trace.glsl");
-	static_assert(sizeof(TemporalPushConstant) == 112, "TemporalPushConstant must match rt_shadow_temporal.glsl");
+	static_assert(sizeof(TemporalPushConstant) == 116, "TemporalPushConstant must match rt_shadow_temporal.glsl");
 	static_assert(sizeof(AtrousPushConstant) == 48, "AtrousPushConstant must match rt_shadow_atrous.glsl");
 
 	RtShadowTraceShaderRD trace_shader;
@@ -301,7 +294,7 @@ private:
 			const Size2i &p_size, const Projection &p_inv_view_projection,
 			const Transform3D &p_camera_transform, float p_focal_pixels, uint32_t p_light_count,
 			const Settings &p_settings);
-	void _temporal(RID p_depth_texture, const Buffers &p_buffers, const Size2i &p_size,
+	void _temporal(RID p_depth_texture, RID p_normal_roughness, const Quaternion &p_previous_view_rotation, const Buffers &p_buffers, const Size2i &p_size,
 			const Projection &p_reprojection, const Projection &p_inv_projection,
 			const Settings &p_settings);
 	void _atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_normal_roughness,

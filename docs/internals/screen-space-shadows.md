@@ -1,6 +1,6 @@
 # Screen-space shadows implementation and rebuild contract
 
-Source-checked against `66bd97e00d`. User controls: `GodotForkDocs/features/screen-space-shadows.md`. The feature ports Bend Studio's directional depth march to Godot Forward+ and adds optional caster restriction. It does not replace RT scene traversal or GI.
+Source contract reviewed in the [2026-11-06 audit](../DOCUMENTATION_AUDIT.md). User controls: `GodotForkDocs/features/screen-space-shadows.md`. The feature ports Bend Studio's directional depth march to Godot Forward+ and adds optional caster restriction. It does not replace RT scene traversal or GI.
 
 ## Source map
 

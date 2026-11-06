@@ -36,12 +36,6 @@
 // MAX_PENUMBRA_PIXELS in rt_shadow_trace.glsl.
 #define MAX_PENUMBRA_PIXELS 32.0
 
-// How much wider than its own measured penumbra a freshly disoccluded pixel may
-// be filtered while its history refills. Four leaves the widening at its full
-// reach for any penumbra of eight pixels or more, and folds it away entirely at
-// a contact edge, where the traced answer needs no help.
-#define HISTORY_FILL_SCALE 4.0
-
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D source_visibility;
@@ -54,7 +48,8 @@ layout(rgba8, set = 0, binding = 5) uniform restrict writeonly image2D dest_visi
 // Written only on the first iteration. This is the buffer next frame reprojects,
 // and it holds that iteration's input, not its result.
 layout(rgba8, set = 0, binding = 6) uniform restrict writeonly image2D dest_history_visibility;
-layout(rg16f, set = 0, binding = 7) uniform restrict writeonly image2D dest_history_meta;
+#include "../oct_inc.glsl"
+layout(rgba16ui, set = 0, binding = 7) uniform restrict writeonly uimage2D dest_history_meta;
 
 // Which light each channel of the mask carries. Constant through the denoiser,
 // so this is the trace's own output on every iteration.
@@ -85,6 +80,12 @@ float linear_view_depth(float depth) {
 			(params.depth_unproject.z * depth + params.depth_unproject.w);
 }
 
+void store_meta(ivec2 pos, float depth, vec3 normal, vec4 age) {
+	uint packed_normal = packUnorm4x8(vec4(vec3_to_oct(normal), 0.0, 0.0));
+	uint packed_age = packUnorm4x8(age);
+	imageStore(dest_history_meta, pos, uvec4(packHalf2x16(vec2(depth, 0.0)), packed_normal, packed_age & 65535u, packed_age >> 16u));
+}
+
 void main() {
 	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
 	if (any(greaterThanEqual(pos, params.screen_size))) {
@@ -104,7 +105,7 @@ void main() {
 		imageStore(dest_visibility, pos, VIS_ENCODE(center));
 		if (params.write_history != 0u) {
 			imageStore(dest_history_visibility, pos, VIS_ENCODE(center));
-			imageStore(dest_history_meta, pos, vec4(0.0, 0.0, 0.0, 0.0));
+			store_meta(pos, 0.0, vec3(0, 0, 1), vec4(0));
 			imageStore(dest_history_index, pos, center_index);
 		}
 		return;
@@ -112,7 +113,7 @@ void main() {
 
 	vec3 center_normal = normalize(texelFetch(source_normal_roughness, pos, 0).xyz * 2.0 - 1.0);
 	vec4 hit_distance = texelFetch(source_hit_distance, pos, 0);
-	float history_length = texelFetch(source_history_length, pos, 0).r;
+	vec4 history_age = texelFetch(source_history_length, pos, 0);
 
 	// How far the filter may reach, per light, in pixels — the same unit the
 	// kernel steps in, so the filter can be made to match the penumbra instead of
@@ -120,10 +121,6 @@ void main() {
 	// resting on the surface produces a penumbra a pixel or two wide and must be
 	// filtered that narrowly; filtering it across the eight pixels the last
 	// iteration reaches is exactly what destroys contact hardening.
-	//
-	// A pixel with little accumulated history is still noisy, so it is filtered
-	// wider than its penumbra alone would ask for until the history fills in --
-	// but only in proportion to that penumbra, so a contact edge is left alone.
 	vec4 penumbra_pixels = clamp(hit_distance, vec4(0.0), vec4(1.0));
 
 	// The center pixel's own penumbra is not enough to size the filter. With one
@@ -141,36 +138,21 @@ void main() {
 			if (texelFetch(source_index, ntap, 0) != center_index) {
 				continue;
 			}
+			float neighbor_z = texelFetch(source_depth, ntap, 0).r;
+			vec3 neighbor_n = normalize(texelFetch(source_normal_roughness, ntap, 0).xyz * 2.0 - 1.0);
+			if (abs(neighbor_z - center_depth) > 0.004 * center_depth || dot(neighbor_n, center_normal) < 0.94) {
+				continue;
+			}
 			penumbra_pixels = max(penumbra_pixels,
 					clamp(texelFetch(source_hit_distance, ntap, 0), vec4(0.0), vec4(1.0)));
 		}
 	}
-	// Whether there is anything here to smooth at all. A blocker resting on the
-	// surface produces a penumbra of literally zero, and with one sample per pixel
-	// every ray around it agrees, so the traced answer is already exact. Filtering
-	// it is pure loss, and it is exactly the contact hardening that makes a
-	// raytraced shadow worth tracing. So both floors below -- the constant one and
-	// the wide one a pixel gets while its history fills in -- apply only where a
-	// penumbra was actually measured.
 	penumbra_pixels *= MAX_PENUMBRA_PIXELS;
-
+	// Keep the spatial-only footprint. A directly measured contact wins over neighboring misses.
+	penumbra_pixels = mix(penumbra_pixels, hit_distance * MAX_PENUMBRA_PIXELS, greaterThan(hit_distance, vec4(0.0)));
+	penumbra_pixels = mix(penumbra_pixels, vec4(0.0), equal(history_age, vec4(0.0)));
 	vec4 has_penumbra = step(vec4(0.0001), penumbra_pixels);
-
-	// A pixel whose history has just been thrown away has only this frame's one
-	// ray to go on, so it is widened while the history refills; without that a
-	// disocclusion is a burst of single-sample noise. The widening is bounded by a
-	// multiple of the measured penumbra as well as by MAX_PENUMBRA_PIXELS, so a
-	// wide penumbra still reaches the full width while a contact shadow, whose
-	// rays all agree and whose raw answer is already exact, is not smeared across
-	// thirty-one pixels it never covered.
-	//
-	// The decay is spread over the whole accumulation window rather than a few
-	// frames, because at one sample per light the noise it hides outlives the
-	// first handful of frames.
-	float history_boost = 1.0 - clamp(history_length, 0.0, 1.0);
-	vec4 fill_pixels = history_boost * min(vec4(MAX_PENUMBRA_PIXELS), penumbra_pixels * HISTORY_FILL_SCALE);
-	vec4 floor_pixels = max(vec4(params.min_filter_pixels), fill_pixels);
-	vec4 reach_pixels = max(penumbra_pixels, has_penumbra * floor_pixels);
+	vec4 reach_pixels = max(penumbra_pixels, has_penumbra * params.min_filter_pixels);
 
 	// Every tap in the loop below lands at least one kernel step from the center,
 	// and a tap's weight is clamp(1 - tap_pixels / reach_pixels). So a channel
@@ -194,8 +176,7 @@ void main() {
 		if (params.write_history != 0u) {
 			imageStore(dest_history_visibility, pos, VIS_ENCODE(center));
 			imageStore(dest_history_index, pos, center_index);
-			imageStore(dest_history_meta, pos,
-					vec4(linear_view_depth(center_depth), history_length, 0.0, 0.0));
+			store_meta(pos, linear_view_depth(center_depth), center_normal, history_age);
 		}
 		return;
 	}
@@ -276,7 +257,6 @@ void main() {
 		// position is the RATIO of the previous view depth to the current one, not a
 		// distance, so the temporal pass scales it by this pixel's own view depth
 		// before the two can be compared.
-		imageStore(dest_history_meta, pos,
-				vec4(linear_view_depth(center_depth), history_length, 0.0, 0.0));
+		store_meta(pos, linear_view_depth(center_depth), center_normal, history_age);
 	}
 }
