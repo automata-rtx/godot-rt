@@ -317,7 +317,7 @@ private:
 		Projection previous_view_projection;
 		Transform3D previous_camera;
 		void configure(RenderSceneBuffersRD *p_buffers) override { free_data(); }
-		void free_data();
+		void free_data() override;
 		~BatchData() { free_data(); }
 	};
 	const bool regional_batch = false;
