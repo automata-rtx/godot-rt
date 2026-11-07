@@ -29,14 +29,22 @@ vec3 near_field_rotate(vec3 value) {
 	return value + 2.0 * cross(params.camera_rotation.xyz, cross(params.camera_rotation.xyz, value) + params.camera_rotation.w * value);
 }
 vec3 near_field_world(vec2 uv) {
+#ifdef AMD_GI_REGIONAL_BATCH
+	return batch_world(parent_screen_uv(uv));
+#else
 	float depth = textureLod(depth_buffer, uv, 0).r;
 	vec4 position = params.inv_view_projection * vec4(uv * 2.0 - 1.0, depth, 1);
 	// Match the reference homogeneous reconstruction. Do not substitute an
 	// arbitrary finite endpoint for an infinite projection's w=0 boundary.
 	return position.xyz / position.w;
+#endif
 }
 vec3 near_field_normal(vec2 uv) {
+#ifdef AMD_GI_REGIONAL_BATCH
+	return batch_shading_normal(parent_screen_uv(uv));
+#else
 	return normalize(textureLod(primary_shading_normal, uv, 0).xyz * 2.0 - 1.0);
+#endif
 }
 float near_field_intersect(vec3 direction, vec3 normal, vec3 point) {
 	return -dot(point, normal) / max(1e-5, -dot(direction, normal));
@@ -72,6 +80,9 @@ void integrate_near_field(ivec2 pixel) {
 	float angle = noise.x * PI;
 	vec3 slice = vec3(cos(angle), sin(angle), 0);
 	vec2 uv_direction = slice.xy * frame.near_field.yz * slice_radius;
+#ifdef AMD_GI_REGIONAL_BATCH
+	uv_direction /= frame.parent_rect.zw;
+#endif
 	vec3 world_direction = near_field_rotate(slice);
 	vec3 orthogonal = world_direction - dot(world_direction, eye_direction) * eye_direction;
 	vec3 axis = normalize(cross(orthogonal, eye_direction));
@@ -100,7 +111,11 @@ void integrate_near_field(ivec2 pixel) {
 			float previous_horizon = horizon;
 			horizon = max(horizon, sample_cosine);
 			if (sample_cosine >= previous_horizon) {
+#ifdef AMD_GI_REGIONAL_BATCH
+				vec3 sample_lighting = batch_previous_lighting(parent_screen_uv(sample_uv));
+#else
 				vec3 sample_lighting = frame.grid.w == 0u ? textureLod(previous_lighting, sample_uv, 0).rgb / frame.settings.w : vec3(0);
+#endif
 				vec3 sample_normal = near_field_normal(sample_uv);
 				if (step_index > 0) {
 					vec3 closest = previous_world * min(near_field_intersect(previous_world, sample_normal, sample_world), near_field_intersect(previous_world, normal, world));

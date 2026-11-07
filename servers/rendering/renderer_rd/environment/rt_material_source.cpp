@@ -69,6 +69,9 @@ Error RaytracingMaterialSource::compile(const ShaderCompiler &p_native_compiler,
 	defaults.renames["OUTPUT_IS_SRGB"] = "false";
 	defaults.renames["CLIP_SPACE_FAR"] = "0.0";
 	defaults.renames["FRAGCOORD"] = "gi_source_fragcoord";
+	// Raster coordinate helpers depend on the Forward+ scene UBO. Ray-hit
+	// material evaluation supplies its own screen coordinates in compute shaders.
+	defaults.renames["SCREEN_UV"] = "screen_uv";
 	defaults.renames["FRONT_FACING"] = "gi_source_front_face";
 	defaults.renames["DEPTH"] = "gi_source_depth";
 	defaults.renames["IS_MULTIVIEW"] = "false";

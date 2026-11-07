@@ -94,11 +94,33 @@ const int pass_id = AMD_GI_PASS;
 #define PASS_PREPARE_LIGHT_MASKS 56
 #define PASS_DEBUG_VIEW 57
 #define PASS_DEBUG_STATS 58
+#define PASS_BATCH_JOIN 59
+
+// Reprojection/selection/preparation and post-resolve screen consumers do not
+// mutate the shared world. Preserve producer dependencies (including optional
+// reservoirs), without declaring false writes between independent regions.
+#if AMD_GI_PASS <= PASS_PURGE || AMD_GI_PASS == PASS_COMPACT_PROBES || (AMD_GI_PASS >= PASS_TRACE && AMD_GI_PASS <= PASS_RESOLVE) || AMD_GI_PASS == PASS_PREPARE_LIGHTS || AMD_GI_PASS == PASS_PREPARE_LIGHT_MASKS || AMD_GI_PASS == PASS_BATCH_JOIN
+#define AMD_GI_WORLD_WRITES
+#define AMD_GI_WORLD_ACCESS
+#else
+#define AMD_GI_WORLD_ACCESS readonly
+#endif
+// Reflection hits refresh cache tile lifetime even though radiance is read-only.
+#if defined(AMD_GI_WORLD_WRITES) || AMD_GI_PASS == PASS_REFLECTION_TRACE
+#define AMD_GI_KEYS_WRITES
+#define AMD_GI_KEYS_ACCESS
+#else
+#define AMD_GI_KEYS_ACCESS readonly
+#endif
 #include "../oct_inc.glsl"
 #define AMD_GI_REFERENCE_RANDOM
 #define AMD_GI_EMITTER_STORAGE_OFFSET
 #include "amd_gi_cache_inc.glsl"
 #include "amd_gi_sampling_inc.glsl"
+#ifdef AMD_GI_REGIONAL_BATCH
+mat4 gi_batch_source_view_projection();
+vec2 gi_batch_source_viewport_size();
+#endif
 #include "rt_gi_transport_inc.glsl"
 layout(set = 0, binding = 37) uniform samplerCube sky_radiance;
 
@@ -109,7 +131,7 @@ blue_noise;
 
 // Independent world-space reservoir hash, double-buffered each frame.
 // Logical arrays share a descriptor; see amd_gi_reservoirs_inc.glsl.
-layout(set = 0, binding = 32, std430) restrict buffer PreviousLightReservoirs {
+layout(set = 0, binding = 32, std430) restrict AMD_GI_WORLD_ACCESS buffer PreviousLightReservoirs {
 	uint data[];
 }
 previous_light_reservoirs;
@@ -121,7 +143,7 @@ layout(set = 0, binding = 55) uniform sampler2D previous_geometry_normal;
 layout(set = 0, binding = 58) uniform sampler2D temporal_auto_exposure;
 layout(set = 0, binding = 60) uniform sampler2D primary_shading_normal;
 layout(set = 0, binding = 61) uniform sampler2D primary_roughness;
-layout(set = 0, binding = 59, std430) restrict buffer Work {
+layout(set = 0, binding = 59, std430) restrict AMD_GI_WORLD_ACCESS buffer Work {
 	uvec4 counts;
 	uvec4 probe_dispatch;
 	uvec4 primary_dispatch;
@@ -135,14 +157,14 @@ vec3 previous_surface(ivec2 pixel, vec3 current) {
 	vec4 previous = texelFetch(previous_surface_position, pixel, 0);
 	return texelFetch(geometry_normal_buffer, pixel, 0).a > 0.0 ? previous.xyz : current;
 }
-layout(set = 0, binding = 44, std430) restrict buffer LightGrid {
+layout(set = 0, binding = 44, std430) restrict AMD_GI_WORLD_ACCESS buffer LightGrid {
 	uvec4 minimum;
 	uvec4 maximum;
 	uvec4 data[]; // selected light, selected weight, total weight, reserved
 }
 light_grid;
 
-layout(set = 0, binding = 33, std430) restrict buffer LightReservoirs {
+layout(set = 0, binding = 33, std430) restrict AMD_GI_WORLD_ACCESS buffer LightReservoirs {
 	uint data[];
 }
 light_reservoirs;
@@ -180,8 +202,51 @@ layout(set = 0, binding = 10, std140) uniform Frame {
 	uvec4 debug_options;
 	vec4 debug_settings;
 	vec4 tuning;
+#ifdef AMD_GI_REGIONAL_BATCH
+	uvec4 batch_info;
+	vec4 parent_rect;
+	vec4 parent_angular;
+	mat4 parent_view_projection;
+	mat4 parent_inverse_view_projection;
+	mat4 previous_parent_view_projection;
+	vec4 previous_parent_eye;
+	vec4 previous_parent_forward;
+	vec4 feedback_rect[2];
+	vec4 feedback_previous_rect[2];
+	uvec4 feedback_size[2];
+	vec4 feedback_exposure;
+#endif
 }
 frame;
+#ifdef AMD_GI_REGIONAL_BATCH
+mat4 gi_batch_source_view_projection() {
+	return frame.parent_view_projection;
+}
+vec2 gi_batch_source_viewport_size() {
+	return frame.parent_angular.yz;
+}
+#endif
+float world_angular_footprint() {
+#ifdef AMD_GI_REGIONAL_BATCH
+	return frame.parent_angular.x;
+#else
+	return frame.settings.y;
+#endif
+}
+bool world_history_reset() {
+#ifdef AMD_GI_REGIONAL_BATCH
+	return frame.batch_info.w != 0u;
+#else
+	return frame.grid.w != 0u;
+#endif
+}
+vec2 parent_screen_uv(vec2 uv) {
+#ifdef AMD_GI_REGIONAL_BATCH
+	return frame.parent_rect.xy + uv * frame.parent_rect.zw;
+#else
+	return uv;
+#endif
+}
 #if AMD_GI_PASS == PASS_INTERPOLATE || AMD_GI_PASS == PASS_DEBUG_VIEW
 layout(rgba16f, set = 0, binding = 64) uniform restrict writeonly image2D debug_output;
 #endif
@@ -243,11 +308,11 @@ layout(set = 0, binding = 12, std430) restrict readonly buffer PreviousProbes {
 	Probe data[];
 }
 previous_probes;
-layout(set = 0, binding = 13, std430) restrict buffer Rays {
+layout(set = 0, binding = 13, std430) restrict AMD_GI_WORLD_ACCESS buffer Rays {
 	RayRecord data[];
 }
 rays;
-layout(set = 0, binding = 36, std430) restrict buffer SecondaryRays {
+layout(set = 0, binding = 36, std430) restrict AMD_GI_WORLD_ACCESS buffer SecondaryRays {
 	RayRecord data[];
 }
 secondary_rays;
@@ -259,34 +324,34 @@ layout(set = 0, binding = 15, std430) restrict readonly buffer PreviousRadiance 
 	uvec2 data[];
 }
 previous_radiance;
-layout(set = 0, binding = 16, std430) coherent restrict buffer Keys {
+layout(set = 0, binding = 16, std430) coherent restrict AMD_GI_KEYS_ACCESS buffer Keys {
 	uvec4 dispatch; // group XYZ, active_index tile count
 	uvec4 purge_dispatch;
 	uvec4 occupied; // Ping-pong packed tile counts; lists share unused active-record lanes.
 	Tile data[];
 }
 keys;
-layout(set = 0, binding = 17, std430) buffer PreviousCache {
+layout(set = 0, binding = 17, std430) readonly buffer PreviousCache {
 	uvec2 data[];
 }
 previous_cache;
-layout(set = 0, binding = 18, std430) buffer Cache {
+layout(set = 0, binding = 18, std430) AMD_GI_WORLD_ACCESS buffer Cache {
 	uvec2 data[];
 }
 cache;
-layout(set = 0, binding = 34, std430) coherent buffer PendingIndirectCache {
+layout(set = 0, binding = 34, std430) coherent AMD_GI_WORLD_ACCESS buffer PendingIndirectCache {
 	uvec4 data[];
 }
 pending_indirect_cache;
-layout(set = 0, binding = 62, std430) coherent buffer PendingDirectCache {
+layout(set = 0, binding = 62, std430) coherent AMD_GI_WORLD_ACCESS buffer PendingDirectCache {
 	uvec4 data[];
 }
 pending_direct_cache;
-layout(set = 0, binding = 35, std430) buffer IndirectCache {
+layout(set = 0, binding = 35, std430) AMD_GI_WORLD_ACCESS buffer IndirectCache {
 	uvec2 data[];
 }
 indirect_cache;
-layout(set = 0, binding = 19, std430) restrict buffer Owners {
+layout(set = 0, binding = 19, std430) restrict AMD_GI_WORLD_ACCESS buffer Owners {
 	uint data[];
 }
 owners;
@@ -302,6 +367,38 @@ layout(set = 0, binding = 22, std430) restrict buffer Pixels {
 	StoredPixel data[];
 }
 pixels;
+#ifdef AMD_GI_REGIONAL_BATCH
+// Fixed-capacity world queues, shared by every screen region of the camera.
+// Only live, compacted primary ranges are dispatched. Secondary IDs retain a
+// fixed capacity offset so reservoir layout never changes on ADS transitions.
+layout(set = 0, binding = 68, std430) restrict AMD_GI_WORLD_ACCESS buffer BatchOrigins {
+	uvec4 regions[2]; // live probes, concatenated probe base, reserved
+	vec4 data[];
+}
+batch_origins;
+layout(set = 0, binding = 69, std430) restrict AMD_GI_WORLD_ACCESS buffer BatchWork {
+	uvec4 counts;
+	uvec4 probe_dispatch;
+	uvec4 primary_dispatch;
+	uvec4 secondary_dispatch;
+	uvec4 grid_dispatch;
+	uint hit_indices[];
+}
+batch_work;
+layout(set = 0, binding = 70, std430) restrict readonly buffer OtherPreviousPixels {
+	StoredPixel data[];
+}
+other_previous_pixels;
+layout(set = 0, binding = 71) uniform sampler2D other_depth;
+layout(set = 0, binding = 72) uniform sampler2D other_geometry_normal;
+layout(set = 0, binding = 73) uniform sampler2D other_previous_position;
+layout(set = 0, binding = 74) uniform sampler2D other_shading_normal;
+layout(set = 0, binding = 75) uniform sampler2D other_previous_geometry;
+layout(set = 0, binding = 76) uniform sampler2D other_previous_lighting;
+#if AMD_GI_PASS == PASS_RESERVOIR_RESET || AMD_GI_PASS == PASS_PURGE || (AMD_GI_PASS >= PASS_ALLOCATE && AMD_GI_PASS <= PASS_SHADE_INDIRECT_HITS) || AMD_GI_PASS == PASS_PREPARE_LIGHTS || AMD_GI_PASS == PASS_PREPARE_LIGHT_MASKS || AMD_GI_PASS == PASS_DEBUG_STATS || AMD_GI_PASS == PASS_BATCH_JOIN
+#define work batch_work
+#endif
+#endif
 layout(rgba16f, set = 0, binding = 23) uniform restrict image2D filter_image;
 layout(r8_snorm, set = 0, binding = 49) uniform restrict image2D denoiser_blur_mask;
 layout(set = 0, binding = 24, std430) restrict buffer Spawn {
@@ -449,7 +546,7 @@ uint angular_index(vec3 direction, vec3 normal) {
 // GI-1's distance-quantized world tiles and direction-dependent 2D cell layout.
 // Reference bucket/checksum collision search; keys are retained for diagnostics.
 float cache_cell_size(vec3 position) {
-	float desired = max(distance(params.camera_position.xyz, position) * tan(frame.settings.y * (32.0 * frame.tuning.z)), frame.settings.x);
+	float desired = max(distance(params.camera_position.xyz, position) * tan(world_angular_footprint() * (32.0 * frame.tuning.z)), frame.settings.x);
 	return 0.001 * exp2(floor(log2(1000.0 * desired)));
 }
 ivec4 cache_key(vec3 position, vec3 direction, float hit_distance, out uvec2 cell) {
@@ -546,7 +643,25 @@ vec3 environment_radiance_cone(vec3 direction, float solid_angle) {
 	return environment_radiance_lod(direction, false, gi_environment_lod(solid_angle, float(textureQueryLevels(sky_radiance))));
 }
 uint primary_ray_count() {
+#ifdef AMD_GI_REGIONAL_BATCH
+	return frame.batch_info.x;
+#else
 	return frame.tracing.x * frame.tracing.y * 64u;
+#endif
+}
+uint active_primary_ray_count() {
+#ifdef AMD_GI_REGIONAL_BATCH
+	return batch_work.counts.x * 64u;
+#else
+	return primary_ray_count();
+#endif
+}
+uint primary_ray_id(uint slot, uint lane) {
+#ifdef AMD_GI_REGIONAL_BATCH
+	return (batch_origins.regions[frame.batch_info.y].y + slot) * 64u + lane;
+#else
+	return slot * 64u + lane;
+#endif
 }
 RayRecord empty_ray() {
 	RayRecord ray;
@@ -627,8 +742,12 @@ RayHit load_hit(RayRecord record, vec3 origin) {
 	return ray;
 }
 RayHit primary_hit(uint id) {
+#ifdef AMD_GI_REGIONAL_BATCH
+	vec3 origin = batch_origins.data[id / 64u].xyz;
+#else
 	uint probe = spawn.data[id / 64u].x;
 	vec3 origin = probe != INVALID ? probes.data[probe].position.xyz : vec3(0);
+#endif
 	return load_hit(rays.data[id], origin);
 }
 RayHit secondary_hit(uint id) {
@@ -649,7 +768,7 @@ struct HitSample {
 	vec4 indirect;
 	uvec4 links; // next cell hit, feedback/emissive flags, compact hit ID, secondary bypass
 };
-layout(set = 0, binding = 46, std430) restrict buffer HitSamples {
+layout(set = 0, binding = 46, std430) restrict AMD_GI_WORLD_ACCESS buffer HitSamples {
 	HitSample data[];
 }
 hit_samples;
@@ -657,6 +776,8 @@ hit_samples;
 void reset_light_bounds();
 void register_light_bounds(vec3 position);
 
+void reset_cache(uint lane);
+#ifdef AMD_GI_WORLD_WRITES
 void reset_cache(uint lane) {
 	uint tile = gl_WorkGroupID.x * 64u + lane;
 	if (tile == 0u) {
@@ -666,6 +787,8 @@ void reset_cache(uint lane) {
 		work.primary_dispatch = uvec4(0, 1, 1, 0);
 		work.secondary_dispatch = uvec4(0, 1, 1, 0);
 		work.grid_dispatch = uvec4(0, 1, 1, 0);
+
+#ifndef AMD_GI_REGIONAL_BATCH
 		reset_light_bounds();
 		keys.dispatch = uvec4(0, 1, 1, 0);
 		if (frame.grid.w != 0u) {
@@ -675,13 +798,16 @@ void reset_cache(uint lane) {
 		uint groups = (previous_count + 63u) / 64u;
 		keys.purge_dispatch = uvec4(min(groups, 65535u), max((groups + 65534u) / 65535u, 1u), 1u, 0u);
 		keys.occupied[params.padding & 1u] = 0u;
+#endif
 		if (frame.emitters.w != 0u) {
 			queues.data[frame.emitters.z + 3u] = 0u;
 		}
 	}
+#ifndef AMD_GI_REGIONAL_BATCH
 	if (frame.grid.w != 0u && tile < TILE_COUNT) {
 		keys.data[tile].state = uvec4(0);
 	}
+#endif
 	uint cached = tile;
 	if (frame.flags.w != 0u && cached < CACHED_PROBES) {
 		cached_state.data[cached] = uvec4(0, 1, INVALID, INVALID);
@@ -691,9 +817,50 @@ void reset_cache(uint lane) {
 		}
 	}
 }
+#endif
+#ifdef AMD_GI_REGIONAL_BATCH
+void batch_join(uint id);
+#ifdef AMD_GI_WORLD_WRITES
+void batch_join(uint id) {
+	if (params.samples == 0u) {
+		if (id == 0u) {
+			batch_work.counts = uvec4(0);
+			batch_work.probe_dispatch = uvec4(0, 1, 1, 0);
+			batch_work.primary_dispatch = uvec4(0, 1, 1, 0);
+			batch_work.secondary_dispatch = uvec4(0, 1, 1, 0);
+			batch_work.grid_dispatch = uvec4(0, 1, 1, 0);
+			batch_origins.regions[0] = uvec4(0);
+			batch_origins.regions[1] = uvec4(0);
+			reset_light_bounds();
+			keys.dispatch = uvec4(0, 1, 1, 0);
+			if (world_history_reset()) {
+				keys.occupied = uvec4(0);
+			}
+			uint previous_count = keys.occupied[(params.padding + 1u) & 1u];
+			uint groups = (previous_count + 63u) / 64u;
+			keys.purge_dispatch = uvec4(min(groups, 65535u), max((groups + 65534u) / 65535u, 1u), 1u, 0u);
+			keys.occupied[params.padding & 1u] = 0u;
+		}
+		if (world_history_reset() && id < TILE_COUNT) {
+			keys.data[id].state = uvec4(0);
+		}
+	} else if (id == 0u) {
+		uint count = 0u;
+		for (uint region = 0u; region < frame.batch_info.z; region++) {
+			batch_origins.regions[region].y = count;
+			count += batch_origins.regions[region].x;
+		}
+		batch_work.counts.x = count;
+		batch_work.probe_dispatch = uvec4(min(count, 65535u), max((count + 65534u) / 65535u, 1u), 1u, 0u);
+	}
+}
+#endif
+#endif
 // PurgeHashGridCache visits occupied tiles, not the unused hash capacity.
 // The two persistent index lists use key.x/key.y in the active-record tail;
 // the frame-local active list separately uses state.x in those same records.
+void purge_cache(uint id);
+#ifdef AMD_GI_WORLD_WRITES
 void purge_cache(uint id) {
 	uint old_list = (params.padding + 1u) & 1u, new_list = params.padding & 1u;
 	if (id >= keys.occupied[old_list]) {
@@ -708,6 +875,7 @@ void purge_cache(uint id) {
 	uint slot = atomicAdd(keys.occupied[new_list], 1u);
 	keys.data[TILE_COUNT + slot].key[new_list] = int(tile);
 }
+#endif
 uint previous_probe(vec3 p, vec3 normal, ivec2 pixel) {
 	vec3 lookup_position = previous_surface(pixel, p);
 	if (frame.grid.w != 0u) {
@@ -1041,6 +1209,8 @@ void patch_probe(uint index) {
 
 // Compact live spawn slots before assigning the reference per-ray RNG IDs.
 // The scan is stable in tile order, as CompactScreenProbes' prefix scan is.
+void compact_probes(uint lane);
+#ifdef AMD_GI_WORLD_WRITES
 void compact_probes(uint lane) {
 	uint capacity = frame.tracing.x * frame.tracing.y;
 	for (uint base = 0u; base < capacity; base += 64u) {
@@ -1069,8 +1239,12 @@ void compact_probes(uint lane) {
 	}
 	if (lane == 0u) {
 		work.probe_dispatch = uvec4(min(work.counts.x, 65535u), max((work.counts.x + 65534u) / 65535u, 1u), 1u, 0u);
+#ifdef AMD_GI_REGIONAL_BATCH
+		batch_origins.regions[frame.batch_info.y].x = work.counts.x;
+#endif
 	}
 }
+#endif
 void gather_probe(uint slot) {
 	if (slot >= work.counts.x) {
 		spawn.data[slot] = uvec4(INVALID);
@@ -1193,8 +1367,10 @@ void prepare_probe(uint slot, uint lane) {
 // Shared with the separate glossy path below. Probe guiding changes angular
 // allocation only; radiance reconstruction still stores incident radiance.
 float reflection_kernel(vec3 n, vec3 v, vec3 l, float roughness);
+void trace_probe(uint slot, uint lane);
+#ifdef AMD_GI_WORLD_WRITES
 void trace_probe(uint slot, uint lane) {
-	uint ray_id = slot * 64u + lane;
+	uint ray_id = primary_ray_id(slot, lane);
 	if (frame.motion.y != 0u) {
 		hit_samples.data[ray_id].direct = vec4(0);
 		hit_samples.data[ray_id].indirect = vec4(0);
@@ -1218,6 +1394,9 @@ void trace_probe(uint slot, uint lane) {
 		spawn_position = vec4(found ? primary_ray_surface(ivec2(spawn.data[slot].yz), p, n) : p, found ? 1.0 : 0.0);
 		spawn_normal = vec4(n, 0);
 		probes.data[probe].position = spawn_position;
+#ifdef AMD_GI_REGIONAL_BATCH
+		batch_origins.data[ray_id / 64u] = spawn_position;
+#endif
 		probe_mask.data[probe] = spawn_position.w > 0.0 ? probe : INVALID;
 		probes.data[probe].normal.xyz = spawn_normal.xyz;
 		probes.data[probe].state = uvec4(spawn.data[slot].yz, params.padding, slot);
@@ -1267,6 +1446,9 @@ void trace_probe(uint slot, uint lane) {
 	}
 	rays.data[ray_id] = ray;
 }
+#endif
+void allocate_tile(uint id);
+#ifdef AMD_GI_WORLD_WRITES
 void allocate_tile(uint id) {
 	RayRecord ray = pass_id == PASS_ALLOCATE_SECONDARY ? secondary_rays.data[id] : rays.data[id];
 	if (ray.position.w < 0.0) {
@@ -1325,6 +1507,9 @@ void allocate_tile(uint id) {
 	}
 	debug_cache_overflow(bucket / frame.cache_config.y);
 }
+#endif
+void register_ray(uint id);
+#ifdef AMD_GI_WORLD_WRITES
 void register_ray(uint id) {
 	bool secondary = pass_id == PASS_REGISTER_SECONDARY;
 	RayRecord ray = secondary ? secondary_rays.data[id] : rays.data[id];
@@ -1360,6 +1545,7 @@ void register_ray(uint id) {
 		atomicMax(keys.data[cell / TILE_CELLS].state.y, params.padding);
 	}
 }
+#endif
 
 #include "amd_gi_denoiser_inc.glsl"
 // Prefix-scan passes are mutually exclusive; share their workgroup scratch
@@ -1370,8 +1556,12 @@ void register_ray(uint id) {
 // Light sampling calls the reservoir hash helpers above.
 #include "amd_gi_lights_inc.glsl"
 layout(set = 0, binding = 45) uniform sampler2D previous_lighting;
+#include "amd_gi_regions_inc.glsl"
 
 bool screen_lighting(RayHit hit, bool glossy, out vec3 outgoing) {
+#ifdef AMD_GI_REGIONAL_BATCH
+	return batch_screen_lighting(hit, glossy, outgoing);
+#else
 	outgoing = vec3(0);
 	if (frame.grid.w != 0u || frame.settings.w <= 0.0 || (!glossy && (params.bounces != 0u || frame.motion.z == 0u))) {
 		return false;
@@ -1414,6 +1604,7 @@ bool screen_lighting(RayHit hit, bool glossy, out vec3 outgoing) {
 	}
 	outgoing = (value.rgb / frame.settings.w);
 	return true;
+#endif
 }
 
 // Unregistered/short connections retain uncached evaluation. The normal cached
@@ -1425,6 +1616,8 @@ vec3 shade_transport(RayHit ray, uint state, uint cell) {
 	return shade_direct(ray, state, cell);
 }
 
+void populate_secondary(uint id);
+#ifdef AMD_GI_WORLD_WRITES
 void populate_secondary(uint id) {
 	uint owner;
 	if (frame.motion.y != 0u) {
@@ -1453,6 +1646,7 @@ void populate_secondary(uint id) {
 	vec3 direction = normalize(gi_rotate(rotation, vec3(radius * cos(angle), radius * sin(angle), sqrt(1.0 - samples.x))));
 	secondary_rays.data[owner] = trace_record(gi_offset_position(source.position.xyz, source.normal_mask.xyz), direction);
 }
+#endif
 RayHit owned_hit(uint owner) {
 	if (owner < primary_ray_count()) {
 		return primary_hit(owner);
@@ -1461,6 +1655,8 @@ RayHit owned_hit(uint owner) {
 }
 // AMD's per-hit integer atomics preserve every accepted contribution while
 // eliminating the serial walk through all hits that share a cache cell.
+void accumulate_direct(uint cell, vec4 value);
+#ifdef AMD_GI_WORLD_WRITES
 void accumulate_direct(uint cell, vec4 value) {
 	if (value.w == 0.0) {
 		return;
@@ -1474,6 +1670,9 @@ void accumulate_direct(uint cell, vec4 value) {
 	}
 	atomicAdd(pending_direct_cache.data[index].w, uint(value.w));
 }
+#endif
+void shade_hit(uint id);
+#ifdef AMD_GI_WORLD_WRITES
 void shade_hit(uint id) {
 	if (id >= (params.samples == 0u ? work.counts.y : work.counts.z)) {
 		return;
@@ -1501,6 +1700,7 @@ void shade_hit(uint id) {
 	hit_samples.data[id].direct = direct;
 	accumulate_direct(cell, direct);
 }
+#endif
 vec3 indirect_hit(uint hit) {
 	RayHit secondary = secondary_hit(hit);
 	uint target = floatBitsToUint(secondary.direction_cache.w);
@@ -1518,8 +1718,10 @@ vec3 indirect_hit(uint hit) {
 	vec4 brdf_pdf = gi_cache_unpack(gi_cache_pack(vec4(gi_rough_brdf(source.diffuse.rgb, source.normal_mask.xyz, -source.direction_cache.xyz, sampled_direction), max(dot(source.normal_mask.xyz, sampled_direction), 0.0) / PI)));
 	return ((outgoing * brdf_pdf.rgb) / brdf_pdf.w) / frame.settings.z;
 }
+void shade_indirect_hit(uint id);
+#ifdef AMD_GI_WORLD_WRITES
 void shade_indirect_hit(uint id) {
-	if (id >= (frame.motion.y != 0u ? work.counts.y : primary_ray_count())) {
+	if (id >= (frame.motion.y != 0u ? work.counts.y : active_primary_ray_count())) {
 		return;
 	}
 	if (frame.motion.y != 0u) {
@@ -1542,6 +1744,7 @@ void shade_indirect_hit(uint id) {
 	atomicAdd(pending_indirect_cache.data[index].z, quantized.z);
 	atomicAdd(pending_indirect_cache.data[index].w, 1u);
 }
+#endif
 uvec2 blend_hit_samples(uint cell, bool indirect, uvec2 old, uvec3 sum, uint count) {
 	vec4 history = gi_cache_unpack(old);
 	vec4 update = vec4(vec3(sum) / 1000.0, float(count));
@@ -1558,6 +1761,8 @@ uvec2 blend_hit_samples(uint cell, bool indirect, uvec2 old, uvec3 sum, uint cou
 	return gi_cache_pack(gi_cache_accumulate(history, update, maximum_count));
 }
 
+void update_indirect(uint cell);
+#ifdef AMD_GI_WORLD_WRITES
 void update_indirect(uint cell) {
 	uint local = cell % TILE_CELLS;
 	if (cell >= TILE_COUNT * TILE_CELLS || local >= 64u) {
@@ -1568,6 +1773,9 @@ void update_indirect(uint cell) {
 	indirect_cache.data[cell] = blend_hit_samples(cell, true, indirect_cache.data[cell], pending.xyz, pending.w);
 	pending_indirect_cache.data[index] = uvec4(0);
 }
+#endif
+void update_cell(uint cell);
+#ifdef AMD_GI_WORLD_WRITES
 void update_cell(uint cell) {
 	if (cell >= TILE_COUNT * TILE_CELLS || cell % TILE_CELLS >= 64u) {
 		return;
@@ -1592,6 +1800,9 @@ void update_cell(uint cell) {
 	vec3 value = shade_direct(owned_hit(owner), state, owner, valid_update);
 	cache.data[cell] = blend_hit_samples(cell, false, previous_cache.data[cell], gi_cache_quantize(value), valid_update ? 1u : 0u);
 }
+#endif
+void build_mip(uint tile, uint lane, uint mip);
+#ifdef AMD_GI_WORLD_WRITES
 void build_mip(uint tile, uint lane, uint mip) {
 	bool indirect = pass_id >= PASS_INDIRECT_MIP1 && pass_id <= PASS_INDIRECT_MIP3;
 	uint width = 8u >> mip;
@@ -1624,6 +1835,7 @@ void build_mip(uint tile, uint lane, uint mip) {
 		cache.data[tile * TILE_CELLS + MIP_OFFSET[mip] + lane] = value;
 	}
 }
+#endif
 vec3 accumulate_probe_radiance(vec3 value, vec3 contribution) {
 	// ScreenProbes_AccumulateRadiance skips zero and NaN-length inputs.
 	return dot(contribution, contribution) > 0.0 ? gi_cache_unpack(gi_cache_pack(vec4(value + contribution, 0))).rgb : value;
@@ -1634,13 +1846,13 @@ void resolve_probe(uint slot, uint lane) {
 		return;
 	}
 	uint id = probe * 64u + lane;
-	RayHit ray = primary_hit(slot * 64u + lane);
-	RayRecord traced = rays.data[slot * 64u + lane];
+	RayHit ray = primary_hit(primary_ray_id(slot, lane));
+	RayRecord traced = rays.data[primary_ray_id(slot, lane)];
 	vec3 value = environment_radiance(traced.direction_cache.xyz, false);
 	float cache_change = 0.0;
 	float hit_distance = traced.position.w < 0.0 ? params.max_distance : traced.position.w;
 	if (ray.position.w >= 0.0) {
-		uint ray_id = slot * 64u + lane;
+		uint ray_id = primary_ray_id(slot, lane);
 		bool feedback = frame.motion.y != 0u && (hit_samples.data[ray_id].links.y & 1u) != 0u;
 		bool emissive = ray.emission.w > 0.0;
 		bool primary_bypass = ray.position.w < cache_cell_size(ray.position.xyz);
@@ -2074,7 +2286,7 @@ void reproject_pixel(ivec2 pixel, uint id) {
 	}
 	float blur_mask;
 	vec2 current_uv = (vec2(pixel) + 0.5) / vec2(params.size);
-	current.color = gi_denoiser_accumulate(current.color, lighting, current_uv, sky, previous_uv_valid, current.response, delta, blur_mask);
+	current.color = gi_denoiser_accumulate(current.color, lighting, parent_screen_uv(current_uv), sky, previous_uv_valid, current.response, delta, blur_mask);
 	current.color = gi_cache_unpack(gi_cache_pack(current.color));
 	current.normal_delta.w = unpackHalf2x16(packHalf2x16(vec2(delta, 0))).x;
 	pixels.data[id] = pack_pixel(current);
@@ -2188,7 +2400,7 @@ void main() {
 	uint lane = gl_LocalInvocationIndex;
 	uint probe = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
 	uint id = probe * 64u + lane;
-#if AMD_GI_PASS == PASS_PREPARE || AMD_GI_PASS == PASS_ALLOCATE || AMD_GI_PASS == PASS_REGISTER || AMD_GI_PASS == PASS_ALLOCATE_SECONDARY || AMD_GI_PASS == PASS_REGISTER_SECONDARY || AMD_GI_PASS == PASS_RESOLVE
+#if (defined(AMD_GI_REGIONAL_BATCH) && AMD_GI_PASS == PASS_TRACE) || AMD_GI_PASS == PASS_PREPARE || AMD_GI_PASS == PASS_ALLOCATE || AMD_GI_PASS == PASS_REGISTER || AMD_GI_PASS == PASS_ALLOCATE_SECONDARY || AMD_GI_PASS == PASS_REGISTER_SECONDARY || AMD_GI_PASS == PASS_RESOLVE
 	if (probe >= work.counts.x) {
 		return;
 	}
@@ -2201,7 +2413,10 @@ void main() {
 		probe = keys.data[TILE_COUNT + active_index].state.x;
 		id = probe * TILE_CELLS + lane;
 	}
-#if AMD_GI_PASS == PASS_DEBUG_VIEW
+#if defined(AMD_GI_REGIONAL_BATCH) && AMD_GI_PASS == PASS_BATCH_JOIN
+	batch_join(id);
+	return;
+#elif AMD_GI_PASS == PASS_DEBUG_VIEW
 	debug_view(ivec2(gl_GlobalInvocationID.xy));
 	return;
 #elif AMD_GI_PASS == PASS_DEBUG_STATS

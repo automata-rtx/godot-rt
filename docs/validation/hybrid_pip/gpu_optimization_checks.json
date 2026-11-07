@@ -1,0 +1,16 @@
+{
+  "spirv": {
+    "unchanged_executable_spirv_variants": 117,
+    "qualified_consumer_variants": 58
+  },
+  "blur": {
+    "old_axis_mean_variance": 0.1697033152452494,
+    "new_axis_variance": 0.16969707062546982,
+    "new_centroid": [
+      -1.2207274760438019e-17,
+      5.764614565568276e-18
+    ],
+    "kernel_extent_change_requires_visual_review": true,
+    "note": "Moments and normalization do not prove sparse sampling is visually equivalent."
+  }
+}

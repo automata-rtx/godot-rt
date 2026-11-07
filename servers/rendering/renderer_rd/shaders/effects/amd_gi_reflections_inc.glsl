@@ -271,6 +271,8 @@ uint reflection_diagnostic_cache_mip(uint cell, bool indirect) {
 	return 4u;
 }
 #endif
+void trace_reflection(ivec2 pixel, uint id);
+#ifdef AMD_GI_KEYS_WRITES
 void trace_reflection(ivec2 pixel, uint id) {
 	ReflectionSample result;
 	if (frame.emitters.w != 0u) {
@@ -361,6 +363,7 @@ void trace_reflection(ivec2 pixel, uint id) {
 	reflection_samples.data[id] = pack_reflection(result);
 #endif
 }
+#endif
 
 vec4 reflection_raw(ivec2 pixel) {
 	ReflectionSample sample_value = unpack_reflection(reflection_samples.data[reflection_index(pixel)]);
@@ -755,6 +758,7 @@ void temporal_reflection(ivec2 pixel, uint id) {
 	float count = (hit_weight * old_hit.w + surface_weight * old_surface.w) / weight;
 	vec4 lighting = vec4(dual_color * count, count) + vec4(color, 1);
 	vec2 uv = (vec2(pixel) + 0.5) / vec2(params.size);
+	uv = parent_screen_uv(uv);
 	vec2 vignette_uv = uv * (1.0 - uv.yx);
 	float max_count = max(8.0 * pow(15.0 * vignette_uv.x * vignette_uv.y, 0.25), 1.0);
 	if (lighting.w > max_count) {

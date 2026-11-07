@@ -37,6 +37,7 @@
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
 
 #define RB_SCOPE_AMD_GI SNAME("amd_gi")
+#define RB_SCOPE_AMD_GI_BATCH SNAME("amd_gi_batch")
 #define RB_SCOPE_AMD_GI_GEOMETRY SNAME("amd_gi_geometry")
 
 namespace RendererRD {
@@ -54,6 +55,20 @@ public:
 		float reflection_energy = 0;
 		float border = 0;
 		uint64_t revision = 0;
+	};
+	struct RegionInput {
+		Ref<RenderSceneBuffersRD> buffers;
+		RID normals;
+		Projection projection;
+		Rect2 parent_uv_rect = Rect2(0, 0, 1, 1);
+		uint64_t history_generation = 0;
+		bool reset_history = false;
+	};
+	struct LogicalView {
+		Size2i output_size;
+		Projection projection;
+		Transform3D camera;
+		float exposure = 1.0f;
 	};
 
 private:
@@ -118,6 +133,7 @@ private:
 		PREPARE_LIGHT_MASKS,
 		DEBUG_VIEW,
 		DEBUG_STATS,
+		BATCH_JOIN,
 		PASS_COUNT
 	};
 	struct PushConstant {
@@ -159,6 +175,21 @@ private:
 	};
 	static_assert(sizeof(PushConstant) == 128);
 	static_assert(sizeof(FrameUniform) == 544);
+	struct BatchUniform {
+		uint32_t info[4]; // primary capacity, region, active regions, world reset
+		float parent_rect[4];
+		float angular[4]; // parent pixel footprint, output width/height, reserved
+		float parent_view_projection[16];
+		float parent_inverse_view_projection[16];
+		float previous_parent_view_projection[16];
+		float previous_parent_eye[4];
+		float previous_parent_forward[4];
+		float feedback_rect[2][4];
+		float feedback_previous_rect[2][4];
+		uint32_t feedback_size[2][4]; // width, height, valid previous frame, reserved
+		float feedback_exposure[4];
+	};
+	static_assert(sizeof(BatchUniform) == 384);
 	struct BindingReuse {
 		LocalVector<RD::Uniform> uniforms;
 		// Borrowed from UniformSetCacheRD; never free these handles ourselves.
@@ -167,27 +198,14 @@ private:
 		void update(const LocalVector<RD::Uniform> &p_uniforms);
 		RID get_uniform_set(uint32_t p_pass, RID p_shader, uint32_t p_set, const LocalVector<RD::Uniform> &p_uniforms, bool p_validate);
 	};
-	struct ViewData : public RenderBufferCustomDataRD {
-		GDCLASS(ViewData, RenderBufferCustomDataRD);
+	// World-space transport belongs to the logical camera, not to a screen region.
+	// Screen histories may release their reference without evicting another
+	// region's cache. Scheduling still has to serialize one complete cache frame.
+	struct WorldData : public RefCounted {
+		GDCLASS(WorldData, RefCounted);
 
 	public:
-		RID binding_version;
-		BindingReuse bindings[2]; // Set 0 swaps history resources each frame.
-		BindingReuse material_bindings;
-		RID frame_uniform;
-		RID debug_stats;
-		uint32_t debug_stats_bytes = 0;
-		Dictionary diagnostics;
-		uint32_t reflection_mode = 1;
-		uint32_t reflection_radii = 0;
-		RID feedback_lights;
-		uint32_t feedback_light_bytes = 0;
-		RID probes[2];
-		RID radiance[2];
-		RID pixels[2];
-		RID rays, keys, cache[2], owners, scratch;
-		RID spawn, queues, probe_mask, work;
-		RID cached_probes, cached_state, cached_order[2];
+		RID keys, cache[2], owners, indirect_cache[2], direct_updates;
 		RID light_reservoirs[2];
 		RID light_grid;
 		uint32_t light_grid_bytes = 0;
@@ -203,10 +221,39 @@ private:
 		enum class LightHistoryAction { KEEP,
 			RESET_RESERVOIRS,
 			RESET_VIEW };
-		LightHistoryAction update_light_order(const RaytracingGIScene &p_scene, uint32_t p_environment_count, bool p_retain_on_emitter_transitions);
+		LightHistoryAction update_light_order(const RaytracingGIScene &p_scene, uint32_t p_environment_count, bool p_retain_on_emitter_transitions, bool p_light_resampling);
 		bool ensure_light_grid(uint32_t p_emitters, uint32_t p_lights);
-		RID indirect_cache[2], secondary_rays;
-		RID hit_samples, direct_updates, source_validation;
+		RID environment_cube;
+		RID environment_source;
+		Vector<RID> environment_mips;
+		uint64_t environment_revision = 0;
+		float environment_border = 0;
+		~WorldData();
+	};
+	struct ViewData : public RenderBufferCustomDataRD {
+		GDCLASS(ViewData, RenderBufferCustomDataRD);
+
+	public:
+		Ref<WorldData> world;
+		RID binding_version;
+		BindingReuse bindings[4]; // Native uses2; batch screen and world ping-pongs are independent.
+		BindingReuse material_bindings;
+		RID frame_uniform;
+		RID debug_stats;
+		uint32_t debug_stats_bytes = 0;
+		Dictionary diagnostics;
+		uint32_t reflection_mode = 1;
+		uint32_t reflection_radii = 0;
+		RID feedback_lights;
+		uint32_t feedback_light_bytes = 0;
+		RID probes[2];
+		RID radiance[2];
+		RID pixels[2];
+		RID rays, scratch;
+		RID spawn, queues, probe_mask, work;
+		RID cached_probes, cached_state, cached_order[2];
+		RID secondary_rays;
+		RID hit_samples, source_validation;
 		RID reflection_samples, reflection_history[2];
 		uint32_t reflection_stride = 0;
 		float reflection_roughness = 0;
@@ -234,20 +281,51 @@ private:
 		float previous_exposure = 0;
 		Projection previous_view_projection;
 		Transform3D previous_camera;
-		RID environment_cube;
-		RID environment_source;
-		Vector<RID> environment_mips;
-		uint64_t environment_revision = 0;
-		float environment_border = 0;
+		Rect2 previous_parent_rect = Rect2(0, 0, 1, 1);
+		uint64_t history_generation = 0;
+		uint32_t last_batch_frame = UINT32_MAX;
+		bool batch_screen = false;
 		void configure(RenderSceneBuffersRD *p_buffers) override { free_data(); }
 		void free_data() override;
 		~ViewData() { free_data(); }
 	};
+	struct BatchData : public RenderBufferCustomDataRD {
+		GDCLASS(BatchData, RenderBufferCustomDataRD);
+
+	public:
+		Ref<WorldData> world;
+		RID rays, secondary_rays, hit_samples, work, origins;
+		uint32_t capacity = 0;
+		uint32_t cache_buckets = 0;
+		uint32_t allocation_improvements = 0;
+		bool reservoirs_valid = false;
+		RID prepared_version;
+		uint64_t prepared_layout = 0;
+		uint32_t frame = 0;
+		int64_t last_completed_frame = -1;
+		uint32_t reservoir_index = 0;
+		bool valid = false;
+		bool multibounce = false;
+		bool cache_all_hits = false;
+		bool light_resampling = false;
+		uint32_t world_configuration = 0;
+		uint32_t world_improvements = 0;
+		float cell_size = 0;
+		float distant_cell_scale = 0;
+		float continuation = 0;
+		float max_distance = 0;
+		Projection previous_view_projection;
+		Transform3D previous_camera;
+		void configure(RenderSceneBuffersRD *p_buffers) override { free_data(); }
+		void free_data();
+		~BatchData() { free_data(); }
+	};
+	const bool regional_batch = false;
 	AmdGiShaderRD shader;
 	AmdGiEnvironmentShaderRD environment_shader;
 	RID environment_version;
 	RID environment_pipelines[2];
-	RID prepare_environment(ViewData &p_data, const Environment &p_environment);
+	RID prepare_environment(WorldData &p_data, const Environment &p_environment);
 	RID version;
 	String published_source;
 	// Render thread owns the version, its shader RIDs and all cleanup. The
@@ -289,11 +367,27 @@ private:
 	uint32_t random_seed_count = 0;
 	void ensure_sampling_data(const Size2i &p_size);
 	RID pipelines[PASS_COUNT];
+	struct RenderContext;
+	bool prepare_render_context(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffersRD> &p_buffers, RID p_normals, const Projection &p_projection, const Transform3D &p_camera, float p_exposure, const Environment &p_environment, RenderContext &r_context, const Ref<BatchData> &p_batch = Ref<BatchData>(), const RD::BufferReadGroup *p_shared_source_reads = nullptr);
+	void configure_batch_contexts(RenderContext *p_contexts, const RegionInput *p_regions, uint32_t p_count, const LogicalView &p_parent, const Ref<BatchData> &p_batch, bool p_reset_world, bool p_reset_reservoirs);
+	bool dispatch_render_passes(RenderContext &r_context, uint32_t p_first_pass, uint32_t p_end_pass, bool p_debug_passes);
+	bool finish_render_context(RenderContext &r_context);
+	RID get_render_uniform_set(RenderContext &r_context, uint32_t p_pass, RID p_shader, uint32_t p_set);
+	Error add_render_source_reads(RenderContext &r_context, RD::ComputeListID p_list);
 
 public:
 	static Dictionary get_diagnostics(const Ref<RenderSceneBuffersRD> &p_buffers);
+	static int64_t get_batch_completed_frame(const Ref<RenderSceneBuffersRD> &p_owner) {
+		if (p_owner.is_null() || !p_owner->has_custom_data(RB_SCOPE_AMD_GI_BATCH)) {
+			return -1;
+		}
+		const Ref<BatchData> data = p_owner->get_custom_data(RB_SCOPE_AMD_GI_BATCH);
+		return data.is_valid() ? data->last_completed_frame : -1;
+	}
 	static bool is_enabled();
 	static bool is_supported();
+	static bool is_regional_supported();
+	static uint32_t get_region_guard_pixels();
 	static void clear(const Ref<RenderSceneBuffersRD> &p_buffers);
 	bool has_material_pipelines(const RaytracingGIScene &p_scene) const;
 	void prepare_scene_material_pipelines(const RaytracingGIScene &p_scene, bool p_hold);
@@ -302,7 +396,9 @@ public:
 	void prepare_feedback_lights(const Ref<RenderSceneBuffersRD> &p_buffers, const PagedArray<RID> &p_lights);
 	RID get_feedback_lights(const Ref<RenderSceneBuffersRD> &p_buffers) const;
 	bool render(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffersRD> &p_buffers, RID p_normals, const Projection &p_projection, const Transform3D &p_camera, float p_exposure, const Environment &p_environment);
-	AMDGI();
+	bool prepare_regions(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffersRD> &p_owner, const RegionInput &p_uniform, const RegionInput *p_scoped, uint32_t p_scoped_count, const LogicalView &p_parent, const Environment &p_environment);
+	bool render_regions(const RaytracingGIScene &p_scene, const Ref<RenderSceneBuffersRD> &p_owner, const RegionInput *p_regions, uint32_t p_count, const LogicalView &p_parent, const Environment &p_environment);
+	explicit AMDGI(bool p_regional_batch = false);
 	~AMDGI();
 };
 } // namespace RendererRD

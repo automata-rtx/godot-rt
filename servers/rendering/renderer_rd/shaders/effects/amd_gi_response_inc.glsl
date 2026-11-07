@@ -60,6 +60,8 @@ uint gi_cache_response(uint cell, bool indirect) {
 #endif
 	return (value >> ((cell % TILE_CELLS & 3u) * 8u)) & 255u;
 }
+void gi_store_cache_response(uint cell, bool indirect, uint state);
+#ifdef AMD_GI_WORLD_WRITES
 void gi_store_cache_response(uint cell, bool indirect, uint state) {
 	uint word = gi_response_word(cell);
 	uint shift = (cell % TILE_CELLS & 3u) * 8u;
@@ -73,6 +75,7 @@ void gi_store_cache_response(uint cell, bool indirect, uint state) {
 		atomicOr(cache.data[word / 2u][word & 1u], state << shift);
 	}
 }
+#endif
 
 // Follow the same mip choice as the radiance lookup. Parent confidence is
 // evidence-weighted during mip construction; a lone changing fine cell cannot

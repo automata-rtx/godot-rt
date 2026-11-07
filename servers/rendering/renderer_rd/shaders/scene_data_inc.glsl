@@ -34,6 +34,10 @@ struct SceneData {
 
 	vec2 viewport_size;
 	vec2 screen_pixel_size;
+	vec4 region_to_parent_uv;
+	vec2 parent_screen_pixel_size;
+	uint regional_view;
+	uint region_padding;
 
 	// Use vec4s because std140 doesn't play nice with vec2s, z and w are wasted.
 	vec4 directional_penumbra_shadow_kernel[32];

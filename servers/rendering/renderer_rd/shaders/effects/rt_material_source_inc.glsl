@@ -132,10 +132,18 @@ void gi_source_begin(uint instance, bool front_face) {
 	gi_source_front_face = front_face;
 	gi_source_discarded = false;
 	gi_source_frame = GISourceFrame(gi_sources.header.x, params.exposure, 0xffffffffu);
+#ifdef AMD_GI_REGIONAL_BATCH
+	read_viewport_size = gi_batch_source_viewport_size();
+#else
 	read_viewport_size = vec2(params.size);
+#endif
 	inv_view_matrix = mat4(vec4(gi_source_rotate(vec3(1, 0, 0)), 0), vec4(gi_source_rotate(vec3(0, 1, 0)), 0), vec4(gi_source_rotate(vec3(0, 0, 1)), 0), vec4(params.camera_position.xyz, 1));
 	read_view_matrix = inverse(inv_view_matrix);
+#ifdef AMD_GI_REGIONAL_BATCH
+	projection_matrix = gi_batch_source_view_projection() * inv_view_matrix;
+#else
 	projection_matrix = inverse(params.inv_view_projection) * inv_view_matrix;
+#endif
 	inv_projection_matrix = inverse(projection_matrix);
 	read_model_matrix = mat4(transpose(hits.data[instance].object_to_world));
 	model_normal_matrix = hits.data[instance].normal_to_world;

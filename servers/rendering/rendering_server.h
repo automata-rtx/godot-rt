@@ -627,6 +627,13 @@ public:
 	virtual String viewport_get_upscaler_status(RID p_viewport) const = 0;
 	virtual Dictionary viewport_get_amd_gi_diagnostics(RID p_viewport) const = 0;
 	virtual Dictionary viewport_get_amd_gi_preparation_status(RID p_viewport) const = 0;
+	virtual void viewport_prepare_hybrid_pip(RID p_viewport, Size2i p_native_capacity) = 0;
+	virtual void viewport_prepare_resident_hybrid_pip(RID p_viewport, Size2i p_native_capacity) = 0;
+	virtual void viewport_set_hybrid_pip_enabled(RID p_viewport, bool p_enabled) = 0;
+	virtual void viewport_set_hybrid_pip_active(RID p_viewport, bool p_active) = 0;
+	virtual void viewport_set_hybrid_pip_blur_enabled(RID p_viewport, bool p_enabled) = 0;
+	virtual void viewport_set_hybrid_pip_region(RID p_viewport, const Rect2 &p_native_region, const PackedVector2Array &p_aperture) = 0;
+	virtual Dictionary viewport_get_hybrid_pip_status(RID p_viewport) const = 0;
 
 	virtual void viewport_set_measure_render_time(RID p_viewport, bool p_enable) = 0;
 	virtual double viewport_get_measured_render_time_cpu(RID p_viewport) const = 0;

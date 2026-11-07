@@ -47,6 +47,10 @@
 #include "servers/rendering/rendering_server_globals.h"
 #include "servers/rendering/storage/texture_storage.h"
 
+#ifdef STREAMLINE_ENABLED
+#include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
+#endif
+
 #ifndef XR_DISABLED
 #include "servers/xr/xr_interface.h"
 #include "servers/xr/xr_server.h"
@@ -149,6 +153,8 @@ static bool _update_mode_has_frame_history(RSE::ViewportUpdateMode p_mode) {
 }
 
 void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
+	// Output changes can invalidate both configurations. Switching ADS never comes here.
+	p_viewport->scope_buffers.unref();
 	if (p_viewport->render_buffers.is_valid()) {
 		if (p_viewport->size.width == 0 || p_viewport->size.height == 0) {
 			p_viewport->render_buffers.unref();
@@ -366,6 +372,10 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 			rb_config.set_use_debanding(p_viewport->use_debanding);
 
 			p_viewport->render_buffers->configure(&rb_config);
+			p_viewport->render_buffers->set_hybrid_pip_status(Dictionary());
+			if (!p_viewport->hybrid_pip_configuration.resident_parent) {
+				p_viewport->render_buffers->set_hybrid_pip_configuration(p_viewport->hybrid_pip_configuration);
+			}
 		}
 	}
 }
@@ -373,6 +383,20 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 void RendererViewport::_draw_3d(Viewport *p_viewport) {
 #ifndef _3D_DISABLED
 	RENDER_TIMESTAMP("> Render 3D Scene");
+	// Geometry that supplies a scope temporal resolve needs previous transforms,
+	// even when the parent viewport has no temporal AA or upscaler.
+	if (p_viewport->hybrid_pip_configuration.enabled) {
+		const int mode = ProjectSettings::get_singleton()->get_setting("rendering/hybrid_pip/native_aa", 0);
+		const int background = ProjectSettings::get_singleton()->get_setting("rendering/hybrid_pip/background_reconstruction", 0);
+		const bool temporal = (mode >= 3 && mode <= 5) || background == 2;
+		if (temporal != p_viewport->hybrid_pip_temporal_motion) {
+			const bool before = _viewport_requires_motion_vectors(p_viewport);
+			p_viewport->hybrid_pip_temporal_motion = temporal;
+			if (before != _viewport_requires_motion_vectors(p_viewport)) {
+				num_viewports_with_motion_vectors += temporal ? 1 : -1;
+			}
+		}
+	}
 
 	Ref<XRInterface> xr_interface;
 #ifndef XR_DISABLED
@@ -397,7 +421,39 @@ void RendererViewport::_draw_3d(Viewport *p_viewport) {
 	}
 
 	float screen_mesh_lod_threshold = p_viewport->mesh_lod_threshold / float(p_viewport->size.width);
-	RSG::scene->render_camera(p_viewport->render_buffers, p_viewport->camera, p_viewport->scenario, p_viewport->self, p_viewport->internal_size, p_viewport->jitter_phase_count, screen_mesh_lod_threshold, p_viewport->shadow_atlas, xr_interface, p_viewport->window_output_max_value, &p_viewport->render_info);
+	const auto &scope = p_viewport->hybrid_pip_configuration;
+	const bool draw_scope = scope.enabled && scope.resident_parent && scope.active && p_viewport->render_buffers.is_valid() && !p_viewport->use_xr && p_viewport->view_count == 1;
+	if (draw_scope && p_viewport->scope_buffers.is_null()) {
+		RenderSceneBuffersConfiguration config;
+		config.set_render_target(p_viewport->render_target);
+		config.set_internal_size(p_viewport->size);
+		config.set_allow_target_vrs(false);
+		config.set_target_size(p_viewport->size);
+		config.set_texture_mipmap_bias(p_viewport->texture_mipmap_bias);
+		config.set_anisotropic_filtering_level(p_viewport->anisotropic_filtering_level);
+		config.set_fsr_sharpness(p_viewport->fsr_sharpness);
+		config.set_use_debanding(p_viewport->use_debanding);
+		p_viewport->scope_buffers = RSG::scene->render_buffers_create();
+		p_viewport->scope_buffers->set_hybrid_pip_configuration(scope);
+		p_viewport->scope_buffers->configure(&config);
+	}
+	if (draw_scope != p_viewport->drew_scope_buffers) {
+#ifdef STREAMLINE_ENABLED
+		// Frame generation tags the presented frame under the normal buffer's handle.
+		// The regional parent has a different handle and cannot turn those tags off.
+		if (draw_scope) {
+			Ref<RenderSceneBuffersRD> normal = p_viewport->render_buffers;
+			StreamlineVK *streamline = StreamlineVK::get_singleton();
+			if (normal.is_valid() && normal->has_streamline_viewport() && streamline) {
+				streamline->frame_generation_set_enabled(normal->get_claimed_streamline_viewport(0), false, normal->get_target_size(), normal->get_internal_size());
+			}
+		}
+#endif
+		// The returning upscaler owns textures from an older view of the world.
+		p_viewport->prev_camera_data_frame = 0;
+	}
+	p_viewport->drew_scope_buffers = draw_scope;
+	RSG::scene->render_camera(p_viewport->last_drawn_buffers(), p_viewport->camera, p_viewport->scenario, p_viewport->self, draw_scope ? p_viewport->size : p_viewport->internal_size, draw_scope ? 0 : p_viewport->jitter_phase_count, screen_mesh_lod_threshold, p_viewport->shadow_atlas, xr_interface, p_viewport->window_output_max_value, &p_viewport->render_info);
 
 	RENDER_TIMESTAMP("< Render 3D Scene");
 #endif // _3D_DISABLED
@@ -1191,7 +1247,7 @@ void RendererViewport::_viewport_set_size(Viewport *p_viewport, int p_width, int
 }
 
 bool RendererViewport::_viewport_requires_motion_vectors(Viewport *p_viewport) {
-	return p_viewport->use_taa ||
+	return p_viewport->use_taa || p_viewport->hybrid_pip_temporal_motion ||
 			RSE::scaling_3d_mode_type(p_viewport->scaling_3d_mode) == RSE::VIEWPORT_SCALING_3D_TYPE_TEMPORAL ||
 			p_viewport->debug_draw == RSE::VIEWPORT_DEBUG_DRAW_MOTION_VECTORS || p_viewport->force_motion_vectors;
 }
@@ -1339,7 +1395,8 @@ void RendererViewport::viewport_set_prev_camera_data(RID p_viewport, const Rende
 const RendererSceneRender::CameraData *RendererViewport::viewport_get_prev_camera_data(RID p_viewport) {
 	const Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL_V(viewport, nullptr);
-	return &viewport->prev_camera_data;
+	const uint64_t frame = RSG::rasterizer->get_frame_number();
+	return viewport->prev_camera_data_frame != 0 && viewport->prev_camera_data_frame + 1 == frame ? &viewport->prev_camera_data : nullptr;
 }
 
 void RendererViewport::viewport_set_disable_2d(RID p_viewport, bool p_disable) {
@@ -1377,6 +1434,9 @@ void RendererViewport::viewport_attach_camera(RID p_viewport, RID p_camera) {
 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL(viewport);
 
+	if (viewport->camera != p_camera) {
+		viewport->prev_camera_data_frame = 0;
+	}
 	viewport->camera = p_camera;
 }
 
@@ -1388,6 +1448,9 @@ void RendererViewport::viewport_set_scenario(RID p_viewport, RID p_scenario) {
 		RSG::scene->scenario_remove_viewport_visibility_mask(viewport->scenario, p_viewport);
 	}
 
+	if (viewport->scenario != p_scenario) {
+		viewport->prev_camera_data_frame = 0;
+	}
 	viewport->scenario = p_scenario;
 	if (viewport->use_occlusion_culling) {
 		RendererSceneOcclusionCull::get_singleton()->buffer_set_scenario(p_viewport, p_scenario);
@@ -1678,7 +1741,110 @@ Dictionary RendererViewport::viewport_get_amd_gi_preparation_status(RID p_viewpo
 	if (viewport->render_buffers.is_null()) {
 		return Dictionary();
 	}
-	return RSG::scene->get_amd_gi_preparation_status(viewport->render_buffers);
+	return RSG::scene->get_amd_gi_preparation_status(viewport->last_drawn_buffers());
+}
+
+void RendererViewport::viewport_prepare_hybrid_pip(RID p_viewport, Size2i p_native_capacity) {
+	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL(viewport);
+	ERR_FAIL_COND(p_native_capacity != Size2i() && (p_native_capacity.x <= 0 || p_native_capacity.y <= 0));
+	viewport->scope_buffers.unref();
+	viewport->hybrid_pip_configuration.resident_parent = false;
+	_prepare_hybrid_pip(viewport, p_native_capacity);
+}
+
+void RendererViewport::viewport_prepare_resident_hybrid_pip(RID p_viewport, Size2i p_native_capacity) {
+	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL(viewport);
+	ERR_FAIL_COND(p_native_capacity != Size2i() && (p_native_capacity.x <= 0 || p_native_capacity.y <= 0));
+	if (!viewport->hybrid_pip_configuration.resident_parent && viewport->render_buffers.is_valid()) {
+		viewport->render_buffers->set_hybrid_pip_configuration({});
+	}
+	viewport->hybrid_pip_configuration.resident_parent = true;
+	_prepare_hybrid_pip(viewport, p_native_capacity);
+}
+
+void RendererViewport::_prepare_hybrid_pip(Viewport *viewport, Size2i p_native_capacity) {
+	auto &configuration = viewport->hybrid_pip_configuration;
+	configuration.native_capacity = p_native_capacity;
+	configuration.enabled = true;
+	configuration.preparation_generation++;
+	if (configuration.preparation_generation == 0) {
+		configuration.preparation_generation = 1;
+	}
+	if (viewport->hybrid_buffers().is_valid()) {
+		viewport->hybrid_buffers()->set_hybrid_pip_configuration(configuration);
+	}
+}
+
+void RendererViewport::viewport_set_hybrid_pip_enabled(RID p_viewport, bool p_enabled) {
+	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL(viewport);
+	const bool required_before = _viewport_requires_motion_vectors(viewport);
+	viewport->hybrid_pip_configuration.enabled = p_enabled;
+	if (!p_enabled) {
+		viewport->hybrid_pip_temporal_motion = false;
+		viewport->scope_buffers.unref();
+	}
+	if (required_before != _viewport_requires_motion_vectors(viewport)) {
+		num_viewports_with_motion_vectors += p_enabled ? 1 : -1;
+	}
+	if (viewport->hybrid_buffers().is_valid()) {
+		viewport->hybrid_buffers()->set_hybrid_pip_configuration(viewport->hybrid_pip_configuration);
+	}
+}
+
+void RendererViewport::viewport_set_hybrid_pip_active(RID p_viewport, bool p_active) {
+	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL(viewport);
+	viewport->hybrid_pip_configuration.active = p_active;
+	if (viewport->hybrid_buffers().is_valid()) {
+		viewport->hybrid_buffers()->set_hybrid_pip_configuration(viewport->hybrid_pip_configuration);
+	}
+}
+
+void RendererViewport::viewport_set_hybrid_pip_blur_enabled(RID p_viewport, bool p_enabled) {
+	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL(viewport);
+	viewport->hybrid_pip_configuration.blur_enabled = p_enabled;
+	if (viewport->hybrid_buffers().is_valid()) {
+		viewport->hybrid_buffers()->set_hybrid_pip_configuration(viewport->hybrid_pip_configuration);
+	}
+}
+
+void RendererViewport::viewport_set_hybrid_pip_region(RID p_viewport, const Rect2 &p_native_region, const PackedVector2Array &p_aperture) {
+	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL(viewport);
+	ERR_FAIL_COND(!p_native_region.position.is_finite() || !p_native_region.size.is_finite() || p_native_region.size.x <= 0 || p_native_region.size.y <= 0);
+	ERR_FAIL_COND(p_aperture.size() < 3 || p_aperture.size() > 16);
+	for (const Vector2 &point : p_aperture) {
+		ERR_FAIL_COND(!point.is_finite());
+	}
+	viewport->hybrid_pip_configuration.native_region = p_native_region;
+	viewport->hybrid_pip_configuration.aperture = p_aperture;
+	if (viewport->hybrid_buffers().is_valid()) {
+		viewport->hybrid_buffers()->set_hybrid_pip_configuration(viewport->hybrid_pip_configuration);
+	}
+}
+
+Dictionary RendererViewport::viewport_get_hybrid_pip_status(RID p_viewport) const {
+	const Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL_V(viewport, Dictionary());
+	if (viewport->hybrid_buffers().is_valid()) {
+		Dictionary status = viewport->hybrid_buffers()->get_hybrid_pip_status();
+		status["viewport_size"] = viewport->size;
+		status["preparation_generation"] = viewport->hybrid_pip_configuration.preparation_generation;
+		return status;
+	}
+	Dictionary result;
+	result["viewport_size"] = viewport->size;
+	result["enabled"] = viewport->hybrid_pip_configuration.enabled;
+	result["requested_active"] = viewport->hybrid_pip_configuration.active;
+	result["ready"] = false;
+	result["active"] = false;
+	result["reason"] = "no_render_buffers";
+	result["preparation_generation"] = viewport->hybrid_pip_configuration.preparation_generation;
+	return result;
 }
 
 Dictionary RendererViewport::viewport_get_amd_gi_diagnostics(RID p_viewport) const {
@@ -1687,7 +1853,7 @@ Dictionary RendererViewport::viewport_get_amd_gi_diagnostics(RID p_viewport) con
 	if (viewport->render_buffers.is_null()) {
 		return Dictionary();
 	}
-	return RSG::scene->debug_get_amd_gi_diagnostics(viewport->render_buffers);
+	return RSG::scene->debug_get_amd_gi_diagnostics(viewport->last_drawn_buffers());
 }
 
 String RendererViewport::viewport_get_upscaler_status(RID p_viewport) const {
@@ -1788,6 +1954,7 @@ bool RendererViewport::free(RID p_rid) {
 	if (viewport_owner.owns(p_rid)) {
 		Viewport *viewport = viewport_owner.get_or_null(p_rid);
 
+		viewport->scope_buffers.unref();
 		RSG::texture_storage->render_target_free(viewport->render_target);
 		RSG::light_storage->shadow_atlas_free(viewport->shadow_atlas);
 		if (viewport->render_buffers.is_valid()) {

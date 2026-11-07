@@ -2929,6 +2929,13 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("viewport_get_upscaler_status", "viewport"), &RenderingServer::viewport_get_upscaler_status);
 	ClassDB::bind_method(D_METHOD("viewport_get_amd_gi_diagnostics", "viewport"), &RenderingServer::viewport_get_amd_gi_diagnostics);
 	ClassDB::bind_method(D_METHOD("viewport_get_amd_gi_preparation_status", "viewport"), &RenderingServer::viewport_get_amd_gi_preparation_status);
+	ClassDB::bind_method(D_METHOD("viewport_prepare_hybrid_pip", "viewport", "native_capacity"), &RenderingServer::viewport_prepare_hybrid_pip);
+	ClassDB::bind_method(D_METHOD("viewport_prepare_resident_hybrid_pip", "viewport", "native_capacity"), &RenderingServer::viewport_prepare_resident_hybrid_pip);
+	ClassDB::bind_method(D_METHOD("viewport_set_hybrid_pip_enabled", "viewport", "enabled"), &RenderingServer::viewport_set_hybrid_pip_enabled);
+	ClassDB::bind_method(D_METHOD("viewport_set_hybrid_pip_active", "viewport", "active"), &RenderingServer::viewport_set_hybrid_pip_active);
+	ClassDB::bind_method(D_METHOD("viewport_set_hybrid_pip_blur_enabled", "viewport", "enabled"), &RenderingServer::viewport_set_hybrid_pip_blur_enabled);
+	ClassDB::bind_method(D_METHOD("viewport_set_hybrid_pip_region", "viewport", "native_region", "aperture"), &RenderingServer::viewport_set_hybrid_pip_region);
+	ClassDB::bind_method(D_METHOD("viewport_get_hybrid_pip_status", "viewport"), &RenderingServer::viewport_get_hybrid_pip_status);
 	ClassDB::bind_method(D_METHOD("viewport_get_measured_render_time_cpu", "viewport"), &RenderingServer::viewport_get_measured_render_time_cpu);
 
 	ClassDB::bind_method(D_METHOD("viewport_get_measured_render_time_gpu", "viewport"), &RenderingServer::viewport_get_measured_render_time_gpu);

@@ -36,6 +36,7 @@
 #include "servers/rendering/renderer_rd/effects/dlss.h"
 #include "servers/rendering/renderer_rd/effects/fsr2.h"
 #include "servers/rendering/renderer_rd/effects/gtao.h"
+#include "servers/rendering/renderer_rd/effects/hybrid_pip.h"
 #include "servers/rendering/renderer_rd/effects/motion_vectors_store.h"
 #include "servers/rendering/renderer_rd/effects/ss_effects.h"
 #include "servers/rendering/renderer_rd/effects/taa.h"
@@ -859,7 +860,118 @@ private:
 	bool _using_restricted_sss_casters(const RenderDataRD *p_render_data);
 	RID _ensure_screen_space_shadow_mask(Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size);
 	void _render_screen_space_shadows(RenderDataRD *p_render_data, Ref<RenderSceneBuffersRD> p_render_buffers, const Size2i &p_size);
+	struct PreOpaqueView {
+		Ref<RenderSceneBuffersRD> buffers;
+		Ref<RenderBufferDataForwardClustered> forward_buffers;
+	};
+	struct PreOpaqueLightingState {
+		uint32_t directional_light_count = 0;
+		uint32_t positional_light_count = 0;
+		bool using_screen_space_shadows = false;
+	};
+	// Keep scene preparation and regional screen work independently callable.
+	// The compatibility orchestrator below retains the original single-view order.
+	void _pre_opaque_render_shadow_maps(RenderDataRD *p_render_data, const PreOpaqueView &p_view, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer);
+	void _pre_opaque_render_screen_effects(RenderDataRD *p_render_data, const PreOpaqueView &p_view, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, const RID *p_normal_roughness_slices);
+	PreOpaqueLightingState _pre_opaque_prepare_lighting(RenderDataRD *p_render_data, const PreOpaqueView &p_view);
+	void _pre_opaque_render_rt_shadows(RenderDataRD *p_render_data, const PreOpaqueView &p_view, const RendererRD::RTShadows::PreparedFrame *p_prepared_frame = nullptr, bool p_history_valid = true);
+	void _pre_opaque_render_raytraced_gi(RenderDataRD *p_render_data, const PreOpaqueView &p_view);
+	void _pre_opaque_render_contact_shadows(RenderDataRD *p_render_data, const PreOpaqueView &p_view, bool p_using_screen_space_shadows);
+	void _pre_opaque_finish_shared(RenderDataRD *p_render_data, const PreOpaqueView &p_view, const PreOpaqueLightingState &p_lighting);
 	void _pre_opaque_render(RenderDataRD *p_render_data, bool p_use_ssao, bool p_use_ssil, bool p_use_ssr, bool p_use_gi, const RID *p_normal_roughness_slices, RID p_voxel_gi_buffer);
+	enum SceneScaleType {
+		SCALE_NONE,
+		SCALE_FSR2,
+		SCALE_MFX,
+		SCALE_DLSS,
+	};
+	// Own cross-stage values and resource references, never stack captures or
+	// copies of RenderDataRD/RenderSceneDataRD. Renderer-wide lists, UBO allocation,
+	// cluster and sky scratch still need a shared frame coordinator before two
+	// preparations may be interleaved; the current wrapper prepares one view.
+	struct ScenePassContext {
+		static constexpr int TEXTURE_MULTISAMPLES[RSE::VIEWPORT_MSAA_MAX] = { 1, 2, 4, 8 };
+
+		Ref<RenderSceneBuffersRD> rb;
+		Ref<RenderBufferDataForwardClustered> rb_data;
+		bool is_reflection_probe = false;
+		bool is_multiview = false;
+		bool ce_needs_motion_vectors = false;
+		bool ce_needs_normal_roughness = false;
+		bool using_taa = false;
+		bool using_upscaling = false;
+		Size2i screen_size;
+		RID color_framebuffer;
+		RID color_only_framebuffer;
+		RendererRD::MaterialStorage::Samplers samplers;
+		uint32_t color_pass_flags = 0;
+		bool using_separate_specular = false;
+		bool using_ssr = false;
+		bool using_sdfgi = false;
+		bool using_voxelgi = false;
+		bool reverse_cull = false;
+		bool using_ssil = false;
+		bool using_motion_pass = false;
+		bool using_sss = false;
+		RID radiance_texture;
+		bool draw_sky = false;
+		bool draw_sky_fog_only = false;
+		float sky_luminance_multiplier = 1.0f;
+		float sky_brightness_multiplier = 1.0f;
+		Color clear_color;
+		bool load_color = false;
+		RSE::ViewportMSAA msaa = RSE::VIEWPORT_MSAA_DISABLED;
+		bool use_msaa = false;
+		bool ce_pre_opaque_resolved_color = false;
+		bool ce_post_opaque_resolved_color = false;
+		bool ce_pre_transparent_resolved_color = false;
+		bool ce_pre_opaque_resolved_depth = false;
+		bool ce_post_opaque_resolved_depth = false;
+		bool ce_pre_transparent_resolved_depth = false;
+		bool debug_voxelgis = false;
+		bool debug_sdfgi_probes = false;
+		bool depth_pre_pass = false;
+		SceneShaderForwardClustered::ShaderSpecialization base_specialization = {};
+		bool using_ssao = false;
+		SceneScaleType scale_type = SCALE_NONE;
+		bool regional = false;
+		bool reset_history = false;
+	};
+	bool _prepare_scene_depth(RenderDataRD *p_render_data, const Color &p_default_bg_color, ScenePassContext &r_context, bool p_reuse_scene = false, const Ref<RenderSceneBuffersRD> &p_parent_buffers = Ref<RenderSceneBuffersRD>());
+	void _render_scene_pre_opaque(RenderDataRD *p_render_data, ScenePassContext &r_context);
+	void _render_scene_color(RenderDataRD *p_render_data, const Color &p_default_bg_color, ScenePassContext &r_context);
+	void _render_scene_present(RenderDataRD *p_render_data, const ScenePassContext &p_context);
+	class HybridPiPData : public RenderBufferCustomDataRD {
+		GDCLASS(HybridPiPData, RenderBufferCustomDataRD);
+
+	public:
+		Ref<RenderSceneBuffersRD> regions[2];
+		RenderSceneDataRD scene_data[2];
+		RenderDataRD render_data[2];
+		Ref<RendererRD::HybridPiP::HybridPiPViewData> compositor;
+		Vector<Vector2> aperture;
+		RendererRD::HybridPiPLayout previous_layout;
+		RendererRD::HybridPiP::Outputs outputs;
+		Size2i output_size;
+		Size2i native_capacity;
+		uint64_t preparation_generation = 0;
+		uint64_t last_frame[3] = {};
+		bool composition_warmed = false;
+		bool screen_effects_warmed = false;
+		bool prepared = false;
+		bool recovering = false;
+		bool produced_parent = false;
+		void clear_borrowed_frame();
+		void configure(RenderSceneBuffersRD *) override { free_data(); }
+		void free_data() override;
+		~HybridPiPData() { free_data(); }
+	};
+	RendererRD::HybridPiP *hybrid_compositor = nullptr;
+	RendererRD::AMDGI *hybrid_gi = nullptr;
+	RendererRD::AMDGI::Environment _hybrid_gi_environment(RenderDataRD *p_render_data, const Ref<RenderSceneBuffersRD> &p_buffers, float p_exposure);
+	void _hybrid_region_data(RenderDataRD *p_parent, HybridPiPData &p_data, uint32_t p_region, const RendererRD::HybridPiPRegion &p_current, const RendererRD::HybridPiPRegion &p_previous);
+	bool _prepare_hybrid_resources(RenderDataRD *p_render_data, HybridPiPData &p_data, const RendererRD::HybridPiPLayout &p_layout, Size2i p_native_target, int p_native_aa, int p_background_mode);
+	bool _render_hybrid_scene(RenderDataRD *p_render_data, const Color &p_default_bg_color);
 	void _process_sss(Ref<RenderSceneBuffersRD> p_render_buffers, const Projection &p_camera);
 
 	/* Debug */

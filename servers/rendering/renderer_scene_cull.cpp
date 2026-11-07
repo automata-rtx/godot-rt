@@ -35,6 +35,7 @@
 #include "core/math/geometry_3d.h"
 #include "core/object/callable_mp.h"
 #include "core/object/worker_thread_pool.h"
+#include "servers/rendering/render_jitter.h"
 #include "servers/rendering/rendering_light_culler.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_default.h"
@@ -79,21 +80,6 @@ static void _rt_report_cpu_cost(uint64_t p_gather_usec, uint64_t p_build_usec) {
 	frames = 0;
 	gather_total = build_total = gather_peak = build_peak = 0;
 }
-
-/* HALTON SEQUENCE */
-
-#ifndef _3D_DISABLED
-static float get_halton_value(int p_index, int p_base) {
-	float f = 1;
-	float r = 0;
-	while (p_index > 0) {
-		f = f / static_cast<float>(p_base);
-		r = r + f * (p_index % p_base);
-		p_index = p_index / p_base;
-	}
-	return r * 2.0f - 1.0f;
-}
-#endif // _3D_DISABLED
 
 /* EVENT QUEUING */
 
@@ -2794,8 +2780,8 @@ void RendererSceneCull::render_camera(const Ref<RenderSceneBuffers> &p_render_bu
 			camera_jitter_array.resize(p_jitter_phase_count);
 
 			for (uint32_t i = current_jitter_count; i < p_jitter_phase_count; i++) {
-				camera_jitter_array[i].x = get_halton_value(i, 2);
-				camera_jitter_array[i].y = get_halton_value(i, 3);
+				camera_jitter_array[i].x = render_halton_value(i, 2);
+				camera_jitter_array[i].y = render_halton_value(i, 3);
 			}
 		}
 
@@ -4522,7 +4508,10 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	const RendererSceneRender::CameraData *prev_camera_data = p_camera_data;
 	if (p_viewport.is_valid()) {
 		occluders_tex = RSG::viewport->viewport_get_occluder_debug_texture(p_viewport);
-		prev_camera_data = RSG::viewport->viewport_get_prev_camera_data(p_viewport);
+		const RendererSceneRender::CameraData *history = RSG::viewport->viewport_get_prev_camera_data(p_viewport);
+		if (history && history->view_count == p_camera_data->view_count && history->is_orthogonal == p_camera_data->is_orthogonal) {
+			prev_camera_data = history;
+		}
 	}
 
 	RENDER_TIMESTAMP("Render 3D Scene");

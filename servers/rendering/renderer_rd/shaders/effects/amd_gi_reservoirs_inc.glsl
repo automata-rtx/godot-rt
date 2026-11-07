@@ -60,12 +60,12 @@ uint reservoir_xxhash(uint value) {
 	return result ^ (result >> 16u);
 }
 float reservoir_cell_size(vec3 position, vec3 eye) {
-	float step = distance(eye, position) * tan(frame.settings.y * 16.0);
+	float step = distance(eye, position) * tan(world_angular_footprint() * 16.0);
 	uint level = uint(log2(1e3 * step));
 	return 1e-3 * exp2(float(level));
 }
 uvec2 reservoir_index_hash(vec3 position, vec3 eye) {
-	float step = distance(eye, position) * tan(frame.settings.y * 16.0);
+	float step = distance(eye, position) * tan(world_angular_footprint() * 16.0);
 	uint level = uint(log2(1e3 * step));
 	float cell_size = 1e-3 * exp2(float(level));
 	uvec3 cell = uvec3(ivec3(floor(position / cell_size)));
@@ -85,11 +85,13 @@ vec3 reservoir_jitter(vec3 position, vec3 normal, inout uint state) {
 	jitter *= reservoir_cell_size(position, params.camera_position.xyz) * sqrt(2.0);
 	return position + jitter.x * b1 + jitter.y * b2;
 }
+void reservoir_reset(uint id);
+#ifdef AMD_GI_WORLD_WRITES
 void reservoir_reset(uint id) {
 	if (id < RESERVOIR_ENTRIES) {
 		light_reservoirs.data[id] = 0u;
 		light_reservoirs.data[RESERVOIR_ENTRIES + id] = 0u;
-		if (frame.grid.w != 0u || frame.options.w != 0u) {
+		if (world_history_reset() || frame.options.w != 0u) {
 			previous_light_reservoirs.data[id] = 0u;
 		}
 	}
@@ -98,6 +100,9 @@ void reservoir_reset(uint id) {
 		light_reservoirs.data[reservoir_entries_offset() + id] = INVALID;
 	}
 }
+#endif
+void reservoir_insert(uint id, vec3 position);
+#ifdef AMD_GI_WORLD_WRITES
 void reservoir_insert(uint id, vec3 position) {
 	uvec2 key = reservoir_index_hash(position, params.camera_position.xyz);
 	for (uint i = 0u; i < 16u; i++) {
@@ -112,8 +117,13 @@ void reservoir_insert(uint id, vec3 position) {
 		return;
 	}
 }
+#endif
 uint reservoir_find_previous(vec3 position) {
+#ifdef AMD_GI_REGIONAL_BATCH
+	uvec2 key = reservoir_index_hash(position, frame.previous_parent_eye.xyz);
+#else
 	uvec2 key = reservoir_index_hash(position, frame.previous_eye.xyz);
+#endif
 	for (uint i = 0u; i < 16u; i++) {
 		uint entry = key.x * 16u + i;
 		uint hash = previous_light_reservoirs.data[entry];
@@ -130,6 +140,8 @@ uvec4 reservoir_load_previous(uint id) {
 	uint base = 3u * RESERVOIR_ENTRIES + 4u * id;
 	return uvec4(previous_light_reservoirs.data[base], previous_light_reservoirs.data[base + 1u], previous_light_reservoirs.data[base + 2u], previous_light_reservoirs.data[base + 3u]);
 }
+void reservoir_store(uint id, uvec4 packed, vec3 normal);
+#ifdef AMD_GI_WORLD_WRITES
 void reservoir_store(uint id, uvec4 packed, vec3 normal) {
 	uint base = 3u * RESERVOIR_ENTRIES + 4u * id;
 	for (uint i = 0u; i < 4u; i++) {
@@ -137,6 +149,7 @@ void reservoir_store(uint id, uvec4 packed, vec3 normal) {
 	}
 	light_reservoirs.data[reservoir_normals_offset() + id] = pack_reservoir_normal(normal);
 }
+#endif
 uint reservoir_previous_prefix(uint entry) {
 	uint block = entry / 256u;
 	uint scan = reservoir_scan_offset();
@@ -145,6 +158,8 @@ uint reservoir_previous_prefix(uint entry) {
 
 // Three-level exclusive integer scan, equivalent to gfxCommandScanSum. Keep
 // dispatch barriers between levels and compaction; no floating-point atomics.
+void reservoir_scan(uint group, uint lane, uint level);
+#ifdef AMD_GI_WORLD_WRITES
 void reservoir_scan(uint group, uint lane, uint level) {
 	uint scan = reservoir_scan_offset();
 	uint count = level == 0u ? RESERVOIR_ENTRIES : (level == 1u ? RESERVOIR_BLOCKS : RESERVOIR_TOP_BLOCKS);
@@ -177,6 +192,9 @@ void reservoir_scan(uint group, uint lane, uint level) {
 		light_reservoirs.data[scan + (level == 0u ? 0u : 2u * RESERVOIR_BLOCKS) + group] = prefix_scan[255];
 	}
 }
+#endif
+void reservoir_compact(uint id);
+#ifdef AMD_GI_WORLD_WRITES
 void reservoir_compact(uint id) {
 	if (id >= reservoir_capacity()) {
 		return;
@@ -191,3 +209,4 @@ void reservoir_compact(uint id) {
 	uint slot = light_reservoirs.data[reservoir_slots_offset() + id];
 	light_reservoirs.data[reservoir_values_offset() + prefix + slot] = id;
 }
+#endif

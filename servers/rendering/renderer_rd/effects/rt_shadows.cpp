@@ -131,7 +131,7 @@ RTShadows::~RTShadows() {
 
 void RTShadows::_trace(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, const Buffers &p_buffers,
 		const Size2i &p_size, const Projection &p_inv_view_projection,
-		const Transform3D &p_camera_transform, float p_focal_pixels, uint32_t p_light_count,
+		const Transform3D &p_camera_transform, float p_focal_pixels, const PreparedFrame &p_frame,
 		const Settings &p_settings) {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 	TextureStorage *texture_storage = TextureStorage::get_singleton();
@@ -203,9 +203,9 @@ void RTShadows::_trace(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, 
 	push_constant.camera_rotation[3] = camera_rotation.w;
 	push_constant.screen_size[0] = p_size.x;
 	push_constant.screen_size[1] = p_size.y;
-	push_constant.light_count = p_light_count;
+	push_constant.light_count = p_frame.light_count;
 	const uint32_t sample_count = CLAMP(p_settings.sample_count, 1u, 255u);
-	push_constant.samples_and_frame = sample_count | ((frame_index & 0xffffffu) << 8);
+	push_constant.samples_and_frame = sample_count | ((p_frame.sample_phase & 0xffffffu) << 8);
 	store_vector3(p_camera_transform.origin, push_constant.camera_position);
 	push_constant.max_ray_distance = p_settings.max_ray_distance;
 	push_constant.focal_pixels = p_focal_pixels;
@@ -226,7 +226,7 @@ void RTShadows::_trace(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, 
 
 void RTShadows::_temporal(RID p_depth_texture, RID p_normal_roughness, const Quaternion &p_previous_view_rotation, const Buffers &p_buffers, const Size2i &p_size,
 		const Projection &p_reprojection, const Projection &p_inv_projection,
-		const Settings &p_settings) {
+		const Settings &p_settings, uint32_t p_sample_phase, bool p_history_valid) {
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 	RID sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 
@@ -271,9 +271,11 @@ void RTShadows::_temporal(RID p_depth_texture, RID p_normal_roughness, const Qua
 	push_constant.depth_unproject[3] = p_inv_projection.columns[3][3];
 	push_constant.screen_size[0] = p_size.x;
 	push_constant.screen_size[1] = p_size.y;
-	push_constant.max_history = MAX(1.0f, p_settings.max_history);
+	// The shader writes the fresh visibility and age before testing this limit.
+	// Bypass historical reads while retaining spatial filtering and history writes.
+	push_constant.max_history = p_history_valid ? MAX(1.0f, p_settings.max_history) : 1.0f;
 	push_constant.clamp_sigma = MAX(0.0f, p_settings.history_clamp_sigma);
-	push_constant.frame_index = frame_index;
+	push_constant.frame_index = p_sample_phase;
 	push_constant.previous_view_rotation[0] = p_previous_view_rotation.x;
 	push_constant.previous_view_rotation[1] = p_previous_view_rotation.y;
 	push_constant.previous_view_rotation[2] = p_previous_view_rotation.z;
@@ -369,6 +371,24 @@ bool RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 	}
 
 	frame_index++;
+	PreparedFrame frame;
+	if (!prepare_frame(p_lights, frame_index, frame)) {
+		return false;
+	}
+	return render_prepared(p_tlas, p_depth_texture, p_normal_roughness, p_buffers, p_screen_size,
+			p_camera_projection, p_camera_transform, p_prev_camera_projection, p_prev_camera_transform, frame, p_settings);
+}
+
+bool RTShadows::prepare_frame(const LocalVector<LightParams> &p_lights, uint32_t p_sample_phase, PreparedFrame &r_frame) {
+	r_frame = PreparedFrame();
+	// Invalidate earlier tokens even when this preparation cannot produce lights.
+	preparation_generation++;
+	if (preparation_generation == 0) {
+		preparation_generation = 1;
+	}
+	if (!valid || p_lights.is_empty()) {
+		return false;
+	}
 
 	const uint32_t light_count = MIN((uint32_t)p_lights.size(), MAX_RT_LIGHTS);
 
@@ -376,7 +396,27 @@ bool RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 	if (light_buffer.is_null()) {
 		return false;
 	}
-	RD::get_singleton()->buffer_update(light_buffer, 0, sizeof(LightParams) * light_count, p_lights.ptr());
+	if (RD::get_singleton()->buffer_update(light_buffer, 0, sizeof(LightParams) * light_count, p_lights.ptr()) != OK) {
+		return false;
+	}
+	r_frame.owner = this;
+	r_frame.generation = preparation_generation;
+	r_frame.light_count = light_count;
+	r_frame.sample_phase = p_sample_phase;
+	return true;
+}
+
+bool RTShadows::render_prepared(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
+		const Buffers &p_buffers, const Size2i &p_screen_size,
+		const Projection &p_camera_projection, const Transform3D &p_camera_transform,
+		const Projection &p_prev_camera_projection, const Transform3D &p_prev_camera_transform,
+		const PreparedFrame &p_frame, const Settings &p_settings, bool p_history_valid) {
+	if (!valid || p_tlas.is_null() || light_buffer.is_null() ||
+			p_frame.owner != this || p_frame.generation != preparation_generation || p_frame.light_count == 0 ||
+			p_buffers.output_mask.is_null() || p_buffers.output_index.is_null() ||
+			p_buffers.raw_hit_distance.is_null()) {
+		return false;
+	}
 
 	// The acceleration structure lives in world space, so rays are traced there.
 	const Projection view_projection = p_camera_projection * Projection(p_camera_transform.affine_inverse());
@@ -387,7 +427,7 @@ bool RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 	const float focal_pixels = float(p_screen_size.y) * 0.5f * (float)p_camera_projection.columns[1][1];
 
 	_trace(p_tlas, p_depth_texture, p_normal_roughness, p_buffers, p_screen_size, inv_view_projection,
-			p_camera_transform, Math::abs(focal_pixels), light_count, p_settings);
+			p_camera_transform, Math::abs(focal_pixels), p_frame, p_settings);
 
 	const bool denoise = p_settings.denoise && p_normal_roughness.is_valid() &&
 			temporal_pipeline.is_valid() && atrous_pipeline.is_valid() &&
@@ -401,19 +441,22 @@ bool RTShadows::render(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
 		return true;
 	}
 
-	// Straight from this frame's clip space to the previous frame's, which is
-	// exact for static geometry under any camera movement. On the first frame of
-	// a viewport the previous camera is still the identity; the resulting history
-	// lookups fail the surface test rather than producing a smear.
-	const Projection prev_view_projection = p_prev_camera_projection * Projection(p_prev_camera_transform.affine_inverse());
-	const Projection reprojection = prev_view_projection * inv_view_projection;
+	// Straight from this frame's clip space to the region's previous clip space,
+	// exact for static geometry. Do not inspect an absent previous camera when
+	// this region has explicitly rejected its history.
+	Projection reprojection;
+	Quaternion previous_view_rotation;
+	if (p_history_valid) {
+		const Projection prev_view_projection = p_prev_camera_projection * Projection(p_prev_camera_transform.affine_inverse());
+		reprojection = prev_view_projection * inv_view_projection;
+		previous_view_rotation = (p_prev_camera_transform.basis.inverse() * p_camera_transform.basis).get_rotation_quaternion();
+	}
 
 	// The denoiser works on the mask in place: the temporal pass reads it and the
 	// last a-trous pass writes it back.
 	const Projection inv_projection = p_camera_projection.inverse();
 
-	const Quaternion previous_view_rotation = (p_prev_camera_transform.basis.inverse() * p_camera_transform.basis).get_rotation_quaternion();
-	_temporal(p_depth_texture, p_normal_roughness, previous_view_rotation, p_buffers, p_screen_size, reprojection, inv_projection, p_settings);
+	_temporal(p_depth_texture, p_normal_roughness, previous_view_rotation, p_buffers, p_screen_size, reprojection, inv_projection, p_settings, p_frame.sample_phase, p_history_valid);
 
 	// A-trous iterations with a doubling step. The first iteration is the one
 	// that writes the history, and what it stores is its own INPUT -- the

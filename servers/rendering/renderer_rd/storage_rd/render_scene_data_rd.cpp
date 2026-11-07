@@ -30,6 +30,7 @@
 
 #include "render_scene_data_rd.h"
 
+#include "servers/rendering/renderer_rd/hybrid_pip_layout.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
@@ -37,6 +38,53 @@
 
 Transform3D RenderSceneDataRD::get_cam_transform() const {
 	return cam_transform;
+}
+
+void RenderSceneDataRD::configure_region_from(const RenderSceneDataRD &p_parent, const RendererRD::HybridPiPRegion &p_current, const RendererRD::HybridPiPRegion &p_previous) {
+	ERR_FAIL_COND(!p_current.is_valid() || !p_previous.is_valid() || p_parent.view_count != 1 || p_parent.cam_orthogonal || !p_parent.flip_y);
+	// Copy value state explicitly: Object/RefCounted identity and its borrowed
+	// uniform-buffer handle must never be copied between logical and regional views.
+	calculate_motion_vectors = p_parent.calculate_motion_vectors;
+	reset_camera_history = p_parent.reset_camera_history;
+	cam_transform = p_parent.cam_transform;
+	cam_projection = p_current.crop_projection(p_parent.cam_projection);
+	taa_jitter = p_current.parent_to_region_jitter(p_parent.taa_jitter);
+	taa_frame_count = p_parent.taa_frame_count;
+	camera_visible_layers = p_parent.camera_visible_layers;
+	cam_orthogonal = false;
+	flip_y = p_parent.flip_y;
+	main_cam_transform = p_parent.main_cam_transform;
+	view_count = 1;
+	view_eye_offset[0] = p_parent.view_eye_offset[0];
+	view_projection[0] = p_current.crop_projection(p_parent.view_projection[0]);
+	prev_cam_transform = p_parent.prev_cam_transform;
+	prev_cam_projection = p_previous.crop_projection(p_parent.prev_cam_projection);
+	prev_taa_jitter = p_previous.parent_to_region_jitter(p_parent.prev_taa_jitter);
+	prev_view_projection[0] = p_previous.crop_projection(p_parent.prev_view_projection[0]);
+	z_near = p_parent.z_near;
+	z_far = p_parent.z_far;
+	lod_distance_multiplier = p_parent.lod_distance_multiplier;
+	screen_mesh_lod_threshold = p_parent.screen_mesh_lod_threshold;
+	directional_light_count = p_parent.directional_light_count;
+	dual_paraboloid_side = p_parent.dual_paraboloid_side;
+	opaque_prepass_threshold = p_parent.opaque_prepass_threshold;
+	material_uv2_mode = p_parent.material_uv2_mode;
+	material_triangle_mode = p_parent.material_triangle_mode;
+	emissive_exposure_normalization = p_parent.emissive_exposure_normalization;
+	shadow_pass = p_parent.shadow_pass;
+	alpha_pass = p_parent.alpha_pass;
+	shadow_atlas_pixel_size = p_parent.shadow_atlas_pixel_size;
+	directional_shadow_pixel_size = p_parent.directional_shadow_pixel_size;
+	radiance_pixel_size = p_parent.radiance_pixel_size;
+	radiance_border_size = p_parent.radiance_border_size;
+	reflection_atlas_border_size = p_parent.reflection_atlas_border_size;
+	time = p_parent.time;
+	time_step = p_parent.time_step;
+	regional_view = true;
+	parent_screen_size = p_current.parent_size;
+	const Vector2 uv_scale = Vector2(p_current.output_rect.size) / Vector2(parent_screen_size);
+	const Vector2 uv_offset = Vector2(p_current.output_rect.position) / Vector2(parent_screen_size);
+	region_to_parent_uv = Vector4(uv_scale.x, uv_scale.y, uv_offset.x, uv_offset.y);
 }
 
 Projection RenderSceneDataRD::get_cam_projection() const {
@@ -135,6 +183,17 @@ void RenderSceneDataRD::update_ubo(RID p_uniform_buffer, RSE::ViewportDebugDraw 
 	Size2 screen_pixel_size = Vector2(1.0, 1.0) / Size2(p_screen_size);
 	ubo.screen_pixel_size[0] = screen_pixel_size.x;
 	ubo.screen_pixel_size[1] = screen_pixel_size.y;
+	ubo.regional_view = regional_view;
+	for (int i = 0; i < 4; i++) {
+		ubo.region_to_parent_uv[i] = region_to_parent_uv[i];
+	}
+	const Size2i logical_size = regional_view ? parent_screen_size : p_screen_size;
+	ubo.parent_screen_pixel_size[0] = 1.0f / MAX(logical_size.x, 1);
+	ubo.parent_screen_pixel_size[1] = 1.0f / MAX(logical_size.y, 1);
+	if (regional_view) {
+		ubo.viewport_size[0] = parent_screen_size.x;
+		ubo.viewport_size[1] = parent_screen_size.y;
+	}
 
 	ubo.shadow_atlas_pixel_size[0] = shadow_atlas_pixel_size.x;
 	ubo.shadow_atlas_pixel_size[1] = shadow_atlas_pixel_size.y;

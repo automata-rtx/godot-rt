@@ -45,6 +45,13 @@ relevant route below; do not load all feature notes, history or proof logs.
 - US English. Run repository hooks before pushing over the entire change range:
   `prek run --from-ref origin/master --to-ref HEAD`. Hooks can rewrite files;
   inspect the result and include any corrections.
+- A successful local editor or clang CI job does not establish Windows matrix
+  success. For C++ changes, compile affected editor/template objects with
+  `dev_mode=yes` (warnings as errors and tests enabled), then inspect all four
+  Windows jobs for the exact published commit. Keep CI's warning policy enabled.
+  Before integrating another branch, preserve previously verified build fixes;
+  fixes on a test branch do not automatically exist on `master`. See
+  [CI validation](docs/VALIDATION.md#windows-ci-and-branch-integration).
 - Bound API/property changes need class reference regeneration with the matching
   engine's `--headless --doctool .`, when runtime execution is authorized. Do not
   claim regenerated docs if XML was maintained manually.

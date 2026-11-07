@@ -22,6 +22,44 @@ do not discard all warnings/errors to get a green fixture.
 
 ## Regression routes
 
+### HybridPiP regional rendering
+
+For resident ADS, verify no regional allocation is requested before a scoped equip, repeated active toggles reuse the same preparation generation, and disabling on unequip releases the scope parent. Check the ordinary upscaler after release, a size change, live-owner teardown and actual activation in a matching export. The [portable contract](../GodotForkDocs/features/hybrid-pip.md) distinguishes the resident and original preparation APIs.
+
+Use the [regional fixtures](validation/hybrid_pip/README.md) and
+[recorded results/open gates](validation/hybrid_pip/RESULTS.md). Cover both
+feature-off and prepared-uniform behavior, regional histories, GI queue variants,
+shader failure and live-owner shutdown. A visible image or `ready=true` does not
+establish useful GPU savings, all supported AA quality, or zero ADS spikes.
+
+### Windows CI and branch integration
+
+Local release-style builds normally omit strict warnings and unit-test sources.
+The Windows workflow uses `dev_mode=yes`: extra warnings, warnings as errors,
+tests, and strict checks. Compile affected objects with that policy before
+publication; include the release-template configuration for non-editor code.
+Object-only checks do not create a new editor or replace full link/test coverage.
+
+After publication, inspect the exact commit's static checks and all four Windows
+jobs: MSVC editor, clang-cl editor, MSVC release template, and GCC release
+template. A passing clang editor is insufficient. Distinguish compilation,
+packaging, test, and infrastructure failures using the failed step's log; do not
+disable warnings or tests to make the matrix green.
+
+Fetch the destination branch before integration and preserve fixes verified on
+other branches. A successful run on a test branch is not evidence that `master`
+contains its fixes. Check both ancestry and the resulting source when integrating
+divergent or cherry-picked histories; avoid replacing whole files from an older
+branch without reviewing the fixes that replacement would discard.
+
+The existing workflow compiles `amd_gi.cpp` and its pipeline-preparation test
+early with each matrix entry's own flags, then continues the full build. These
+early targets reduce the time to find recurring failures; they are not the full
+acceptance gate. See the [2026-11-06 CI investigation](validation/windows_ci_2026_11_06.md)
+for the branch and compiler evidence.
+
+### Feature checks
+
 | Changed area | Existing entry points (under `docs/validation/` unless stated) |
 | --- | --- |
 | GI asynchronous preparation and cache reuse | `shadow_validation/amd_gi_preparation.gd` with `--reverse`, `GODOT_AMD_GI_FAIL_MATERIAL_PIPELINE=once:last`, and separate `--quit-pending` run; keep fixture blocking unset; then cold/cached target-game loading passes |

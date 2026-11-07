@@ -40,7 +40,12 @@ public:
 	TAA();
 	~TAA();
 
-	void process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_format, float p_z_near, float p_z_far);
+	// Reset invalid screen history without destroying prepared textures. The
+	// current frame refreshes both color and velocity history for the next call.
+	// A crop uses the complete logical-view resolution at the crop's sampling
+	// density for variance tuning. Zero retains the original internal-size rule.
+	// This reference never changes dispatch dimensions or motion-vector units.
+	void process(Ref<RenderSceneBuffersRD> p_render_buffers, RD::DataFormat p_format, float p_z_near, float p_z_far, bool p_reset_history = false, const Size2i &p_reference_size = Size2i());
 
 private:
 	struct TAAResolvePushConstant {
@@ -54,7 +59,7 @@ private:
 	RID shader_version;
 	RID pipeline;
 
-	void resolve(RID p_frame, RID p_temp, RID p_depth, RID p_velocity, RID p_prev_velocity, RID p_history, Size2 p_resolution, float p_z_near, float p_z_far);
+	void resolve(RID p_frame, RID p_temp, RID p_depth, RID p_velocity, RID p_prev_velocity, RID p_history, Size2 p_resolution, float p_z_near, float p_z_far, const Size2i &p_reference_size);
 };
 
 } // namespace RendererRD

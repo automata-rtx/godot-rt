@@ -203,7 +203,7 @@ void RenderSceneBuffersRD::configure(const RenderSceneBuffersConfiguration *p_co
 
 	ERR_FAIL_COND_MSG(view_count == 0, "Must have at least 1 view");
 
-	vrs_mode = texture_storage->render_target_get_vrs_mode(render_target);
+	vrs_mode = p_config->get_allow_target_vrs() ? texture_storage->render_target_get_vrs_mode(render_target) : RSE::VIEWPORT_VRS_DISABLED;
 
 	update_samplers();
 

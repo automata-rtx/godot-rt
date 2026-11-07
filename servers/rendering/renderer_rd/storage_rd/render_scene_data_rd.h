@@ -36,11 +36,16 @@
 // This is a container for data related to rendering a single frame of a viewport where we load this data into a UBO
 // that can be used by the main scene shader but also by various effects.
 
+namespace RendererRD {
+struct HybridPiPRegion;
+}
+
 class RenderSceneDataRD : public RenderSceneData {
 	GDCLASS(RenderSceneDataRD, RenderSceneData);
 
 public:
 	bool calculate_motion_vectors = false;
+	bool reset_camera_history = false;
 
 	Transform3D cam_transform;
 	Projection cam_projection;
@@ -49,6 +54,9 @@ public:
 	uint32_t camera_visible_layers;
 	bool cam_orthogonal = false;
 	bool flip_y = false;
+	bool regional_view = false;
+	Vector4 region_to_parent_uv = Vector4(1, 1, 0, 0);
+	Size2i parent_screen_size;
 
 	// For billboards to cast correct shadows.
 	Transform3D main_cam_transform;
@@ -84,14 +92,15 @@ public:
 	Size2 shadow_atlas_pixel_size;
 	Size2 directional_shadow_pixel_size;
 
-	float radiance_pixel_size;
-	float radiance_border_size;
+	float radiance_pixel_size = 0.0f;
+	float radiance_border_size = 0.0f;
 	Size2 reflection_atlas_border_size;
 
 	float time;
 	float time_step;
 
 	virtual Transform3D get_cam_transform() const override;
+	void configure_region_from(const RenderSceneDataRD &p_parent, const RendererRD::HybridPiPRegion &p_current, const RendererRD::HybridPiPRegion &p_previous);
 	virtual Projection get_cam_projection() const override;
 
 	virtual uint32_t get_view_count() const override;
@@ -140,6 +149,10 @@ private:
 
 		float viewport_size[2];
 		float screen_pixel_size[2];
+		float region_to_parent_uv[4];
+		float parent_screen_pixel_size[2];
+		uint32_t regional_view;
+		uint32_t region_padding;
 
 		float directional_penumbra_shadow_kernel[128]; //32 vec4s
 		float directional_soft_shadow_kernel[128];

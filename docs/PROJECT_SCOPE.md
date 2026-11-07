@@ -16,6 +16,8 @@ them into unrelated projects as Godot requirements. Source audit: 2026-10-26.
   settings may be used for authorized diagnosis; do not silently persist tests.
 - Check the current conversation before running Godot or a game. An old successful
   run, this document, or an archived authorization does not grant new permission.
+- The former Game Director chat is retired. Omit it from all benchmark coordination
+  and release messages. Check for competing workloads locally before timing.
 - For this owner's GI/reflection tests, turn grass off and prefer a bounded
   windowed resolution such as 1280x720. Preserve original saves/preferences.
 - The desktop target is an RTX 5090. The laptop target is a Ryzen 7 7840HS with

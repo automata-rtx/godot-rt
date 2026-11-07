@@ -12,6 +12,7 @@ paths are certified. Controls: [portable guide](../GodotForkDocs/FORK_GUIDE.md).
 | VBAO | Selectable visibility-bitmask ambient occlusion | Reference/scoring rigs exist; scene-dependent screen-space limitations remain |
 | Screen-space shadows | Directional depth-based contact shadow with caster filtering | Existing analytic/RT comparisons; screen boundaries and depth-layer omissions are method limits |
 | AMD GI core | Cached diffuse and glossy paths, light/sky proposals, multibounce, native material adapter | Runs in the owner's project; full AMD image parity and target performance are not certified |
+| HybridPiP branch | Opt-in resident scope renderer, separate hip-fire upscaler, magnified DLSS lens, reconstructed periphery, regional GI and shadows. [Build and integration](../GodotForkDocs/features/hybrid-pip.md) | Owner confirmed smooth repeated ADS in the sandbox. The 3× headless check passed 12 toggles with unchanged preparation generation. Production weapon integration, export runtime verification and incremental resident VRAM remain open. [Earlier B3 comparison](validation/hybrid_pip/B3_GPU_COMPARISON.md) |
 | GI scene/CPU hardening | Same-frame AS preparation, conditional refit, material/geometry reuse, ordinary MultiMesh, light/emitter update separation, preparation recovery | Scene metadata, MultiMesh/deformation image references, 21-stage binding/resource lifecycle and injected preparation recovery passed on RTX 5090. This does not certify every prepared fixture |
 | GI optional controls | Three sky modes, alternative reflection filtering, debug views, statistics and exclusion reports | Runtime-options fixture passed with binding validation; visual acceptance of every visualizer in every project remains separate |
 | GI preparation/reflection optimizations | MultiMesh placement reuse, per-update shared geometry preparation, validated descriptor reuse, exact-default firefly rank shortcut | Independent reviews, targeted GPU regressions and Live World benchmarks passed; approximately 4–5% less CPU renderer time in the measured view. [Evidence and limits](validation/amd_gi_optimization_2026_10_26/RESULTS.md) |
@@ -22,9 +23,10 @@ paths are certified. Controls: [portable guide](../GodotForkDocs/FORK_GUIDE.md).
 
 ## Open project observations
 
-**Local build delivery (2026-11-06).** The standard desktop shortcut points to the
-latest local settings-editor build in the engine checkout, SHA-256
-`F752866DA77677EE337F4449503B425AEF85F00DAEF5AA2D7815C47146485E56`.
+**Local build delivery (2026-11-07).** The standard desktop shortcut points to the
+latest local HybridPiP development editor in the engine checkout, SHA-256
+`E7013C88614305E0A5B013E49F54CCF7096418B8220920B555354133FEC82C19`.
+Its regional feature remains off by default. See the branch's validation limits above.
 Future successful local editor builds must update/verify this shortcut.
 `Desktop/GodotRTGI` is now reserved for Actions downloads; its existing executable
 was not replaced by this policy change. See [delivery rules](PROJECT_SCOPE.md#local-build-delivery).

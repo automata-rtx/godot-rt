@@ -96,6 +96,17 @@ func _stage(label: String, enabled: bool = true, frames: int = 8) -> void:
 	for frame in frames:
 		await process_frame
 		await RenderingServer.frame_post_draw
+	if enabled:
+		# A source edit may start asynchronous native-material compilation. The
+		# ordinary fixed-frame descriptor assertions begin after that explicit
+		# readiness boundary; waiting only at startup races shader replacement.
+		var preparing := false
+		for view in _views:
+			var preparation := RenderingServer.viewport_get_amd_gi_preparation_status(view.get_viewport_rid())
+			preparing = preparing or not preparation.get("ready", false)
+		if preparing:
+			await _wait_for_gi(label + "_material_preparation")
+			await RenderingServer.frame_post_draw
 	var stage_record := {"stage": label, "views": []}
 	for index in _views.size():
 		var view := _views[index]
@@ -118,8 +129,8 @@ func _stage(label: String, enabled: bool = true, frames: int = 8) -> void:
 
 
 func _wait_for_gi(label: String) -> void:
-	# Cold preparation and explicit fault injection use a wall-clock backoff.
-	# Ordinary mutation stages still retain their fixed-frame assertions.
+	# Cold preparation, shader replacement and explicit fault injection use a
+	# wall-clock bound. Ready descriptor-only mutations keep fixed-frame checks.
 	var start := Time.get_ticks_msec()
 	var deadline := start + 90000
 	while Time.get_ticks_msec() < deadline:
@@ -127,8 +138,9 @@ func _wait_for_gi(label: String) -> void:
 		await RenderingServer.frame_post_draw
 		var ready := true
 		for view in _views:
+			var preparation := RenderingServer.viewport_get_amd_gi_preparation_status(view.get_viewport_rid())
 			var info := RenderingServer.viewport_get_amd_gi_diagnostics(view.get_viewport_rid())
-			ready = ready and int(info.get("frame", -1)) >= 1 and info.get("size", Vector2i.ZERO) == view.size
+			ready = ready and preparation.get("ready", false) and int(info.get("frame", -1)) >= 1 and info.get("size", Vector2i.ZERO) == view.size
 		if ready:
 			_readiness_waits.append({"stage": label, "milliseconds": Time.get_ticks_msec() - start, "ready": true})
 			return
@@ -184,6 +196,11 @@ func _run() -> void:
 	await _stage("uniform_bytes_same_descriptor")
 	_shader.code = SOURCE.replace("ROUGHNESS = 0.2;", "ROUGHNESS = 0.35;")
 	await _stage("shader_version_replacement")
+	# Raster and ray-hit material compilers share defaults, but their coordinate
+	# providers differ. A helper exercises both compiler scopes without sampling
+	# screen textures (which have a separate compatibility contract).
+	_shader.code = SOURCE.replace("void fragment() {", "vec3 coordinate_helper(vec2 screen_position, vec4 fragment_position) { return vec3(screen_position, fragment_position.x * 0.001); }\nvoid fragment() {").replace("ROUGHNESS = 0.2;", "ALBEDO += abs(coordinate_helper(SCREEN_UV, FRAGCOORD)) * 0.001;\n    ROUGHNESS = 0.2;")
+	await _stage("screen_coordinate_material_helper")
 	_views[0].size = Vector2i(333, 187)
 	await _stage("odd_viewport_resize")
 	ProjectSettings.set_setting(GI + "reflections/half_resolution", false)

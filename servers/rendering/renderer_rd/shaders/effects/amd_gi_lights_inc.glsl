@@ -38,10 +38,15 @@ uint ordered_float(float f) {
 float unordered_float(uint u) {
 	return uintBitsToFloat((u & 0x80000000u) != 0u ? u ^ 0x80000000u : ~u);
 }
+void reset_light_bounds();
+#ifdef AMD_GI_WORLD_WRITES
 void reset_light_bounds() {
 	light_grid.minimum = uvec4(0xffffffffu);
 	light_grid.maximum = uvec4(0u);
 }
+#endif
+void register_light_bounds(vec3 position);
+#ifdef AMD_GI_WORLD_WRITES
 void register_light_bounds(vec3 position) {
 	// requestLightSampleLocation is part of registering the visibility hit,
 	// as in Capsaicin. No full-capacity ray scan or extra bounds pass.
@@ -50,6 +55,7 @@ void register_light_bounds(vec3 position) {
 		atomicMax(light_grid.maximum[axis], ordered_float(position[axis]));
 	}
 }
+#endif
 void light_grid_configuration(out vec3 minimum, out vec3 cell_size, out uvec3 dimensions) {
 	if (light_grid.minimum.x == 0xffffffffu) {
 		minimum = params.camera_position.xyz - vec3(1);
@@ -119,6 +125,8 @@ bool finite_zero_proposal(Emitter light) {
 	float margin = max(0.01, max(magnitude, max(max(abs(size.x), abs(size.y)), abs(size.z))) * 0.00001);
 	return length(center - nearest) > margin;
 }
+void prepare_light(uint light_index);
+#ifdef AMD_GI_WORLD_WRITES
 void prepare_light(uint light_index) {
 	if (light_index >= gi_light_count()) {
 		return;
@@ -149,6 +157,9 @@ void prepare_light(uint light_index) {
 		}
 	}
 }
+#endif
+void prepare_light_mask(uint id);
+#ifdef AMD_GI_WORLD_WRITES
 void prepare_light_mask(uint id) {
 	uint leaf = id / 64u, lane = id % 64u;
 	if (leaf >= proposal_leaf_count() || lane >= proposal_strata()) {
@@ -165,6 +176,7 @@ void prepare_light_mask(uint id) {
 		}
 	}
 }
+#endif
 float gi_volume_weight(uint index, vec3 minimum, vec3 extent, bool prepared) {
 	vec3 color;
 	float weight = 0.0;
@@ -245,6 +257,8 @@ bool gi_stream_select(float weight, inout float total, inout float residual, ino
 	}
 	return false;
 }
+void build_light_grid(uint cell_index, uint lane);
+#ifdef AMD_GI_WORLD_WRITES
 void build_light_grid(uint cell_index, uint lane) {
 	vec3 minimum, cell_size;
 	uvec3 dimensions;
@@ -304,6 +318,7 @@ void build_light_grid(uint cell_index, uint lane) {
 #endif
 	light_grid.data[cell_index * 64u + lane] = uvec4(selected, floatBitsToUint(selected_weight), floatBitsToUint(total), 0u);
 }
+#endif
 uint light_grid_segment(uint start, uint count, inout uint rng, out float pdf) {
 	float residual = random_float(rng), none = 1.0, total = 0.0, selected_weight = 0.0;
 	uint selected = INVALID;
@@ -409,6 +424,8 @@ bool gi_confirm_unlit_analytic_hit(RayHit ray) {
 	}
 	return true;
 }
+vec3 resampled_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_cell);
+#ifdef AMD_GI_WORLD_WRITES
 vec3 resampled_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_cell) {
 	update_cell = false;
 	vec3 shading_normal = ray.normal_mask.xyz;
@@ -476,7 +493,11 @@ vec3 resampled_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_c
 		// origin-to-hit distance and cell-size predicate.
 		hit_samples.data[hit_id].links.w = uint(ray.position.w < cache_cell_size(ray.position.xyz));
 	}
+#ifdef AMD_GI_REGIONAL_BATCH
+	uint resample_rng = frame.tracing.w != 0u ? gi_random(atomicAdd(batch_work.counts.w, 1u)) : 0u;
+#else
 	uint resample_rng = frame.tracing.w != 0u ? gi_random(atomicAdd(work.counts.w, 1u)) : 0u;
+#endif
 	if (frame.tracing.w != 0u && hit_id != INVALID) {
 		reservoir_insert(hit_id, reservoir_jitter(ray.position.xyz, ray.normal_mask.xyz, rng));
 	}
@@ -542,9 +563,12 @@ vec3 resampled_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_c
 	}
 	return value * (weight * visibility);
 }
+#endif
 vec3 diffuse_hit_emission(RayHit ray) {
 	return ray.emission.rgb;
 }
+vec3 shade_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_cell);
+#ifdef AMD_GI_WORLD_WRITES
 vec3 shade_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_cell) {
 	update_cell = false;
 	// GenerateReservoirs stops at an emissive primary hit; Le is injected into
@@ -558,8 +582,12 @@ vec3 shade_direct(RayHit ray, inout uint rng, uint hit_id, out bool update_cell)
 	update_cell = gi_confirm_unlit_analytic_hit(ray);
 	return vec3(0);
 }
+#endif
 
+vec3 shade_direct(RayHit ray, inout uint rng, uint hit_id);
+#ifdef AMD_GI_WORLD_WRITES
 vec3 shade_direct(RayHit ray, inout uint rng, uint hit_id) {
 	bool update_cell;
 	return shade_direct(ray, rng, hit_id, update_cell);
 }
+#endif

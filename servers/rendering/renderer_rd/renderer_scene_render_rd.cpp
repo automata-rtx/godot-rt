@@ -1321,7 +1321,7 @@ void RendererSceneRenderRD::_update_vrs(Ref<RenderSceneBuffersRD> p_render_buffe
 		return;
 	}
 
-	if (vrs) {
+	if (vrs && p_render_buffers->get_vrs_mode() != RSE::VIEWPORT_VRS_DISABLED) {
 		RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
 
 		RSE::ViewportVRSMode vrs_mode = texture_storage->render_target_get_vrs_mode(render_target);
@@ -1380,6 +1380,7 @@ void RendererSceneRenderRD::render_scene(const Ref<RenderSceneBuffers> &p_render
 	RenderSceneDataRD scene_data;
 	{
 		// Our first camera is used by default
+		scene_data.reset_camera_history = p_camera_data == p_prev_camera_data;
 		scene_data.cam_transform = p_camera_data->main_transform;
 		scene_data.cam_projection = p_camera_data->main_projection;
 		scene_data.cam_orthogonal = p_camera_data->is_orthogonal;
@@ -1546,7 +1547,7 @@ void RendererSceneRenderRD::_process_frame_generation(const Ref<RenderSceneBuffe
 
 	const RID render_target = p_render_buffers->get_render_target();
 
-	bool enabled = GLOBAL_GET_CACHED(bool, "rendering/streamline/frame_generation") &&
+	bool enabled = !p_render_buffers->get_hybrid_pip_configuration().resident_parent && GLOBAL_GET_CACHED(bool, "rendering/streamline/frame_generation") &&
 			RendererRD::DLSSFrameGeneration::is_available() &&
 			// The presented image in the editor is the editor's own interface, not a game frame.
 			!Engine::get_singleton()->is_editor_hint() &&

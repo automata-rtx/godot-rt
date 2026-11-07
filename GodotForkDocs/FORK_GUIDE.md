@@ -5,6 +5,7 @@ Documentation audited 2026-11-06 against `b3c0262131` plus the local working
 changes, including loading preparation, conservative RT-shadow denoising,
 emitter-history retention and the settings UI cleanup. This identifies source
 behavior, not the contents of every installed editor or export template.
+The 2026-11-07 scope update documents the resident HybridPiP API in the local branch build. Check the resident method in the running editor or export before using it.
 
 Copy this entire `GodotForkDocs` folder into a project. Link this entry point
 from the project's AI instructions; read only the relevant guide below.
@@ -21,6 +22,7 @@ Do not load engine history or all feature guides for ordinary project work.
 | Build a GI overlay or diagnose a rendering stage | [Diagnostics](features/amd-gi-debug.md) |
 | Tune bounce response or compare optional algorithms | [Bounded tuning](features/amd-gi-tuning.md), [improvements](features/amd-gi-improvements.md) |
 | Configure upscaling/frame generation | [DLSS / Streamline](features/dlss.md) |
+| Equip a magnified sight, warm it, toggle ADS and release its buffers | [HybridPiP](features/hybrid-pip.md) |
 | Investigate an artifact, stall or crash | [Troubleshooting](TROUBLESHOOTING.md), then [testing](TESTING.md) |
 
 ## Essential rules

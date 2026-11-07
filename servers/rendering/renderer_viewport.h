@@ -76,6 +76,11 @@ public:
 		RID render_target;
 		RID render_target_texture;
 		Ref<RenderSceneBuffers> render_buffers;
+		RenderSceneBuffers::HybridPiPConfiguration hybrid_pip_configuration;
+		Ref<RenderSceneBuffers> scope_buffers;
+		bool drew_scope_buffers = false;
+		const Ref<RenderSceneBuffers> &hybrid_buffers() const { return hybrid_pip_configuration.resident_parent ? scope_buffers : render_buffers; }
+		const Ref<RenderSceneBuffers> &last_drawn_buffers() const { return drew_scope_buffers && scope_buffers.is_valid() ? scope_buffers : render_buffers; }
 
 		RSE::ViewportMSAA msaa_2d = RSE::VIEWPORT_MSAA_DISABLED;
 		RSE::ViewportMSAA msaa_3d = RSE::VIEWPORT_MSAA_DISABLED;
@@ -83,6 +88,7 @@ public:
 		bool use_taa = false;
 		bool use_debanding = false;
 		bool force_motion_vectors = false;
+		bool hybrid_pip_temporal_motion = false;
 
 		RendererSceneRender::CameraData prev_camera_data;
 		uint64_t prev_camera_data_frame = 0;
@@ -225,6 +231,7 @@ private:
 	bool _viewport_requires_motion_vectors(Viewport *p_viewport);
 	void _viewport_set_force_motion_vectors(Viewport *p_viewport, bool p_force_motion_vectors);
 	void _configure_3d_render_buffers(Viewport *p_viewport);
+	void _prepare_hybrid_pip(Viewport *viewport, Size2i p_native_capacity);
 	void _draw_3d(Viewport *p_viewport);
 	void _draw_viewport(Viewport *p_viewport);
 	DisplayServerEnums::WindowID _get_containing_window(Viewport *p_viewport);
@@ -312,6 +319,13 @@ public:
 	String viewport_get_upscaler_status(RID p_viewport) const;
 	Dictionary viewport_get_amd_gi_diagnostics(RID p_viewport) const;
 	Dictionary viewport_get_amd_gi_preparation_status(RID p_viewport) const;
+	void viewport_prepare_hybrid_pip(RID p_viewport, Size2i p_native_capacity);
+	void viewport_prepare_resident_hybrid_pip(RID p_viewport, Size2i p_native_capacity);
+	void viewport_set_hybrid_pip_enabled(RID p_viewport, bool p_enabled);
+	void viewport_set_hybrid_pip_active(RID p_viewport, bool p_active);
+	void viewport_set_hybrid_pip_blur_enabled(RID p_viewport, bool p_enabled);
+	void viewport_set_hybrid_pip_region(RID p_viewport, const Rect2 &p_native_region, const PackedVector2Array &p_aperture);
+	Dictionary viewport_get_hybrid_pip_status(RID p_viewport) const;
 
 	float viewport_get_measured_render_time_cpu(RID p_viewport) const;
 	float viewport_get_measured_render_time_gpu(RID p_viewport) const;

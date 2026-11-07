@@ -6,6 +6,12 @@ Read this when changing or porting the renderer. Project setup belongs in [the u
 shadow collection, light slots, tracing, filtering and map routing; it does not
 authorize a separate geometry cache or GPU dependency layer.
 
+The experimental [HybridPiP integration](hybrid-pip.md) adds a prepared light
+token so regional shadow passes share one logical sample phase and light upload.
+Each region still has its own depth/motion/denoising history. Preserve that
+contract when porting this branch; calling the ordinary wrapper twice would
+advance preparation independently. The ordinary single-region wrapper remains.
+
 ## Source map
 
 | Responsibility | Source |

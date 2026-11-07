@@ -581,13 +581,17 @@ void vertex_shader(vec3 vertex_input,
 
 #ifdef USE_MULTIVIEW
 	vec3 view = -normalize(vertex_interp - eye_offset);
-	vec2 clip_pos = clamp((combined_projected.xy / combined_projected.w) * 0.5 + 0.5, 0.0, 1.0);
+	vec2 clip_pos = (combined_projected.xy / combined_projected.w) * 0.5 + 0.5;
 #else
 	vec3 view = -normalize(vertex_interp);
-	vec2 clip_pos = clamp((gl_Position.xy / gl_Position.w) * 0.5 + 0.5, 0.0, 1.0);
+	vec2 clip_pos = (gl_Position.xy / gl_Position.w) * 0.5 + 0.5;
 #endif
 
-	uvec2 screen_size = uvec2(1.0 / scene_data.screen_pixel_size);
+	if (scene_data.regional_view != 0u) {
+		clip_pos = clip_pos * scene_data.region_to_parent_uv.xy + scene_data.region_to_parent_uv.zw;
+	}
+	clip_pos = clamp(clip_pos, 0.0, 1.0);
+	uvec2 screen_size = uvec2(1.0 / (scene_data.regional_view != 0u ? scene_data.parent_screen_pixel_size : scene_data.screen_pixel_size));
 	uvec2 screen_pixel = clamp(uvec2(clip_pos * vec2(screen_size)), uvec2(0), screen_size - uvec2(1));
 	uvec2 cluster_pos = screen_pixel >> implementation_data.cluster_shift;
 	uint cluster_offset = (implementation_data.cluster_width * cluster_pos.y + cluster_pos.x) * (implementation_data.max_cluster_element_count_div_32 + 32);
@@ -813,13 +817,20 @@ void vertex_shader(vec3 vertex_input,
 				vec2(1, 1));
 
 		vec2 point_coord = point_coords[gl_VertexIndex % 6];
-		gl_Position.xy += (point_coord * 2.0 - 1.0) * (point_size / scene_data.viewport_size) * gl_Position.w;
+		vec2 point_viewport_size = scene_data.viewport_size;
+		if (scene_data.regional_view != 0u) {
+			point_viewport_size *= scene_data.region_to_parent_uv.xy;
+		}
+		gl_Position.xy += (point_coord * 2.0 - 1.0) * (point_size / point_viewport_size) * gl_Position.w;
 
 #ifdef POINT_COORD_USED
 		point_coord_interp = point_coord;
 #endif
 	} else {
 		gl_PointSize = point_size;
+		if (scene_data.regional_view != 0u) {
+			gl_PointSize /= scene_data.screen_pixel_size.y * scene_data.viewport_size.y * scene_data.region_to_parent_uv.y;
+		}
 	}
 #endif
 }
@@ -1152,6 +1163,17 @@ layout(location = 14) in vec2 point_coord_interp;
 
 #define global_time scene_data_block.data.time
 
+// Functions keep these read-only built-ins usable from material helper functions,
+// not only from fragment_shader's local scope.
+vec2 hybrid_pip_screen_uv() {
+	vec2 uv = gl_FragCoord.xy * scene_data_block.data.screen_pixel_size;
+	return scene_data_block.data.regional_view != 0u ? uv * scene_data_block.data.region_to_parent_uv.xy + scene_data_block.data.region_to_parent_uv.zw : uv;
+}
+
+vec4 hybrid_pip_fragment_coordinate() {
+	return scene_data_block.data.regional_view != 0u ? vec4(hybrid_pip_screen_uv() / scene_data_block.data.parent_screen_pixel_size, gl_FragCoord.zw) : gl_FragCoord;
+}
+
 #if defined(ENABLE_SSS) && defined(ENABLE_TRANSMITTANCE)
 //both required for transmittance to be enabled
 #define LIGHT_TRANSMITTANCE_USED
@@ -1446,6 +1468,14 @@ void fragment_shader(in SceneData scene_data) {
 	float normal_map_depth = 1.0;
 
 	vec2 screen_uv = gl_FragCoord.xy * scene_data.screen_pixel_size;
+	// Native effect textures use regional UV; user shader coordinates and the
+	// shared light cluster retain the logical parent view's coordinate system.
+	vec2 parent_screen_uv = screen_uv;
+	vec4 parent_fragcoord = gl_FragCoord;
+	if (scene_data.regional_view != 0u) {
+		parent_screen_uv = screen_uv * scene_data.region_to_parent_uv.xy + scene_data.region_to_parent_uv.zw;
+		parent_fragcoord.xy = parent_screen_uv / scene_data.parent_screen_pixel_size;
+	}
 
 	float sss_strength = 0.0;
 
@@ -1654,7 +1684,7 @@ void fragment_shader(in SceneData scene_data) {
 #ifdef USE_MULTIVIEW
 		vec4 volumetric_fog = volumetric_fog_process(combined_uv, -vertex.z);
 #else
-		vec4 volumetric_fog = volumetric_fog_process(screen_uv, -vertex.z);
+		vec4 volumetric_fog = volumetric_fog_process(parent_screen_uv, -vertex.z);
 #endif
 		vec4 res = vec4(0.0);
 		if (bool(scene_data.flags & SCENE_DATA_FLAGS_USE_FOG)) {
@@ -1693,7 +1723,7 @@ void fragment_shader(in SceneData scene_data) {
 #ifdef USE_MULTIVIEW
 	uvec2 cluster_pos = uvec2(combined_uv.xy / scene_data.screen_pixel_size) >> implementation_data.cluster_shift;
 #else
-	uvec2 cluster_pos = uvec2(gl_FragCoord.xy) >> implementation_data.cluster_shift;
+	uvec2 cluster_pos = uvec2(parent_fragcoord.xy) >> implementation_data.cluster_shift;
 #endif
 	uint cluster_offset = (implementation_data.cluster_width * cluster_pos.y + cluster_pos.x) * (implementation_data.max_cluster_element_count_div_32 + 32);
 

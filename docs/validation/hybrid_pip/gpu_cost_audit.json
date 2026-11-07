@@ -1,0 +1,680 @@
+{
+  "source_profile_sha256": "9fc4908bf454682483d21c1d297b4daa215d4a3257316b706bf8f8ce9662b295",
+  "stage_profile_note": "Earlier dev5 static 512x576 crop; stage labels are timestamp intervals, not isolated GPU execution measurements. Final dev8 uses 528x608.",
+  "stages": {
+    "native": {
+      "samples": 1200,
+      "gpu_mean_ms": 2.3406729333333334,
+      "stage_means_ms": {
+        "< Bake 3D Cluster": 0.00012010666666666666,
+        "< Render 3D Scene": 3.5199999999999998e-06,
+        "< Render Canvas 0": 3.4506666666666666e-05,
+        "< Render Canvas 1": 3.52e-05,
+        "< Render Canvas 2": 3.472e-05,
+        "< Render Canvas 3": 3.554666666666666e-05,
+        "< Render Canvas 4": 3.5119999999999996e-05,
+        "> Bake 3D Cluster": 0.0054336,
+        "> Render 3D Scene": 3.704e-05,
+        "> Render Canvas 0": 2.8533333333333333e-06,
+        "> Render Canvas 1": 3.5759999999999996e-05,
+        "> Render Canvas 2": 3.472e-05,
+        "> Render Canvas 3": 3.5386666666666664e-05,
+        "> Render Canvas 4": 3.4853333333333334e-05,
+        "AMD GI": 1.59020832,
+        "Copy Depth Texture": 3.1199999999999998e-06,
+        "Cull 2D Lights": 3.2533333333333332e-06,
+        "Cull 3D Scene": 3.7013333333333334e-05,
+        "Cull CanvasItem Tree": 0.00014418666666666665,
+        "Cull DirectionalLight3D, Split 0": 3.6666666666666666e-05,
+        "Cull DirectionalLight3D, Split 1": 3.664e-05,
+        "Glow": 0.009350213333333333,
+        "Pre Opaque Render": 0.0033774133333333333,
+        "Prepare 3D Scene": 9.72e-05,
+        "Process GTAO": 0.14331557333333333,
+        "Process Post Opaque Compositor Effects": 3.1199999999999998e-06,
+        "Process Post Sky Compositor Effects": 3.2e-06,
+        "Process Post Transparent Compositor Effects": 3.173333333333333e-06,
+        "Process Pre Opaque Compositor Effects": 3.573333333333333e-06,
+        "Process Pre Transparent Compositor Effects": 2.9866666666666667e-06,
+        "Raytraced Shadows": 0.06711714666666667,
+        "Render 3D Scene": 0.00010135999999999999,
+        "Render 3D Transparent Pass": 0.010776373333333334,
+        "Render CanvasItems": 0.00605376,
+        "Render Depth Pre-Pass": 0.0493332,
+        "Render Opaque Pass": 0.06967432,
+        "Render Sky": 0.03429869333333333,
+        "Resolve": 3.3066666666666666e-06,
+        "Screen Space Shadows": 0.023156106666666666,
+        "Setup 3D Scene": 0.007667226666666666,
+        "Setup Shadows": 3.4666666666666664e-06,
+        "Setup Sky": 0.13932917333333333,
+        "Tonemap": 0.031085653333333334,
+        "Update Occlusion Buffer": 3.653333333333333e-05,
+        "Update RT Acceleration Structures": 0.14764882666666668,
+        "Update Visibility Dependencies": 3.6906666666666663e-05,
+        "Update Volumetric Fog": 0.0017757066666666667
+      }
+    },
+    "native_reference_blur": {
+      "samples": 1200,
+      "gpu_mean_ms": 2.7315888,
+      "stage_means_ms": {
+        "< Bake 3D Cluster": 0.00012037333333333333,
+        "< Render 3D Scene": 3.2266666666666665e-06,
+        "< Render Canvas 0": 3.509333333333333e-05,
+        "< Render Canvas 1": 3.528e-05,
+        "< Render Canvas 2": 3.5386666666666664e-05,
+        "< Render Canvas 3": 3.554666666666666e-05,
+        "< Render Canvas 4": 3.568e-05,
+        "> Bake 3D Cluster": 0.00543568,
+        "> Render 3D Scene": 3.704e-05,
+        "> Render Canvas 0": 3.6266666666666665e-06,
+        "> Render Canvas 1": 3.506666666666667e-05,
+        "> Render Canvas 2": 3.488e-05,
+        "> Render Canvas 3": 3.6106666666666664e-05,
+        "> Render Canvas 4": 3.5039999999999997e-05,
+        "AMD GI": 1.57610216,
+        "Copy Depth Texture": 3.0399999999999997e-06,
+        "Cull 2D Lights": 2.72e-06,
+        "Cull 3D Scene": 3.706666666666666e-05,
+        "Cull CanvasItem Tree": 0.00014530666666666666,
+        "Cull DirectionalLight3D, Split 0": 3.752e-05,
+        "Cull DirectionalLight3D, Split 1": 3.7199999999999996e-05,
+        "Glow": 0.00919112,
+        "Hybrid reference blur complete": 0.00036648,
+        "Hybrid reference compose and blur": 0.4087972,
+        "Pre Opaque Render": 0.0037496,
+        "Prepare 3D Scene": 9.562666666666666e-05,
+        "Process GTAO": 0.14089392,
+        "Process Post Opaque Compositor Effects": 3.2e-06,
+        "Process Post Sky Compositor Effects": 3.2e-06,
+        "Process Post Transparent Compositor Effects": 3.173333333333333e-06,
+        "Process Pre Opaque Compositor Effects": 3.2533333333333332e-06,
+        "Process Pre Transparent Compositor Effects": 3.573333333333333e-06,
+        "Raytraced Shadows": 0.06577693333333333,
+        "Render 3D Scene": 0.00010037333333333333,
+        "Render 3D Transparent Pass": 0.011598906666666667,
+        "Render CanvasItems": 0.006236586666666667,
+        "Render Depth Pre-Pass": 0.05005850666666667,
+        "Render Opaque Pass": 0.06962557333333333,
+        "Render Sky": 0.03440053333333333,
+        "Resolve": 3.0666666666666664e-06,
+        "Screen Space Shadows": 0.022015386666666668,
+        "Setup 3D Scene": 0.0077924533333333336,
+        "Setup Shadows": 2.7466666666666665e-06,
+        "Setup Sky": 0.14197253333333335,
+        "Tonemap": 0.03162568,
+        "Update Occlusion Buffer": 3.688e-05,
+        "Update RT Acceleration Structures": 0.14299754666666667,
+        "Update Visibility Dependencies": 3.7279999999999995e-05,
+        "Update Volumetric Fog": 0.0018771466666666666
+      }
+    },
+    "regional_blur": {
+      "samples": 1200,
+      "gpu_mean_ms": 2.7034604,
+      "stage_means_ms": {
+        "< Bake 3D Cluster": 0.00011970666666666666,
+        "< Render 3D Scene": 3.36e-06,
+        "< Render Canvas 0": 3.496e-05,
+        "< Render Canvas 1": 3.3946666666666665e-05,
+        "< Render Canvas 2": 3.3759999999999995e-05,
+        "< Render Canvas 3": 3.4773333333333335e-05,
+        "< Render Canvas 4": 3.445333333333333e-05,
+        "> Bake 3D Cluster": 0.005170106666666667,
+        "> Render 3D Scene": 3.725333333333333e-05,
+        "> Render Canvas 0": 2.8e-06,
+        "> Render Canvas 1": 3.498666666666667e-05,
+        "> Render Canvas 2": 3.498666666666667e-05,
+        "> Render Canvas 3": 3.5226666666666666e-05,
+        "> Render Canvas 4": 3.5039999999999997e-05,
+        "AMD GI Regional Batch": 1.5169839466666666,
+        "Copy Depth Texture": 5.893333333333333e-06,
+        "Cull 2D Lights": 3.5466666666666664e-06,
+        "Cull 3D Scene": 3.6666666666666666e-05,
+        "Cull CanvasItem Tree": 0.00014053333333333332,
+        "Cull DirectionalLight3D, Split 0": 3.634666666666666e-05,
+        "Cull DirectionalLight3D, Split 1": 3.6559999999999996e-05,
+        "Glow": 0.010055813333333333,
+        "Pre Opaque Render": 0.0036112266666666667,
+        "Prepare 3D Scene": 9.992e-05,
+        "Process GTAO": 0.12963474666666666,
+        "Process Post Opaque Compositor Effects": 6.799999999999999e-06,
+        "Process Post Sky Compositor Effects": 6.879999999999999e-06,
+        "Process Post Transparent Compositor Effects": 0.42829424,
+        "Process Pre Transparent Compositor Effects": 6.5066666666666665e-06,
+        "Raytraced Shadows": 0.06941514666666666,
+        "Render 3D Scene": 0.00010053333333333333,
+        "Render 3D Transparent Pass": 0.022484453333333335,
+        "Render CanvasItems": 0.00660336,
+        "Render Depth Pre-Pass": 0.053489093333333335,
+        "Render Opaque Pass": 0.07269325333333333,
+        "Render Sky": 0.03090386666666667,
+        "Resolve": 6.853333333333333e-06,
+        "Screen Space Shadows": 0.019010453333333333,
+        "Setup 3D Scene": 0.010297093333333333,
+        "Setup Shadows": 3.573333333333333e-06,
+        "Setup Sky": 0.14374376,
+        "Tonemap": 0.03339392,
+        "Update Occlusion Buffer": 3.613333333333333e-05,
+        "Update RT Acceleration Structures": 0.14425381333333334,
+        "Update Visibility Dependencies": 3.632e-05,
+        "Update Volumetric Fog": 0.00234784
+      }
+    },
+    "enabled_uniform": {
+      "samples": 1200,
+      "gpu_mean_ms": 2.33396,
+      "stage_means_ms": {
+        "< Bake 3D Cluster": 0.00012010666666666666,
+        "< Render 3D Scene": 3.0666666666666664e-06,
+        "< Render Canvas 0": 3.5759999999999996e-05,
+        "< Render Canvas 1": 3.565333333333333e-05,
+        "< Render Canvas 2": 3.5573333333333334e-05,
+        "< Render Canvas 3": 3.573333333333333e-05,
+        "< Render Canvas 4": 3.533333333333333e-05,
+        "> Bake 3D Cluster": 0.006826213333333333,
+        "> Render 3D Scene": 3.7306666666666666e-05,
+        "> Render Canvas 0": 3.0666666666666664e-06,
+        "> Render Canvas 1": 3.52e-05,
+        "> Render Canvas 2": 3.488e-05,
+        "> Render Canvas 3": 3.578666666666667e-05,
+        "> Render Canvas 4": 3.4746666666666664e-05,
+        "AMD GI Regional Batch": 1.59440448,
+        "Copy Depth Texture": 3.28e-06,
+        "Cull 2D Lights": 3.76e-06,
+        "Cull 3D Scene": 3.7733333333333333e-05,
+        "Cull CanvasItem Tree": 0.00014362666666666666,
+        "Cull DirectionalLight3D, Split 0": 3.706666666666666e-05,
+        "Cull DirectionalLight3D, Split 1": 3.712e-05,
+        "Glow": 0.009419253333333334,
+        "Pre Opaque Render": 0.0043955466666666665,
+        "Prepare 3D Scene": 9.397333333333334e-05,
+        "Process GTAO": 0.13966317333333333,
+        "Process Post Opaque Compositor Effects": 2.8533333333333333e-06,
+        "Process Post Sky Compositor Effects": 3.413333333333333e-06,
+        "Process Post Transparent Compositor Effects": 2.693333333333333e-06,
+        "Process Pre Transparent Compositor Effects": 3.4399999999999997e-06,
+        "Raytraced Shadows": 0.06554296,
+        "Render 3D Scene": 9.744e-05,
+        "Render 3D Transparent Pass": 0.011540293333333333,
+        "Render CanvasItems": 0.006426346666666667,
+        "Render Depth Pre-Pass": 0.049697946666666666,
+        "Render Opaque Pass": 0.06844770666666666,
+        "Render Sky": 0.03552928,
+        "Resolve": 3.3866666666666667e-06,
+        "Screen Space Shadows": 0.02249488,
+        "Setup 3D Scene": 0.007295973333333333,
+        "Setup Shadows": 3.3066666666666666e-06,
+        "Setup Sky": 0.13948861333333334,
+        "Tonemap": 0.031029946666666666,
+        "Update Occlusion Buffer": 3.6826666666666664e-05,
+        "Update RT Acceleration Structures": 0.13904429333333335,
+        "Update Visibility Dependencies": 3.744e-05,
+        "Update Volumetric Fog": 0.0016464533333333334
+      }
+    }
+  },
+  "final_pixel_budget": {
+    "output": 921600,
+    "background": 230400,
+    "native_crop": 321024,
+    "protected": 164864,
+    "regional_fraction": 0.5983333333333334,
+    "ideal_no_overlap_no_guard_fraction": 0.38416666666666666
+  },
+  "saved_offline_shader_sources_match": {
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\oct_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_cache_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_sampling_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\rt_gi_transport_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_geometry_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\rt_material_source_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_debug_counters_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_response_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_denoiser_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_reservoirs_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_lights_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_sky_sampling_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_regions_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_near_field_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_reflections_inc.glsl": true,
+    "servers\\rendering\\renderer_rd\\shaders\\effects\\amd_gi_debug_inc.glsl": true
+  },
+  "spirv_access_decorations": {
+    "batch-32": [
+      {
+        "binding": 16,
+        "name": "keys",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false,
+          "3": false
+        },
+        "direct_load_or_access_chain_uses": 2
+      },
+      {
+        "binding": 17,
+        "name": "previous_cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 1
+      },
+      {
+        "binding": 18,
+        "name": "cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 3
+      },
+      {
+        "binding": 35,
+        "name": "indirect_cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 3
+      },
+      {
+        "binding": 44,
+        "name": "light_grid",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false
+        },
+        "direct_load_or_access_chain_uses": 8
+      },
+      {
+        "binding": 69,
+        "name": "batch_work",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false,
+          "3": false,
+          "4": false,
+          "5": false
+        },
+        "direct_load_or_access_chain_uses": 1
+      }
+    ],
+    "batch-36": [
+      {
+        "binding": 16,
+        "name": "keys",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false,
+          "3": false
+        },
+        "direct_load_or_access_chain_uses": 2
+      },
+      {
+        "binding": 17,
+        "name": "previous_cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 18,
+        "name": "cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 35,
+        "name": "indirect_cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 44,
+        "name": "light_grid",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 69,
+        "name": "batch_work",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false,
+          "3": false,
+          "4": false,
+          "5": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      }
+    ],
+    "batch-37": [
+      {
+        "binding": 16,
+        "name": "keys",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false,
+          "3": false
+        },
+        "direct_load_or_access_chain_uses": 2
+      },
+      {
+        "binding": 17,
+        "name": "previous_cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 18,
+        "name": "cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 35,
+        "name": "indirect_cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 44,
+        "name": "light_grid",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 69,
+        "name": "batch_work",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false,
+          "3": false,
+          "4": false,
+          "5": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      }
+    ],
+    "batch-39": [
+      {
+        "binding": 16,
+        "name": "keys",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false,
+          "3": false
+        },
+        "direct_load_or_access_chain_uses": 2
+      },
+      {
+        "binding": 17,
+        "name": "previous_cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 18,
+        "name": "cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 35,
+        "name": "indirect_cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 44,
+        "name": "light_grid",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 69,
+        "name": "batch_work",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false,
+          "3": false,
+          "4": false,
+          "5": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      }
+    ],
+    "batch-40": [
+      {
+        "binding": 16,
+        "name": "keys",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false,
+          "3": false
+        },
+        "direct_load_or_access_chain_uses": 2
+      },
+      {
+        "binding": 17,
+        "name": "previous_cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 18,
+        "name": "cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 35,
+        "name": "indirect_cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 44,
+        "name": "light_grid",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 69,
+        "name": "batch_work",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false,
+          "3": false,
+          "4": false,
+          "5": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      }
+    ],
+    "batch-46": [
+      {
+        "binding": 16,
+        "name": "keys",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false,
+          "3": false
+        },
+        "direct_load_or_access_chain_uses": 5
+      },
+      {
+        "binding": 17,
+        "name": "previous_cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 1
+      },
+      {
+        "binding": 18,
+        "name": "cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 1
+      },
+      {
+        "binding": 35,
+        "name": "indirect_cache",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false
+        },
+        "direct_load_or_access_chain_uses": 1
+      },
+      {
+        "binding": 44,
+        "name": "light_grid",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      },
+      {
+        "binding": 69,
+        "name": "batch_work",
+        "variable_nonwritable": false,
+        "block_nonwritable": false,
+        "member_nonwritable": {
+          "0": false,
+          "1": false,
+          "2": false,
+          "3": false,
+          "4": false,
+          "5": false
+        },
+        "direct_load_or_access_chain_uses": 0
+      }
+    ]
+  },
+  "spirv_note": "Saved offline compiler output, not a runtime render-graph capture. No NonWritable means the declared resource is writable, not proof of an actual write by that pass."
+}

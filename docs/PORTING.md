@@ -15,6 +15,7 @@ Read those for the feature being rebuilt; the portable pack is for game authors.
 | Visibility-bitmask ambient occlusion | [VBAO](internals/ambient-occlusion.md) |
 | Directional screen-space contact shadows | [Screen-space shadows](internals/screen-space-shadows.md) |
 | DLSS, frame generation and device/SDK lifetime | [Streamline](internals/dlss.md) |
+| Experimental regional scope rendering, shared GI batch and regional histories | [HybridPiP](internals/hybrid-pip.md) |
 
 ## Assigning sequential feature work to agents
 

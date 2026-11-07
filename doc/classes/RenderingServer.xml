@@ -4199,6 +4199,13 @@
 				Returns the 3D scaling mode the renderer actually used for [param viewport], which is not necessarily the one it was asked for: an upscaler that is unavailable on the current renderer, driver or hardware silently falls back to another one. For example, a viewport set to [constant VIEWPORT_SCALING_3D_MODE_DLSS] reports [constant VIEWPORT_SCALING_3D_MODE_FSR2] wherever DLSS cannot run.
 			</description>
 		</method>
+		<method name="viewport_get_hybrid_pip_status" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="viewport" type="RID" />
+			<description>
+				Returns the experimental HybridPiP preparation and rendering state. Check [code]ready[/code] and [code]active[/code] rather than assuming an activation request took effect. Unsupported configurations render uniformly and report a [code]reason[/code]. Use [code]viewport_size[/code] for layout in final output pixels, including before first use and during hip-fire upscaling. [code]enabled[/code] and [code]requested_active[/code] report the request. When prepared, the dictionary also reports [code]output_size[/code], [code]background_size[/code], [code]native_size[/code], [code]native_rect[/code], [code]region_count[/code], [code]preparation_generation[/code], [code]rendered_frame[/code], and [code]gi_frame[/code]. Diagnostic reason strings are not a stable scripting interface.
+			</description>
+		</method>
 		<method name="viewport_get_internal_size" qualifiers="const">
 			<return type="Vector2i" />
 			<param index="0" name="viewport" type="RID" />
@@ -4272,6 +4279,23 @@
 			<param index="0" name="viewport" type="RID" />
 			<description>
 				Returns a human-readable description of how the temporal upscaler running on [param viewport] is configured, or an empty string if none is running. Intended for debug overlays only: the wording is not stable between engine versions and nothing should be parsed out of it.
+			</description>
+		</method>
+		<method name="viewport_prepare_hybrid_pip">
+			<return type="void" />
+			<param index="0" name="viewport" type="RID" />
+			<param index="1" name="native_capacity" type="Vector2i" />
+			<description>
+				Enables experimental HybridPiP and requests persistent regional resources for [param viewport]. Pass [constant Vector2i.ZERO] for an exact fit calculated from the current 3D target after stretching and resizing. A positive [param native_capacity] reserves a fixed allocation in output pixels; it must cover the protected rectangle rounded outward to output pixels. Matching the pixel extent gives an unpadded crop. Preparation happens during rendering, so call this behind a loading screen and poll [method viewport_get_hybrid_pip_status]. Calling this again increments the preparation generation; do not call it every frame or on each ADS toggle.
+				The initial implementation requires Vulkan Forward+, active AMD GI, one perspective view, native scale, and compatible effects. See the fork's HybridPiP guide for supported combinations and fallback behavior.
+			</description>
+		</method>
+		<method name="viewport_prepare_resident_hybrid_pip">
+			<return type="void" />
+			<param index="0" name="viewport" type="RID" />
+			<param index="1" name="native_capacity" type="Vector2i" />
+			<description>
+				Prepares HybridPiP with a dedicated native compositor parent. Capacity follows [method viewport_prepare_hybrid_pip]. Inactive frames use the viewport's ordinary resolution and upscaler. Active frames draw through the regional buffers. Both allocations persist between aim transitions. Activate once under a loading screen to warm the first regional draw. Disable the feature with [method viewport_set_hybrid_pip_enabled] to release its buffers.
 			</description>
 		</method>
 		<method name="viewport_remove_canvas">
@@ -4400,6 +4424,39 @@
 			<param index="1" name="transform" type="Transform2D" />
 			<description>
 				Sets the viewport's global transformation matrix.
+			</description>
+		</method>
+		<method name="viewport_set_hybrid_pip_active">
+			<return type="void" />
+			<param index="0" name="viewport" type="RID" />
+			<param index="1" name="active" type="bool" />
+			<description>
+				Requests regional rendering while [param active] is [code]true[/code]. An active draw reconstructs the background and composites the inner region. A request before preparation finishes can produce a uniform frame. Setting [param active] to [code]false[/code] retains prepared resources. With [method viewport_prepare_resident_hybrid_pip] this selects the ordinary viewport and its configured upscaler. With [method viewport_prepare_hybrid_pip] it selects the prepared uniform region. It does not enable a disabled feature.
+			</description>
+		</method>
+		<method name="viewport_set_hybrid_pip_blur_enabled">
+			<return type="void" />
+			<param index="0" name="viewport" type="RID" />
+			<param index="1" name="enabled" type="bool" />
+			<description>
+				Enables the depth-dependent peripheral blur during active regional rendering. The supplied aperture remains clear. This blur is applied after regional reconstruction and before display processing; it does not modify GI feedback. It defaults to enabled.
+			</description>
+		</method>
+		<method name="viewport_set_hybrid_pip_enabled">
+			<return type="void" />
+			<param index="0" name="viewport" type="RID" />
+			<param index="1" name="enabled" type="bool" />
+			<description>
+				Enables or disables the experimental HybridPiP renderer, which defaults to disabled. Disabling a resident scope drops the viewport's scope-buffer reference when the rendering server processes the call. Legacy preparation releases regional state during subsequent rendering. Deactivate and disable when removing a sight. For frequent ADS switches, use [method viewport_set_hybrid_pip_active] instead so prepared resources remain available.
+			</description>
+		</method>
+		<method name="viewport_set_hybrid_pip_region">
+			<return type="void" />
+			<param index="0" name="viewport" type="RID" />
+			<param index="1" name="native_region" type="Rect2" />
+			<param index="2" name="aperture" type="PackedVector2Array" />
+			<description>
+				Sets scope coverage in normalized full-output coordinates. [param aperture] contains 3 to 16 ordered vertices defining the clear opening and must have nonzero area. In rectangular mode [param native_region] protects the part of the mesh that needs native coverage and must cover the aperture. In magnified lens-only mode it specifies the source field of view. The source must contain the optical axis and its reconstructed footprint must cover the visible aperture. The background may supply the housing. The crop uses the capacity selected by [method viewport_prepare_hybrid_pip] and can fit the protected rectangle exactly. Moving coverage within that capacity does not request new texture allocations. Invalid or oversized coverage uses uniform rendering with an explanatory status.
 			</description>
 		</method>
 		<method name="viewport_set_measure_render_time">

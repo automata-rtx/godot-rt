@@ -178,6 +178,18 @@ public:
 		bool accurate_occluder_distance = true;
 	};
 
+	// A borrowed preparation token. All regions of one logical view use this
+	// token before the next prepare_frame() call on this effect. It owns neither
+	// the light buffer nor the scene, and cannot survive another preparation.
+	struct PreparedFrame {
+	private:
+		friend class RTShadows;
+		const RTShadows *owner = nullptr;
+		uint64_t generation = 0;
+		uint32_t light_count = 0;
+		uint32_t sample_phase = 0;
+	};
+
 private:
 	struct TracePushConstant {
 		float inv_view_projection[16];
@@ -288,21 +300,35 @@ private:
 
 	bool valid = false;
 	uint32_t frame_index = 0;
+	uint64_t preparation_generation = 0;
 
 	void _ensure_light_buffer(uint32_t p_light_count);
 	void _trace(RID p_tlas, RID p_depth_texture, RID p_normal_roughness, const Buffers &p_buffers,
 			const Size2i &p_size, const Projection &p_inv_view_projection,
-			const Transform3D &p_camera_transform, float p_focal_pixels, uint32_t p_light_count,
+			const Transform3D &p_camera_transform, float p_focal_pixels, const PreparedFrame &p_frame,
 			const Settings &p_settings);
 	void _temporal(RID p_depth_texture, RID p_normal_roughness, const Quaternion &p_previous_view_rotation, const Buffers &p_buffers, const Size2i &p_size,
 			const Projection &p_reprojection, const Projection &p_inv_projection,
-			const Settings &p_settings);
+			const Settings &p_settings, uint32_t p_sample_phase, bool p_history_valid);
 	void _atrous(RID p_source, RID p_dest, RID p_depth_texture, RID p_normal_roughness,
 			const Buffers &p_buffers, const Size2i &p_size, const Projection &p_inv_projection,
 			int p_step_size, bool p_write_history, float p_min_filter_pixels);
 
 public:
 	bool is_valid() const { return valid; }
+
+	// Upload once, then render any regions with the same light identities and
+	// sample phase. Does not advance the compatibility render() frame counter.
+	bool prepare_frame(const LocalVector<LightParams> &p_lights, uint32_t p_sample_phase, PreparedFrame &r_frame);
+
+	// Screen buffers and previous camera/projection belong to this region's last
+	// produced image. An inactive or remapped region must reject stale history,
+	// even if its textures still exist. No light buffer allocation/upload occurs here.
+	bool render_prepared(RID p_tlas, RID p_depth_texture, RID p_normal_roughness,
+			const Buffers &p_buffers, const Size2i &p_screen_size,
+			const Projection &p_camera_projection, const Transform3D &p_camera_transform,
+			const Projection &p_prev_camera_projection, const Transform3D &p_prev_camera_transform,
+			const PreparedFrame &p_frame, const Settings &p_settings, bool p_history_valid = true);
 
 	// The previous camera is what the denoiser reprojects its history with. Motion
 	// vectors would be the obvious source, but they are written by the opaque

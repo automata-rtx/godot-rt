@@ -10,6 +10,12 @@ not the historical implementation diary.
 [native material/scene integration](rt-materials.md). Reuse their geometry owner,
 revision tracking and GPU dependency infrastructure; do not build a GI-local copy.
 
+The `HybridPiP` branch adds the [regional ownership/scheduling contract](hybrid-pip.md).
+Read it when rebuilding regional rendering: native and regional GI use the same
+world-state types but different shader families and scheduling. The feature is
+off by default; this does not make two independent GI render calls safe to share
+a world cache.
+
 ## Baseline and responsibility split
 
 The algorithm baseline is AMD Capsaicin GI 1.2, commit
@@ -40,7 +46,7 @@ and squared-confidence interpolation of fresh-sample weight (history endpoints
 [Validation](../validation/amd_gi_improvements/README.md) owns evidence and
 limits; do not infer target-GPU speed or quality from these source contracts.
 
-Bit 3 controls emitter transitions in `ViewData::update_light_order`. The logical
+Bit 3 controls emitter transitions in `WorldData::update_light_order`. The logical
 light order is sky, sorted analytic lights, then emitter triangles. At an
 emitter zero crossing, an otherwise stable light prefix permits reuse: new
 triangles append to the list and old out-of-range samples are already rejected
@@ -193,8 +199,11 @@ mapping retains a diagnosed fallback, not a promise of arbitrary shader support.
 
 ## Per-view data and pass flow
 
-`ViewData` owns per-viewport probe, cache, reconstruction, feedback, and reflection
-histories. Stored probes use an 8x8 screen grid and 64 directions; update spacing
+`ViewData` owns screen/probe, reconstruction, feedback, and reflection histories
+and holds a strong reference to `WorldData`, which owns world-cache, light and
+reservoir state. Native rendering has one such world per logical view; the
+regional batch shares one world across its screen regions. Stored probes use
+an 8x8 screen grid and 64 directions; update spacing
 8/16/32 changes the budget, with partial tiles rounded up. World hash buckets hold
 16 tiles; each tile has 85 cells (64 + 16 + 4 + 1 mip cells). Optional retained
 probes, indirect caches, hit lists, and reservoirs have real storage costs.

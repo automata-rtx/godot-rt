@@ -188,6 +188,10 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	}
 
 	if (err != OK) {
+		// Finish pending pipeline work and release its owned handles before
+		// freeing shaders, whose RD dependencies would otherwise free the same
+		// pipelines while their IDs remain in this map until destruction.
+		pipeline_hash_map.clear_pipelines();
 		if (version.is_valid()) {
 			SceneShaderForwardClustered::singleton->shader.version_free(version);
 			version = RID();
@@ -772,7 +776,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.renames["IN_SHADOW_PASS"] = "bool(scene_data_block.data.flags & SCENE_DATA_FLAGS_IN_SHADOW_PASS)";
 		actions.renames["VIEWPORT_SIZE"] = "read_viewport_size";
 
-		actions.renames["FRAGCOORD"] = "gl_FragCoord";
+		actions.renames["FRAGCOORD"] = "hybrid_pip_fragment_coordinate()";
 		actions.renames["FRONT_FACING"] = "gl_FrontFacing";
 		actions.renames["NORMAL_MAP"] = "normal_map";
 		actions.renames["NORMAL_MAP_DEPTH"] = "normal_map_depth";
@@ -799,7 +803,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.renames["EMISSION"] = "emission";
 		actions.renames["POINT_COORD"] = "point_coord";
 		actions.renames["INSTANCE_CUSTOM"] = "instance_custom";
-		actions.renames["SCREEN_UV"] = "screen_uv";
+		actions.renames["SCREEN_UV"] = "hybrid_pip_screen_uv()";
 		actions.renames["DEPTH"] = "gl_FragDepth";
 		actions.renames["FOG"] = "fog";
 		actions.renames["RADIANCE"] = "custom_radiance";

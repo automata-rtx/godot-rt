@@ -52,11 +52,15 @@ private:
 	float texture_mipmap_bias = 0.0;
 	bool use_taa = false;
 	bool use_debanding = false;
+	bool allow_target_vrs = true;
 
 protected:
 	static void _bind_methods();
 
 public:
+	void set_allow_target_vrs(bool p_allow) { allow_target_vrs = p_allow; }
+	bool get_allow_target_vrs() const { return allow_target_vrs; }
+
 	RID get_render_target() const { return render_target; }
 	void set_render_target(RID p_render_target) { render_target = p_render_target; }
 
@@ -107,6 +111,42 @@ public:
 	RenderSceneBuffers() {}
 	virtual ~RenderSceneBuffers() {}
 
+	// A preparation request is separate from the per-frame ADS/layout request.
+	// Backends which do not implement regional rendering retain uniform output.
+	struct HybridPiPConfiguration {
+		bool enabled = false;
+		bool active = false;
+		bool blur_enabled = true;
+		bool resident_parent = false;
+		Size2i native_capacity;
+		Rect2 native_region;
+		PackedVector2Array aperture;
+		uint64_t preparation_generation = 0;
+	};
+
+	void set_hybrid_pip_configuration(const HybridPiPConfiguration &p_configuration) {
+		if (p_configuration.preparation_generation != hybrid_pip_configuration.preparation_generation || p_configuration.enabled != hybrid_pip_configuration.enabled) {
+			hybrid_pip_status.clear();
+		}
+		hybrid_pip_configuration = p_configuration;
+	}
+	const HybridPiPConfiguration &get_hybrid_pip_configuration() const { return hybrid_pip_configuration; }
+	void set_hybrid_pip_status(const Dictionary &p_status) { hybrid_pip_status = p_status; }
+	Dictionary get_hybrid_pip_status() const {
+		Dictionary result = hybrid_pip_status.duplicate();
+		result["enabled"] = hybrid_pip_configuration.enabled;
+		result["requested_active"] = hybrid_pip_configuration.active;
+		if (!hybrid_pip_configuration.enabled || !hybrid_pip_configuration.active) {
+			result["active"] = false;
+		}
+		if (!result.has("ready")) {
+			result["ready"] = false;
+			result["active"] = false;
+			result["reason"] = "not_prepared_or_unsupported";
+		}
+		return result;
+	}
+
 	virtual void configure(const RenderSceneBuffersConfiguration *p_config) = 0;
 
 	// for those settings that are unlikely to require buffers to be recreated, we'll add setters
@@ -114,4 +154,8 @@ public:
 	virtual void set_texture_mipmap_bias(float p_texture_mipmap_bias) = 0;
 	virtual void set_anisotropic_filtering_level(RSE::ViewportAnisotropicFiltering p_anisotropic_filtering_level) = 0;
 	virtual void set_use_debanding(bool p_use_debanding) = 0;
+
+private:
+	HybridPiPConfiguration hybrid_pip_configuration;
+	Dictionary hybrid_pip_status;
 };
