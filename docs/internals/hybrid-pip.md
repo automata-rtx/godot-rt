@@ -12,6 +12,8 @@ Preserve both preparation entry points. `RendererViewport` owns the ordinary ren
 
 On a parent switch, invalidate the previous camera frame and preserve the reset through the ordinary Forward+ pass. Child histories require a consecutive rendered frame. Keep distinct Streamline handles, explicitly suspend frame generation on the departing normal handle and suppress it on the regional parent. Route GI preparation/diagnostics to the drawn buffers and report `viewport_size` even before the scope parent exists. The engine does not know which weapon is equipped. See the [project integration contract](../../GodotForkDocs/features/hybrid-pip.md) for allocation gates and coverage.
 
+Each resident activation holds its own `HybridPiPAttempt` receipt. Both regional DLSS driver callbacks hold references to that receipt only. Atomic success bits confirm the requested regions and failure bits stay set for the attempt. The viewport selects its ordinary buffers on the next draw after a rejection or warm-up timeout. Only the render thread mutates the timer and decline reason. Keep receipts independent across reconfiguration and teardown so an old callback cannot affect a replacement sight. No callback waits for GPU completion.
+
 ## Ownership and schedule
 
 `AMDGI::WorldData` owns persistent world-cache/reservoir/light/environment state;

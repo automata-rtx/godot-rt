@@ -33,6 +33,53 @@
 #include "core/object/class_db.h"
 #include "servers/rendering/rendering_server.h" // IWYU pragma: keep // Needed to bind RSE enums.
 
+void HybridPiPAttempt::report_dlss(Resolve p_region, bool p_success) {
+	// Low bits record successful submissions, high bits are sticky failures.
+	dlss_results.bit_or(uint32_t(p_region) << (p_success ? 0 : 2));
+}
+
+void HybridPiPAttempt::set_frame(bool p_regional, uint32_t p_required_resolves) {
+	regional_frame = p_regional;
+	required_resolves = p_required_resolves;
+}
+
+void HybridPiPAttempt::decline(const String &p_reason) {
+	if (decline_reason.is_empty()) {
+		decline_reason = p_reason;
+	}
+}
+
+bool HybridPiPAttempt::failed() const {
+	return !decline_reason.is_empty() || (dlss_results.get() >> 2) != 0;
+}
+
+String HybridPiPAttempt::failure_reason() const {
+	const uint32_t failures = dlss_results.get() >> 2;
+	if (failures & BACKGROUND) {
+		return "background_dlss_evaluation_failed";
+	}
+	if (failures & LENS) {
+		return "lens_dlss_evaluation_failed";
+	}
+	return decline_reason;
+}
+
+bool HybridPiPAttempt::confirmed() const {
+	const uint32_t results = dlss_results.get();
+	return regional_frame && decline_reason.is_empty() && (results >> 2) == 0 && (results & required_resolves) == required_resolves;
+}
+
+void HybridPiPAttempt::update_warmup(uint64_t p_now) {
+	if (failed() || confirmed()) {
+		timing_warmup = false;
+	} else if (!timing_warmup) {
+		timing_warmup = true;
+		warmup_start = p_now;
+	} else if (p_now - warmup_start >= WARMUP_LIMIT_MSEC) {
+		decline("regional_warmup_timed_out");
+	}
+}
+
 void RenderSceneBuffersConfiguration::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_render_target"), &RenderSceneBuffersConfiguration::get_render_target);
 	ClassDB::bind_method(D_METHOD("set_render_target", "render_target"), &RenderSceneBuffersConfiguration::set_render_target);

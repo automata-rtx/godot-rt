@@ -7,12 +7,46 @@ preserves the design and acceptance gates; current source contracts live in
 [the integration guide](../internals/hybrid-pip.md). It does not itself authorize
 engine/game runs or changes to project assets.
 
-Current checkpoint: the initial regional renderer is implemented and has targeted
+Initial regional prototype checkpoint (historical): the initial regional renderer is implemented and has targeted
 GPU validation, but its performance and transition gates are not closed. The
 [validation report](../validation/hybrid_pip/RESULTS.md) records negligible 720p
 matched-blur GPU savings, extra CPU/memory cost, deferred 1080p/native performance
 controls, and regional upscalers that remain unimplemented. Further render runs
 are currently prohibited by the owner. Do not read this plan as a completion claim.
+
+## Resident renderer and sight placement checkpoint, November 8, 2026
+
+The [runtime guide](../../GodotForkDocs/features/hybrid-pip.md) describes the
+resident ADS path, independent regional DLSS reconstruction, lens-only composition
+and automatic fallback to ordinary ADS. The sandbox uses a centered opening and
+height-based calibration. The following placement and camera policies are proposals.
+
+- For a reference source square of 360 pixels at 2560 × 1440, use final 3D
+  output dimensions and compute `s = min(width / 2560, height / 1440)` with
+  floating-point division. Round `360 * s` once. Center the fitted reference
+  frame. A 1280 × 800 output has a 1280 × 720 reference with 40 extra rows at
+  either end and a 180-pixel square. A 1280 × 1280 output keeps that same
+  square. A 3440 × 1440 output keeps the 360-pixel square.
+- Showing additional scenery in those extra rows would require a gameplay
+  camera decision. Today's player camera holds vertical FOV constant. To
+  preserve the reference composition, hold the reference vertical FOV on
+  wider displays and its corresponding horizontal FOV on taller displays.
+  The renderer can project a lens with either camera policy.
+- A fixed reference square is easy to tune for a centered prototype. For
+  production sights, author a non-rendered plane at the visible glass opening
+  or ordered rim markers for an irregular aperture. Project the opening with
+  the actual ADS camera into final output coordinates. Check coverage at the
+  selected zoom and across the expected sway range.
+- The source rectangle, reconstructed texture and visible aperture have
+  different extents. The current API can translate a fixed-size crop each
+  frame and retains previous crop mapping. Keeping the source fixed while
+  moving the glass is another candidate within available coverage. The
+  current compositor derives its optical axis from the aperture vertices.
+  Independent image motion, glass clipping and eye-position shading would
+  require an explicit design and moving-image validation.
+- Prepare buffer dimensions on sight or output changes. Avoid resizing on
+  sway. Validate lens coverage, edge history and ADS transitions on 16:9,
+  ultrawide and square outputs before adopting a placement policy.
 
 ## Target and boundaries
 

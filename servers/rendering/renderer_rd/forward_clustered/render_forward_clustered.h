@@ -935,6 +935,8 @@ private:
 		bool using_ssao = false;
 		SceneScaleType scale_type = SCALE_NONE;
 		bool regional = false;
+		Ref<HybridPiPAttempt> scope_attempt;
+		HybridPiPAttempt::Resolve scope_region = HybridPiPAttempt::BACKGROUND;
 		bool reset_history = false;
 	};
 	bool _prepare_scene_depth(RenderDataRD *p_render_data, const Color &p_default_bg_color, ScenePassContext &r_context, bool p_reuse_scene = false, const Ref<RenderSceneBuffersRD> &p_parent_buffers = Ref<RenderSceneBuffersRD>());

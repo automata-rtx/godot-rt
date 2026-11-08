@@ -33,6 +33,29 @@
 #include "core/object/ref_counted.h"
 #include "servers/rendering/rendering_server_enums.h"
 
+// One resident ADS request. Driver callbacks retain only this small receipt, never a viewport
+// or its GPU resources. All fields except dlss_results belong to the rendering thread.
+class HybridPiPAttempt : public RefCounted {
+	SafeNumeric<uint32_t> dlss_results;
+	uint32_t required_resolves = 0;
+	bool regional_frame = false;
+	bool timing_warmup = false;
+	uint64_t warmup_start = 0;
+	String decline_reason;
+
+public:
+	enum Resolve { BACKGROUND = 1,
+		LENS = 2 };
+	static constexpr uint64_t WARMUP_LIMIT_MSEC = 5000;
+	void report_dlss(Resolve p_region, bool p_success);
+	void set_frame(bool p_regional, uint32_t p_required_resolves);
+	void decline(const String &p_reason);
+	void update_warmup(uint64_t p_now);
+	bool confirmed() const;
+	bool failed() const;
+	String failure_reason() const;
+};
+
 class RenderSceneBuffersConfiguration : public RefCounted {
 	GDCLASS(RenderSceneBuffersConfiguration, RefCounted);
 
@@ -118,6 +141,7 @@ public:
 		bool active = false;
 		bool blur_enabled = true;
 		bool resident_parent = false;
+		Ref<HybridPiPAttempt> attempt;
 		Size2i native_capacity;
 		Rect2 native_region;
 		PackedVector2Array aperture;
@@ -125,7 +149,7 @@ public:
 	};
 
 	void set_hybrid_pip_configuration(const HybridPiPConfiguration &p_configuration) {
-		if (p_configuration.preparation_generation != hybrid_pip_configuration.preparation_generation || p_configuration.enabled != hybrid_pip_configuration.enabled) {
+		if (p_configuration.preparation_generation != hybrid_pip_configuration.preparation_generation || p_configuration.enabled != hybrid_pip_configuration.enabled || p_configuration.attempt != hybrid_pip_configuration.attempt) {
 			hybrid_pip_status.clear();
 		}
 		hybrid_pip_configuration = p_configuration;

@@ -3481,6 +3481,8 @@ void RenderForwardClustered::_render_scene_color(RenderDataRD *p_render_data, co
 				const real_t aspect = p_render_data->scene_data->cam_projection.get_aspect();
 
 				RendererRD::DLSSEffect::Parameters params;
+				params.scope_attempt = r_context.scope_attempt;
+				params.scope_region = r_context.scope_region;
 				params.viewport = rb->get_streamline_viewport(v);
 				params.internal_size = rb->get_internal_size();
 				params.target_size = rb->get_target_size();
@@ -3896,8 +3898,21 @@ bool RenderForwardClustered::_render_hybrid_scene(RenderDataRD *p_render_data, c
 		result["region_count"] = p_ready ? (p_active ? 2 : 1) : 0;
 		result["gi_frame"] = RendererRD::AMDGI::get_batch_completed_frame(parent);
 		parent->set_hybrid_pip_status(result);
+		if (configuration.attempt.is_valid()) {
+			uint32_t required = 0;
+			if (background_mode == HYBRID_BACKGROUND_DLSS) {
+				required |= HybridPiPAttempt::BACKGROUND;
+			}
+			if (native_aa_applied == HYBRID_AA_DLAA) {
+				required |= HybridPiPAttempt::LENS;
+			}
+			configuration.attempt->set_frame(p_active, required);
+		}
 	};
-	auto decline = [&](const String &p_reason) {
+	auto decline = [&](const String &p_reason, bool p_preparing = false) {
+		if (!p_preparing && configuration.attempt.is_valid()) {
+			configuration.attempt->decline(p_reason);
+		}
 		status(false, false, p_reason);
 		return false;
 	};
@@ -3951,8 +3966,11 @@ bool RenderForwardClustered::_render_hybrid_scene(RenderDataRD *p_render_data, c
 	if (p_render_data->voxel_gi_instances && p_render_data->voxel_gi_instances->size() > 0) {
 		return decline("voxel_gi_requires_uniform_rendering");
 	}
-	if (!amd_gi || !rtgi_scene || !rtgi_scene->is_ready() || !amd_gi->has_material_pipelines(*rtgi_scene) || !RendererRD::AMDGI::is_regional_supported()) {
-		return decline("amd_gi_preparing_or_unsupported");
+	if (!RendererRD::AMDGI::is_enabled() || !RendererRD::AMDGI::is_regional_supported()) {
+		return decline("amd_gi_disabled_or_unsupported");
+	}
+	if (!amd_gi || !rtgi_scene || !rtgi_scene->is_ready() || !amd_gi->has_material_pipelines(*rtgi_scene)) {
+		return decline("amd_gi_preparing_or_unsupported", true);
 	}
 	_update_dirty_geometry_instances();
 	for (uint32_t i = 0; i < p_render_data->instances->size(); i++) {
@@ -4063,7 +4081,7 @@ bool RenderForwardClustered::_render_hybrid_scene(RenderDataRD *p_render_data, c
 	}
 	hybrid_gi->prepare_scene_material_pipelines(*rtgi_scene, false);
 	if (!hybrid_gi->has_material_pipelines(*rtgi_scene)) {
-		return decline("regional_material_pipelines_preparing");
+		return decline("regional_material_pipelines_preparing", true);
 	}
 	Ref<HybridPiPData> owner;
 	if (parent->has_custom_data(SNAME("hybrid_pip"))) {
@@ -4093,7 +4111,7 @@ bool RenderForwardClustered::_render_hybrid_scene(RenderDataRD *p_render_data, c
 		return decline("larger_native_resolve_requires_dlss");
 	}
 	if (!_prepare_hybrid_resources(p_render_data, *owner.ptr(), layout, native_target_size, native_aa, background_mode)) {
-		return decline("regional_resources_preparing_or_failed");
+		return decline("regional_resources_preparing_or_failed", true);
 	}
 	owner->aperture.resize(configuration.aperture.size());
 	for (int i = 0; i < owner->aperture.size(); i++) {
@@ -4157,7 +4175,7 @@ bool RenderForwardClustered::_render_hybrid_scene(RenderDataRD *p_render_data, c
 	logical.exposure = p_render_data->camera_attributes.is_valid() ? RSG::camera_attributes->camera_attributes_get_exposure_normalization_factor(p_render_data->camera_attributes) : 1.0f;
 	RendererRD::AMDGI::Environment gi_environment = _hybrid_gi_environment(p_render_data, parent, logical.exposure);
 	if (!hybrid_gi->prepare_regions(*rtgi_scene, parent, uniform, regions, 2, logical, gi_environment)) {
-		return decline("regional_gi_resources_preparing_or_failed");
+		return decline("regional_gi_resources_preparing_or_failed", true);
 	}
 	if (!owner->screen_effects_warmed) {
 		// Preparation initializes these inactive surfaces to empty depth. Warm
@@ -4193,6 +4211,10 @@ bool RenderForwardClustered::_render_hybrid_scene(RenderDataRD *p_render_data, c
 			return decline("regional_depth_preparation_failed");
 		}
 		contexts[i].reset_history = active ? regions[i].reset_history : uniform.reset_history;
+		if (active) {
+			contexts[i].scope_attempt = configuration.attempt;
+			contexts[i].scope_region = i == 0 ? HybridPiPAttempt::BACKGROUND : HybridPiPAttempt::LENS;
+		}
 	}
 	if (!owner->screen_effects_warmed && !active && (contexts[0].draw_sky || contexts[0].draw_sky_fog_only)) {
 		// A sky shader may own half/quarter-resolution passes. Allocate and warm
@@ -4250,7 +4272,10 @@ bool RenderForwardClustered::_render_hybrid_scene(RenderDataRD *p_render_data, c
 	preparation["ready"] = bool(preparation["ready"]) && rendered;
 	preparation["rendered_frame"] = frame;
 	parent->set_amd_gi_preparation_status(preparation);
-	if (!rendered) {
+	ScenePassContext presentation;
+	presentation.rb = parent;
+	presentation.rb_data = parent_forward;
+	auto present_after_failure = [&](const String &p_reason) {
 		// GI may already have advanced the shared cache. Never invoke the native
 		// renderer again in this frame and advance it a second time.
 		for (uint64_t &last : owner->last_frame) {
@@ -4260,12 +4285,12 @@ bool RenderForwardClustered::_render_hybrid_scene(RenderDataRD *p_render_data, c
 		if (!owner->produced_parent) {
 			RD::get_singleton()->texture_clear(parent->get_internal_texture(), Color(0, 0, 0, 1), 0, 1, 0, 1);
 		}
-		status(false, false, "regional_gi_failed_uniform_recovery_pending");
-		ScenePassContext presentation;
-		presentation.rb = parent;
-		presentation.rb_data = parent_forward;
+		decline(p_reason);
 		_render_scene_present(p_render_data, presentation);
 		return true;
+	};
+	if (!rendered) {
+		return present_after_failure("regional_gi_failed_uniform_recovery_pending");
 	}
 	for (uint32_t i = 0; i < active_count; i++) {
 		_pre_opaque_render_contact_shadows(active_data[i], views[i], lighting.using_screen_space_shadows);
@@ -4289,8 +4314,7 @@ bool RenderForwardClustered::_render_hybrid_scene(RenderDataRD *p_render_data, c
 			const RID filtered = parent->create_texture(SNAME("hybrid_pip"), SNAME("background_fxaa"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, layout.background.render_size);
 			const float exposure = p_render_data->environment.is_valid() ? environment_get_exposure(p_render_data->environment) : 1.0f;
 			if (!hybrid_compositor->filter_fxaa(inputs.background_color, filtered, layout.background.render_size, exposure * parent->get_luminance_multiplier())) {
-				owner->recovering = true;
-				return decline("background_fxaa_failed");
+				return present_after_failure("background_fxaa_failed");
 			}
 			inputs.background_color = filtered;
 			background_fxaa_applied = true;
@@ -4309,14 +4333,12 @@ bool RenderForwardClustered::_render_hybrid_scene(RenderDataRD *p_render_data, c
 			if (native_aa == RSE::VIEWPORT_SCREEN_SPACE_AA_FXAA) {
 				const float exposure = p_render_data->environment.is_valid() ? environment_get_exposure(p_render_data->environment) : 1.0f;
 				if (!hybrid_compositor->filter_fxaa(inputs.native_color, filtered, layout.native.render_size, exposure * parent->get_luminance_multiplier())) {
-					owner->recovering = true;
-					return decline("native_fxaa_failed");
+					return present_after_failure("native_fxaa_failed");
 				}
 			} else {
 				const RID framebuffer = FramebufferCacheRD::get_singleton()->get_cache(filtered);
 				if (!smaa || framebuffer.is_null()) {
-					owner->recovering = true;
-					return decline("native_smaa_unavailable");
+					return present_after_failure("native_smaa_unavailable");
 				}
 				smaa->process(native_buffers, inputs.native_color, framebuffer, false);
 			}
@@ -4345,29 +4367,18 @@ bool RenderForwardClustered::_render_hybrid_scene(RenderDataRD *p_render_data, c
 #endif
 		}
 		if (!hybrid_compositor->render(owner->compositor, inputs, owner->outputs, layout, logical.projection.inverse(), owner->aperture, settings)) {
-			owner->recovering = true;
-			for (uint64_t &last : owner->last_frame) {
-				last = 0;
-			}
-			if (!owner->produced_parent) {
-				RD::get_singleton()->texture_clear(parent->get_internal_texture(), Color(0, 0, 0, 1), 0, 1, 0, 1);
-			}
-			status(false, false, "regional_composition_failed_uniform_recovery_pending");
-		} else {
-			owner->last_frame[1] = owner->last_frame[2] = frame;
-			owner->previous_layout = layout;
-			owner->produced_parent = true;
-			status(true, true, "ready");
+			return present_after_failure("regional_composition_failed_uniform_recovery_pending");
 		}
+		owner->last_frame[1] = owner->last_frame[2] = frame;
+		owner->previous_layout = layout;
+		owner->produced_parent = true;
+		status(true, true, "ready");
 	} else {
 		owner->last_frame[0] = frame;
 		owner->recovering = false;
 		owner->produced_parent = true;
 		status(true, false, "ready");
 	}
-	ScenePassContext presentation;
-	presentation.rb = parent;
-	presentation.rb_data = parent_forward;
 	_render_scene_present(p_render_data, presentation);
 	return true;
 }

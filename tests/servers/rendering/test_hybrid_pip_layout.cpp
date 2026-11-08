@@ -33,6 +33,7 @@
 TEST_FORCE_LINK(test_hybrid_pip_layout)
 
 #include "servers/rendering/renderer_rd/hybrid_pip_layout.h"
+#include "servers/rendering/storage/render_scene_buffers.h"
 
 #include <climits>
 
@@ -40,6 +41,49 @@ namespace TestHybridPiPLayout {
 
 using RendererRD::HybridPiPLayout;
 using RendererRD::HybridPiPRegion;
+
+TEST_CASE("[HybridPiP] Resident ADS requires both requested DLSS submissions and isolates old callbacks") {
+	Ref<HybridPiPAttempt> attempt;
+	attempt.instantiate();
+	attempt->set_frame(true, HybridPiPAttempt::BACKGROUND | HybridPiPAttempt::LENS);
+	CHECK_FALSE(attempt->confirmed());
+	attempt->report_dlss(HybridPiPAttempt::LENS, true);
+	CHECK_FALSE(attempt->confirmed());
+	attempt->report_dlss(HybridPiPAttempt::BACKGROUND, true);
+	CHECK(attempt->confirmed());
+
+	for (HybridPiPAttempt::Resolve region : { HybridPiPAttempt::LENS, HybridPiPAttempt::BACKGROUND }) {
+		Ref<HybridPiPAttempt> old_callback = attempt;
+		attempt.instantiate();
+		attempt->set_frame(true, 0);
+		old_callback->report_dlss(region, false);
+		old_callback->report_dlss(region, true);
+		CHECK(old_callback->failed());
+		CHECK_FALSE(old_callback->confirmed());
+		CHECK(attempt->confirmed());
+	}
+}
+
+TEST_CASE("[HybridPiP] A temporary warm-up has a deadline and a permanent decline latches immediately") {
+	HybridPiPAttempt attempt;
+	attempt.update_warmup(10);
+	attempt.update_warmup(10 + HybridPiPAttempt::WARMUP_LIMIT_MSEC - 1);
+	CHECK_FALSE(attempt.failed());
+	attempt.set_frame(true, 0);
+	attempt.update_warmup(10 + HybridPiPAttempt::WARMUP_LIMIT_MSEC);
+	CHECK(attempt.confirmed());
+	attempt.set_frame(false, 0);
+	attempt.update_warmup(10000);
+	attempt.update_warmup(10000 + HybridPiPAttempt::WARMUP_LIMIT_MSEC);
+	CHECK(attempt.failed());
+	CHECK(attempt.failure_reason() == "regional_warmup_timed_out");
+
+	HybridPiPAttempt incompatible;
+	incompatible.decline("material_samples_uniform_screen_buffers");
+	incompatible.set_frame(true, 0);
+	CHECK_FALSE(incompatible.confirmed());
+	CHECK(incompatible.failure_reason() == "material_samples_uniform_screen_buffers");
+}
 
 TEST_CASE("[HybridPiP] Scope input scaling preserves coverage and peripheral workload") {
 	HybridPiPLayout layout;

@@ -97,11 +97,16 @@ bool DLSSEffect::is_available() {
 
 void DLSSEffect::upscale(const Parameters &p_params) {
 	if (!is_available()) {
+		if (p_params.scope_attempt.is_valid()) {
+			p_params.scope_attempt->report_dlss(p_params.scope_region, false);
+		}
 		return;
 	}
 
 	CallbackArgs *args = args_allocator.alloc();
 	args->owner = this;
+	args->scope_attempt = p_params.scope_attempt;
+	args->scope_region = p_params.scope_region;
 	args->viewport = p_params.viewport;
 	args->output_size = p_params.target_size;
 	args->quality = StreamlineVK::quality_from_scale(p_params.scale);
@@ -158,8 +163,9 @@ void DLSSEffect::upscale(const Parameters &p_params) {
 
 void DLSSEffect::callback(RDD *p_driver, RDD::CommandBufferID p_command_buffer, CallbackArgs *p_userdata) {
 	StreamlineVK *streamline = StreamlineVK::get_singleton();
-	if (streamline != nullptr) {
-		streamline->super_resolution_evaluate(p_command_buffer.id, p_userdata->viewport, p_userdata->output_size, p_userdata->quality, p_userdata->preset, p_userdata->upscale_alpha, p_userdata->camera, p_userdata->inputs);
+	const bool evaluated = streamline && streamline->super_resolution_evaluate(p_command_buffer.id, p_userdata->viewport, p_userdata->output_size, p_userdata->quality, p_userdata->preset, p_userdata->upscale_alpha, p_userdata->camera, p_userdata->inputs);
+	if (p_userdata->scope_attempt.is_valid()) {
+		p_userdata->scope_attempt->report_dlss(p_userdata->scope_region, evaluated);
 	}
 	p_userdata->owner->args_allocator.free(p_userdata);
 }

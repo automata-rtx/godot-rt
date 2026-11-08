@@ -383,6 +383,32 @@ func _run() -> void:
     if not await _stage(view, "18_feature_reprepared", false): return
     RenderingServer.viewport_set_hybrid_pip_active(view.get_viewport_rid(), true)
     if not await _stage(view, "19_final_regional", true): return
+
+    # A resident decline must draw the ordinary scaled camera while the caller
+    # is still holding ADS. Repeated requests must not retry on every frame.
+    var rid := view.get_viewport_rid()
+    RenderingServer.viewport_set_hybrid_pip_active(rid, false)
+    RenderingServer.viewport_set_hybrid_pip_enabled(rid, false)
+    view.scaling_3d_scale = 0.5
+    compositor = Compositor.new()
+    compositor.compositor_effects = [NoOpEffect.new()]
+    main.camera.compositor = compositor
+    RenderingServer.viewport_prepare_resident_hybrid_pip(rid, CAPACITY)
+    RenderingServer.viewport_set_hybrid_pip_active(rid, true)
+    if not await _wait(view, "20_resident_declined", false, false, "compositor_callback_requires_uniform_rendering"): return
+    var rejected := _state(view)
+    main.camera.compositor = null
+    RenderingServer.viewport_set_hybrid_pip_active(rid, true)
+    await _frames(4)
+    var held := _state(view)
+    _expect(held.get("resident_state") == "fallback" and held.get("requested_active"), "held ADS lost the fallback latch")
+    _expect(held.get("rendered_frame") == rejected.get("rendered_frame"), "declined scope was rendered again")
+    var normal_size := RenderingServer.viewport_get_internal_size(rid)
+    _expect(normal_size.x < view.size.x and _gi(view).get("size") == normal_size, "fallback did not draw ordinary scaled buffers")
+    RenderingServer.viewport_set_hybrid_pip_active(rid, false)
+    RenderingServer.viewport_set_hybrid_pip_active(rid, true)
+    if not await _wait(view, "21_resident_rearmed", true, true): return
+    _expect(_state(view).get("resident_state") == "active", "fresh ADS did not recover")
     _display.texture = null
     view.queue_free()
     _views.clear()

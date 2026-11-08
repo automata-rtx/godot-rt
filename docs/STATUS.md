@@ -25,8 +25,8 @@ paths are certified. Controls: [portable guide](../GodotForkDocs/FORK_GUIDE.md).
 
 **Local build delivery (2026-11-07).** The standard desktop shortcut points to the
 latest local HybridPiP development editor in the engine checkout, SHA-256
-`E7013C88614305E0A5B013E49F54CCF7096418B8220920B555354133FEC82C19`.
-Its regional feature remains off by default. See the branch's validation limits above.
+`323868A97E50BADDEAF740D181CA8F2B6F3658A1030924EE89F13D8DE51EF2C6`.
+This local build also includes automatic resident ADS fallback. Eight headless HybridPiP unit tests passed (126 assertions), including independent DLSS region failures, late callbacks and warm-up timeout. The sandbox headless restoration check passed. The new rendered fallback stages have been syntax-checked only. Its regional feature remains off by default. See the branch's validation limits above.
 Future successful local editor builds must update/verify this shortcut.
 `Desktop/GodotRTGI` is now reserved for Actions downloads; its existing executable
 was not replaced by this policy change. See [delivery rules](PROJECT_SCOPE.md#local-build-delivery).

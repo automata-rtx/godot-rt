@@ -154,6 +154,7 @@ static bool _update_mode_has_frame_history(RSE::ViewportUpdateMode p_mode) {
 
 void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 	// Output changes can invalidate both configurations. Switching ADS never comes here.
+	p_viewport->hybrid_pip_configuration.attempt.unref();
 	p_viewport->scope_buffers.unref();
 	if (p_viewport->render_buffers.is_valid()) {
 		if (p_viewport->size.width == 0 || p_viewport->size.height == 0) {
@@ -421,8 +422,21 @@ void RendererViewport::_draw_3d(Viewport *p_viewport) {
 	}
 
 	float screen_mesh_lod_threshold = p_viewport->mesh_lod_threshold / float(p_viewport->size.width);
-	const auto &scope = p_viewport->hybrid_pip_configuration;
-	const bool draw_scope = scope.enabled && scope.resident_parent && scope.active && p_viewport->render_buffers.is_valid() && !p_viewport->use_xr && p_viewport->view_count == 1;
+	auto &scope = p_viewport->hybrid_pip_configuration;
+	const bool requested = scope.enabled && scope.resident_parent && scope.active;
+	if (requested) {
+		if (scope.attempt.is_null()) {
+			scope.attempt.instantiate();
+			if (p_viewport->use_xr || p_viewport->view_count != 1 || p_viewport->render_buffers.is_null() || OS::get_singleton()->get_current_rendering_method() != "forward_plus") {
+				scope.attempt->decline("requires_forward_plus_single_view");
+			}
+			if (p_viewport->scope_buffers.is_valid()) {
+				p_viewport->scope_buffers->set_hybrid_pip_configuration(scope);
+			}
+		}
+		scope.attempt->update_warmup(OS::get_singleton()->get_ticks_msec());
+	}
+	const bool draw_scope = requested && !scope.attempt->failed();
 	if (draw_scope && p_viewport->scope_buffers.is_null()) {
 		RenderSceneBuffersConfiguration config;
 		config.set_render_target(p_viewport->render_target);
@@ -1435,6 +1449,7 @@ void RendererViewport::viewport_attach_camera(RID p_viewport, RID p_camera) {
 	ERR_FAIL_NULL(viewport);
 
 	if (viewport->camera != p_camera) {
+		viewport->hybrid_pip_configuration.attempt.unref();
 		viewport->prev_camera_data_frame = 0;
 	}
 	viewport->camera = p_camera;
@@ -1449,6 +1464,7 @@ void RendererViewport::viewport_set_scenario(RID p_viewport, RID p_scenario) {
 	}
 
 	if (viewport->scenario != p_scenario) {
+		viewport->hybrid_pip_configuration.attempt.unref();
 		viewport->prev_camera_data_frame = 0;
 	}
 	viewport->scenario = p_scenario;
@@ -1766,6 +1782,7 @@ void RendererViewport::viewport_prepare_resident_hybrid_pip(RID p_viewport, Size
 
 void RendererViewport::_prepare_hybrid_pip(Viewport *viewport, Size2i p_native_capacity) {
 	auto &configuration = viewport->hybrid_pip_configuration;
+	configuration.attempt.unref();
 	configuration.native_capacity = p_native_capacity;
 	configuration.enabled = true;
 	configuration.preparation_generation++;
@@ -1783,6 +1800,7 @@ void RendererViewport::viewport_set_hybrid_pip_enabled(RID p_viewport, bool p_en
 	const bool required_before = _viewport_requires_motion_vectors(viewport);
 	viewport->hybrid_pip_configuration.enabled = p_enabled;
 	if (!p_enabled) {
+		viewport->hybrid_pip_configuration.attempt.unref();
 		viewport->hybrid_pip_temporal_motion = false;
 		viewport->scope_buffers.unref();
 	}
@@ -1797,6 +1815,10 @@ void RendererViewport::viewport_set_hybrid_pip_enabled(RID p_viewport, bool p_en
 void RendererViewport::viewport_set_hybrid_pip_active(RID p_viewport, bool p_active) {
 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL(viewport);
+	if (viewport->hybrid_pip_configuration.active == p_active) {
+		return;
+	}
+	viewport->hybrid_pip_configuration.attempt.unref();
 	viewport->hybrid_pip_configuration.active = p_active;
 	if (viewport->hybrid_buffers().is_valid()) {
 		viewport->hybrid_buffers()->set_hybrid_pip_configuration(viewport->hybrid_pip_configuration);
@@ -1830,20 +1852,37 @@ void RendererViewport::viewport_set_hybrid_pip_region(RID p_viewport, const Rect
 Dictionary RendererViewport::viewport_get_hybrid_pip_status(RID p_viewport) const {
 	const Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL_V(viewport, Dictionary());
-	if (viewport->hybrid_buffers().is_valid()) {
-		Dictionary status = viewport->hybrid_buffers()->get_hybrid_pip_status();
-		status["viewport_size"] = viewport->size;
-		status["preparation_generation"] = viewport->hybrid_pip_configuration.preparation_generation;
-		return status;
-	}
+	const auto &scope = viewport->hybrid_pip_configuration;
 	Dictionary result;
+	if (viewport->hybrid_buffers().is_valid()) {
+		result = viewport->hybrid_buffers()->get_hybrid_pip_status();
+	} else {
+		result["ready"] = false;
+		result["active"] = false;
+		result["reason"] = "no_render_buffers";
+	}
+	result["enabled"] = scope.enabled;
+	result["requested_active"] = scope.active;
 	result["viewport_size"] = viewport->size;
-	result["enabled"] = viewport->hybrid_pip_configuration.enabled;
-	result["requested_active"] = viewport->hybrid_pip_configuration.active;
-	result["ready"] = false;
-	result["active"] = false;
-	result["reason"] = "no_render_buffers";
-	result["preparation_generation"] = viewport->hybrid_pip_configuration.preparation_generation;
+	result["preparation_generation"] = scope.preparation_generation;
+	if (scope.resident_parent) {
+		const bool requested = scope.enabled && scope.active;
+		const bool fallback = requested && scope.attempt.is_valid() && scope.attempt->failed();
+		const bool confirmed = requested && scope.attempt.is_valid() && scope.attempt->confirmed();
+		result["active"] = confirmed;
+		if (!requested) {
+			result["resident_state"] = "idle";
+		} else if (fallback) {
+			result["resident_state"] = "fallback";
+			result["ready"] = false;
+			result["reason"] = scope.attempt->failure_reason();
+		} else if (confirmed) {
+			result["resident_state"] = "active";
+		} else {
+			result["resident_state"] = "warming";
+			result["ready"] = false;
+		}
+	}
 	return result;
 }
 

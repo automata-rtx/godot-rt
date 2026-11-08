@@ -38,6 +38,7 @@
 #include "core/templates/paged_allocator.h"
 #include "servers/rendering/renderer_rd/shaders/effects/dlss_reactive.glsl.gen.h"
 #include "servers/rendering/rendering_device.h"
+#include "servers/rendering/storage/render_scene_buffers.h"
 
 namespace RendererRD {
 
@@ -50,6 +51,8 @@ namespace RendererRD {
 class DLSSEffect {
 	struct CallbackArgs {
 		DLSSEffect *owner = nullptr;
+		Ref<HybridPiPAttempt> scope_attempt;
+		HybridPiPAttempt::Resolve scope_region = HybridPiPAttempt::BACKGROUND;
 		uint32_t viewport = 0;
 		Size2i output_size;
 		StreamlineVK::Quality quality = StreamlineVK::QUALITY_DLAA;
@@ -84,6 +87,8 @@ public:
 	// false if the pass could not run, in which case p_dest must not be tagged.
 	bool build_reactive_mask(RID p_color, RID p_dest, const Size2i &p_size, float p_scale);
 	struct Parameters {
+		Ref<HybridPiPAttempt> scope_attempt;
+		HybridPiPAttempt::Resolve scope_region = HybridPiPAttempt::BACKGROUND;
 		// Unique per view, and stable across frames: Streamline keeps this viewport's history
 		// under it.
 		uint32_t viewport = 0;

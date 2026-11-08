@@ -90,7 +90,9 @@ resolution; signs and other UI drawn as 3D geometry follow their region's resolu
 
 ## Compatibility and limits
 
-A declined regional draw can fall back to uniform rendering on the native scope parent. After a persistent decline, request inactive and use ordinary FOV ADS to regain the normal upscaler. Current fallbacks include custom
+Resident requests report `resident_state` as `idle`, `warming`, `active` or `fallback`. A known incompatibility, failed regional DLSS submission or five seconds of unconfirmed warm-up latches fallback. The next eligible camera draw uses the ordinary viewport and player upscaler. The detecting frame can already be recorded. The game owns weapon visibility and ordinary FOV ADS. Stop a loading warm-up on either active or fallback. Each requested DLSS region must successfully submit before the attempt reports active. This is a driver submission result, not a GPU completion fence.
+
+Release and re-aim, prepare a changed profile, or change the camera/scenario or viewport configuration to retry. Moving the aperture or resending the same active request keeps the existing decision. Legacy preparation still uses the uniform parent on decline. Older resident builds without `resident_state` need a game-side bounded wait and explicit deactivation. Current fallbacks include custom
 compositor callbacks, materials sampling screen/depth/normal textures, custom
 clip-space/projection writes, point-size shaders, camera DoF, auto-exposure,
 custom sky FOV, volumetric fog, SDFGI/VoxelGI/SSIL, SSR when not replaced by GI

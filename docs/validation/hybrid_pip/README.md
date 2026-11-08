@@ -2,6 +2,8 @@
 
 Actual build identities, results and remaining gates: [validation report](RESULTS.md).
 
+The final resident stages hold ADS across an incompatible compositor, verify the ordinary scaled camera keeps drawing, then re-arm. Native unit tests separately inject lens and background DLSS callback results without needing an NVIDIA device.
+
 Standalone generated geometry; no fps-proto assets or edits. This is a correctness
 fixture, **not a benchmark**. PNG readbacks, material compilation, and readiness
 waits deliberately interfere with timing.
